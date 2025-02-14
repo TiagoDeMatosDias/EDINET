@@ -1,0 +1,3 @@
+testdata/outputs/dummy_database.db
+testdata/*
+files/downloadeddocs/*
