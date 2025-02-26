@@ -3,6 +3,7 @@ import classes.EDINET as e
 from config import Config
 import classes.helper as h
 import classes.data as d
+import classes.yahoofinance as y
 
 from datetime import datetime
 # Press Shift+F10 to execute it or replace it with your code.
@@ -52,6 +53,9 @@ if __name__ == '__main__':
     #data.Generate_Financial_Ratios("Standardized_Data_Complete", "Standardized_Data_Complete_Ratios")
     #data.parse_edinet_taxonomy("testdata\\inputs\\Taxonomy\\taxonomy\\jppfs\\2024-11-01\\jppfs_cor_2024-11-01.xsd", "TAXONOMY_JPFS_COR")
 
+    #data.copy_table_to_Standard("financialData_full", "Standardized_Data_Complete")
+    data.Generate_Financial_Ratios("Standardized_Data_Complete", "Standardized_Data_Complete_Ratios")
+
     columns = {
     'CurrentRatio': (False, 1.5),
     'QuickRatio': (False, 1.0),
@@ -59,16 +63,21 @@ if __name__ == '__main__':
     'DebtToEquityRatio': (True, 1.0),
     'DebtToAssetsRatio': (True, 1.5),
     'ReturnOnEquity': (False, 1.0),
-    'ReturnOnAssets': (False, 1.2),
-    'GrossMargin': (False, 1.5),
+    'ReturnOnAssets': (False, 2),
+    'GrossMargin': (False, 1),
     'OperatingMargin': (False, 1.5),
     'NetProfitMargin': (False, 2.0),
     'AssetTurnover': (False, 0.5),
-    'InventoryTurnover': (False, 0.5)
+    'InventoryTurnover': (False, 0.5),
+    'ShareholderPayout': (False, 1),
+    'FreeCashflowMargin': (False, 1.5),
+    'netSales_Growth' : (False, 2),
+    'netIncome_Growth' : (False, 2)
     }
+    data.Generate_Rankings("Standardized_Data_Complete_Ratios", "Standardized_Data_Complete_Ratios_Rankings", columns)
+    
+    #y.update_all_stock_prices(config.get("Database"), only_update_empty=True)
 
-    #data.Generate_Rankings("Standardized_Data_Complete_Ratios", "Standardized_Data_Complete_Ratios_Rankings", columns)
-    data.SQL_to_CSV("Standardized_Data_Complete_Ratios_Rankings", "Standardized_Data_Complete_Ratios_Rankings.csv", "left join edinet_codes on edinet_codes.EdinetCode = Standardized_Data_Complete_Ratios_Rankings.edinetCode")
     print('Program Ended')
 
 
