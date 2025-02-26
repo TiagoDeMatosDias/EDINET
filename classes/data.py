@@ -56,7 +56,7 @@ class data:
         
         # Create the output table with the same schema as the input table
         cursor.execute(f"""CREATE TABLE IF NOT EXISTS {output_table} AS SELECT * FROM {input_table} WHERE   
-            (
+            ((
             AccountingTerm like 'jppfs_cor:NetSales'
             OR
             AccountingTerm like '%OrdinaryIncome'
@@ -101,12 +101,21 @@ class data:
             (                
             Period = 'CurrentYearDuration'
             OR            
-            Period = 'CurrentYearInstant'            
+            Period = 'CurrentYearInstant' 
+            OR
+            Period = 'Prior1YearDuration'           
             )
             AND
             (
             AccountingTerm LIKE 'jppfs_cor:%'
-            )""")
+            )) 
+            OR
+            (AccountingTerm = 'jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults'
+            AND
+            Period = 'CurrentYearInstant_NonConsolidatedMember' 
+            )
+            
+            """)
         conn.commit()
         conn.close()
 
@@ -138,10 +147,13 @@ class data:
             df = pd.read_sql_query(f"""SELECT * FROM {input_table} WHERE edinetCode = '{company}' """, conn)
 
             # Calculate the ratios
+
+            # Create a combined column for AccountingTerm and Period
+            df['AccountingTerm_Period'] = df['AccountingTerm'] + '_' + df['Period']
                     
             RatiosTable = df.pivot_table(
-                index=['edinetCode', 'docID',  'Currency', 'docTypeCode', 'periodStart', 'periodEnd'],
-                columns='AccountingTerm',
+                index=['edinetCode', 'docID',  'docTypeCode', 'periodStart', 'periodEnd'],
+                columns=['AccountingTerm_Period'],
                 values='Amount',
                 aggfunc='first'
             ).reset_index()
@@ -157,22 +169,51 @@ class data:
 
             # Define the relevant columns for each parameter
             columns_mapping = {
-                "netIncome": ["jppfs_cor:NetIncome", "jppfs_cor:ProfitLoss"],
-                "netSales": ["jppfs_cor:NetSales"],
-                "operatingIncome": ["jppfs_cor:OperatingIncome"],
-                "grossProfit": ["jppfs_cor:GrossProfit"],
-                "totalAssets": ["jppfs_cor:Assets", "jppfs_cor:TotalAssets"],
-                "totalDebt": ["jppfs_cor:TotalDebt", "jppfs_cor:LongTermLoansPayable"],
-                "shareholdersEquity": ["jppfs_cor:ShareholdersEquity"],
-                "currentAssets": ["jppfs_cor:CurrentAssets"],
-                "currentLiabilities": ["jppfs_cor:CurrentLiabilities"],
-                "inventories": ["jppfs_cor:Inventories"],
-                "costOfSales": ["jppfs_cor:CostOfSales"]
+                "netIncome": ["jppfs_cor:NetIncome_CurrentYearDuration", "jppfs_cor:ProfitLoss_CurrentYearDuration"],
+                "netIncome_PriorYear": ["jppfs_cor:NetIncome_Prior1YearDuration", "jppfs_cor:ProfitLoss_Prior1YearDuration"],
+                "netSales": ["jppfs_cor:NetSales_CurrentYearDuration"],
+                "netSales_PriorYear": ["jppfs_cor:NetSales_Prior1YearDuration"],
+                "operatingIncome": ["jppfs_cor:OperatingIncome_CurrentYearDuration"],
+                "operatingIncome_PriorYear": ["jppfs_cor:OperatingIncome_Prior1YearDuration"],
+                "grossProfit": ["jppfs_cor:GrossProfit_CurrentYearDuration"],
+                "grossProfit_PriorYear": ["jppfs_cor:GrossProfit_Prior1YearDuration"],
+                "totalAssets": ["jppfs_cor:Assets_CurrentYearInstant", "jppfs_cor:TotalAssets_CurrentYearInstant"],
+                "totalAssets_PriorYear": ["jppfs_cor:Assets_Prior1YearInstant", "jppfs_cor:TotalAssets_Prior1YearInstant"],
+                "totalDebt": ["jppfs_cor:TotalDebt_CurrentYearInstant", "jppfs_cor:LongTermLoansPayable_CurrentYearInstant"],
+                "totalDebt_PriorYear": ["jppfs_cor:TotalDebt_Prior1YearInstant", "jppfs_cor:LongTermLoansPayable_Prior1YearInstant"],
+                "shareholdersEquity": ["jppfs_cor:ShareholdersEquity_CurrentYearInstant"],
+                "shareholdersEquity_PriorYear": ["jppfs_cor:ShareholdersEquity_Prior1YearInstant"],
+                "currentAssets": ["jppfs_cor:CurrentAssets_CurrentYearInstant"],
+                "currentAssets_PriorYear": ["jppfs_cor:CurrentAssets_Prior1YearInstant"],
+                "currentLiabilities": ["jppfs_cor:CurrentLiabilities_CurrentYearInstant"],
+                "currentLiabilities_PriorYear": ["jppfs_cor:CurrentLiabilities_Prior1YearInstant"],
+                "inventories": ["jppfs_cor:Inventories_CurrentYearInstant"],
+                "inventories_PriorYear": ["jppfs_cor:Inventories_Prior1YearInstant"],
+                "costOfSales": ["jppfs_cor:CostOfSales_CurrentYearDuration"],
+                "costOfSales_PriorYear": ["jppfs_cor:CostOfSales_Prior1YearDuration"],
+                "dividends": ["jppfs_cor:CashDividendsPaidFinCF_CurrentYearDuration"],
+                "dividends_PriorYear": ["jppfs_cor:CashDividendsPaidFinCF_Prior1YearDuration"],
+                "buybacks": ["jppfs_cor:PurchaseOfTreasuryStockFinCF_CurrentYearDuration"],
+                "buybacks_PriorYear": ["jppfs_cor:PurchaseOfTreasuryStockFinCF_Prior1YearDuration"],
+                "operatingCashflow": ["jppfs_cor:NetCashProvidedByUsedInOperatingActivities_CurrentYearDuration"],
+                "operatingCashflow_PriorYear": ["jppfs_cor:NetCashProvidedByUsedInOperatingActivities_Prior1YearDuration"],
+                "investmentCashflow": ["jppfs_cor:NetCashProvidedByUsedInInvestmentActivities_CurrentYearDuration"],
+                "investmentCashflow_PriorYear": ["jppfs_cor:NetCashProvidedByUsedInInvestmentActivities_Prior1YearDuration"],
+                "financingCashflow": ["jppfs_cor:NetCashProvidedByUsedInFinancingActivities_CurrentYearDuration"],
+                "financingCashflow_PriorYear": ["jppfs_cor:NetCashProvidedByUsedInFinancingActivities_Prior1YearDuration"],
+                "SharesOutstanding" : ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults_CurrentYearInstant_NonConsolidatedMember"]
             }
 
             # Populate the new columns using a lambda function
             for new_col, relevant_cols in columns_mapping.items():
                 RatiosTable[new_col] = RatiosTable.apply(lambda row: next((row[col] for col in relevant_cols if col in row and pd.notnull(row[col])), np.nan), axis=1)
+
+            RatiosTable.reset_index( drop=True, inplace=True)
+
+            # Calculate additional data
+            RatiosTable["Cashflow_free"] = (RatiosTable["operatingCashflow"].fillna(0) + RatiosTable["investmentCashflow"].fillna(0))
+            RatiosTable["Cashflow_equity"] = ( RatiosTable["dividends"].fillna(0) + RatiosTable["buybacks"].fillna(0) )
+            RatiosTable["Cashflow_debt"] = (RatiosTable["financingCashflow"].fillna(0) - RatiosTable["Cashflow_equity"].fillna(0))
 
             # Calculate the ratios with default value as zero for nulls
             RatiosTable["CurrentRatio"] = RatiosTable["currentAssets"].fillna(0) / RatiosTable["currentLiabilities"].fillna(1)
@@ -186,29 +227,23 @@ class data:
             RatiosTable["OperatingMargin"] = RatiosTable["operatingIncome"].fillna(0) / RatiosTable["netSales"].fillna(1)
             RatiosTable["NetProfitMargin"] = RatiosTable["netIncome"].fillna(0) / RatiosTable["netSales"].fillna(1)
             RatiosTable["AssetTurnover"] = RatiosTable["netSales"].fillna(0) / RatiosTable["totalAssets"].fillna(1)
-            RatiosTable["InventoryTurnover"] = RatiosTable["costOfSales"].fillna(0) / RatiosTable["inventories"].fillna(1)
+            RatiosTable["InventoryTurnover"] = RatiosTable["costOfSales"].fillna(0) / RatiosTable["inventories"].fillna(1)                        
+            RatiosTable["BuybackPayout"] = (  -1 * RatiosTable["buybacks"].fillna(0)  )/ RatiosTable["netIncome"].fillna(1)
+            RatiosTable["ShareholderPayout"] = ( -1 * RatiosTable["Cashflow_equity"] )/ RatiosTable["netIncome"].fillna(1)
+            RatiosTable["DividendPayout"] = ( -1 * RatiosTable["dividends"].fillna(0)  )/ RatiosTable["netIncome"].fillna(1)
+            RatiosTable["FreeCashflowMargin"] = RatiosTable["Cashflow_free"].fillna(0) / RatiosTable["netSales"].fillna(1)
+            RatiosTable["CashflowToEquityMargin"] = RatiosTable["Cashflow_equity"].fillna(0) / RatiosTable["netSales"].fillna(1)
+            RatiosTable["CashflowToDebtMargin"] = RatiosTable["Cashflow_debt"].fillna(0) / RatiosTable["netSales"].fillna(1)
+            RatiosTable["netSales_Growth"] = (RatiosTable["netSales"].fillna(0) / RatiosTable["netSales_PriorYear"].fillna(RatiosTable["netSales"].fillna(1))) - 1
+            RatiosTable["netIncome_Growth"] = (RatiosTable["netIncome"].fillna(0) / RatiosTable["netIncome_PriorYear"].fillna(RatiosTable["netIncome"].fillna(1))) - 1
+            RatiosTable["NCAV"] = RatiosTable["currentAssets"].fillna(0) - (RatiosTable["totalAssets"].fillna(1) - RatiosTable["shareholdersEquity"].fillna(1))
 
-            """
-            # Calculate the rankings per column
-            RatiosTable["Ranking_CurrentRatio"] = RatiosTable["CurrentRatio"].rank(ascending=False )            
-            RatiosTable["Ranking_QuickRatio"] = RatiosTable["QuickRatio"].rank(ascending=False)            
-            RatiosTable["Ranking_LiquidAssets"] = RatiosTable["LiquidAssets"].rank(ascending=False)            
-            RatiosTable["Ranking_DebtToEquityRatio"] = RatiosTable["DebtToEquityRatio"].rank(ascending=True)            
-            RatiosTable["Ranking_DebtToAssetsRatio"]  = RatiosTable["DebtToAssetsRatio"].rank(ascending=True)            
-            RatiosTable["Ranking_ReturnOnEquity"]  = RatiosTable["ReturnOnEquity"].rank(ascending=False)            
-            RatiosTable["Ranking_ReturnOnAssets"] = RatiosTable["ReturnOnAssets"].rank(ascending=False)            
-            RatiosTable["Ranking_GrossMargin"] = RatiosTable["GrossMargin"].rank(ascending=False)            
-            RatiosTable["Ranking_OperatingMargin"]  = RatiosTable["OperatingMargin"].rank(ascending=False)            
-            RatiosTable["Ranking_NetProfitMargin"]  = RatiosTable["NetProfitMargin"].rank(ascending=False)            
-            RatiosTable["Ranking_AssetTurnover"]  = RatiosTable["AssetTurnover"].rank(ascending=False)            
-            RatiosTable["Ranking_InventoryTurnover"] = RatiosTable["InventoryTurnover"].rank(ascending=False)  
-              
-            RatiosTable["Ranking_Overall"] = 1.5 * RatiosTable["Ranking_CurrentRatio"] +  RatiosTable["Ranking_QuickRatio"] + RatiosTable["Ranking_LiquidAssets"] + 1.5 * RatiosTable["Ranking_DebtToEquityRatio"] + 1.5 * RatiosTable["Ranking_DebtToAssetsRatio"] + 1.5 * RatiosTable["Ranking_ReturnOnEquity"] + 2 * RatiosTable["Ranking_ReturnOnAssets"] + RatiosTable["Ranking_GrossMargin"] + RatiosTable["Ranking_OperatingMargin"] + RatiosTable["Ranking_NetProfitMargin"] + 0.5 * RatiosTable["Ranking_AssetTurnover"] + 0.5 * RatiosTable["Ranking_InventoryTurnover"] 
-            """
+
+
 
             # remove unnecessary columns
-            columns_to_keep = ['edinetCode', 'docID', 'Currency', 'docTypeCode', 'periodStart', 'periodEnd', "CurrentRatio", "QuickRatio", "LiquidAssets", "DebtToEquityRatio", "DebtToAssetsRatio", "ReturnOnEquity", "ReturnOnAssets", "GrossMargin", "OperatingMargin", "NetProfitMargin", "AssetTurnover", "InventoryTurnover"]
-            RatiosTable = RatiosTable.loc[:, columns_to_keep]
+            #columns_to_keep = ['edinetCode', 'docID', 'Currency', 'docTypeCode', 'periodStart', 'periodEnd', "CurrentRatio", "QuickRatio", "LiquidAssets", "DebtToEquityRatio", "DebtToAssetsRatio", "ReturnOnEquity", "ReturnOnAssets", "GrossMargin", "OperatingMargin", "NetProfitMargin", "AssetTurnover", "InventoryTurnover", "BuybackPayout", "ShareholderPayout", "DividendPayout", "FreeCashflowMargin", "CashflowToEquityMargin", "CashflowToDebtMargin", "netSales_Growth", "netIncome_Growth"]
+            #RatiosTable = RatiosTable.loc[:, columns_to_keep]
 
 
             # Store the data back to the database
@@ -259,13 +294,21 @@ class data:
         df = pd.read_sql_query(f"SELECT * FROM {output_table}", conn)
         # Select only numeric columns for mean calculation
         numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
-        avg_ranks = df.groupby('edinetCode')[numeric_columns].mean().reset_index()
+        avg_ranks = df.groupby('edinetCode')[numeric_columns].median().reset_index()
 
         # Generate the weighted rank
         avg_ranks["Weighted_Rank"] = avg_ranks[[f"Ranking_{column}" for column in columns]].dot([weight for _, weight in columns.values()])
 
         # Group by edinetCode and sum the values in other columns
         grouped_df = avg_ranks.groupby('edinetCode').mean().reset_index()
+
+        # Simple Valuation
+        grouped_df["netIncomePerShare"] = (grouped_df["netIncome"] /  grouped_df["SharesOutstanding"]).round(0)
+        grouped_df["NCAV_PerShare"] = (grouped_df["NCAV"] /  grouped_df["SharesOutstanding"]).round(0)
+
+        grouped_df["Valuation_PerShare_netIncomeDiscount_10pct"] = (grouped_df["netIncomePerShare"]/(0.1 - grouped_df["netSales_Growth"].apply(lambda x: min(x, 0.08)))).round(0)
+        grouped_df["Valuation_PerShare_netIncomeDiscount_12pct"] = (grouped_df["netIncomePerShare"]/(0.12 - grouped_df["netSales_Growth"].apply(lambda x: min(x, 0.08)))).round(0)
+        grouped_df["Valuation_PerShare_netIncomeDiscount_8pct"] = (grouped_df["netIncomePerShare"]/(0.08 - grouped_df["netSales_Growth"].apply(lambda x: min(x, 0.08)))).round(0)
 
         # Store the grouped data back to the database
         grouped_df.to_sql(output_table, conn, if_exists='replace', index=False)
