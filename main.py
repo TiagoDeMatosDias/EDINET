@@ -9,7 +9,6 @@ from datetime import datetime
 # Press Shift+F10 to execute it or replace it with your code.
 # Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
 # Collect data from API
-
 def get_FileswithMeta(start_date="2015-01-01", end_date=None):
     fileswithmeta = edinet.get_All_documents_withMetadata(start_date, end_date)
     fileswithMetaLocation = defaultLocation + "\\" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "-EDINET-File-List.csv"
@@ -27,34 +26,50 @@ if __name__ == '__main__':
     baseURL = config.get("baseURL")
     apikey = config.get("apikey")
     defaultLocation = config.get("defaultLocation")
+    Database_DocumentList = config.get("Database_DocumentList")
+    Database_downloadList = config.get("Database_downloadList")
+    FinancialData = config.get("Database_FinancialData")
+    Database_Standardized = config.get("Database_Standardized")
+
 
     print(f"baseURL: {baseURL}")
     print(f"apikey: {apikey}")
     print(f"defaultLocation: {defaultLocation}")
+    print(f"Database_DocumentList: {Database_DocumentList}")
+    print(f"FinancialData: {FinancialData}")
 
     edinet = e.Edinet()    
     #Working!!!
-    #edinet.get_All_documents_withMetadata("2015-01-01", "2025-01-31")
+    # Get all documents released between two dates
+    #edinet.get_All_documents_withMetadata("2025-01-01", "2025-07-01",Database_DocumentList)
 
-    #Working!!!
-    #filters = edinet.generate_filter("edinetCode", "=", "E01296")
-    #filters = edinet.generate_filter("docTypeCode", "=", "120")
-    #filters = edinet.generate_filter("csvFlag", "=", "1", filters)
-    #filters = edinet.generate_filter("secCode", "", "", filters, True)
-    #docs = edinet.query_database_select("downloadList", filters , "DocsToDownload")
-    #edinet.downloadDoc("S1004542","C:\\programming\\Finance\\EDINET\\EDINET\\testdata\\inputs", "1")
+    # Add the documents to the database that match the criteria
+    # You need the following filters for the baseline annual reports only
+    filters = edinet.generate_filter("docTypeCode", "=", "120")
+    filters = edinet.generate_filter("csvFlag", "=", "1", filters)
+    filters = edinet.generate_filter("secCode", "!=", "", filters)
+    filters = edinet.generate_filter("Downloaded", "=", "False", filters)
+    #edinet.downloadDocs(Database_DocumentList, FinancialData, filters)
 
-    #edinet.downloadDocs("downloadList", "financialData_full")
-    #edinet.clear_table("DocsToDownload")
-    #edinet.store_edinetCodes("testdata\\inputs\\EdinetcodeDlInfo.csv")
-
+    # Data class instantiation
     data = d.data()
-    #data.copy_table_to_Standard("financialData_full", "Standardized_Data_Complete")
+
+    # Standardize the data you have downloaded    
+    #data.copy_table_to_Standard(FinancialData, Database_Standardized)
+
+    # Generate financial ratios for the standardized data
+    # data.Generate_Financial_Ratios(Database_Standardized, Database_Standardized + "_Ratios")
+
+    # Aggregate the ratios
+    data.Generate_Aggregated_Ratios(Database_Standardized + "_Ratios", Database_Standardized + "_Ratios_Aggregated")
+
+    #data = d.data()
+    #data.copy_table_to_Standard(FinancialData, "Standardized_Data_Complete")
     #data.Generate_Financial_Ratios("Standardized_Data_Complete", "Standardized_Data_Complete_Ratios")
     #data.parse_edinet_taxonomy("testdata\\inputs\\Taxonomy\\taxonomy\\jppfs\\2024-11-01\\jppfs_cor_2024-11-01.xsd", "TAXONOMY_JPFS_COR")
 
     #data.copy_table_to_Standard("financialData_full", "Standardized_Data_Complete")
-    data.Generate_Financial_Ratios("Standardized_Data_Complete", "Standardized_Data_Complete_Ratios")
+    #data.Generate_Financial_Ratios("Standardized_Data_Complete", "Standardized_Data_Complete_Ratios")
 
     columns = {
     'CurrentRatio': (False, 1.5),
@@ -74,7 +89,7 @@ if __name__ == '__main__':
     'netSales_Growth' : (False, 2),
     'netIncome_Growth' : (False, 2)
     }
-    data.Generate_Rankings("Standardized_Data_Complete_Ratios", "Standardized_Data_Complete_Ratios_Rankings", columns)
+    #data.Generate_Rankings("Standardized_Data_Complete_Ratios", "Standardized_Data_Complete_Ratios_Rankings", columns)
     
     #y.update_all_stock_prices(config.get("Database"), only_update_empty=True)
 

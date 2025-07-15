@@ -17,10 +17,8 @@ class Edinet:
         self.key = self.config.get("apikey")
         self.defaultLocation = self.config.get("defaultLocation")
         self.Database = self.config.get("Database")
-        self.Database_DocumentList = self.config.get("Database_DocumentList")
 
-
-    def get_All_documents_withMetadata(self, start_date="2015-01-01", end_date=None):
+    def get_All_documents_withMetadata(self, start_date="2015-01-01", end_date=None, Database_DocumentList="DocumentList"):
         """
         Fetch all available document IDs for a given company from the EDINET API and store them in the database.
         
@@ -57,13 +55,16 @@ class Edinet:
                     columns = list(data.get("results")[0].keys())
                     columns.append("Downloaded")
                     
-                    self.create_table(self.Database_DocumentList, columns)
+                    self.create_table(Database_DocumentList, columns)
 
                     # Insert documents into the database
                     for entry in data.get("results", []):
-                        entry["Downloaded"] = "False"
-                        placeholders = ", ".join(["?" for _ in entry])
-                        cursor.execute(f"INSERT INTO {self.Database_DocumentList} VALUES ({placeholders})", tuple(entry.values()))
+                        # Check if the document already exists in the table
+                        cursor.execute(f"SELECT COUNT(*) FROM {Database_DocumentList} WHERE docID = ?", (entry["docID"],))
+                        if cursor.fetchone()[0] == 0:
+                            entry["Downloaded"] = "False"
+                            placeholders = ", ".join(["?" for _ in entry])
+                            cursor.execute(f"INSERT INTO {Database_DocumentList} VALUES ({placeholders})", tuple(entry.values()))
                     
                     conn.commit()
             
@@ -93,10 +94,12 @@ class Edinet:
             print(f"Failed to download file. Status code: {response.status_code}")
             return null
 
-    def downloadDocs(self, input_table, output_table=None):
+    def downloadDocs(self, input_table, output_table=None, filter=None):
         
         # Connect to the SQLite database
-        filter = self.generate_filter("Downloaded", "=", "False")
+        if filter is None:
+            filter = self.generate_filter("Downloaded", "=", "False")
+
         docList = self.query_database_select(input_table,filter)
         
         for doc in docList:
