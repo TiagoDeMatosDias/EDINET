@@ -264,6 +264,7 @@ class data:
             RatiosTable["PerShare_TotalPayout"] = RatiosTable["PerShare_Buybacks"].fillna(0) + RatiosTable["PerShare_Dividends"].fillna(0)
             RatiosTable["PerShare_SharePrice"] = RatiosTable["PerShare_Earnings"].fillna(0) * RatiosTable["PE_Ratio"].fillna(1)
 
+
             # Price Ratios
             RatiosTable["Ratio_PriceEarnings"] = RatiosTable["PerShare_SharePrice"].fillna(0) / RatiosTable["PerShare_Earnings"].fillna(1)
             RatiosTable["Ratio_EarningsYield"] = RatiosTable["PerShare_Earnings"].fillna(0) / RatiosTable["PerShare_SharePrice"].fillna(1)
@@ -273,6 +274,8 @@ class data:
             RatiosTable["Ratio_DividendsYield"] = RatiosTable["PerShare_Dividends"].fillna(0) / RatiosTable["PerShare_SharePrice"].fillna(1)
             RatiosTable["Ratio_BuybacksYield"] = RatiosTable["PerShare_Buybacks"].fillna(0) / RatiosTable["PerShare_SharePrice"].fillna(1)
             RatiosTable["Ratio_TotalPayoutYield"] = RatiosTable["PerShare_TotalPayout"].fillna(0) / RatiosTable["PerShare_SharePrice"].fillna(1)
+            RatiosTable["MarketCap"] = RatiosTable["PerShare_SharePrice"].fillna(0) * RatiosTable["SharesOutstanding"].fillna(1)
+
 
             # Calculate the 3 year and 5 year averages
             RatiosTable["Ratio_PriceBook_3Year_Average"] = RatiosTable["Ratio_PriceBook"].rolling(window=3, min_periods=1).mean()
@@ -290,16 +293,17 @@ class data:
             conn.commit()
             exists = True
         
-        
-        
         conn.close()
 
         pass
+
+
     def Generate_Aggregated_Ratios(self, input_table, output_table):
         """
         This function aggregates financial ratios from the input table and stores the results in the output table.
         It calculates the average of each ratio (columns with prefix "Ratio_") for each company and adds a column
-        for the count of periods aggregated, processing data in chunks to handle large datasets.
+        for the count of periods aggregated. Additionally, it includes the latest value of the MarketCap column
+        based on the most recent period.
         """
         conn = sqlite3.connect(self.Database)
         
@@ -321,10 +325,48 @@ class data:
 
             # Group by edinetCode and calculate the mean for ratio columns
             aggregated_df = df.groupby('edinetCode')[ratio_columns].mean().reset_index()
+           
+
+            # Filter columns with prefix "PerShare_"
+            PerShare_columns = [col for col in df.columns if col.startswith("PerShare_")]
+            if not ratio_columns:
+                raise ValueError("No columns with prefix 'Ratio_' found in the input table.")
+
+            # for the pershare columns we get the standard deviation and the growth from the first period_start to the latest period_start
+            aggregated_df_PerShare = df.groupby('edinetCode')[PerShare_columns].agg(['mean', 'std']).reset_index()
+            # Flatten the MultiIndex columns
+            aggregated_df_PerShare.columns = ['_'.join(col).strip() for col in aggregated_df_PerShare.columns.values]
+            # Rename the edinet_ column back to edinetCode
+            aggregated_df_PerShare.rename(columns={'edinetCode_': 'edinetCode'}, inplace=True)
+
+            # Ensure the DataFrame is sorted by edinetCode and period_start
+            df = df.sort_values(by=['edinetCode', 'periodStart'])
+            # for the pershare columns and for each edinetcode we get the growth from the first period_start to the latest period_start
+            for col in PerShare_columns:
+                # Get the first and last periodStart for each edinetCode
+                first_value = df.groupby('edinetCode')[col].first().reset_index()
+                last_value = df.groupby('edinetCode')[col].last().reset_index()
+
+                # Calculate the growth
+                growth_col_name = f"{col}_Growth"
+                # Calculate the number of years between the first and last periodStart
+                first_period = pd.to_datetime(df.groupby('edinetCode')['periodStart'].first().reset_index()['periodStart'])
+                last_period = pd.to_datetime(df.groupby('edinetCode')['periodStart'].last().reset_index()['periodStart'])
+                years_difference = (last_period - first_period).dt.days / 365.0
+
+                # Calculate the annualized growth
+                aggregated_df_PerShare[growth_col_name] = ((last_value[col] / first_value[col]) ** (1 / years_difference)) - 1
+            
 
             # Add a column for the count of periods aggregated
             count_df = df.groupby('edinetCode').size().reset_index(name='number_of_Periods')
             aggregated_df = pd.merge(aggregated_df, count_df, on='edinetCode')
+            aggregated_df = pd.merge(aggregated_df, aggregated_df_PerShare, on='edinetCode', how='left')
+
+
+            # Add the latest MarketCap value for each company based on the most recent period
+            latest_marketcap_df = df.sort_values('periodEnd').groupby('edinetCode').last().reset_index()[['edinetCode', 'MarketCap']]
+            aggregated_df = pd.merge(aggregated_df, latest_marketcap_df, on='edinetCode', how='left')
 
             # Round the values to 2 decimal places
             aggregated_df = aggregated_df.round(2)
@@ -338,62 +380,6 @@ class data:
 
         conn.close()
 
-
-    def Generate_Rankings(self, input_table, output_table, columns):
-        """
-        This function takes the data from an input table and ranks the columns (either ascending or descending), it also generates a weighted rank of all the columns.
-        The output is placed in the output table.
-        The columns parameter is a dictionary containing the column names, whether it is to be ranked in an ascending or descending manner, and the weight it should have in the overall ranking.
-        """
-        conn = sqlite3.connect(self.Database)
-        # Process data in chunks to handle large datasets
-        chunk_size = 10000
-        offset = 0
-        first_chunk = True
-
-        while True:
-            # Get a chunk of data from the input table
-            df = pd.read_sql_query(f"SELECT * FROM {input_table} LIMIT {chunk_size} OFFSET {offset}", conn)
-            if df.empty:
-                break
-
-            # Rank the columns
-            for column, (ascending, weight) in columns.items():
-                df[f"Ranking_{column}"] = df[column].rank(ascending=ascending)
-
-            # Store the data back to the database
-            df.to_sql(output_table, conn, if_exists='replace' if first_chunk else 'append', index=False)
-            conn.commit()
-
-            offset += chunk_size
-            first_chunk = False
- 
-
-        # Calculate the average ranks for each unique edinetCode
-        df = pd.read_sql_query(f"SELECT * FROM {output_table}", conn)
-        # Select only numeric columns for mean calculation
-        numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
-        avg_ranks = df.groupby('edinetCode')[numeric_columns].median().reset_index()
-
-        # Generate the weighted rank
-        avg_ranks["Weighted_Rank"] = avg_ranks[[f"Ranking_{column}" for column in columns]].dot([weight for _, weight in columns.values()])
-
-        # Group by edinetCode and sum the values in other columns
-        grouped_df = avg_ranks.groupby('edinetCode').mean().reset_index()
-
-        # Simple Valuation
-        grouped_df["netIncomePerShare"] = (grouped_df["netIncome"] /  grouped_df["SharesOutstanding"]).round(0)
-        grouped_df["NCAV_PerShare"] = (grouped_df["NCAV"] /  grouped_df["SharesOutstanding"]).round(0)
-
-        grouped_df["Valuation_PerShare_netIncomeDiscount_10pct"] = (grouped_df["netIncomePerShare"]/(0.1 - grouped_df["netSales_Growth"].apply(lambda x: min(x, 0.08)))).round(0)
-        grouped_df["Valuation_PerShare_netIncomeDiscount_12pct"] = (grouped_df["netIncomePerShare"]/(0.12 - grouped_df["netSales_Growth"].apply(lambda x: min(x, 0.08)))).round(0)
-        grouped_df["Valuation_PerShare_netIncomeDiscount_8pct"] = (grouped_df["netIncomePerShare"]/(0.08 - grouped_df["netSales_Growth"].apply(lambda x: min(x, 0.08)))).round(0)
-
-        # Store the grouped data back to the database
-        grouped_df.to_sql(output_table, conn, if_exists='replace', index=False)
-        conn.commit()
-
-        conn.close()
 
 
 
