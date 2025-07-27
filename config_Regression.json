@@ -1,0 +1,32 @@
+{
+    "Database": "D:\\programming\\EDINET\\dummy_database.db",
+    "DB_Tables": [
+        {
+            "Name": "Standard_Data_Ratios",
+            "Alias": "s",
+            "Join": ""
+        }        
+    ],
+    "NumberOfPeriods": 2,
+    "DependentVariable": {
+        "Name": "CAGR_PerShare_Earnings",
+        "Formula": "EXP((1.0/2.0) * LOG(s.PerShare_Earnings / s_1.PerShare_Earnings)) - 1"
+    },
+    "IndependentVariables": [
+        {
+            "Name":"Ratio_netSales_Growth",
+            "Table_Alias":"s",
+            "Formula": "Ratio_netSales_Growth"
+        },
+        {
+            "Name":"Ratio_BuybackPayout",
+            "Table_Alias":"s",
+            "Formula": "Ratio_BuybackPayout"
+        },
+        {
+            "Name":"Ratio_BuybacksYield",
+            "Table_Alias":"s",
+            "Formula": "Ratio_BuybacksYield"
+        }
+    ]
+}

@@ -1,71 +1,50 @@
+
+    SELECT s.edinetCode, s.PeriodStart, EXP((1.0/2.0) * LOG(s.PerShare_Earnings / s_1.PerShare_Earnings)) - 1 AS CAGR_PerShare_Earnings, s.Ratio_netSales_Growth AS Ratio_netSales_Growth, s.Ratio_BuybackPayout AS Ratio_BuybackPayout, s.Ratio_BuybacksYield AS Ratio_BuybacksYield, s_1.Ratio_netSales_Growth AS Ratio_netSales_Growth_1, s_1.Ratio_BuybackPayout AS Ratio_BuybackPayout_1, s_1.Ratio_BuybacksYield AS Ratio_BuybacksYield_1
+    FROM Standard_Data_Ratios AS s LEFT JOIN Standard_Data_Ratios AS s_0 ON s.edinetCode = s_0.edinetCode AND STRFTIME('%J', s.PeriodStart) - STRFTIME('%J', s_0.PeriodEnd) >= 1 AND STRFTIME('%J', s.PeriodStart) - STRFTIME('%J', s_0.PeriodEnd) < 5 LEFT JOIN Standard_Data_Ratios AS s_1 ON s.edinetCode = s_1.edinetCode AND STRFTIME('%J', s_0.PeriodStart) - STRFTIME('%J', s_1.PeriodEnd) >= 1 AND STRFTIME('%J', s_0.PeriodStart) - STRFTIME('%J', s_1.PeriodEnd) < 5
+    WHERE EXP((1.0/2.0) * LOG(s.PerShare_Earnings / s_1.PerShare_Earnings)) - 1 IS NOT NULL AND s.Ratio_netSales_Growth IS NOT NULL AND s.Ratio_BuybackPayout IS NOT NULL AND s.Ratio_BuybacksYield IS NOT NULL AND s_1.Ratio_netSales_Growth IS NOT NULL AND s_1.Ratio_BuybackPayout IS NOT NULL AND s_1.Ratio_BuybacksYield IS NOT NULL
+    
                               OLS Regression Results                              
 ==================================================================================
-Dep. Variable:     CAGR_PerShare_Earnings   R-squared:                       0.025
-Model:                                OLS   Adj. R-squared:                  0.022
-Method:                     Least Squares   F-statistic:                     7.384
-Date:                    Fri, 18 Jul 2025   Prob (F-statistic):           9.35e-45
-Time:                            23:27:22   Log-Likelihood:                 7089.0
-No. Observations:                   12814   AIC:                        -1.409e+04
-Df Residuals:                       12768   BIC:                        -1.374e+04
-Df Model:                              45                                         
+Dep. Variable:     CAGR_PerShare_Earnings   R-squared:                       0.000
+Model:                                OLS   Adj. R-squared:                  0.000
+Method:                     Least Squares   F-statistic:                     2.180
+Date:                    Sun, 27 Jul 2025   Prob (F-statistic):             0.0685
+Time:                            14:04:52   Log-Likelihood:                -28107.
+No. Observations:                   21706   AIC:                         5.622e+04
+Df Residuals:                       21701   BIC:                         5.626e+04
+Df Model:                               4                                         
 Covariance Type:                nonrobust                                         
-=============================================================================================
-                                coef    std err          t      P>|t|      [0.025      0.975]
----------------------------------------------------------------------------------------------
-const                         0.0488      0.003     18.430      0.000       0.044       0.054
-Ratio_netIncome_Growth_S1  7.209e-05   9.34e-05      0.772      0.440      -0.000       0.000
-Ratio_EarningsYield_S1        0.0346      0.006      5.905      0.000       0.023       0.046
-MarketCap_S1               1.013e-14    4.7e-15      2.154      0.031    9.12e-16    1.93e-14
-Ratio_GrossMargin_S1      -2.007e-13   3.62e-13     -0.555      0.579    -9.1e-13    5.09e-13
-Ratio_OperatingMargin_S1    5.34e-13   9.21e-13      0.580      0.562   -1.27e-12    2.34e-12
-Ratio_NetProfitMargin_S1   1.063e-13    1.2e-13      0.889      0.374   -1.28e-13    3.41e-13
-Ratio_ReturnOnEquity_S1   -2.431e-12   1.79e-11     -0.136      0.892   -3.76e-11    3.27e-11
-Ratio_ReturnOnAssets_S1       0.0855      0.019      4.572      0.000       0.049       0.122
-Ratio_QuickRatio_S1          -0.0038      0.001     -2.994      0.003      -0.006      -0.001
-Ratio_netIncome_Growth_S2     0.0001      0.000      1.355      0.175   -6.56e-05       0.000
-Ratio_EarningsYield_S2       -0.0014      0.006     -0.244      0.807      -0.013       0.010
-MarketCap_S2              -6.934e-16   5.32e-15     -0.130      0.896   -1.11e-14    9.74e-15
-Ratio_GrossMargin_S2      -2.791e-13   5.11e-13     -0.547      0.585   -1.28e-12    7.22e-13
-Ratio_OperatingMargin_S2   5.364e-13   1.08e-12      0.498      0.619   -1.58e-12    2.65e-12
-Ratio_NetProfitMargin_S2   2.326e-14   1.57e-13      0.148      0.882   -2.84e-13     3.3e-13
-Ratio_ReturnOnEquity_S2   -3.088e-13   1.29e-11     -0.024      0.981   -2.55e-11    2.49e-11
-Ratio_ReturnOnAssets_S2       0.0444      0.018      2.518      0.012       0.010       0.079
-Ratio_QuickRatio_S2          -0.0013      0.001     -0.858      0.391      -0.004       0.002
-Ratio_netIncome_Growth_S3 -1.987e-05   2.51e-05     -0.791      0.429   -6.91e-05    2.94e-05
-Ratio_EarningsYield_S3       -0.0027      0.006     -0.464      0.643      -0.014       0.009
-MarketCap_S3              -2.761e-15   5.54e-15     -0.498      0.618   -1.36e-14    8.11e-15
-Ratio_GrossMargin_S3      -4.281e-14   5.19e-13     -0.082      0.934   -1.06e-12    9.75e-13
-Ratio_OperatingMargin_S3   1.456e-13   8.44e-13      0.172      0.863   -1.51e-12     1.8e-12
-Ratio_NetProfitMargin_S3   3.416e-14   1.56e-13      0.219      0.827   -2.72e-13     3.4e-13
-Ratio_ReturnOnEquity_S3    3.855e-12   2.02e-11      0.191      0.849   -3.58e-11    4.35e-11
-Ratio_ReturnOnAssets_S3      -0.0006      0.017     -0.033      0.974      -0.034       0.033
-Ratio_QuickRatio_S3          -0.0023      0.001     -1.704      0.088      -0.005       0.000
-Ratio_netIncome_Growth_S4 -3.124e-06   2.74e-05     -0.114      0.909   -5.69e-05    5.07e-05
-Ratio_EarningsYield_S4        0.0312      0.006      5.288      0.000       0.020       0.043
-MarketCap_S4              -3.398e-15   7.69e-15     -0.442      0.659   -1.85e-14    1.17e-14
-Ratio_GrossMargin_S4       8.945e-14      3e-12      0.030      0.976    -5.8e-12    5.98e-12
-Ratio_OperatingMargin_S4   -4.86e-13   1.02e-12     -0.476      0.634   -2.49e-12    1.52e-12
-Ratio_NetProfitMargin_S4   2.542e-13   1.48e-13      1.721      0.085   -3.52e-14    5.44e-13
-Ratio_ReturnOnEquity_S4   -3.231e-12   1.62e-11     -0.200      0.841   -3.49e-11    2.84e-11
-Ratio_ReturnOnAssets_S4      -0.0230      0.015     -1.547      0.122      -0.052       0.006
-Ratio_QuickRatio_S4          -0.0004      0.001     -0.305      0.760      -0.003       0.002
-Ratio_netIncome_Growth_S5 -2.444e-05    2.8e-05     -0.874      0.382   -7.93e-05    3.04e-05
-Ratio_EarningsYield_S5       -0.0634      0.007     -8.708      0.000      -0.078      -0.049
-MarketCap_S5              -1.979e-14   7.44e-15     -2.659      0.008   -3.44e-14    -5.2e-15
-Ratio_GrossMargin_S5        3.24e-13   2.97e-12      0.109      0.913    -5.5e-12    6.14e-12
-Ratio_OperatingMargin_S5  -8.595e-13   1.21e-12     -0.707      0.479   -3.24e-12    1.52e-12
-Ratio_NetProfitMargin_S5  -2.941e-13   1.38e-13     -2.124      0.034   -5.65e-13   -2.27e-14
-Ratio_ReturnOnEquity_S5    5.024e-13    1.1e-11      0.046      0.964    -2.1e-11    2.21e-11
-Ratio_ReturnOnAssets_S5    8.412e-11   1.88e-10      0.448      0.654   -2.84e-10    4.52e-10
-Ratio_QuickRatio_S5           0.0013      0.001      1.232      0.218      -0.001       0.003
+=========================================================================================
+                            coef    std err          t      P>|t|      [0.025      0.975]
+-----------------------------------------------------------------------------------------
+const                     0.0789      0.006     13.080      0.000       0.067       0.091
+Ratio_netSales_Growth  1.613e+06   6.36e+06      0.253      0.800   -1.09e+07    1.41e+07
+Ratio_BuybackPayout   -5.324e+10    2.1e+11     -0.253      0.800   -4.65e+11    3.59e+11
+Ratio_BuybacksYield    6.215e+07   2.45e+08      0.253      0.800   -4.19e+08    5.43e+08
+Ratio_netSales_Growth -1.613e+06   6.36e+06     -0.253      0.800   -1.41e+07    1.09e+07
+Ratio_BuybackPayout    5.324e+10    2.1e+11      0.253      0.800   -3.59e+11    4.65e+11
+Ratio_BuybacksYield   -6.215e+07   2.45e+08     -0.253      0.800   -5.43e+08    4.19e+08
 ==============================================================================
-Omnibus:                    20088.518   Durbin-Watson:                   1.361
-Prob(Omnibus):                  0.000   Jarque-Bera (JB):         31180863.762
-Skew:                           9.616   Prob(JB):                         0.00
-Kurtosis:                     243.895   Cond. No.                     2.16e+13
+Omnibus:                    69246.251   Durbin-Watson:                   1.391
+Prob(Omnibus):                  0.000   Jarque-Bera (JB):       9203912240.018
+Skew:                          52.139   Prob(JB):                         0.00
+Kurtosis:                    3191.378   Cond. No.                     9.39e+15
 ==============================================================================
 
 Notes:
 [1] Standard Errors assume that the covariance matrix of the errors is correctly specified.
-[2] The condition number is large, 2.16e+13. This might indicate that there are
-strong multicollinearity or other numerical problems.
+[2] The smallest eigenvalue is 1.62e-26. This might indicate that there are
+strong multicollinearity problems or that the design matrix is singular.
+P-values for each variable:
+const                    6.024144e-39
+Ratio_netSales_Growth    7.999464e-01
+Ratio_BuybackPayout      7.999464e-01
+Ratio_BuybacksYield      7.999464e-01
+Ratio_netSales_Growth    7.999464e-01
+Ratio_BuybackPayout      7.999464e-01
+Ratio_BuybacksYield      7.999464e-01
+dtype: float64
+Variables significant at the 5.0% level:
+- const (P-value: 6.024144355330606e-39)
+Significant predictor variables at the 5.0% level:
+No predictor variables are significant at this level.
