@@ -7,26 +7,26 @@
             "Join": ""
         }        
     ],
-    "NumberOfPeriods": 2,
+    "NumberOfPeriods": 3,
     "DependentVariable": {
-        "Name": "CAGR_PerShare_Earnings",
-        "Formula": "EXP((1.0/2.0) * LOG(s.PerShare_Earnings / s_1.PerShare_Earnings)) - 1"
+        "Name": "PerShare_Earnings",
+        "Formula": "s.PerShare_Earnings"
     },
     "IndependentVariables": [
         {
-            "Name":"Ratio_netSales_Growth",
+            "Name":"PerShare_Sales",
             "Table_Alias":"s",
-            "Formula": "Ratio_netSales_Growth"
+            "Formula": "PerShare_Sales"
         },
         {
-            "Name":"Ratio_BuybackPayout",
+            "Name":"Ratio_NetProfitMargin",
             "Table_Alias":"s",
-            "Formula": "Ratio_BuybackPayout"
+            "Formula": "Ratio_NetProfitMargin"
         },
         {
-            "Name":"Ratio_BuybacksYield",
+            "Name":"Ratio_EarningsYield",
             "Table_Alias":"s",
-            "Formula": "Ratio_BuybacksYield"
+            "Formula": "Ratio_EarningsYield"
         }
     ]
 }
