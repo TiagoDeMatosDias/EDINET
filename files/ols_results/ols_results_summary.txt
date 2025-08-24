@@ -1,50 +1,58 @@
+--- SQL Query ---
+SELECT s.edinetCode, s.PeriodStart, s.PerShare_Earnings AS PerShare_Earnings, s_0.PerShare_Sales AS PerShare_Sales_0, s_0.Ratio_NetProfitMargin AS Ratio_NetProfitMargin_0, s_0.Ratio_EarningsYield AS Ratio_EarningsYield_0, s_1.PerShare_Sales AS PerShare_Sales_1, s_1.Ratio_NetProfitMargin AS Ratio_NetProfitMargin_1, s_1.Ratio_EarningsYield AS Ratio_EarningsYield_1, s_2.PerShare_Sales AS PerShare_Sales_2, s_2.Ratio_NetProfitMargin AS Ratio_NetProfitMargin_2, s_2.Ratio_EarningsYield AS Ratio_EarningsYield_2
+    FROM Standard_Data_Ratios AS s LEFT JOIN Standard_Data_Ratios AS s_0 ON s.edinetCode = s_0.edinetCode AND STRFTIME('%J', s.PeriodStart) - STRFTIME('%J', s_0.PeriodEnd) BETWEEN 1 AND 5 LEFT JOIN Standard_Data_Ratios AS s_1 ON s_0.edinetCode = s_1.edinetCode AND STRFTIME('%J', s_0.PeriodStart) - STRFTIME('%J', s_1.PeriodEnd) BETWEEN 1 AND 5 LEFT JOIN Standard_Data_Ratios AS s_2 ON s_1.edinetCode = s_2.edinetCode AND STRFTIME('%J', s_1.PeriodStart) - STRFTIME('%J', s_2.PeriodEnd) BETWEEN 1 AND 5
+    WHERE s.PerShare_Earnings IS NOT NULL AND s_0.PerShare_Sales IS NOT NULL AND s_0.Ratio_NetProfitMargin IS NOT NULL AND s_0.Ratio_EarningsYield IS NOT NULL AND s_1.PerShare_Sales IS NOT NULL AND s_1.Ratio_NetProfitMargin IS NOT NULL AND s_1.Ratio_EarningsYield IS NOT NULL AND s_2.PerShare_Sales IS NOT NULL AND s_2.Ratio_NetProfitMargin IS NOT NULL AND s_2.Ratio_EarningsYield IS NOT NULL
 
-    SELECT s.edinetCode, s.PeriodStart, EXP((1.0/2.0) * LOG(s.PerShare_Earnings / s_1.PerShare_Earnings)) - 1 AS CAGR_PerShare_Earnings, s.Ratio_netSales_Growth AS Ratio_netSales_Growth, s.Ratio_BuybackPayout AS Ratio_BuybackPayout, s.Ratio_BuybacksYield AS Ratio_BuybacksYield, s_1.Ratio_netSales_Growth AS Ratio_netSales_Growth_1, s_1.Ratio_BuybackPayout AS Ratio_BuybackPayout_1, s_1.Ratio_BuybacksYield AS Ratio_BuybacksYield_1
-    FROM Standard_Data_Ratios AS s LEFT JOIN Standard_Data_Ratios AS s_0 ON s.edinetCode = s_0.edinetCode AND STRFTIME('%J', s.PeriodStart) - STRFTIME('%J', s_0.PeriodEnd) >= 1 AND STRFTIME('%J', s.PeriodStart) - STRFTIME('%J', s_0.PeriodEnd) < 5 LEFT JOIN Standard_Data_Ratios AS s_1 ON s.edinetCode = s_1.edinetCode AND STRFTIME('%J', s_0.PeriodStart) - STRFTIME('%J', s_1.PeriodEnd) >= 1 AND STRFTIME('%J', s_0.PeriodStart) - STRFTIME('%J', s_1.PeriodEnd) < 5
-    WHERE EXP((1.0/2.0) * LOG(s.PerShare_Earnings / s_1.PerShare_Earnings)) - 1 IS NOT NULL AND s.Ratio_netSales_Growth IS NOT NULL AND s.Ratio_BuybackPayout IS NOT NULL AND s.Ratio_BuybacksYield IS NOT NULL AND s_1.Ratio_netSales_Growth IS NOT NULL AND s_1.Ratio_BuybackPayout IS NOT NULL AND s_1.Ratio_BuybacksYield IS NOT NULL
-    
-                              OLS Regression Results                              
-==================================================================================
-Dep. Variable:     CAGR_PerShare_Earnings   R-squared:                       0.000
-Model:                                OLS   Adj. R-squared:                  0.000
-Method:                     Least Squares   F-statistic:                     2.180
-Date:                    Sun, 27 Jul 2025   Prob (F-statistic):             0.0685
-Time:                            14:04:52   Log-Likelihood:                -28107.
-No. Observations:                   21706   AIC:                         5.622e+04
-Df Residuals:                       21701   BIC:                         5.626e+04
-Df Model:                               4                                         
-Covariance Type:                nonrobust                                         
-=========================================================================================
-                            coef    std err          t      P>|t|      [0.025      0.975]
------------------------------------------------------------------------------------------
-const                     0.0789      0.006     13.080      0.000       0.067       0.091
-Ratio_netSales_Growth  1.613e+06   6.36e+06      0.253      0.800   -1.09e+07    1.41e+07
-Ratio_BuybackPayout   -5.324e+10    2.1e+11     -0.253      0.800   -4.65e+11    3.59e+11
-Ratio_BuybacksYield    6.215e+07   2.45e+08      0.253      0.800   -4.19e+08    5.43e+08
-Ratio_netSales_Growth -1.613e+06   6.36e+06     -0.253      0.800   -1.41e+07    1.09e+07
-Ratio_BuybackPayout    5.324e+10    2.1e+11      0.253      0.800   -3.59e+11    4.65e+11
-Ratio_BuybacksYield   -6.215e+07   2.45e+08     -0.253      0.800   -5.43e+08    4.19e+08
+--- OLS Regression Results ---
+                            OLS Regression Results                            
 ==============================================================================
-Omnibus:                    69246.251   Durbin-Watson:                   1.391
-Prob(Omnibus):                  0.000   Jarque-Bera (JB):       9203912240.018
-Skew:                          52.139   Prob(JB):                         0.00
-Kurtosis:                    3191.378   Cond. No.                     9.39e+15
+Dep. Variable:      PerShare_Earnings   R-squared:                       0.471
+Model:                            OLS   Adj. R-squared:                  0.471
+Method:                 Least Squares   F-statistic:                     2183.
+Date:                Sun, 27 Jul 2025   Prob (F-statistic):               0.00
+Time:                        15:28:37   Log-Likelihood:            -4.4976e+05
+No. Observations:               22054   AIC:                         8.995e+05
+Df Residuals:                   22044   BIC:                         8.996e+05
+Df Model:                           9                                         
+Covariance Type:            nonrobust                                         
+===========================================================================================
+                              coef    std err          t      P>|t|      [0.025      0.975]
+-------------------------------------------------------------------------------------------
+const                    7.823e+05   1.48e+06      0.528      0.597   -2.12e+06    3.69e+06
+PerShare_Sales_0            0.0371      0.000     98.936      0.000       0.036       0.038
+Ratio_NetProfitMargin_0  7.411e-06      0.000      0.060      0.952      -0.000       0.000
+Ratio_EarningsYield_0    6.151e+06   4.33e+06      1.422      0.155   -2.33e+06    1.46e+07
+PerShare_Sales_1           -0.0363      0.001    -67.769      0.000      -0.037      -0.035
+Ratio_NetProfitMargin_1 -1.116e-05      0.000     -0.073      0.941      -0.000       0.000
+Ratio_EarningsYield_1   -1.642e+07   4.39e+06     -3.739      0.000    -2.5e+07   -7.81e+06
+PerShare_Sales_2            0.0207      0.000     50.432      0.000       0.020       0.022
+Ratio_NetProfitMargin_2  1.764e-06      0.000      0.013      0.989      -0.000       0.000
+Ratio_EarningsYield_2    1.067e+07   4.18e+06      2.553      0.011    2.48e+06    1.89e+07
+==============================================================================
+Omnibus:                    62157.563   Durbin-Watson:                   2.102
+Prob(Omnibus):                  0.000   Jarque-Bera (JB):      22464157318.648
+Skew:                          36.006   Prob(JB):                         0.00
+Kurtosis:                    4946.800   Cond. No.                     2.34e+11
 ==============================================================================
 
 Notes:
 [1] Standard Errors assume that the covariance matrix of the errors is correctly specified.
-[2] The smallest eigenvalue is 1.62e-26. This might indicate that there are
-strong multicollinearity problems or that the design matrix is singular.
-P-values for each variable:
-const                    6.024144e-39
-Ratio_netSales_Growth    7.999464e-01
-Ratio_BuybackPayout      7.999464e-01
-Ratio_BuybacksYield      7.999464e-01
-Ratio_netSales_Growth    7.999464e-01
-Ratio_BuybackPayout      7.999464e-01
-Ratio_BuybacksYield      7.999464e-01
-dtype: float64
+[2] The condition number is large, 2.34e+11. This might indicate that there are
+strong multicollinearity or other numerical problems.
+
+--- Significance Analysis ---
+Significance level (alpha): 0.05
+
 Variables significant at the 5.0% level:
-- const (P-value: 6.024144355330606e-39)
-Significant predictor variables at the 5.0% level:
-No predictor variables are significant at this level.
+- PerShare_Sales_0 (P-value: 0)
+- PerShare_Sales_1 (P-value: 0)
+- Ratio_EarningsYield_1 (P-value: 0.0001852)
+- PerShare_Sales_2 (P-value: 0)
+- Ratio_EarningsYield_2 (P-value: 0.01068)
+
+Predictor variables significant at the 5.0% level:
+- PerShare_Sales_0 (P-value: 0)
+- PerShare_Sales_1 (P-value: 0)
+- Ratio_EarningsYield_1 (P-value: 0.0001852)
+- PerShare_Sales_2 (P-value: 0)
+- Ratio_EarningsYield_2 (P-value: 0.01068)
