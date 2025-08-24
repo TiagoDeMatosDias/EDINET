@@ -202,8 +202,6 @@ class Edinet:
             data["periodStart"] = doc.get("periodStart")    
             data["periodEnd"] = doc.get("periodEnd")
         return data
-        
-
 
     def clear_table(self, table_name="temp_data"):
         """
@@ -224,8 +222,6 @@ class Edinet:
                 conn.close()
             except UnboundLocalError:
                 pass
-
-    
 
     def list_files_in_folder(self, folder_path, recursive=False):
         """
@@ -421,7 +417,6 @@ class Edinet:
             if connection is None:
                 conn.close()
 
-
     def detect_file_encoding(self, file_path):
         """
         Detect the encoding of a file.
@@ -467,7 +462,6 @@ class Edinet:
         finally:
             if connection is None:
                 conn.close()
-
 
     def store_edinetCodes(self, csv_file):
         """
