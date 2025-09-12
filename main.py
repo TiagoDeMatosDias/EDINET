@@ -58,7 +58,7 @@ if __name__ == '__main__':
     #data.copy_table_to_Standard(FinancialData, Database_Standardized)
 
     # Generate financial ratios for the standardized data
-    data.Generate_Financial_Ratios(Database_Standardized, Database_Standardized + "_Ratios_2")
+    data.Generate_Financial_Ratios(Database_Standardized + "_2", Database_Standardized + "_Ratios_2")
 
     # Aggregate the ratios
     data.Generate_Aggregated_Ratios(Database_Standardized + "_Ratios_2", Database_Standardized + "_Ratios_Aggregated_2")

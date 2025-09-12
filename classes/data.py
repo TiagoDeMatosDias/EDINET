@@ -42,7 +42,7 @@ class data:
 
     def Filter_for_Relevant(self, input_table, output_table):
         """
-        Generates financial statements by querying data from the input table and 
+        Generates financial statements by querying data from the input table and
         storing the results in the output table, keeping only specific columns.
 
         Args:
@@ -54,65 +54,25 @@ class data:
         """
         conn = sqlite3.connect(self.Database)
         cursor = conn.cursor()
-        
-        # Define the LIKE arguments for AccountingTerm and Period
-        accounting_term_conditions = [
-            "jppfs_cor:NetSales",
-            "jppfs_cor:OperatingRevenue1",
-            "jppfs_cor:IncomeBeforeIncomeTaxes",
-            "%OrdinaryIncome",
-            "jppfs_cor:NetIncome",
-            "%ProfitLoss",
-            "jppfs_cor:OperatingIncome",
-            "jppfs_cor:CostOfSales",
-            "jppfs_cor:TotalAssets",
-            "jppfs_cor:Assets",
-            "jppfs_cor:ShareholdersEquity",
-            "jppfs_cor:CashDividendsPaidFinCF",
-            "jppfs_cor:PurchaseOfTreasuryStockFinCF",
-            "jppfs_cor:NetCashProvidedByUsedInOperatingActivities",
-            "jppfs_cor:NetCashProvidedByUsedInInvestmentActivities",
-            "jppfs_cor:NetCashProvidedByUsedInFinancingActivities",
-            "jppfs_cor:CurrentAssets",
-            "jppfs_cor:CurrentLiabilities",
-            "jppfs_cor:Inventories",
-            "jppfs_cor:TotalDebt",
-            "jppfs_cor:GrossProfit"
-        ]
 
-        period_conditions = [
-            "CurrentYearDuration",
-            "CurrentYearInstant",
-            "Prior1YearDuration"
-        ]
+        # Load configuration
+        with open('financial_ratios_config.json', 'r') as f:
+            config = json.load(f)
+        
+        accounting_term_conditions = config['accounting_term_conditions']
+        period_conditions = config['period_conditions']
+        query_template = config['query_template']
 
         # Build the SQL query dynamically
         accounting_term_query = " OR ".join([f"AccountingTerm LIKE '{term}'" for term in accounting_term_conditions])
         period_query = " OR ".join([f"Period = '{period}'" for period in period_conditions])
 
-        query = f"""
-            CREATE TABLE IF NOT EXISTS {output_table} AS 
-            SELECT 
-                AccountingTerm,
-                Period,
-                Currency,
-                Amount,
-                docID,
-                edinetCode,
-                docTypeCode,
-                submitDateTime,
-                periodStart,
-                periodEnd
-            FROM {input_table} WHERE (
-            ({accounting_term_query}) AND ({period_query}) AND (AccountingTerm LIKE 'jppfs_cor:%')
-            ) OR (
-            AccountingTerm = 'jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults' AND 
-            Period = 'CurrentYearInstant_NonConsolidatedMember'
-            ) OR (
-            AccountingTerm = 'jpcrp_cor:PriceEarningsRatioSummaryOfBusinessResults' AND 
-            Period = 'CurrentYearDuration'
-            )
-        """
+        query = query_template.format(
+            output_table=output_table,
+            input_table=input_table,
+            accounting_term_query=accounting_term_query,
+            period_query=period_query
+        )
 
         # Execute the query
         cursor.execute(query)
