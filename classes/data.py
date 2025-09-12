@@ -4,6 +4,7 @@ import sqlite3
 import xml.etree.ElementTree as ET
 import random
 import numpy as np
+import json
 
 class data:
     def __init__(self):
@@ -119,33 +120,54 @@ class data:
         conn.close()
 
 
+    def evaluate_expression(self, df, expression):
+        if "value" in expression:
+            return expression["value"]
+
+        if "column" in expression:
+            col_name = expression["column"]
+            series = df[col_name]
+            if "fillna" in expression:
+                fillna_config = expression["fillna"]
+                if isinstance(fillna_config, dict) and "column" in fillna_config:
+                    fallback_series = self.evaluate_expression(df, fillna_config)
+                    series = series.fillna(fallback_series)
+                else:
+                    series = series.fillna(fillna_config)
+            return series
+
+        op = expression["operator"]
+        operands = [self.evaluate_expression(df, operand) for operand in expression["operands"]]
+
+        if op == '+':
+            return operands[0] + operands[1]
+        if op == '-':
+            return operands[0] - operands[1]
+        if op == '*':
+            return operands[0] * operands[1]
+        if op == '/':
+            return operands[0] / operands[1]
+        return None
+
     def Generate_Financial_Ratios(self, input_table, output_table):
         # This function will take the input table and generate the financial ratios
-        # Each ratio shall have both on a yearly and 3 and 5 year average
         # The output will be stored in the output_table
-        # Ratio 1: Current Ratio = Current Assets / Current Liabilities
-        # Ratio 2: Quick Ratio = (Current Assets - Inventory) / Current Liabilities
-        # Ratio 3: Debt to Equity Ratio = Total Debt / Total Equity
-        # Ratio 4: Return on Equity = Net Income / Total Equity
-        # Ratio 5: Return on Assets = Net Income / Total Assets
-        # Ratio 6: Gross Margin = Gross Profit / Revenue
-        # Ratio 7: Operating Margin = Operating Income / Revenue
-        # Ratio 8: Net Profit Margin = Net Income / Revenue
-        # Ratio 9: Asset Turnover = Revenue / Total Assets
-        # Ratio 10: Inventory Turnover = Cost of Goods Sold / Inventory
 
         # Connect to the database
         conn = sqlite3.connect(self.Database)
 
+        # Load configuration
+        with open('financial_ratios_config.json', 'r') as f:
+            config = json.load(f)
+        columns_mapping = config['mappings']
+        ratios_definitions = config['ratios']
+
         # Get the list of companies
         companies = self.get_companyList(input_table, conn)
-        # Per company
         exists = False
         for company in companies:
             # Get the data for the company
             df = pd.read_sql_query(f"""SELECT * FROM {input_table} WHERE edinetCode = '{company}' """, conn)
-
-            # Calculate the ratios
 
             # Create a combined column for AccountingTerm and Period
             df['AccountingTerm_Period'] = df['AccountingTerm'] + '_' + df['Period']
@@ -162,47 +184,9 @@ class data:
             RatiosTable.columns = [col if isinstance(col, str) else col[1] for col in RatiosTable.columns]
             RatiosTable = pd.DataFrame(RatiosTable)
 
-            # Convert any non-numeric columns to numeric, except for the following columns 'edinetCode', 'docID',  'Currency', 'docTypeCode', 'periodStart', 'periodEnd'
+            # Convert any non-numeric columns to numeric
             numeric_columns = RatiosTable.columns.difference(['edinetCode', 'docID', 'Currency', 'docTypeCode', 'periodStart', 'periodEnd'])
             RatiosTable[numeric_columns] = RatiosTable[numeric_columns].apply(pd.to_numeric, errors='coerce')
-
-            # Define the relevant columns for each parameter
-            columns_mapping = {
-                "netIncome": ["jppfs_cor:NetIncome_CurrentYearDuration", "jppfs_cor:ProfitLoss_CurrentYearDuration"],
-                "netIncome_PriorYear": ["jppfs_cor:NetIncome_Prior1YearDuration", "jppfs_cor:ProfitLoss_Prior1YearDuration"],
-                "netSales": ["jppfs_cor:NetSales_CurrentYearDuration", "jppfs_cor:OperatingRevenue1_CurrentYearDuration"],
-                "netSales_PriorYear": ["jppfs_cor:NetSales_Prior1YearDuration", "jppfs_cor:OperatingRevenue1_Prior1YearDuration"],
-                "operatingIncome": ["jppfs_cor:OperatingIncome_CurrentYearDuration"],
-                "operatingIncome_PriorYear": ["jppfs_cor:OperatingIncome_Prior1YearDuration"],
-                "grossProfit": ["jppfs_cor:GrossProfit_CurrentYearDuration"],
-                "grossProfit_PriorYear": ["jppfs_cor:GrossProfit_Prior1YearDuration"],
-                "totalAssets": ["jppfs_cor:Assets_CurrentYearInstant", "jppfs_cor:TotalAssets_CurrentYearInstant"],
-                "totalAssets_PriorYear": ["jppfs_cor:Assets_Prior1YearInstant", "jppfs_cor:TotalAssets_Prior1YearInstant"],
-                "totalDebt": ["jppfs_cor:TotalDebt_CurrentYearInstant", "jppfs_cor:LongTermLoansPayable_CurrentYearInstant"],
-                "totalDebt_PriorYear": ["jppfs_cor:TotalDebt_Prior1YearInstant", "jppfs_cor:LongTermLoansPayable_Prior1YearInstant"],
-                "shareholdersEquity": ["jppfs_cor:ShareholdersEquity_CurrentYearInstant"],
-                "shareholdersEquity_PriorYear": ["jppfs_cor:ShareholdersEquity_Prior1YearInstant"],
-                "currentAssets": ["jppfs_cor:CurrentAssets_CurrentYearInstant"],
-                "currentAssets_PriorYear": ["jppfs_cor:CurrentAssets_Prior1YearInstant"],
-                "currentLiabilities": ["jppfs_cor:CurrentLiabilities_CurrentYearInstant"],
-                "currentLiabilities_PriorYear": ["jppfs_cor:CurrentLiabilities_Prior1YearInstant"],
-                "inventories": ["jppfs_cor:Inventories_CurrentYearInstant"],
-                "inventories_PriorYear": ["jppfs_cor:Inventories_Prior1YearInstant"],
-                "costOfSales": ["jppfs_cor:CostOfSales_CurrentYearDuration"],
-                "costOfSales_PriorYear": ["jppfs_cor:CostOfSales_Prior1YearDuration"],
-                "dividends": ["jppfs_cor:CashDividendsPaidFinCF_CurrentYearDuration"],
-                "dividends_PriorYear": ["jppfs_cor:CashDividendsPaidFinCF_Prior1YearDuration"],
-                "buybacks": ["jppfs_cor:PurchaseOfTreasuryStockFinCF_CurrentYearDuration"],
-                "buybacks_PriorYear": ["jppfs_cor:PurchaseOfTreasuryStockFinCF_Prior1YearDuration"],
-                "operatingCashflow": ["jppfs_cor:NetCashProvidedByUsedInOperatingActivities_CurrentYearDuration"],
-                "operatingCashflow_PriorYear": ["jppfs_cor:NetCashProvidedByUsedInOperatingActivities_Prior1YearDuration"],
-                "investmentCashflow": ["jppfs_cor:NetCashProvidedByUsedInInvestmentActivities_CurrentYearDuration"],
-                "investmentCashflow_PriorYear": ["jppfs_cor:NetCashProvidedByUsedInInvestmentActivities_Prior1YearDuration"],
-                "financingCashflow": ["jppfs_cor:NetCashProvidedByUsedInFinancingActivities_CurrentYearDuration"],
-                "financingCashflow_PriorYear": ["jppfs_cor:NetCashProvidedByUsedInFinancingActivities_Prior1YearDuration"],
-                "SharesOutstanding" : ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults_CurrentYearInstant_NonConsolidatedMember"],
-                "PE_Ratio" : ["jpcrp_cor:PriceEarningsRatioSummaryOfBusinessResults_CurrentYearDuration"]
-            }
 
             # Populate the new columns using a lambda function
             for new_col, relevant_cols in columns_mapping.items():
@@ -214,68 +198,19 @@ class data:
             # Remove the relevant columns from the RatiosTable
             RatiosTable.drop(columns=columns_to_remove, inplace=True, errors='ignore')
 
-            # Remove any columns whose name begins with jppfs_cor:
+            # Remove any columns whose name begins with jppfs_cor: or jpcrp_cor:
             RatiosTable = RatiosTable.loc[:, ~RatiosTable.columns.str.startswith('jppfs_cor:')]
-            # Remove any columns whose name begins with jpcrp_cor:
             RatiosTable = RatiosTable.loc[:, ~RatiosTable.columns.str.startswith('jpcrp_cor:')]
 
-            RatiosTable.reset_index( drop=True, inplace=True)
+            RatiosTable.reset_index(drop=True, inplace=True)
 
-
-            # Calculate additional data
-            RatiosTable["Cashflow_free"] = (RatiosTable["operatingCashflow"].fillna(0) + RatiosTable["investmentCashflow"].fillna(0))
-            RatiosTable["Cashflow_equity"] = ( RatiosTable["dividends"].fillna(0) + RatiosTable["buybacks"].fillna(0) )
-            RatiosTable["Cashflow_debt"] = (RatiosTable["financingCashflow"].fillna(0) - RatiosTable["Cashflow_equity"].fillna(0))
-            RatiosTable["NCAV"] = RatiosTable["currentAssets"].fillna(0) - (RatiosTable["totalAssets"].fillna(1) - RatiosTable["shareholdersEquity"].fillna(1))
-
-
-            # Calculate the ratios with default value as zero for nulls
-            RatiosTable["Ratio_Current"] = RatiosTable["currentAssets"].fillna(0) / RatiosTable["currentLiabilities"].fillna(1)
-            RatiosTable["Ratio_QuickRatio"] = (RatiosTable["currentAssets"].fillna(0) - RatiosTable["inventories"].fillna(0)) / RatiosTable["currentLiabilities"].fillna(1)
-            RatiosTable["Ratio_LiquidAssets"] = RatiosTable["currentAssets"].fillna(0) / RatiosTable["totalAssets"].fillna(1)
-            RatiosTable["Ratio_DebtToEquity"] = RatiosTable["totalDebt"].fillna(0) / RatiosTable["shareholdersEquity"].fillna(1)
-            RatiosTable["Ratio_DebtToAssets"] = RatiosTable["totalDebt"].fillna(0) / RatiosTable["totalAssets"].fillna(1)
-            RatiosTable["Ratio_ReturnOnEquity"] = RatiosTable["netIncome"].fillna(0) / RatiosTable["shareholdersEquity"].fillna(1)
-            RatiosTable["Ratio_ReturnOnAssets"] = RatiosTable["netIncome"].fillna(0) / RatiosTable["totalAssets"].fillna(1)
-            RatiosTable["Ratio_GrossMargin"] = RatiosTable["grossProfit"].fillna(0) / RatiosTable["netSales"].fillna(1)
-            RatiosTable["Ratio_OperatingMargin"] = RatiosTable["operatingIncome"].fillna(0) / RatiosTable["netSales"].fillna(1)
-            RatiosTable["Ratio_NetProfitMargin"] = RatiosTable["netIncome"].fillna(0) / RatiosTable["netSales"].fillna(1)
-            RatiosTable["Ratio_AssetTurnover"] = RatiosTable["netSales"].fillna(0) / RatiosTable["totalAssets"].fillna(1)
-            RatiosTable["Ratio_InventoryTurnover"] = RatiosTable["costOfSales"].fillna(0) / RatiosTable["inventories"].fillna(1)                        
-            RatiosTable["Ratio_BuybackPayout"] = (  -1 * RatiosTable["buybacks"].fillna(0)  )/ RatiosTable["netIncome"].fillna(1)
-            RatiosTable["Ratio_ShareholderPayout"] = ( -1 * RatiosTable["Cashflow_equity"] )/ RatiosTable["netIncome"].fillna(1)
-            RatiosTable["Ratio_DividendPayout"] = ( -1 * RatiosTable["dividends"].fillna(0)  )/ RatiosTable["netIncome"].fillna(1)
-            RatiosTable["Ratio_FreeCashflowMargin"] = RatiosTable["Cashflow_free"].fillna(0) / RatiosTable["netSales"].fillna(1)
-            RatiosTable["Ratio_CashflowToEquityMargin"] = RatiosTable["Cashflow_equity"].fillna(0) / RatiosTable["netSales"].fillna(1)
-            RatiosTable["Ratio_CashflowToDebtMargin"] = RatiosTable["Cashflow_debt"].fillna(0) / RatiosTable["netSales"].fillna(1)
-            RatiosTable["Ratio_netSales_Growth"] = (RatiosTable["netSales"].fillna(0) / RatiosTable["netSales_PriorYear"].fillna(RatiosTable["netSales"].fillna(1))) - 1
-            RatiosTable["Ratio_netIncome_Growth"] = (RatiosTable["netIncome"].fillna(0) / RatiosTable["netIncome_PriorYear"].fillna(RatiosTable["netIncome"].fillna(1))) - 1
-
-            # Calculate Share 
-            RatiosTable["PerShare_BookValue"] = RatiosTable["shareholdersEquity"].fillna(0) / RatiosTable["SharesOutstanding"].fillna(1)
-            RatiosTable["PerShare_Earnings"] = (RatiosTable["netIncome"].fillna(0) / RatiosTable["SharesOutstanding"].fillna(1)) 
-            RatiosTable["PerShare_Sales"] = (RatiosTable["netSales"].fillna(0) / RatiosTable["SharesOutstanding"].fillna(1)) 
-            RatiosTable["PerShare_NCAV"] = (RatiosTable["NCAV"].fillna(0) / RatiosTable["SharesOutstanding"].fillna(1)) 
-            RatiosTable["PerShare_Cashflow_free"] = (RatiosTable["Cashflow_free"].fillna(0) / RatiosTable["SharesOutstanding"].fillna(1)) 
-            RatiosTable["PerShare_Cashflow_equity"] = (RatiosTable["Cashflow_equity"].fillna(0) / RatiosTable["SharesOutstanding"].fillna(1)) 
-            RatiosTable["PerShare_Cashflow_debt"] = (RatiosTable["Cashflow_debt"].fillna(0) / RatiosTable["SharesOutstanding"].fillna(1)) 
-            RatiosTable["PerShare_Dividends"] = (-RatiosTable["dividends"].fillna(0) / RatiosTable["SharesOutstanding"].fillna(1)) 
-            RatiosTable["PerShare_Buybacks"] = (-RatiosTable["buybacks"].fillna(0) / RatiosTable["SharesOutstanding"].fillna(1))             
-            RatiosTable["PerShare_TotalPayout"] = RatiosTable["PerShare_Buybacks"].fillna(0) + RatiosTable["PerShare_Dividends"].fillna(0)
-            RatiosTable["PerShare_SharePrice"] = RatiosTable["PerShare_Earnings"].fillna(0) * RatiosTable["PE_Ratio"].fillna(1)
-
-
-            # Price Ratios
-            RatiosTable["Ratio_PriceEarnings"] = RatiosTable["PerShare_SharePrice"].fillna(0) / RatiosTable["PerShare_Earnings"].fillna(1)
-            RatiosTable["Ratio_EarningsYield"] = RatiosTable["PerShare_Earnings"].fillna(0) / RatiosTable["PerShare_SharePrice"].fillna(1)
-            RatiosTable["Ratio_PriceBook"] = RatiosTable["PerShare_SharePrice"].fillna(0) / RatiosTable["PerShare_BookValue"].fillna(1)
-            RatiosTable["Ratio_PriceNCAV"] = RatiosTable["PerShare_SharePrice"].fillna(0) / RatiosTable["PerShare_NCAV"].fillna(1)
-            RatiosTable["Ratio_FreeCashflowYield"] = RatiosTable["PerShare_Cashflow_free"].fillna(0) / RatiosTable["PerShare_SharePrice"].fillna(1)
-            RatiosTable["Ratio_DividendsYield"] = RatiosTable["PerShare_Dividends"].fillna(0) / RatiosTable["PerShare_SharePrice"].fillna(1)
-            RatiosTable["Ratio_BuybacksYield"] = RatiosTable["PerShare_Buybacks"].fillna(0) / RatiosTable["PerShare_SharePrice"].fillna(1)
-            RatiosTable["Ratio_TotalPayoutYield"] = RatiosTable["PerShare_TotalPayout"].fillna(0) / RatiosTable["PerShare_SharePrice"].fillna(1)
-            RatiosTable["MarketCap"] = RatiosTable["PerShare_SharePrice"].fillna(0) * RatiosTable["SharesOutstanding"].fillna(1)
-
+            # Calculate ratios from config
+            RatiosTable_calcs = RatiosTable.copy()
+            for ratio_def in ratios_definitions:
+                output_col = ratio_def["output"]
+                expression = ratio_def["expression"]
+                RatiosTable[output_col] = self.evaluate_expression(RatiosTable_calcs, expression)
+                RatiosTable_calcs[output_col] = RatiosTable[output_col]
 
             # Calculate the 3 year and 5 year averages
             RatiosTable["Ratio_PriceBook_3Year_Average"] = RatiosTable["Ratio_PriceBook"].rolling(window=3, min_periods=1).mean()
