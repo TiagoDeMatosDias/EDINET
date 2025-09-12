@@ -20,7 +20,7 @@ class Edinet:
 
     def get_All_documents_withMetadata(self, start_date="2015-01-01", end_date=None, Database_DocumentList="DocumentList"):
         """
-        Fetch all available document IDs for a given company from the EDINET API and store them in the database.
+        Fetch all available document IDs for a given time period from the EDINET API and store them in the database.
         
         Parameters:
         - start_date (str): The start date in YYYY-MM-DD format (default: 2015-01-01).
@@ -55,7 +55,7 @@ class Edinet:
                     columns = list(data.get("results")[0].keys())
                     columns.append("Downloaded")
                     
-                    self.create_table(Database_DocumentList, columns)
+                    self.create_table(Database_DocumentList, columns, conn)
 
                     # Insert documents into the database
                     for entry in data.get("results", []):
