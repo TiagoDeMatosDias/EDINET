@@ -1,4 +1,33 @@
 {
+  "accounting_term_conditions": [
+    "jppfs_cor:NetSales",
+    "jppfs_cor:OperatingRevenue1",
+    "jppfs_cor:IncomeBeforeIncomeTaxes",
+    "%OrdinaryIncome",
+    "jppfs_cor:NetIncome",
+    "%ProfitLoss",
+    "jppfs_cor:OperatingIncome",
+    "jppfs_cor:CostOfSales",
+    "jppfs_cor:TotalAssets",
+    "jppfs_cor:Assets",
+    "jppfs_cor:ShareholdersEquity",
+    "jppfs_cor:CashDividendsPaidFinCF",
+    "jppfs_cor:PurchaseOfTreasuryStockFinCF",
+    "jppfs_cor:NetCashProvidedByUsedInOperatingActivities",
+    "jppfs_cor:NetCashProvidedByUsedInInvestmentActivities",
+    "jppfs_cor:NetCashProvidedByUsedInFinancingActivities",
+    "jppfs_cor:CurrentAssets",
+    "jppfs_cor:CurrentLiabilities",
+    "jppfs_cor:Inventories",
+    "jppfs_cor:TotalDebt",
+    "jppfs_cor:GrossProfit"
+  ],
+  "period_conditions": [
+    "CurrentYearDuration",
+    "CurrentYearInstant",
+    "Prior1YearDuration"
+  ],
+  "query_template": "CREATE TABLE IF NOT EXISTS {output_table} AS SELECT AccountingTerm, Period, Currency, Amount, docID, edinetCode, docTypeCode, submitDateTime, periodStart, periodEnd FROM {input_table} WHERE (({accounting_term_query}) AND ({period_query}) AND (AccountingTerm LIKE 'jppfs_cor:%')) OR (AccountingTerm = 'jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults' AND Period = 'CurrentYearInstant_NonConsolidatedMember') OR (AccountingTerm = 'jpcrp_cor:PriceEarningsRatioSummaryOfBusinessResults' AND Period = 'CurrentYearDuration')",
   "mappings": {
     "netIncome": ["jppfs_cor:NetIncome_CurrentYearDuration", "jppfs_cor:ProfitLoss_CurrentYearDuration"],
     "netIncome_PriorYear": ["jppfs_cor:NetIncome_Prior1YearDuration", "jppfs_cor:ProfitLoss_Prior1YearDuration"],
