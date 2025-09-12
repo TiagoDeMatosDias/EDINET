@@ -1,7 +1,7 @@
 import config as c
 import requests
 from datetime import datetime, timedelta
-import classes.helper as h
+import src.utils as h
 import sqlite3
 import os
 import zipfile

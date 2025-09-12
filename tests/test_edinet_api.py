@@ -6,15 +6,15 @@ import sys
 import sqlite3
 import pandas as pd
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from classes.EDINET import Edinet
+from src.edinet_api import Edinet
 
 class TestEdinet(unittest.TestCase):
 
     def setUp(self):
         self.edinet = Edinet()
 
-    @patch('classes.EDINET.requests.get')
-    @patch('classes.EDINET.sqlite3.connect')
+    @patch('src.edinet_api.requests.get')
+    @patch('src.edinet_api.sqlite3.connect')
     def test_get_All_documents_withMetadata(self, mock_sqlite_connect, mock_requests_get):
         # Mock the requests response
         mock_response = MagicMock()
@@ -52,7 +52,7 @@ class TestEdinet(unittest.TestCase):
         self.assertEqual(mock_conn.commit.call_count, 2)
         mock_conn.close.assert_called_once()
 
-    @patch('classes.EDINET.requests.get')
+    @patch('src.edinet_api.requests.get')
     @patch('builtins.open', new_callable=mock_open)
     def test_downloadDoc(self, mock_open_file, mock_requests_get):
         # Mock the requests response
@@ -70,15 +70,15 @@ class TestEdinet(unittest.TestCase):
         mock_open_file.assert_called_with(expected_path, 'wb')
         mock_open_file().write.assert_called_with(b'zip_content')
 
-    @patch('classes.EDINET.Edinet.query_database_select')
-    @patch('classes.EDINET.Edinet.create_folder')
-    @patch('classes.EDINET.Edinet.downloadDoc')
-    @patch('classes.EDINET.Edinet.list_files_in_folder')
-    @patch('classes.EDINET.Edinet.unzip_files')
-    @patch('classes.EDINET.Edinet.load_financial_data')
-    @patch('classes.EDINET.Edinet.query_database_setColumn')
-    @patch('classes.EDINET.Edinet.delete_folder')
-    @patch('classes.EDINET.sqlite3.connect')
+    @patch('src.edinet_api.Edinet.query_database_select')
+    @patch('src.edinet_api.Edinet.create_folder')
+    @patch('src.edinet_api.Edinet.downloadDoc')
+    @patch('src.edinet_api.Edinet.list_files_in_folder')
+    @patch('src.edinet_api.Edinet.unzip_files')
+    @patch('src.edinet_api.Edinet.load_financial_data')
+    @patch('src.edinet_api.Edinet.query_database_setColumn')
+    @patch('src.edinet_api.Edinet.delete_folder')
+    @patch('src.edinet_api.sqlite3.connect')
     def test_downloadDocs(self, mock_sqlite_connect, mock_delete_folder, mock_query_database_setColumn, mock_load_financial_data, mock_unzip_files, mock_list_files_in_folder, mock_downloadDoc, mock_create_folder, mock_query_database_select):
         # Mock the database connection
         mock_conn = MagicMock()
@@ -100,9 +100,9 @@ class TestEdinet(unittest.TestCase):
         mock_query_database_setColumn.assert_called_once()
         mock_delete_folder.assert_called()
 
-    @patch('classes.EDINET.pd.read_csv')
-    @patch('classes.EDINET.Edinet.detect_file_encoding')
-    @patch('classes.EDINET.sqlite3.connect')
+    @patch('src.edinet_api.pd.read_csv')
+    @patch('src.edinet_api.Edinet.detect_file_encoding')
+    @patch('src.edinet_api.sqlite3.connect')
     @patch('pandas.DataFrame.to_sql')
     def test_load_financial_data(self, mock_to_sql, mock_sqlite_connect, mock_detect_encoding, mock_read_csv):
         # Mock the database connection

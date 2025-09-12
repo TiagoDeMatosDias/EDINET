@@ -6,14 +6,14 @@ import sys
 import pandas as pd
 import numpy as np
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from classes.data import data
+from src.data_processing import data
 
 class TestData(unittest.TestCase):
 
     def setUp(self):
         self.data = data()
 
-    @patch('classes.data.sqlite3.connect')
+    @patch('src.data_processing.sqlite3.connect')
     def test_Generate_Financial_Ratios(self, mock_sqlite_connect):
         # Mock the database connection and pandas read_sql_query
         mock_conn = MagicMock()
@@ -38,7 +38,7 @@ class TestData(unittest.TestCase):
         # Assert that to_sql was called, indicating the function ran to completion
         mock_to_sql.assert_called()
 
-    @patch('classes.data.sqlite3.connect')
+    @patch('src.data_processing.sqlite3.connect')
     def test_Generate_Aggregated_Ratios(self, mock_sqlite_connect):
         # Mock the database connection and pandas read_sql_query
         mock_conn = MagicMock()
@@ -60,7 +60,7 @@ class TestData(unittest.TestCase):
         # Assert that to_sql was called, indicating the function ran to completion
         mock_to_sql.assert_called()
 
-    @patch('classes.data.sqlite3.connect')
+    @patch('src.data_processing.sqlite3.connect')
     def test_copy_table_to_Standard(self, mock_sqlite_connect):
         # Mock the database connection
         mock_conn = MagicMock()
