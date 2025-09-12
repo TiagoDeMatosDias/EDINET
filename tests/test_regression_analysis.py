@@ -7,15 +7,15 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from classes import Regression
+from src import regression_analysis
 
 class TestRegression(unittest.TestCase):
 
-    @patch('classes.Regression.load_config')
-    @patch('classes.Regression.sqlite3.connect')
-    @patch('classes.Regression.Generate_SQL_Query')
-    @patch('classes.Regression.Run_Model')
-    @patch('classes.Regression.write_results_to_file')
+    @patch('src.regression_analysis.load_config')
+    @patch('src.regression_analysis.sqlite3.connect')
+    @patch('src.regression_analysis.Generate_SQL_Query')
+    @patch('src.regression_analysis.Run_Model')
+    @patch('src.regression_analysis.write_results_to_file')
     def test_Regression(self, mock_write_results, mock_run_model, mock_generate_sql, mock_sqlite_connect, mock_load_config):
         # Mock the config
         mock_load_config.return_value = {"Database": "test.db"}
@@ -31,7 +31,7 @@ class TestRegression(unittest.TestCase):
         mock_run_model.return_value = sm.OLS(pd.Series([1, 2]), pd.DataFrame({'x1': [1, 2], 'x2': [3, 4]})).fit()
 
         # Call the function
-        Regression.Regression()
+        regression_analysis.Regression()
 
         # Assert that the functions were called
         mock_load_config.assert_called_once()
@@ -51,7 +51,7 @@ class TestRegression(unittest.TestCase):
 
         # Mock the read_sql_query
         with patch('pandas.read_sql_query', return_value=df):
-            results = Regression.Run_Model("query", conn, 'y', ['x1', 'x2'])
+            results = regression_analysis.Run_Model("query", conn, 'y', ['x1', 'x2'])
 
         # Check that the results are of the correct type
         self.assertIsInstance(results, sm.regression.linear_model.RegressionResultsWrapper)
@@ -69,7 +69,7 @@ class TestRegression(unittest.TestCase):
         }
 
         # Call the function
-        query_data = Regression.Generate_SQL_Query(config)
+        query_data = regression_analysis.Generate_SQL_Query(config)
 
         # Check that the query is generated correctly
         self.assertIn("SELECT", query_data["Query"])

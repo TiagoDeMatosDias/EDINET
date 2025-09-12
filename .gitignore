@@ -1,3 +1,8 @@
 testdata/outputs/dummy_database.db
 testdata/*
 files/downloadeddocs/*
+data/
+__pycache__/
+.idea/
+.venv/
+.vscode/

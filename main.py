@@ -1,9 +1,9 @@
 # This is a sample Python script.
-import classes.EDINET as e
+import src.edinet_api as e
 from config import Config
-import classes.helper as h
-import classes.data as d
-import classes.yahoofinance as y
+import src.utils as h
+import src.data_processing as d
+import src.yahoofinance as y
 
 from datetime import datetime
 # Press Shift+F10 to execute it or replace it with your code.
@@ -41,7 +41,7 @@ if __name__ == '__main__':
     edinet = e.Edinet()    
     #Working!!!
     # Get all documents released between two dates
-    #edinet.get_All_documents_withMetadata("2025-01-01", "2025-07-01",Database_DocumentList)
+    #edinet.get_All_documents_withMetadata("2025-07-01", "2025-08-01",Database_DocumentList)
 
     # Add the documents to the database that match the criteria
     # You need the following filters for the baseline annual reports only
@@ -55,7 +55,7 @@ if __name__ == '__main__':
     data = d.data()
 
     # Standardize the data you have downloaded    
-    #data.copy_table_to_Standard(FinancialData, Database_Standardized)
+    data.copy_table_to_Standard(FinancialData, Database_Standardized + "_2")
 
     # Generate financial ratios for the standardized data
     data.Generate_Financial_Ratios(Database_Standardized + "_2", Database_Standardized + "_Ratios_2")

@@ -56,7 +56,7 @@ class data:
         cursor = conn.cursor()
 
         # Load configuration
-        with open('financial_ratios_config.json', 'r') as f:
+        with open('config/financial_ratios_config.json', 'r') as f:
             config = json.load(f)
         
         accounting_term_conditions = config['accounting_term_conditions']
@@ -117,7 +117,7 @@ class data:
         conn = sqlite3.connect(self.Database)
 
         # Load configuration
-        with open('financial_ratios_config.json', 'r') as f:
+        with open('config/financial_ratios_config.json', 'r') as f:
             config = json.load(f)
         columns_mapping = config['mappings']
         ratios_definitions = config['ratios']

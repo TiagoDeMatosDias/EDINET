@@ -12,7 +12,7 @@ class Config:
     def _load_config(self):
         """Loads configuration from a JSON file."""
         try:
-            with open("config.json", "r") as file:
+            with open("config/config.json", "r") as file:
                 self.settings = json.load(file)
         except FileNotFoundError:
             self.settings = {}  # Default to empty if file not found
