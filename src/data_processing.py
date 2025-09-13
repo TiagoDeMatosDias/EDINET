@@ -11,7 +11,6 @@ class data:
         self.config = c.Config()
         self.baseURL = self.config.get("baseURL")
         self.key = self.config.get("apikey")
-        self.defaultLocation = self.config.get("defaultLocation")
         self.Database = self.config.get("Database")
         self.Database_DocumentList = self.config.get("Database_DocumentList")
 
