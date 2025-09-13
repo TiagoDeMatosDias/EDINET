@@ -109,5 +109,11 @@
     {"output": "Ratio_BuybacksYield", "expression": {"operator": "/", "operands": [{"column": "PerShare_Buybacks"}, {"column": "PerShare_SharePrice", "fillna": 1}]}},
     {"output": "Ratio_TotalPayoutYield", "expression": {"operator": "/", "operands": [{"column": "PerShare_TotalPayout"}, {"column": "PerShare_SharePrice", "fillna": 1}]}},
     {"output": "MarketCap", "expression": {"operator": "*", "operands": [{"column": "PerShare_SharePrice"}, {"column": "SharesOutstanding", "fillna": 1}]}}
-  ]
+  ],
+  "standard_column_mapping": {
+    "要素ID": "AccountingTerm",
+    "コンテキストID": "Period",
+    "ユニットID": "Currency",
+    "値": "Amount"
+  }
 }

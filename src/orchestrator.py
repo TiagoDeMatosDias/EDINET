@@ -24,20 +24,30 @@ def run(edinet=None, data=None):
     if not data:
         data = d.data()
 
+
     if run_steps.get("get_documents"):
         try:
             print("Getting all documents with metadata...")
-            edinet.get_All_documents_withMetadata("2025-07-01", "2025-08-01", Database_DocumentList)
+            get_documents_config = config.get("get_documents_config", {})
+            startDate = get_documents_config.get("startDate")
+            endDate = get_documents_config.get("endDate")
+            edinet.get_All_documents_withMetadata(startDate, endDate, Database_DocumentList)
         except Exception as e:
             print(f"Error getting documents: {e}")
 
     if run_steps.get("download_documents"):
         try:
             print("Downloading documents...")
-            filters = edinet.generate_filter("docTypeCode", "=", "120")
-            filters = edinet.generate_filter("csvFlag", "=", "1", filters)
-            filters = edinet.generate_filter("secCode", "!=", "", filters)
-            filters = edinet.generate_filter("Downloaded", "=", "False", filters)
+            download_documents_config = config.get("download_documents_config", {})
+            docTypeCode = download_documents_config.get("docTypeCode")
+            csvFlag = download_documents_config.get("csvFlag")
+            secCode = download_documents_config.get("secCode")
+            downloaded_flag = download_documents_config.get("Downloaded")
+
+            filters = edinet.generate_filter("docTypeCode", "=", docTypeCode)
+            filters = edinet.generate_filter("csvFlag", "=", csvFlag, filters)
+            filters = edinet.generate_filter("secCode", "!=", secCode, filters)
+            filters = edinet.generate_filter("Downloaded", "=", downloaded_flag, filters)
             edinet.downloadDocs(Database_DocumentList, FinancialData, filters)
         except Exception as e:
             print(f"Error downloading documents: {e}")
@@ -45,21 +55,21 @@ def run(edinet=None, data=None):
     if run_steps.get("standardize_data"):
         try:
             print("Standardizing data...")
-            data.copy_table_to_Standard(FinancialData, Database_Standardized + "_2")
+            data.copy_table_to_Standard(FinancialData, Database_Standardized )
         except Exception as e:
             print(f"Error standardizing data: {e}")
 
     if run_steps.get("generate_financial_ratios"):
         try:
             print("Generating financial ratios...")
-            data.Generate_Financial_Ratios(Database_Standardized + "_2", Database_Standardized + "_Ratios_2")
+            data.Generate_Financial_Ratios(Database_Standardized, Database_Standardized + "_Ratios")
         except Exception as e:
             print(f"Error generating financial ratios: {e}")
 
     if run_steps.get("aggregate_ratios"):
         try:
             print("Aggregating ratios...")
-            data.Generate_Aggregated_Ratios(Database_Standardized + "_Ratios_2", Database_Standardized + "_Ratios_Aggregated_2")
+            data.Generate_Aggregated_Ratios(Database_Standardized + "_Ratios", Database_Standardized + "_Ratios_Aggregated")
         except Exception as e:
             print(f"Error aggregating ratios: {e}")
 

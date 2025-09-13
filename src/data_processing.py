@@ -359,23 +359,19 @@ class data:
         conn.commit()
 
     def rename_columns_to_Standard(self, conn, table_name):
-        # Example usage
-        column_mapping = {
-            "要素ID": "AccountingTerm",
-            "コンテキストID": "Period",
-            "ユニットID": "Currency",
-            "値": "Amount"
-        }
+        # Load configuration
+        with open('config/financial_ratios_config.json', 'r') as f:
+            config = json.load(f)
+        column_mapping = config['standard_column_mapping']
         self.rename_columns(conn, table_name, column_mapping)
 
-    def copy_table(self, conn, source_table, target_table, columns=None):
+    def copy_table(self, conn, source_table, target_table):
         """
         Copies data from one table to another in the SQLite database.
         
         :param conn: SQLite connection object
         :param source_table: Name of the source table
         :param target_table: Name of the target table
-        :param columns: List of columns to copy (default is all columns)
         :return: None
         """
         cursor = conn.cursor()        
@@ -399,9 +395,8 @@ class data:
         if conn is None:
             conn = sqlite3.connect(self.Database)
         
-        columns = ["要素ID", "コンテキストID", "ユニットID", "値", "docID", "edinetCode", "docTypeCode", "submitDateTime", "periodStart", "periodEnd"]
         tempTable = "TempTable_" + random.choice("132465sadf")
-        self.copy_table(conn, source_table, tempTable, columns)
+        self.copy_table(conn, source_table, tempTable)
         self.rename_columns_to_Standard(conn, tempTable)
         self.Filter_for_Relevant(tempTable, target_table)
         self.delete_table(tempTable, conn)
