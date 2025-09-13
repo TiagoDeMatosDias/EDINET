@@ -1,5 +1,15 @@
 {
   "doctype": "5",
+  "get_documents_config": {
+    "startDate": "2025-07-01",
+    "endDate": "2025-08-01"
+  },
+  "download_documents_config": {
+    "docTypeCode": "120",
+    "csvFlag": "1",
+    "secCode": "",
+    "Downloaded": "False"
+  },
   "run_steps": {
     "get_documents": false,
     "download_documents": false,
