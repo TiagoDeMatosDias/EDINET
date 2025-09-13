@@ -1,4 +1,3 @@
-
 import unittest
 from unittest.mock import patch, MagicMock
 import os
@@ -11,10 +10,19 @@ from src.data_processing import data
 class TestData(unittest.TestCase):
 
     def setUp(self):
+        pass
+
+    @patch('src.data_processing.c.Config')
+    @patch('src.data_processing.sqlite3.connect')
+    def test_Generate_Financial_Ratios(self, mock_sqlite_connect, mock_config):
+        # Mock the config
+        mock_config_instance = mock_config.return_value
+        mock_config_instance.get.side_effect = lambda key, default=None: {
+            "DB_PATH": "dummy.db"
+        }.get(key, default)
+
         self.data = data()
 
-    @patch('src.data_processing.sqlite3.connect')
-    def test_Generate_Financial_Ratios(self, mock_sqlite_connect):
         # Mock the database connection and pandas read_sql_query
         mock_conn = MagicMock()
         mock_sqlite_connect.return_value = mock_conn
@@ -38,8 +46,17 @@ class TestData(unittest.TestCase):
         # Assert that to_sql was called, indicating the function ran to completion
         mock_to_sql.assert_called()
 
+    @patch('src.data_processing.c.Config')
     @patch('src.data_processing.sqlite3.connect')
-    def test_Generate_Aggregated_Ratios(self, mock_sqlite_connect):
+    def test_Generate_Aggregated_Ratios(self, mock_sqlite_connect, mock_config):
+        # Mock the config
+        mock_config_instance = mock_config.return_value
+        mock_config_instance.get.side_effect = lambda key, default=None: {
+            "DB_PATH": "dummy.db"
+        }.get(key, default)
+        
+        self.data = data()
+
         # Mock the database connection and pandas read_sql_query
         mock_conn = MagicMock()
         mock_sqlite_connect.return_value = mock_conn
@@ -60,8 +77,17 @@ class TestData(unittest.TestCase):
         # Assert that to_sql was called, indicating the function ran to completion
         mock_to_sql.assert_called()
 
+    @patch('src.data_processing.c.Config')
     @patch('src.data_processing.sqlite3.connect')
-    def test_copy_table_to_Standard(self, mock_sqlite_connect):
+    def test_copy_table_to_Standard(self, mock_sqlite_connect, mock_config):
+        # Mock the config
+        mock_config_instance = mock_config.return_value
+        mock_config_instance.get.side_effect = lambda key, default=None: {
+            "DB_PATH": "dummy.db"
+        }.get(key, default)
+
+        self.data = data()
+        
         # Mock the database connection
         mock_conn = MagicMock()
         mock_sqlite_connect.return_value = mock_conn

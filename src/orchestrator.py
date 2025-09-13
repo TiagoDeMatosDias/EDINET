@@ -12,17 +12,12 @@ def run(edinet=None, data=None):
 
     print('Loading Config')
     config = Config()
-    run_config_path = 'c:/programming/Finance/EDINET/EDINET/config/run_config.json'
-
-    with open(run_config_path) as f:
-        run_config = json.load(f)
-
-    run_steps = run_config.get("run_steps", {})
+    run_steps = config.get("run_steps", {})
 
     # Access values from main config
-    Database_DocumentList = config.get("Database_DocumentList")
-    FinancialData = config.get("Database_FinancialData")
-    Database_Standardized = config.get("Database_Standardized")
+    Database_DocumentList = config.get("DB_DOC_LIST_TABLE")
+    FinancialData = config.get("DB_FINANCIAL_DATA_TABLE")
+    Database_Standardized = config.get("DB_STANDARDIZED_TABLE")
 
     if not edinet:
         edinet = e.Edinet()
@@ -71,7 +66,7 @@ def run(edinet=None, data=None):
     if run_steps.get("update_stock_prices"):
         try:
             print("Updating stock prices...")
-            y.update_all_stock_prices(config.get("Database"), only_update_empty=True)
+            y.update_all_stock_prices(config.get("DB_PATH"), only_update_empty=True)
         except Exception as e:
             print(f"Error updating stock prices: {e}")
 
