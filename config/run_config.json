@@ -1,0 +1,10 @@
+{
+  "run_steps": {
+    "get_documents": false,
+    "download_documents": false,
+    "standardize_data": false,
+    "generate_financial_ratios": false,
+    "aggregate_ratios": false,
+    "update_stock_prices": false
+  }
+}
