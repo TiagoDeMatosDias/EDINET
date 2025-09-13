@@ -5,5 +5,14 @@
         "comments": false,
         "strings": false
     },
-    "editor.quickSuggestionsDelay": 300
+    "editor.quickSuggestionsDelay": 300,
+    "python.testing.unittestArgs": [
+        "-v",
+        "-s",
+        "./tests",
+        "-p",
+        "test_*.py"
+    ],
+    "python.testing.pytestEnabled": false,
+    "python.testing.unittestEnabled": true
 }
