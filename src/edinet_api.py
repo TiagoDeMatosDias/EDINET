@@ -14,9 +14,9 @@ class Edinet:
     def __init__(self):
         self.config = c.Config()
         self.baseURL = self.config.get("baseURL")
-        self.key = self.config.get("apikey")
+        self.key = self.config.get("API_KEY")
         self.defaultLocation = self.config.get("defaultLocation")
-        self.Database = self.config.get("Database")
+        self.Database = self.config.get("DB_PATH")
 
     def get_All_documents_withMetadata(self, start_date="2015-01-01", end_date=None, Database_DocumentList="DocumentList"):
         """
@@ -382,7 +382,6 @@ class Edinet:
             
             column_definitions = ", ".join([f"{col} TEXT" for col in columns])
             cursor.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({column_definitions})")
-            conn.commit()
         except Exception as e:
             print(f"An error occurred while creating table {table_name}: {e}")
         finally:

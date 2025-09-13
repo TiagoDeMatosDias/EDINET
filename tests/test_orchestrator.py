@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch, MagicMock
 import json
 import sys
 import os
@@ -8,6 +8,33 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.orchestrator import run
 
 class TestOrchestrator(unittest.TestCase):
+
+    def run_test_with_config(self, run_config, mock_config, mock_e, mock_d, mock_y):
+        # Configure the mock Config object
+        mock_config_instance = mock_config.return_value
+        def get_side_effect(key, default=None):
+            if key == "run_steps":
+                return run_config["run_steps"]
+            return {
+                "DB_DOC_LIST_TABLE": "DocumentList",
+                "DB_FINANCIAL_DATA_TABLE": "FinancialData",
+                "DB_STANDARDIZED_TABLE": "StandardizedData",
+                "DB_PATH": "dummy.db"
+            }.get(key, default)
+        mock_config_instance.get.side_effect = get_side_effect
+
+        # Mock the instances of the classes
+        mock_edinet_instance = MagicMock()
+        mock_e.Edinet.return_value = mock_edinet_instance
+        
+        mock_data_instance = MagicMock()
+        mock_d.data.return_value = mock_data_instance
+
+        # Call the run function
+        run(edinet=mock_edinet_instance, data=mock_data_instance)
+
+        return mock_edinet_instance, mock_data_instance, mock_y
+
 
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
@@ -28,26 +55,15 @@ class TestOrchestrator(unittest.TestCase):
             }
         }
         
-        # Mock the file opening and loading of the run_config.json
-        m = mock_open(read_data=json.dumps(run_config))
-        with patch('builtins.open', m):
-            # Mock the instances of the classes
-            mock_edinet_instance = MagicMock()
-            mock_e.Edinet.return_value = mock_edinet_instance
-            
-            mock_data_instance = MagicMock()
-            mock_d.data.return_value = mock_data_instance
+        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
 
-            # Call the run function
-            run(edinet=mock_edinet_instance, data=mock_data_instance)
-
-            # Assert that the correct methods were called
-            mock_edinet_instance.get_All_documents_withMetadata.assert_called_once()
-            mock_edinet_instance.downloadDocs.assert_not_called()
-            mock_data_instance.copy_table_to_Standard.assert_not_called()
-            mock_data_instance.Generate_Financial_Ratios.assert_not_called()
-            mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
-            mock_y.update_all_stock_prices.assert_not_called()
+        # Assert that the correct methods were called
+        mock_edinet_instance.get_All_documents_withMetadata.assert_called_once()
+        mock_edinet_instance.downloadDocs.assert_not_called()
+        mock_data_instance.copy_table_to_Standard.assert_not_called()
+        mock_data_instance.Generate_Financial_Ratios.assert_not_called()
+        mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
+        mock_y_instance.update_all_stock_prices.assert_not_called()
 
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
@@ -68,22 +84,14 @@ class TestOrchestrator(unittest.TestCase):
             }
         }
         
-        m = mock_open(read_data=json.dumps(run_config))
-        with patch('builtins.open', m):
-            mock_edinet_instance = MagicMock()
-            mock_e.Edinet.return_value = mock_edinet_instance
-            
-            mock_data_instance = MagicMock()
-            mock_d.data.return_value = mock_data_instance
+        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
 
-            run(edinet=mock_edinet_instance, data=mock_data_instance)
-
-            mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
-            mock_edinet_instance.downloadDocs.assert_called_once()
-            mock_data_instance.copy_table_to_Standard.assert_not_called()
-            mock_data_instance.Generate_Financial_Ratios.assert_not_called()
-            mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
-            mock_y.update_all_stock_prices.assert_not_called()
+        mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
+        mock_edinet_instance.downloadDocs.assert_called_once()
+        mock_data_instance.copy_table_to_Standard.assert_not_called()
+        mock_data_instance.Generate_Financial_Ratios.assert_not_called()
+        mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
+        mock_y_instance.update_all_stock_prices.assert_not_called()
 
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
@@ -104,22 +112,14 @@ class TestOrchestrator(unittest.TestCase):
             }
         }
         
-        m = mock_open(read_data=json.dumps(run_config))
-        with patch('builtins.open', m):
-            mock_edinet_instance = MagicMock()
-            mock_e.Edinet.return_value = mock_edinet_instance
-            
-            mock_data_instance = MagicMock()
-            mock_d.data.return_value = mock_data_instance
+        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
 
-            run(edinet=mock_edinet_instance, data=mock_data_instance)
-
-            mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
-            mock_edinet_instance.downloadDocs.assert_not_called()
-            mock_data_instance.copy_table_to_Standard.assert_called_once()
-            mock_data_instance.Generate_Financial_Ratios.assert_not_called()
-            mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
-            mock_y.update_all_stock_prices.assert_not_called()
+        mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
+        mock_edinet_instance.downloadDocs.assert_not_called()
+        mock_data_instance.copy_table_to_Standard.assert_called_once()
+        mock_data_instance.Generate_Financial_Ratios.assert_not_called()
+        mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
+        mock_y_instance.update_all_stock_prices.assert_not_called()
 
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
@@ -140,22 +140,14 @@ class TestOrchestrator(unittest.TestCase):
             }
         }
         
-        m = mock_open(read_data=json.dumps(run_config))
-        with patch('builtins.open', m):
-            mock_edinet_instance = MagicMock()
-            mock_e.Edinet.return_value = mock_edinet_instance
-            
-            mock_data_instance = MagicMock()
-            mock_d.data.return_value = mock_data_instance
+        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
 
-            run(edinet=mock_edinet_instance, data=mock_data_instance)
-
-            mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
-            mock_edinet_instance.downloadDocs.assert_not_called()
-            mock_data_instance.copy_table_to_Standard.assert_not_called()
-            mock_data_instance.Generate_Financial_Ratios.assert_called_once()
-            mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
-            mock_y.update_all_stock_prices.assert_not_called()
+        mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
+        mock_edinet_instance.downloadDocs.assert_not_called()
+        mock_data_instance.copy_table_to_Standard.assert_not_called()
+        mock_data_instance.Generate_Financial_Ratios.assert_called_once()
+        mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
+        mock_y_instance.update_all_stock_prices.assert_not_called()
 
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
@@ -176,22 +168,14 @@ class TestOrchestrator(unittest.TestCase):
             }
         }
         
-        m = mock_open(read_data=json.dumps(run_config))
-        with patch('builtins.open', m):
-            mock_edinet_instance = MagicMock()
-            mock_e.Edinet.return_value = mock_edinet_instance
-            
-            mock_data_instance = MagicMock()
-            mock_d.data.return_value = mock_data_instance
+        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
 
-            run(edinet=mock_edinet_instance, data=mock_data_instance)
-
-            mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
-            mock_edinet_instance.downloadDocs.assert_not_called()
-            mock_data_instance.copy_table_to_Standard.assert_not_called()
-            mock_data_instance.Generate_Financial_Ratios.assert_not_called()
-            mock_data_instance.Generate_Aggregated_Ratios.assert_called_once()
-            mock_y.update_all_stock_prices.assert_not_called()
+        mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
+        mock_edinet_instance.downloadDocs.assert_not_called()
+        mock_data_instance.copy_table_to_Standard.assert_not_called()
+        mock_data_instance.Generate_Financial_Ratios.assert_not_called()
+        mock_data_instance.Generate_Aggregated_Ratios.assert_called_once()
+        mock_y_instance.update_all_stock_prices.assert_not_called()
 
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
@@ -212,22 +196,14 @@ class TestOrchestrator(unittest.TestCase):
             }
         }
         
-        m = mock_open(read_data=json.dumps(run_config))
-        with patch('builtins.open', m):
-            mock_edinet_instance = MagicMock()
-            mock_e.Edinet.return_value = mock_edinet_instance
-            
-            mock_data_instance = MagicMock()
-            mock_d.data.return_value = mock_data_instance
+        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
 
-            run(edinet=mock_edinet_instance, data=mock_data_instance)
-
-            mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
-            mock_edinet_instance.downloadDocs.assert_not_called()
-            mock_data_instance.copy_table_to_Standard.assert_not_called()
-            mock_data_instance.Generate_Financial_Ratios.assert_not_called()
-            mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
-            mock_y.update_all_stock_prices.assert_called_once()
+        mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
+        mock_edinet_instance.downloadDocs.assert_not_called()
+        mock_data_instance.copy_table_to_Standard.assert_not_called()
+        mock_data_instance.Generate_Financial_Ratios.assert_not_called()
+        mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
+        mock_y_instance.update_all_stock_prices.assert_called_once()
 
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
@@ -248,22 +224,14 @@ class TestOrchestrator(unittest.TestCase):
             }
         }
         
-        m = mock_open(read_data=json.dumps(run_config))
-        with patch('builtins.open', m):
-            mock_edinet_instance = MagicMock()
-            mock_e.Edinet.return_value = mock_edinet_instance
-            
-            mock_data_instance = MagicMock()
-            mock_d.data.return_value = mock_data_instance
+        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
 
-            run(edinet=mock_edinet_instance, data=mock_data_instance)
-
-            mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
-            mock_edinet_instance.downloadDocs.assert_not_called()
-            mock_data_instance.copy_table_to_Standard.assert_not_called()
-            mock_data_instance.Generate_Financial_Ratios.assert_not_called()
-            mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
-            mock_y.update_all_stock_prices.assert_not_called()
+        mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
+        mock_edinet_instance.downloadDocs.assert_not_called()
+        mock_data_instance.copy_table_to_Standard.assert_not_called()
+        mock_data_instance.Generate_Financial_Ratios.assert_not_called()
+        mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
+        mock_y_instance.update_all_stock_prices.assert_not_called()
 
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
@@ -284,22 +252,14 @@ class TestOrchestrator(unittest.TestCase):
             }
         }
         
-        m = mock_open(read_data=json.dumps(run_config))
-        with patch('builtins.open', m):
-            mock_edinet_instance = MagicMock()
-            mock_e.Edinet.return_value = mock_edinet_instance
-            
-            mock_data_instance = MagicMock()
-            mock_d.data.return_value = mock_data_instance
+        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
 
-            run(edinet=mock_edinet_instance, data=mock_data_instance)
-
-            mock_edinet_instance.get_All_documents_withMetadata.assert_called_once()
-            mock_edinet_instance.downloadDocs.assert_called_once()
-            mock_data_instance.copy_table_to_Standard.assert_called_once()
-            mock_data_instance.Generate_Financial_Ratios.assert_called_once()
-            mock_data_instance.Generate_Aggregated_Ratios.assert_called_once()
-            mock_y.update_all_stock_prices.assert_called_once()
+        mock_edinet_instance.get_All_documents_withMetadata.assert_called_once()
+        mock_edinet_instance.downloadDocs.assert_called_once()
+        mock_data_instance.copy_table_to_Standard.assert_called_once()
+        mock_data_instance.Generate_Financial_Ratios.assert_called_once()
+        mock_data_instance.Generate_Aggregated_Ratios.assert_called_once()
+        mock_y_instance.update_all_stock_prices.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()

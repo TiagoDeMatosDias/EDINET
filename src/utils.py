@@ -9,7 +9,7 @@ def generateURL(docID, config, doctype=None):
     baseURL = config.get("baseURL")
     if doctype is None:
         doctype = config.get("doctype")
-    apikey = config.get("apikey")
+    apikey = config.get("API_KEY")
 
     #Generate URL
     url = baseURL + "/" + docID + "?type=" + doctype + "&Subscription-Key=" + apikey

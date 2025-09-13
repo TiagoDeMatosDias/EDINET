@@ -10,9 +10,9 @@ class data:
     def __init__(self):
         self.config = c.Config()
         self.baseURL = self.config.get("baseURL")
-        self.key = self.config.get("apikey")
-        self.Database = self.config.get("Database")
-        self.Database_DocumentList = self.config.get("Database_DocumentList")
+        self.key = self.config.get("API_KEY")
+        self.Database = self.config.get("DB_PATH")
+        self.Database_DocumentList = self.config.get("DB_DOC_LIST_TABLE")
 
 
     def create_table(self, table_name, columns, connection=None):
