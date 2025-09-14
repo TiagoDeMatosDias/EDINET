@@ -17,6 +17,6 @@
     "generate_financial_ratios": true,
     "aggregate_ratios": true,
     "update_stock_prices": false,
-    "run_regression": false
+    "run_regression": true
   }
 }
