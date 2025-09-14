@@ -11,14 +11,18 @@ from src import regression_analysis
 
 class TestRegression(unittest.TestCase):
 
+    @patch('os.getenv')
     @patch('src.regression_analysis.load_config')
     @patch('src.regression_analysis.sqlite3.connect')
     @patch('src.regression_analysis.Generate_SQL_Query')
     @patch('src.regression_analysis.Run_Model')
     @patch('src.regression_analysis.write_results_to_file')
-    def test_Regression(self, mock_write_results, mock_run_model, mock_generate_sql, mock_sqlite_connect, mock_load_config):
-        # Mock the config
-        mock_load_config.return_value = {"Database": "test.db"}
+    def test_Regression(self, mock_write_results, mock_run_model, mock_generate_sql, mock_sqlite_connect, mock_load_config, mock_getenv):
+        # Mock getenv to return a test database path
+        mock_getenv.return_value = "test.db"
+
+        # Mock the config loaded from JSON
+        mock_load_config.return_value = {"Output": "test_output.txt"}
 
         # Mock the SQL query generation
         mock_generate_sql.return_value = {
@@ -35,6 +39,7 @@ class TestRegression(unittest.TestCase):
 
         # Assert that the functions were called
         mock_load_config.assert_called_once()
+        mock_getenv.assert_called_once_with("DB_PATH")
         mock_sqlite_connect.assert_called_once_with("test.db")
         mock_generate_sql.assert_called_once()
         mock_run_model.assert_called_once()

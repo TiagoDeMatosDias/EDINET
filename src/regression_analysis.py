@@ -10,8 +10,8 @@ from sklearn import preprocessing
 import statsmodels.api as sm
 import sqlite3
 import json as json
-
-
+import os
+from dotenv import load_dotenv
 
 
 
@@ -19,7 +19,7 @@ import json as json
 def load_config():
     """Loads configuration from a JSON file."""
     try:
-        with open("config_Regression.json", "r") as file:
+        with open("config/config_Regression.json", "r") as file:
             config = json.load(file)
     except FileNotFoundError:
         config = {}  # Default to empty if file not found
@@ -41,10 +41,16 @@ def Regression():
         None
     """
     # Load configuration
+    load_dotenv()
     config = load_config()
 
+    # Get DB path from environment variables
+    db_path = os.getenv("DB_PATH")
+    if not db_path:
+        raise ValueError("DB_PATH environment variable not set or .env file not found.")
+
     # Connect to the SQLite database
-    conn = sqlite3.connect(config["Database"])
+    conn = sqlite3.connect(db_path)
 
     # Generate SQL query based on configuration
     generated_query = Generate_SQL_Query(config)
@@ -58,7 +64,7 @@ def Regression():
     )
 
     # Write regression results to a file
-    output_file = "files/ols_results/ols_results_summary.txt"
+    output_file = config["Output"]
     write_results_to_file(results, generated_query["Query"], output_file)
 
 def Run_Model(
@@ -141,34 +147,34 @@ def write_results_to_file(
 
     with open(output_file, "w") as f:
         # --- Write Query ---
-        f.write("--- SQL Query ---\n")
+        f.write("---" + " SQL Query ---" + "\n")
         f.write(query.strip() + "\n\n")
 
         # --- Write OLS Summary ---
-        f.write("--- OLS Regression Results ---\n")
+        f.write("---" + " OLS Regression Results ---" + "\n")
         f.write(str(results.summary()) + "\n\n")
 
         # --- Write Significance Analysis ---
-        f.write("--- Significance Analysis ---\n")
-        f.write(f"Significance level (alpha): {alpha}\n\n")
+        f.write("---" + " Significance Analysis ---" + "\n")
+        f.write(f"Significance level (alpha): {alpha}" + "\n\n")
 
         # All significant variables (including constant)
-        f.write(f"Variables significant at the {alpha:.1%} level:\n")
+        f.write(f"Variables significant at the {alpha:.1%} level:" + "\n")
         if not significant_variables.empty:
             for var, p_val in significant_variables.items():
-                f.write(f"- {var} (P-value: {p_val:.4g})\n")
+                f.write(f"- {var} (P-value: {p_val:.4g})" + "\n")
         else:
-            f.write("No variables are significant at this level.\n")
+            f.write("No variables are significant at this level." + "\n")
         f.write("\n")
 
         # Significant predictor variables (excluding constant)
         significant_predictors = significant_variables.drop("const", errors="ignore")
-        f.write(f"Predictor variables significant at the {alpha:.1%} level:\n")
+        f.write(f"Predictor variables significant at the {alpha:.1%} level:" + "\n")
         if not significant_predictors.empty:
             for var, p_val in significant_predictors.items():
-                f.write(f"- {var} (P-value: {p_val:.4g})\n")
+                f.write(f"- {var} (P-value: {p_val:.4g})" + "\n")
         else:
-            f.write("No predictor variables are significant at this level.\n")
+            f.write("No predictor variables are significant at this level." + "\n")
 
     print(f"\nOLS results summary written to {output_file}")
 
@@ -261,7 +267,7 @@ def _build_from_clause(db_tables_config: list[dict], num_periods: int) -> str:
         
         join_condition = (
             f"ON {current_alias}.edinetCode = {lagged_alias}.edinetCode "
-            f"AND STRFTIME('%J', {current_alias}.PeriodStart) - STRFTIME('%J', {lagged_alias}.PeriodEnd) BETWEEN 1 AND 5" # Approx 1 to 5 years
+            f"AND AND STRFTIME('%J', {current_alias}.PeriodStart) - STRFTIME('%J', {lagged_alias}.PeriodEnd) BETWEEN 1 AND 5" # Approx 1 to 5 years
         )
         
         from_clause += f" LEFT JOIN {base_table['Name']} AS {lagged_alias} {join_condition}"

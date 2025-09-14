@@ -1,5 +1,5 @@
 {
-    "Database": "D:\\programming\\EDINET\\dummy_database.db",
+    "Output":"data/ols_results/ols_results_summary.txt",
     "DB_Tables": [
         {
             "Name": "Standard_Data_Ratios",
