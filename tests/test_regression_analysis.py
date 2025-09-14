@@ -1,4 +1,3 @@
-
 import unittest
 from unittest.mock import patch, MagicMock
 import os
@@ -11,18 +10,14 @@ from src import regression_analysis
 
 class TestRegression(unittest.TestCase):
 
-    @patch('os.getenv')
-    @patch('src.regression_analysis.load_config')
     @patch('src.regression_analysis.sqlite3.connect')
     @patch('src.regression_analysis.Generate_SQL_Query')
     @patch('src.regression_analysis.Run_Model')
     @patch('src.regression_analysis.write_results_to_file')
-    def test_Regression(self, mock_write_results, mock_run_model, mock_generate_sql, mock_sqlite_connect, mock_load_config, mock_getenv):
-        # Mock getenv to return a test database path
-        mock_getenv.return_value = "test.db"
-
-        # Mock the config loaded from JSON
-        mock_load_config.return_value = {"Output": "test_output.txt"}
+    def test_Regression(self, mock_write_results, mock_run_model, mock_generate_sql, mock_sqlite_connect):
+        # Mock the config object
+        mock_config = MagicMock()
+        mock_config.get.return_value = "test_output.txt"
 
         # Mock the SQL query generation
         mock_generate_sql.return_value = {
@@ -35,13 +30,11 @@ class TestRegression(unittest.TestCase):
         mock_run_model.return_value = sm.OLS(pd.Series([1, 2]), pd.DataFrame({'x1': [1, 2], 'x2': [3, 4]})).fit()
 
         # Call the function
-        regression_analysis.Regression()
+        regression_analysis.Regression(mock_config, "test.db")
 
         # Assert that the functions were called
-        mock_load_config.assert_called_once()
-        mock_getenv.assert_called_once_with("DB_PATH")
         mock_sqlite_connect.assert_called_once_with("test.db")
-        mock_generate_sql.assert_called_once()
+        mock_generate_sql.assert_called_once_with(mock_config)
         mock_run_model.assert_called_once()
         mock_write_results.assert_called_once()
 
@@ -72,9 +65,12 @@ class TestRegression(unittest.TestCase):
             "DB_Tables": [{"Name": "test_table", "Alias": "t"}],
             "NumberOfPeriods": 1
         }
+        
+        mock_config = MagicMock()
+        mock_config.get.side_effect = lambda key: config[key]
 
         # Call the function
-        query_data = regression_analysis.Generate_SQL_Query(config)
+        query_data = regression_analysis.Generate_SQL_Query(mock_config)
 
         # Check that the query is generated correctly
         self.assertIn("SELECT", query_data["Query"])

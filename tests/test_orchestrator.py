@@ -9,7 +9,7 @@ from src.orchestrator import run
 
 class TestOrchestrator(unittest.TestCase):
 
-    def run_test_with_config(self, run_config, mock_config, mock_e, mock_d, mock_y):
+    def run_test_with_config(self, run_config, mock_config, mock_e, mock_d, mock_y, mock_r):
         # Configure the mock Config object
         mock_config_instance = mock_config.return_value
         def get_side_effect(key, default=None):
@@ -33,14 +33,15 @@ class TestOrchestrator(unittest.TestCase):
         # Call the run function
         run(edinet=mock_edinet_instance, data=mock_data_instance)
 
-        return mock_edinet_instance, mock_data_instance, mock_y
+        return mock_edinet_instance, mock_data_instance, mock_y, mock_r
 
 
+    @patch('src.orchestrator.r')
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
     @patch('src.orchestrator.e')
     @patch('src.orchestrator.Config')
-    def test_run_with_get_documents_true(self, mock_config, mock_e, mock_d, mock_y):
+    def test_run_with_get_documents_true(self, mock_config, mock_e, mock_d, mock_y, mock_r):
         """
         Tests that the orchestrator calls get_All_documents_withMetadata when get_documents is true.
         """
@@ -51,11 +52,12 @@ class TestOrchestrator(unittest.TestCase):
                 "standardize_data": False,
                 "generate_financial_ratios": False,
                 "aggregate_ratios": False,
-                "update_stock_prices": False
+                "update_stock_prices": False,
+                "run_regression": False
             }
         }
         
-        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
+        mock_edinet_instance, mock_data_instance, mock_y_instance, mock_r_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y, mock_r)
 
         # Assert that the correct methods were called
         mock_edinet_instance.get_All_documents_withMetadata.assert_called_once()
@@ -63,13 +65,15 @@ class TestOrchestrator(unittest.TestCase):
         mock_data_instance.copy_table_to_Standard.assert_not_called()
         mock_data_instance.Generate_Financial_Ratios.assert_not_called()
         mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
-        mock_y_instance.update_all_stock_prices.assert_not_called()
+        mock_y.update_all_stock_prices.assert_not_called()
+        mock_r.Regression.assert_not_called()
 
+    @patch('src.orchestrator.r')
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
     @patch('src.orchestrator.e')
     @patch('src.orchestrator.Config')
-    def test_run_with_download_documents_true(self, mock_config, mock_e, mock_d, mock_y):
+    def test_run_with_download_documents_true(self, mock_config, mock_e, mock_d, mock_y, mock_r):
         """
         Tests that the orchestrator calls downloadDocs when download_documents is true.
         """
@@ -80,24 +84,27 @@ class TestOrchestrator(unittest.TestCase):
                 "standardize_data": False,
                 "generate_financial_ratios": False,
                 "aggregate_ratios": False,
-                "update_stock_prices": False
+                "update_stock_prices": False,
+                "run_regression": False
             }
         }
         
-        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
+        mock_edinet_instance, mock_data_instance, mock_y_instance, mock_r_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y, mock_r)
 
         mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
         mock_edinet_instance.downloadDocs.assert_called_once()
         mock_data_instance.copy_table_to_Standard.assert_not_called()
         mock_data_instance.Generate_Financial_Ratios.assert_not_called()
         mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
-        mock_y_instance.update_all_stock_prices.assert_not_called()
+        mock_y.update_all_stock_prices.assert_not_called()
+        mock_r.Regression.assert_not_called()
 
+    @patch('src.orchestrator.r')
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
     @patch('src.orchestrator.e')
     @patch('src.orchestrator.Config')
-    def test_run_with_standardize_data_true(self, mock_config, mock_e, mock_d, mock_y):
+    def test_run_with_standardize_data_true(self, mock_config, mock_e, mock_d, mock_y, mock_r):
         """
         Tests that the orchestrator calls copy_table_to_Standard when standardize_data is true.
         """
@@ -108,24 +115,27 @@ class TestOrchestrator(unittest.TestCase):
                 "standardize_data": True,
                 "generate_financial_ratios": False,
                 "aggregate_ratios": False,
-                "update_stock_prices": False
+                "update_stock_prices": False,
+                "run_regression": False
             }
         }
         
-        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
+        mock_edinet_instance, mock_data_instance, mock_y_instance, mock_r_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y, mock_r)
 
         mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
         mock_edinet_instance.downloadDocs.assert_not_called()
         mock_data_instance.copy_table_to_Standard.assert_called_once()
         mock_data_instance.Generate_Financial_Ratios.assert_not_called()
         mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
-        mock_y_instance.update_all_stock_prices.assert_not_called()
+        mock_y.update_all_stock_prices.assert_not_called()
+        mock_r.Regression.assert_not_called()
 
+    @patch('src.orchestrator.r')
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
     @patch('src.orchestrator.e')
     @patch('src.orchestrator.Config')
-    def test_run_with_generate_financial_ratios_true(self, mock_config, mock_e, mock_d, mock_y):
+    def test_run_with_generate_financial_ratios_true(self, mock_config, mock_e, mock_d, mock_y, mock_r):
         """
         Tests that the orchestrator calls Generate_Financial_Ratios when generate_financial_ratios is true.
         """
@@ -136,24 +146,27 @@ class TestOrchestrator(unittest.TestCase):
                 "standardize_data": False,
                 "generate_financial_ratios": True,
                 "aggregate_ratios": False,
-                "update_stock_prices": False
+                "update_stock_prices": False,
+                "run_regression": False
             }
         }
         
-        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
+        mock_edinet_instance, mock_data_instance, mock_y_instance, mock_r_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y, mock_r)
 
         mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
         mock_edinet_instance.downloadDocs.assert_not_called()
         mock_data_instance.copy_table_to_Standard.assert_not_called()
         mock_data_instance.Generate_Financial_Ratios.assert_called_once()
         mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
-        mock_y_instance.update_all_stock_prices.assert_not_called()
+        mock_y.update_all_stock_prices.assert_not_called()
+        mock_r.Regression.assert_not_called()
 
+    @patch('src.orchestrator.r')
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
     @patch('src.orchestrator.e')
     @patch('src.orchestrator.Config')
-    def test_run_with_aggregate_ratios_true(self, mock_config, mock_e, mock_d, mock_y):
+    def test_run_with_aggregate_ratios_true(self, mock_config, mock_e, mock_d, mock_y, mock_r):
         """
         Tests that the orchestrator calls Generate_Aggregated_Ratios when aggregate_ratios is true.
         """
@@ -164,24 +177,27 @@ class TestOrchestrator(unittest.TestCase):
                 "standardize_data": False,
                 "generate_financial_ratios": False,
                 "aggregate_ratios": True,
-                "update_stock_prices": False
+                "update_stock_prices": False,
+                "run_regression": False
             }
         }
         
-        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
+        mock_edinet_instance, mock_data_instance, mock_y_instance, mock_r_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y, mock_r)
 
         mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
         mock_edinet_instance.downloadDocs.assert_not_called()
         mock_data_instance.copy_table_to_Standard.assert_not_called()
         mock_data_instance.Generate_Financial_Ratios.assert_not_called()
         mock_data_instance.Generate_Aggregated_Ratios.assert_called_once()
-        mock_y_instance.update_all_stock_prices.assert_not_called()
+        mock_y.update_all_stock_prices.assert_not_called()
+        mock_r.Regression.assert_not_called()
 
+    @patch('src.orchestrator.r')
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
     @patch('src.orchestrator.e')
     @patch('src.orchestrator.Config')
-    def test_run_with_update_stock_prices_true(self, mock_config, mock_e, mock_d, mock_y):
+    def test_run_with_update_stock_prices_true(self, mock_config, mock_e, mock_d, mock_y, mock_r):
         """
         Tests that the orchestrator calls update_all_stock_prices when update_stock_prices is true.
         """
@@ -192,24 +208,58 @@ class TestOrchestrator(unittest.TestCase):
                 "standardize_data": False,
                 "generate_financial_ratios": False,
                 "aggregate_ratios": False,
-                "update_stock_prices": True
+                "update_stock_prices": True,
+                "run_regression": False
             }
         }
         
-        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
+        mock_edinet_instance, mock_data_instance, mock_y_instance, mock_r_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y, mock_r)
 
         mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
         mock_edinet_instance.downloadDocs.assert_not_called()
         mock_data_instance.copy_table_to_Standard.assert_not_called()
         mock_data_instance.Generate_Financial_Ratios.assert_not_called()
         mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
-        mock_y_instance.update_all_stock_prices.assert_called_once()
+        mock_y.update_all_stock_prices.assert_called_once()
+        mock_r.Regression.assert_not_called()
 
+    @patch('src.orchestrator.r')
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
     @patch('src.orchestrator.e')
     @patch('src.orchestrator.Config')
-    def test_run_with_all_steps_false(self, mock_config, mock_e, mock_d, mock_y):
+    def test_run_with_run_regression_true(self, mock_config, mock_e, mock_d, mock_y, mock_r):
+        """
+        Tests that the orchestrator calls Regression when run_regression is true.
+        """
+        run_config = {
+            "run_steps": {
+                "get_documents": False,
+                "download_documents": False,
+                "standardize_data": False,
+                "generate_financial_ratios": False,
+                "aggregate_ratios": False,
+                "update_stock_prices": False,
+                "run_regression": True
+            }
+        }
+        
+        mock_edinet_instance, mock_data_instance, mock_y_instance, mock_r_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y, mock_r)
+
+        mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
+        mock_edinet_instance.downloadDocs.assert_not_called()
+        mock_data_instance.copy_table_to_Standard.assert_not_called()
+        mock_data_instance.Generate_Financial_Ratios.assert_not_called()
+        mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
+        mock_y.update_all_stock_prices.assert_not_called()
+        mock_r.Regression.assert_called_once()
+
+    @patch('src.orchestrator.r')
+    @patch('src.orchestrator.y')
+    @patch('src.orchestrator.d')
+    @patch('src.orchestrator.e')
+    @patch('src.orchestrator.Config')
+    def test_run_with_all_steps_false(self, mock_config, mock_e, mock_d, mock_y, mock_r):
         """
         Tests that the orchestrator calls no functions when all steps are false.
         """
@@ -220,24 +270,27 @@ class TestOrchestrator(unittest.TestCase):
                 "standardize_data": False,
                 "generate_financial_ratios": False,
                 "aggregate_ratios": False,
-                "update_stock_prices": False
+                "update_stock_prices": False,
+                "run_regression": False
             }
         }
         
-        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
+        mock_edinet_instance, mock_data_instance, mock_y_instance, mock_r_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y, mock_r)
 
         mock_edinet_instance.get_All_documents_withMetadata.assert_not_called()
         mock_edinet_instance.downloadDocs.assert_not_called()
         mock_data_instance.copy_table_to_Standard.assert_not_called()
         mock_data_instance.Generate_Financial_Ratios.assert_not_called()
         mock_data_instance.Generate_Aggregated_Ratios.assert_not_called()
-        mock_y_instance.update_all_stock_prices.assert_not_called()
+        mock_y.update_all_stock_prices.assert_not_called()
+        mock_r.Regression.assert_not_called()
 
+    @patch('src.orchestrator.r')
     @patch('src.orchestrator.y')
     @patch('src.orchestrator.d')
     @patch('src.orchestrator.e')
     @patch('src.orchestrator.Config')
-    def test_run_with_all_steps_true(self, mock_config, mock_e, mock_d, mock_y):
+    def test_run_with_all_steps_true(self, mock_config, mock_e, mock_d, mock_y, mock_r):
         """
         Tests that the orchestrator calls all functions when all steps are true.
         """
@@ -248,18 +301,20 @@ class TestOrchestrator(unittest.TestCase):
                 "standardize_data": True,
                 "generate_financial_ratios": True,
                 "aggregate_ratios": True,
-                "update_stock_prices": True
+                "update_stock_prices": True,
+                "run_regression": True
             }
         }
         
-        mock_edinet_instance, mock_data_instance, mock_y_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y)
+        mock_edinet_instance, mock_data_instance, mock_y_instance, mock_r_instance = self.run_test_with_config(run_config, mock_config, mock_e, mock_d, mock_y, mock_r)
 
         mock_edinet_instance.get_All_documents_withMetadata.assert_called_once()
         mock_edinet_instance.downloadDocs.assert_called_once()
         mock_data_instance.copy_table_to_Standard.assert_called_once()
         mock_data_instance.Generate_Financial_Ratios.assert_called_once()
         mock_data_instance.Generate_Aggregated_Ratios.assert_called_once()
-        mock_y_instance.update_all_stock_prices.assert_called_once()
+        mock_y.update_all_stock_prices.assert_called_once()
+        mock_r.Regression.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()

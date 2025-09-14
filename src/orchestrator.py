@@ -3,6 +3,7 @@ import src.edinet_api as e
 from config import Config
 import src.data_processing as d
 import src.yahoofinance as y
+import src.regression_analysis as r
 
 def run(edinet=None, data=None):
     """
@@ -79,5 +80,12 @@ def run(edinet=None, data=None):
             y.update_all_stock_prices(config.get("DB_PATH"), only_update_empty=True)
         except Exception as e:
             print(f"Error updating stock prices: {e}")
+
+    if run_steps.get("run_regression"):
+        try:
+            print("Running regression...")
+            r.Regression(config, config.get("DB_PATH"))
+        except Exception as e:
+            print(f"Error running regression: {e}")
 
     print('Program Ended')
