@@ -14,19 +14,7 @@ import os
 from dotenv import load_dotenv
 
 
-
-
-def load_config():
-    """Loads configuration from a JSON file."""
-    try:
-        with open("config/config_Regression.json", "r") as file:
-            config = json.load(file)
-    except FileNotFoundError:
-        config = {}  # Default to empty if file not found
-    return config
-
-
-def Regression():
+def Regression(config, db_path):
     """
     Perform regression analysis using data from a SQLite database and configuration from a JSON file.
 
@@ -42,10 +30,7 @@ def Regression():
     """
     # Load configuration
     load_dotenv()
-    config = load_config()
 
-    # Get DB path from environment variables
-    db_path = os.getenv("DB_PATH")
     if not db_path:
         raise ValueError("DB_PATH environment variable not set or .env file not found.")
 
@@ -64,7 +49,7 @@ def Regression():
     )
 
     # Write regression results to a file
-    output_file = config["Output"]
+    output_file = config.get("Output")
     write_results_to_file(results, generated_query["Query"], output_file)
 
 def Run_Model(
@@ -118,7 +103,6 @@ def Run_Model(
         # prevent crashes in subsequent code that expects one.
         empty_model = sm.OLS(pd.Series(dtype=float), pd.DataFrame(dtype=float)).fit()
         return empty_model
-
 
 
 def write_results_to_file(
@@ -179,7 +163,6 @@ def write_results_to_file(
     print(f"\nOLS results summary written to {output_file}")
 
 
-
 def Generate_SQL_Query(config: dict) -> dict:
     """
     Dynamically generates an SQL query for a time-series regression model.
@@ -198,15 +181,15 @@ def Generate_SQL_Query(config: dict) -> dict:
         name, and a list of 'IndependentVariables' names.
     """
     # --- 1. Extract configuration details ---
-    dep_var_config = config["DependentVariable"]
-    ind_vars_config = config["IndependentVariables"]
-    db_tables_config = config["DB_Tables"]
-    num_periods = config["NumberOfPeriods"]
+    dep_var_config = config.get("DependentVariable")
+    ind_vars_config = config.get("IndependentVariables")
+    db_tables_config = config.get("DB_Tables")
+    num_periods = config.get("NumberOfPeriods")
 
     # --- 2. Define variables for the query components ---
     dependent_variable_df_name = dep_var_config["Name"]
     dependent_variable_sql = dep_var_config["Formula"]
-    dependent_variable_select = f"{dependent_variable_sql} AS {dependent_variable_df_name}"
+    dependent_variable_select = f'{dependent_variable_sql} AS {dependent_variable_df_name}'
 
     # Lists to store parts of the query for independent variables
     select_aliases = []
@@ -273,9 +256,3 @@ def _build_from_clause(db_tables_config: list[dict], num_periods: int) -> str:
         from_clause += f" LEFT JOIN {base_table['Name']} AS {lagged_alias} {join_condition}"
         
     return from_clause
-
-
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    Regression()
-    
