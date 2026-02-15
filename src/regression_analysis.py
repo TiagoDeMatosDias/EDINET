@@ -250,7 +250,7 @@ def _build_from_clause(db_tables_config: list[dict], num_periods: int) -> str:
         
         join_condition = (
             f"ON {current_alias}.edinetCode = {lagged_alias}.edinetCode "
-            f"AND AND STRFTIME('%J', {current_alias}.PeriodStart) - STRFTIME('%J', {lagged_alias}.PeriodEnd) BETWEEN 1 AND 5" # Approx 1 to 5 years
+            f"AND STRFTIME('%J', {current_alias}.PeriodStart) - STRFTIME('%J', {lagged_alias}.PeriodEnd) BETWEEN 1 AND 5" # Approx 1 to 5 years
         )
         
         from_clause += f" LEFT JOIN {base_table['Name']} AS {lagged_alias} {join_condition}"
