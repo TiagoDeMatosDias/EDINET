@@ -1,5 +1,5 @@
 import json
-import src.edinet_api as e
+import src.edinet_api as edinet_api
 from config import Config
 import src.data_processing as d
 import src.yahoofinance as y
@@ -21,7 +21,7 @@ def run(edinet=None, data=None):
     Database_Standardized = config.get("DB_STANDARDIZED_TABLE")
 
     if not edinet:
-        edinet = e.Edinet()
+        edinet = edinet_api.Edinet()
     if not data:
         data = d.data()
 
@@ -77,7 +77,7 @@ def run(edinet=None, data=None):
     if run_steps.get("update_stock_prices"):
         try:
             print("Updating stock prices...")
-            y.update_all_stock_prices(config.get("DB_PATH"), only_update_empty=True)
+            y.update_all_stock_prices(config.get("DB_PATH"))
         except Exception as e:
             print(f"Error updating stock prices: {e}")
 

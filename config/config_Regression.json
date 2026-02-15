@@ -7,16 +7,16 @@
             "Join": ""
         }        
     ],
-    "NumberOfPeriods": 3,
+    "NumberOfPeriods": 1,
     "DependentVariable": {
-        "Name": "PerShare_Earnings",
-        "Formula": "s.PerShare_Earnings"
+        "Name": "Ratio_PriceEarnings",
+        "Formula": "s.Ratio_PriceEarnings"
     },
     "IndependentVariables": [
         {
-            "Name":"PerShare_Sales",
+            "Name":"Ratio_netSales_Growth",
             "Table_Alias":"s",
-            "Formula": "PerShare_Sales"
+            "Formula": "Ratio_netSales_Growth"
         },
         {
             "Name":"Ratio_NetProfitMargin",
@@ -24,9 +24,14 @@
             "Formula": "Ratio_NetProfitMargin"
         },
         {
-            "Name":"Ratio_EarningsYield",
+            "Name":"Ratio_LiquidAssets",
             "Table_Alias":"s",
-            "Formula": "Ratio_EarningsYield"
+            "Formula": "Ratio_LiquidAssets"
+        },
+        {
+            "Name":"Ratio_ReturnOnAssets",
+            "Table_Alias":"s",
+            "Formula": "Ratio_ReturnOnAssets"
         }
     ]
 }

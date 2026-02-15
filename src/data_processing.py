@@ -265,12 +265,21 @@ class data:
             # Round the values to 2 decimal places
             aggregated_df = aggregated_df.round(2)
 
+            # Remove duplicates if any
+            #aggregated_df = aggregated_df.drop_duplicates(subset=['edinetCode'])
+
             # Store the aggregated data back to the database
             aggregated_df.to_sql(output_table, conn, if_exists='replace' if first_chunk else 'append', index=False)
             conn.commit()
 
             offset += chunk_size
             first_chunk = False
+
+        df = pd.read_sql_query(f"SELECT * FROM {output_table} ", conn)
+        df = df.drop_duplicates(subset=['edinetCode'])
+        df.to_sql(output_table, conn, if_exists='replace', index=False)
+        #conn.commit()
+
 
         conn.close()
 
