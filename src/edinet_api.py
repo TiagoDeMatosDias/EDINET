@@ -484,7 +484,7 @@ class Edinet:
             
             
             # Insert data into the table
-            df.to_sql("edinet_codes", conn, if_exists="replace", index=False)
+            df.to_sql("Company_info", conn, if_exists="replace", index=False)
             
             # Commit and close
             conn.commit()

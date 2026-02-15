@@ -35,11 +35,13 @@ def load_ticker_data(ticker, prices_table, conn):
 
         if df_last_date["Last_Date"][0] is not None:
             last_date = df_last_date["Last_Date"][0]        
-            today = pd.Timestamp.today().strftime("%Y%m%d")
+            today = pd.Timestamp.today().strftime("%Y-%m-%d")
             base_url = f"https://stooq.com/q/d/l/?s={stooq_ticker}&f={last_date}&t={today}&i=d"
-            if last_date >= today:
+            days_diff = (pd.to_datetime(today) - pd.to_datetime(last_date)).days
+            if days_diff <= 5:
                 print(f"Data for ticker {ticker} is already up to date.")
                 return
+
         else:
             base_url = f"https://stooq.com/q/d/l/?s={stooq_ticker}&i=d"
 
