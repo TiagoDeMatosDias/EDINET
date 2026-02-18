@@ -7,13 +7,21 @@
             "Join": ""
         }        
     ],
-    "NumberOfPeriods": 1,
+    "winsorize_thresholds": {
+        "lower": 0.05,
+        "upper": 0.95
+    },
+    "NumberOfPeriods": 0,
     "NotNullFields": [
-        "s.PerShare_SharePrice"
+        "s.PerShare_SharePrice",
+        "s.netSales",
+        "s.TotalAssets",
+        "s.SharesOutstanding",
+        "s.netIncome"
     ],
     "DependentVariable": {
-        "Name": "Ratio_PriceEarnings",
-        "Formula": "s.Ratio_PriceEarnings"
+        "Name": "Ratio_EarningsYield",
+        "Formula": "s.Ratio_EarningsYield"
     },
     "IndependentVariables": [
         {
