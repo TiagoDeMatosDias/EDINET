@@ -8,6 +8,9 @@
         }        
     ],
     "NumberOfPeriods": 1,
+    "NotNullFields": [
+        "s.PerShare_SharePrice"
+    ],
     "DependentVariable": {
         "Name": "Ratio_PriceEarnings",
         "Formula": "s.Ratio_PriceEarnings"
