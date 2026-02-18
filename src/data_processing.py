@@ -201,8 +201,8 @@ class data:
             RatiosTable["Ratio_PriceEarnings_3Year_Average"] = RatiosTable["Ratio_PriceEarnings"].rolling(window=3, min_periods=1).mean()
             RatiosTable["Ratio_PriceEarnings_5Year_Average"] = RatiosTable["Ratio_PriceEarnings"].rolling(window=5, min_periods=1).mean()
 
-            # Round the values to 2 decimal places
-            RatiosTable = RatiosTable.round(2)
+            # Round the values to 4 decimal places
+            RatiosTable = RatiosTable.round(4)
 
             # Store the data back to the database
             if exists:

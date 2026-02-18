@@ -40,12 +40,18 @@ def Regression(config, db_path):
     # Generate SQL query based on configuration
     generated_query = Generate_SQL_Query(config)
 
+    # get winsorize limits from config, or use defaults
+    winsorize_limits = config.get("winsorize_thresholds", {"lower": 0.01, "upper": 0.99})
+    winsorize_limits = (winsorize_limits["lower"], winsorize_limits["upper"])
+
+
     # Run regression model
     results = Run_Model(
         generated_query["Query"],
         conn,
         generated_query["DependentVariable"],
-        generated_query["IndependentVariables"]
+        generated_query["IndependentVariables"],
+        winsorize_limits
     )
 
     # Write regression results to a file
@@ -57,6 +63,7 @@ def Run_Model(
     conn: sqlite3.Connection,
     dependent_variable_df_name: str,
     independent_variables_df_names: list[str],
+    winsorize_limits: tuple[float, float] = (0.01, 0.99)
 ):
     """
     Executes a SQL query to fetch data, cleans it, and runs an OLS regression model.
@@ -81,15 +88,33 @@ def Run_Model(
         # Replace infinite values with NaN so they can be dropped.
         df_cleaned = df.replace([np.inf, -np.inf], np.nan)
 
+
         # Drop rows with missing values in any of the model's variables.
         # This ensures the regression is run on a complete dataset.
         all_vars = [dependent_variable_df_name] + independent_variables_df_names
         df_cleaned = df_cleaned.dropna(subset=all_vars)
 
+        # drop the edinetCode and PeriodStart columns as they are not needed for regression
+        df_cleaned = df_cleaned.drop(columns=["edinetCode", "periodStart"], errors="ignore")
+
+        # winsorize_limits is a tuple like (0.01, 0.99) representing the lower and upper quantiles for winsorization.
+        upper_limit = winsorize_limits[1]
+        lower_limit = winsorize_limits[0]
+
+        # Drop rows with extreme values outside the quantile bounds
+        lower_bound = df_cleaned.quantile(lower_limit, axis=0)
+        upper_bound = df_cleaned.quantile(upper_limit, axis=0)
+        df_cleaned = df_cleaned[(df_cleaned >= lower_bound).all(axis=1) & (df_cleaned <= upper_bound).all(axis=1)]
+
         # --- Prepare data for OLS regression ---
         y_cleaned = df_cleaned[dependent_variable_df_name]
         X_cleaned = df_cleaned[independent_variables_df_names]
-        X_cleaned = sm.add_constant(X_cleaned)  # Add a constant (intercept)
+        
+
+        # Add a constant (intercept)
+        X_cleaned = sm.add_constant(X_cleaned)  
+
+
 
         # --- Fit the OLS model ---
         model = sm.OLS(y_cleaned, X_cleaned)
@@ -196,7 +221,7 @@ def Generate_SQL_Query(config: dict) -> dict:
     select_aliases = []
     where_conditions = [f"{dependent_variable_sql} IS NOT NULL"]
     if NotNullFields:
-        where_conditions.append(" (" + " or ".join([f"{field} IS NOT NULL" for field in NotNullFields]) + ")")
+        where_conditions.append(" (" + " and ".join([f"{field} IS NOT NULL" for field in NotNullFields]) + ")")
 
     df_column_names = []
 
@@ -204,7 +229,7 @@ def Generate_SQL_Query(config: dict) -> dict:
     from_clause = _build_from_clause(db_tables_config, num_periods)
 
     # --- 4. Build SELECT and WHERE clauses for independent variables ---
-    for i in range(num_periods):
+    for i in range(max(1,num_periods)):
         for ind_var in ind_vars_config:
             table_alias = f"{ind_var['Table_Alias']}_{i}"
             col_name = ind_var["Name"]
@@ -248,13 +273,13 @@ def _build_from_clause(db_tables_config: list[dict], num_periods: int) -> str:
     from_clause = f"{base_table['Name']} AS {base_table['Alias']}"
 
     # Join for each historical period
-    for i in range(num_periods):
+    for i in range(max(1, num_periods)):
         current_alias = f"{base_table['Alias']}" if i == 0 else f"{base_table['Alias']}_{i-1}"
         lagged_alias = f"{base_table['Alias']}_{i}"
         
         join_condition = (
             f"ON {current_alias}.edinetCode = {lagged_alias}.edinetCode "
-            f"AND STRFTIME('%J', {current_alias}.PeriodStart) - STRFTIME('%J', {lagged_alias}.PeriodEnd) BETWEEN 1 AND 5" # Approx 1 to 5 years
+            f"AND CAST(STRFTIME('%J', {current_alias}.PeriodStart) AS INTEGER) - CAST(STRFTIME('%J', {lagged_alias}.PeriodEnd) AS INTEGER) BETWEEN 1 AND 5" # Approx 1 to 5 years
         )
         
         from_clause += f" LEFT JOIN {base_table['Name']} AS {lagged_alias} {join_condition}"
