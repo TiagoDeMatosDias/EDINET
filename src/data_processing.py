@@ -161,6 +161,30 @@ class data:
             RatiosTable = RatiosTable.loc[:, ~RatiosTable.columns.str.startswith('jppfs_cor:')]
             RatiosTable = RatiosTable.loc[:, ~RatiosTable.columns.str.startswith('jpcrp_cor:')]
 
+            # Get stock prices and add to RatiosTable
+            prices_sql = f"""
+            SELECT DISTINCT '{company}' as edinetCode, t.periodEnd,
+                   (SELECT s.Price 
+                    FROM stock_prices s
+                    JOIN companyInfo c ON c.Company_Ticker = s.Ticker
+                    WHERE c.EdinetCode = '{company}'
+                    AND s.Date <= t.periodEnd
+                    ORDER BY s.Date DESC
+                    LIMIT 1) as PerShare_SharePrice
+            FROM {input_table} t
+            WHERE t.edinetCode = '{company}'
+            GROUP BY t.periodEnd
+            """
+            prices_df = pd.read_sql_query(prices_sql, conn)
+            prices_df['periodEnd'] = pd.to_datetime(prices_df['periodEnd'])
+            RatiosTable['periodEnd'] = pd.to_datetime(RatiosTable['periodEnd'])
+            
+            RatiosTable = RatiosTable.merge(
+                prices_df[['periodEnd', 'PerShare_SharePrice']],
+                on='periodEnd',
+                how='left'
+            )
+
             RatiosTable.reset_index(drop=True, inplace=True)
 
             # Calculate ratios from config

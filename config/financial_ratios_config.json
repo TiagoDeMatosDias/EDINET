@@ -61,8 +61,7 @@
     "investmentCashflow_PriorYear": ["jppfs_cor:NetCashProvidedByUsedInInvestmentActivities_Prior1YearDuration"],
     "financingCashflow": ["jppfs_cor:NetCashProvidedByUsedInFinancingActivities_CurrentYearDuration"],
     "financingCashflow_PriorYear": ["jppfs_cor:NetCashProvidedByUsedInFinancingActivities_Prior1YearDuration"],
-    "SharesOutstanding" : ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults_CurrentYearInstant_NonConsolidatedMember"],
-    "PE_Ratio" : ["jpcrp_cor:PriceEarningsRatioSummaryOfBusinessResults_CurrentYearDuration"]
+    "SharesOutstanding" : ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults_CurrentYearInstant_NonConsolidatedMember"]
   },
   "ratios": [
     {"output": "Cashflow_free", "expression": {"operator": "+", "operands": [{"column": "operatingCashflow", "fillna": 0}, {"column": "investmentCashflow", "fillna": 0}]}},
@@ -95,7 +94,6 @@
     {"output": "PerShare_Dividends", "expression": {"operator": "/", "operands": [{"operator": "*", "operands": [{"value": -1}, {"column": "dividends", "fillna": 0}]}, {"column": "SharesOutstanding", "fillna": 1}]}},
     {"output": "PerShare_Buybacks", "expression": {"operator": "/", "operands": [{"operator": "*", "operands": [{"value": -1}, {"column": "buybacks", "fillna": 0}]}, {"column": "SharesOutstanding", "fillna": 1}]}},
     {"output": "PerShare_TotalPayout", "expression": {"operator": "+", "operands": [{"column": "PerShare_Buybacks"}, {"column": "PerShare_Dividends"}]}},
-    {"output": "PerShare_SharePrice", "expression": {"operator": "*", "operands": [{"column": "PerShare_Earnings"}, {"column": "PE_Ratio", "fillna": 1}]}},
     {"output": "Ratio_PriceEarnings", "expression": {"operator": "/", "operands": [{"column": "PerShare_SharePrice"}, {"column": "PerShare_Earnings", "fillna": 1}]}},
     {"output": "Ratio_EarningsYield", "expression": {"operator": "/", "operands": [{"column": "PerShare_Earnings"}, {"column": "PerShare_SharePrice", "fillna": 1}]}},
     {"output": "Ratio_PriceBook", "expression": {"operator": "/", "operands": [{"column": "PerShare_SharePrice"}, {"column": "PerShare_BookValue", "fillna": 1}]}},

@@ -185,6 +185,7 @@ def Generate_SQL_Query(config: dict) -> dict:
     ind_vars_config = config.get("IndependentVariables")
     db_tables_config = config.get("DB_Tables")
     num_periods = config.get("NumberOfPeriods")
+    NotNullFields = config.get("NotNullFields", [])
 
     # --- 2. Define variables for the query components ---
     dependent_variable_df_name = dep_var_config["Name"]
@@ -194,6 +195,9 @@ def Generate_SQL_Query(config: dict) -> dict:
     # Lists to store parts of the query for independent variables
     select_aliases = []
     where_conditions = [f"{dependent_variable_sql} IS NOT NULL"]
+    if NotNullFields:
+        where_conditions.append(" (" + " or ".join([f"{field} IS NOT NULL" for field in NotNullFields]) + ")")
+
     df_column_names = []
 
     # --- 3. Build the FROM and JOIN clauses for lagged data ---
