@@ -61,13 +61,16 @@
     "investmentCashflow_PriorYear": ["jppfs_cor:NetCashProvidedByUsedInInvestmentActivities_Prior1YearDuration"],
     "financingCashflow": ["jppfs_cor:NetCashProvidedByUsedInFinancingActivities_CurrentYearDuration"],
     "financingCashflow_PriorYear": ["jppfs_cor:NetCashProvidedByUsedInFinancingActivities_Prior1YearDuration"],
-    "SharesOutstanding" : ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults_CurrentYearInstant_NonConsolidatedMember"]
+    "SharesOutstanding" : ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults_CurrentYearInstant_NonConsolidatedMember","jpcrp_cor:NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc"]
   },
   "ratios": [
     {"output": "Cashflow_free", "expression": {"operator": "+", "operands": [{"column": "operatingCashflow", "fillna": 0}, {"column": "investmentCashflow", "fillna": 0}]}},
     {"output": "Cashflow_equity", "expression": {"operator": "+", "operands": [{"column": "dividends", "fillna": 0}, {"column": "buybacks", "fillna": 0}]}},
     {"output": "Cashflow_debt", "expression": {"operator": "-", "operands": [{"column": "financingCashflow", "fillna": 0}, {"column": "Cashflow_equity", "fillna": 0}]}},
+    {"output": "TotalLiabilities", "expression": {"operator": "-", "operands": [{"column": "totalAssets", "fillna": 1}, {"column": "shareholdersEquity", "fillna": 1}]}},
+    {"output": "NonCurrentLiabilities", "expression": {"operator": "-", "operands": [{"column": "TotalLiabilities", "fillna": 1}, {"column": "currentLiabilities", "fillna": 1}]}},
     {"output": "NCAV", "expression": {"operator": "-", "operands": [{"column": "currentAssets", "fillna": 0}, {"operator": "-", "operands": [{"column": "totalAssets", "fillna": 1}, {"column": "shareholdersEquity", "fillna": 1}]}]}},
+    {"output": "Ratio_DebtToEquity", "expression": {"operator": "/", "operands": [{"column": "TotalLiabilities", "fillna": 0}, {"column": "shareholdersEquity", "fillna": 1}]}},
     {"output": "Ratio_Current", "expression": {"operator": "/", "operands": [{"column": "currentAssets", "fillna": 0}, {"column": "currentLiabilities", "fillna": 1}]}},
     {"output": "Ratio_LiquidAssets", "expression": {"operator": "/", "operands": [{"column": "currentAssets", "fillna": 0}, {"column": "totalAssets", "fillna": 1}]}},
     {"output": "Ratio_ReturnOnEquity", "expression": {"operator": "/", "operands": [{"column": "netIncome", "fillna": 0}, {"column": "shareholdersEquity", "fillna": 1}]}},
@@ -96,13 +99,17 @@
     {"output": "PerShare_TotalPayout", "expression": {"operator": "+", "operands": [{"column": "PerShare_Buybacks"}, {"column": "PerShare_Dividends"}]}},
     {"output": "Ratio_PriceEarnings", "expression": {"operator": "/", "operands": [{"column": "PerShare_SharePrice"}, {"column": "PerShare_Earnings", "fillna": 1}]}},
     {"output": "Ratio_EarningsYield", "expression": {"operator": "/", "operands": [{"column": "PerShare_Earnings"}, {"column": "PerShare_SharePrice", "fillna": 1}]}},
+    {"output": "Ratio_PriceSales", "expression": {"operator": "/", "operands": [{"column": "PerShare_SharePrice"}, {"column": "PerShare_Sales", "fillna": 1}]}},
     {"output": "Ratio_PriceBook", "expression": {"operator": "/", "operands": [{"column": "PerShare_SharePrice"}, {"column": "PerShare_BookValue", "fillna": 1}]}},
     {"output": "Ratio_PriceNCAV", "expression": {"operator": "/", "operands": [{"column": "PerShare_SharePrice"}, {"column": "PerShare_NCAV", "fillna": 1}]}},
     {"output": "Ratio_FreeCashflowYield", "expression": {"operator": "/", "operands": [{"column": "PerShare_Cashflow_free"}, {"column": "PerShare_SharePrice", "fillna": 1}]}},
     {"output": "Ratio_DividendsYield", "expression": {"operator": "/", "operands": [{"column": "PerShare_Dividends"}, {"column": "PerShare_SharePrice", "fillna": 1}]}},
     {"output": "Ratio_BuybacksYield", "expression": {"operator": "/", "operands": [{"column": "PerShare_Buybacks"}, {"column": "PerShare_SharePrice", "fillna": 1}]}},
     {"output": "Ratio_TotalPayoutYield", "expression": {"operator": "/", "operands": [{"column": "PerShare_TotalPayout"}, {"column": "PerShare_SharePrice", "fillna": 1}]}},
-    {"output": "MarketCap", "expression": {"operator": "*", "operands": [{"column": "PerShare_SharePrice"}, {"column": "SharesOutstanding", "fillna": 1}]}}
+    {"output": "MarketCap", "expression": {"operator": "*", "operands": [{"column": "PerShare_SharePrice"}, {"column": "SharesOutstanding", "fillna": 1}]}},
+    {"output": "EnterpriseValue", "expression": {"operator": "+", "operands": [{"column": "MarketCap"}, {"column": "TotalLiabilities"}]}},
+    {"output": "Ratio_EnterpriseValueSales", "expression": {"operator": "/", "operands": [{"column": "EnterpriseValue"}, {"column": "netSales", "fillna": 1}]}}
+
   ],
   "standard_column_mapping": {
     "要素ID": "AccountingTerm",
