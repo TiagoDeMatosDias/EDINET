@@ -25,24 +25,29 @@
     },
     "IndependentVariables": [
         {
-            "Name":"Ratio_netSales_Growth",
+            "Name":"Ratio_PriceBook",
             "Table_Alias":"s",
-            "Formula": "Ratio_netSales_Growth"
+            "Formula": "Ratio_PriceBook"
         },
         {
-            "Name":"Ratio_NetProfitMargin",
+            "Name":"Ratio_TotalPayoutYield",
             "Table_Alias":"s",
-            "Formula": "Ratio_NetProfitMargin"
+            "Formula": "Ratio_TotalPayoutYield"
         },
         {
-            "Name":"Ratio_LiquidAssets",
+            "Name":"MarketCap",
             "Table_Alias":"s",
-            "Formula": "Ratio_LiquidAssets"
+            "Formula": "MarketCap"
         },
         {
             "Name":"Ratio_ReturnOnAssets",
             "Table_Alias":"s",
             "Formula": "Ratio_ReturnOnAssets"
+        },
+        {
+            "Name":"Ratio_PriceNCAV",
+            "Table_Alias":"s",
+            "Formula": "Ratio_PriceNCAV"
         }
     ]
 }

@@ -195,12 +195,69 @@ class data:
                 RatiosTable[output_col] = self.evaluate_expression(RatiosTable_calcs, expression)
                 RatiosTable_calcs[output_col] = RatiosTable[output_col]
 
-            # Calculate the 3 year and 5 year averages
-            RatiosTable["Ratio_PriceBook_3Year_Average"] = RatiosTable["Ratio_PriceBook"].rolling(window=3, min_periods=1).mean()
-            RatiosTable["Ratio_PriceBook_5Year_Average"] = RatiosTable["Ratio_PriceBook"].rolling(window=5, min_periods=1).mean()
-            RatiosTable["Ratio_PriceEarnings_3Year_Average"] = RatiosTable["Ratio_PriceEarnings"].rolling(window=3, min_periods=1).mean()
-            RatiosTable["Ratio_PriceEarnings_5Year_Average"] = RatiosTable["Ratio_PriceEarnings"].rolling(window=5, min_periods=1).mean()
+            # Calculate the 3 year, 5 year and 10 year averages
 
+            # OPTIONAL: Set this at the top of your script to handle the downcasting warning globally
+            pd.set_option('future.no_silent_downcasting', True)
+
+            new_cols = {}
+            for ratio_def in ratios_definitions:
+                output_col = ratio_def["output"]
+                series = RatiosTable[output_col]
+                
+                # Convert series to numeric type (handles object dtype)
+                series = pd.to_numeric(series, errors='coerce')
+                
+                # Clean up negative zeros in the series
+                series = series.where(series != 0.0, 0.0)
+
+                # Rolling Metrics
+                new_cols[f"{output_col}_3Year_Average"] = series.rolling(window=3, min_periods=1).mean()
+                new_cols[f"{output_col}_5Year_Average"] = series.rolling(window=5, min_periods=1).mean()
+                new_cols[f"{output_col}_10Year_Average"] = series.rolling(window=10, min_periods=1).mean()
+                
+                
+                new_cols[f"{output_col}_3Year_Std"] = series.rolling(window=3, min_periods=1).std()
+                new_cols[f"{output_col}_5Year_Std"] = series.rolling(window=5, min_periods=1).std()
+                new_cols[f"{output_col}_10Year_Std"] = series.rolling(window=10, min_periods=1).std()
+                
+                # Growth Metrics - Handle division by zero from pct_change
+                # pct_change will handle 0 values but may produce inf when dividing by 0
+                growth_3yr = series.pct_change(periods=3,fill_method=None)
+                growth_5yr = series.pct_change(periods=5,fill_method=None)
+                growth_10yr = series.pct_change(periods=10,fill_method=None)
+                
+                # Replace inf values with NaN (occurs when previous value was 0)
+                new_cols[f"{output_col}_3Year_Growth"] = growth_3yr.replace([np.inf, -np.inf], np.nan)
+                new_cols[f"{output_col}_5Year_Growth"] = growth_5yr.replace([np.inf, -np.inf], np.nan)
+                new_cols[f"{output_col}_10Year_Growth"] = growth_10yr.replace([np.inf, -np.inf], np.nan)
+                
+                # Z-Score Calculation with Safety
+                std_5y = new_cols[f"{output_col}_5Year_Std"]
+                avg_5y = new_cols[f"{output_col}_5Year_Average"]
+                
+                
+                # We subtract the mean
+                diff = series - avg_5y
+                
+                # Divide safely: 
+                # - Where std > 0: calculate z-score normally
+                # - Where std == 0: set z-score to 0 (all values equal the mean)
+                # - Where std is NaN: set z-score to NaN
+                z_score = np.where(
+                    std_5y > 0,
+                    diff / std_5y,
+                    np.where(std_5y == 0, 0, np.nan)
+                )
+                
+                # Clean up Z-Score - replace any remaining inf with NaN, then NaN with 0
+                new_cols[f"{output_col}_ZScore"] = (
+                    pd.Series(z_score, index=series.index)
+                        .replace([np.inf, -np.inf], np.nan)
+                        .infer_objects(copy=False)
+                )
+
+            RatiosTable = pd.concat([RatiosTable, pd.DataFrame(new_cols)], axis=1)
             # Round the values to 4 decimal places
             RatiosTable = RatiosTable.round(4)
 

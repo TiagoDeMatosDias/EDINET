@@ -14,7 +14,7 @@
     "get_documents": false,
     "download_documents": false,
     "standardize_data": false,
-    "generate_financial_ratios": false,
+    "generate_financial_ratios": true,
     "aggregate_ratios": false,
     "update_stock_prices": false,
     "run_regression": true
