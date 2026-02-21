@@ -2,89 +2,44 @@
 
 This program is designed to download financial data from the Japanese Securities Regulator (EDINET) and store it in a SQLite database. The main goal is to create a financial screener that allows users to query and analyze the data for future processing.
 
+Additionally the program can run a simple regression analysis to identify which financial ratios are most predictive of specific parameters such as stock price performance, earnings growth, or other financial metrics. The regression analysis can be configured to use different sets of independent variables (financial ratios) and dependent variables (e.g., stock price performance) based on the user's needs.
+
 ## Key Functionality
 
 1. **Download Data**: Fetches financial documents from the EDINET API and stores them in a local database.
-2. **Data Processing**: Processes the downloaded data to generate financial ratios and rankings.
+2. **Data Processing**: Processes the downloaded data to generate financial ratios.
 3. **Database Management**: Manages the storage and retrieval of data in a SQLite database.
-4. **Data Export**: Exports data from the database to CSV files for further analysis.
+4. **Regression Analysis**: Performs regression analysis to identify key financial ratios that predict specific outcomes.
 
-## Main Functions and Methods
+## Configuration
 
-### 1. Download Data
+The program requires a set of configurations to run properly. These configurations include API keys, database paths, and parameters for data processing and regression analysis. 
 
-- **get_All_documents_withMetadata(start_date, end_date)**: Fetches all available document IDs for a given company from the EDINET API and stores them in the database.
-- **downloadDoc(docID, fileLocation, docTypeCode)**: Downloads a specific document from EDINET and saves it as a ZIP file.
-- **downloadDocs(input_table, output_table)**: Downloads multiple documents based on a list of document IDs from the database.
+The following files are used for configuration:
+- `config/run_config.json`: Contains settings for controlling the execution flow of the application, including which steps to run and the parameters for each step.
+- `config/app_config.json`: Contains application-specific settings such as EDINET base urls and default locations for files.
+- `config/financial_ratios_config.json`: Contains definitions and formulas for calculating financial ratios, allowing users to customize which ratios to calculate and how they are defined.
+- `config/regression_config.json`: Contains settings for the regression analysis, including which financial ratios to use as independent variables and which outcomes to predict as dependent variables.
+- `.env`: Contains environment variables such as API keys and database credentials.
 
-### 2. Data Processing
+Most configurations are stored in JSON format for easy editing and readability. The `.env` file is used to store sensitive information such as API keys and database paths, which should not be hardcoded in the source code for security reasons.
 
-- **load_financial_data(financialFiles, table_name, doc, connection)**: Reads financial data from unzipped files and loads it into the SQLite database.
-- **Generate_Financial_Ratios(input_table, output_table)**: Generates financial ratios from the input table and stores the results in the output table.
-- **Generate_Rankings(input_table, output_table, columns)**: Ranks the columns based on specified criteria and generates a weighted rank of all the columns.
+Example .Env file:
+```
+API_KEY=[Your EDINET API Key Here]
+DB_PATH=D:\programming\EDINET\Base.db
+DB_DOC_LIST_TABLE=DocumentList
+DB_STANDARDIZED_TABLE=Standard_Data
+DB_FINANCIAL_DATA_TABLE=financialData_full
+```
 
-### 3. Database Management
-
-- **create_table(table_name, columns, connection)**: Creates a table in the SQLite database with the given columns.
-- **insert_data(table_name, columns, rows, connection)**: Inserts data into a table in the SQLite database.
-- **query_database_select(table, filters, output_table)**: Executes a custom query on the SQLite database and returns the result as a JSON object or copies the data to another table.
-- **clear_table(table_name)**: Clears the specified table in the SQLite database.
-
-### 4. Data Export
-
-- **SQL_to_CSV(input_table, CSV_Name, Query_Modifier, conn)**: Exports data from the specified table to a CSV file.
 
 ## Usage
 
-1. **Configuration**: Ensure that the config.json file is properly set up with the necessary API keys and database paths.
+1. **Configuration**: Ensure that the config files and `.env` file are properly set up with the necessary API keys and database paths.
 2. **Running the Script**: Execute the main.py script to start the program.
 3. **Downloading Data**: Use the provided functions to download and process data from EDINET.
-4. **Exporting Data**: Export the processed data to CSV files for further analysis.
-
-## Example
-
-```python
-# Example usage in main.py
-if __name__ == '__main__':
-    print('Starting Program')
-
-    # Load configuration
-    config = Config()
-
-    # Initialize EDINET and Data classes
-    edinet = Edinet()
-    data = data()
-
-    # Download documents
-    edinet.downloadDocs("downloadList", "financialData_full")
-
-    # Generate financial ratios
-    data.Generate_Financial_Ratios("financialData_full", "financialData_ratios")
-
-    # Define columns for ranking
-    columns = {
-        'CurrentRatio': (False, 1.5),
-        'QuickRatio': (False, 1.0),
-        'LiquidAssets': (False, 1.0),
-        'DebtToEquityRatio': (True, 1.0),
-        'DebtToAssetsRatio': (True, 1.5),
-        'ReturnOnEquity': (False, 1.0),
-        'ReturnOnAssets': (False, 1.2),
-        'GrossMargin': (False, 1.5),
-        'OperatingMargin': (False, 1.5),
-        'NetProfitMargin': (False, 2.0),
-        'AssetTurnover': (False, 0.5),
-        'InventoryTurnover': (False, 0.5)
-    }
-
-    # Generate rankings
-    data.Generate_Rankings("financialData_ratios", "financialData_rankings", columns)
-
-    # Export rankings to CSV
-    data.SQL_to_CSV("financialData_rankings", "financialData_rankings.csv")
-
-    print('Program Ended')
-```
+4. **Handling Data**: You can query the SQLite database to retrieve and analyze the financial data as needed. A ols regression results is generated in the relevant output folder. See config/regression_config.json for details on how to configure the regression analysis.
 
 
 # Key Document Types for Annual Reports:
