@@ -15,10 +15,13 @@ class Edinet:
         self.config = c.Config()
         self.baseURL = self.config.get("baseURL")
         self.key = self.config.get("API_KEY")
-        self.defaultLocation = self.config.get("defaultLocation")
+        self.defaultLocation = self.config.get("RAW_DOCUMENTS_PATH")
         self.Database = self.config.get("DB_PATH")
+        self.DB_COMPANY_INFO_TABLE = self.config.get("DB_COMPANY_INFO_TABLE")
+        self.DB_TAXONOMY_TABLE = self.config.get("DB_TAXONOMY_TABLE")
+        self.DB_DOC_LIST_TABLE = self.config.get("DB_DOC_LIST_TABLE")
 
-    def get_All_documents_withMetadata(self, start_date="2015-01-01", end_date=None, Database_DocumentList="DocumentList"):
+    def get_All_documents_withMetadata(self, start_date="2015-01-01", end_date=None):
         """
         Fetch all available document IDs for a given time period from the EDINET API and store them in the database.
         
@@ -51,22 +54,29 @@ class Edinet:
                 if response.status_code == 200:
                     data = response.json()
                     
-                    # Create the DB table if it doesn't exist
-                    columns = list(data.get("results")[0].keys())
-                    columns.append("Downloaded")
-                    
-                    self.create_table(Database_DocumentList, columns, conn)
+                    if data.get("results") == []:
+                        print(f"No documents found for date {date_str}.")
+                        current_date += timedelta(days=1)
+                        continue
+                    else:
+                        print(f"Found {len(data.get('results'))} documents for date {date_str}.")
 
-                    # Insert documents into the database
-                    for entry in data.get("results", []):
-                        # Check if the document already exists in the table
-                        cursor.execute(f"SELECT COUNT(*) FROM {Database_DocumentList} WHERE docID = ?", (entry["docID"],))
-                        if cursor.fetchone()[0] == 0:
-                            entry["Downloaded"] = "False"
-                            placeholders = ", ".join(["?" for _ in entry])
-                            cursor.execute(f"INSERT INTO {Database_DocumentList} VALUES ({placeholders})", tuple(entry.values()))
-                    
-                    conn.commit()
+                        # Create the DB table if it doesn't exist
+                        columns = list(data.get("results")[0].keys())
+                        columns.append("Downloaded")
+                        
+                        self.create_table(self.DB_DOC_LIST_TABLE, columns, conn)
+
+                        # Insert documents into the database
+                        for entry in data.get("results", []):
+                            # Check if the document already exists in the table
+                            cursor.execute(f"SELECT COUNT(*) FROM {self.DB_DOC_LIST_TABLE} WHERE docID = ?", (entry["docID"],))
+                            if cursor.fetchone()[0] == 0:
+                                entry["Downloaded"] = "False"
+                                placeholders = ", ".join(["?" for _ in entry])
+                                cursor.execute(f"INSERT INTO {self.DB_DOC_LIST_TABLE} VALUES ({placeholders})", tuple(entry.values()))
+                        
+                        conn.commit()
             
             except Exception as e:
                 print(f"Error fetching data for {date_str}: {e}")
@@ -101,6 +111,8 @@ class Edinet:
             filter = self.generate_filter("Downloaded", "=", "False")
 
         docList = self.query_database_select(input_table,filter)
+
+        print(f"Number of documents to download: {len(docList)}")
         
         for doc in docList:
             try:
@@ -167,8 +179,12 @@ class Edinet:
                 columns = list(df.columns)
                 self.create_table(table_name, columns, connection)
 
-                # Insert data into table
-                df.to_sql(table_name, conn, if_exists='append', index=False)
+                # Insert data into table, ignoring duplicate constraint violations
+                try:
+                    df.to_sql(table_name, conn, if_exists='append', index=False)
+                except sqlite3.IntegrityError:
+                    # Ignore duplicate constraint violations
+                    pass
 
             conn.commit()
         except FileNotFoundError:
@@ -484,7 +500,7 @@ class Edinet:
             
             
             # Insert data into the table
-            df.to_sql("Company_info", conn, if_exists="replace", index=False)
+            df.to_sql(self.DB_COMPANY_INFO_TABLE, conn, if_exists="replace", index=False)
             
             # Commit and close
             conn.commit()

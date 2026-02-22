@@ -7,7 +7,7 @@ import src.regression_analysis as r
 
 def run(edinet=None, data=None):
     """
-    Orchestrates the execution of the application based on the run_config.json file.
+    Orchestrates the execution of the application based on the run config file.
     """
     print('Starting Program')
 
@@ -16,9 +16,13 @@ def run(edinet=None, data=None):
     run_steps = config.get("run_steps", {})
 
     # Access values from main config
-    Database_DocumentList = config.get("DB_DOC_LIST_TABLE")
-    FinancialData = config.get("DB_FINANCIAL_DATA_TABLE")
-    Database_Standardized = config.get("DB_STANDARDIZED_TABLE")
+    DB_DOC_LIST_TABLE = config.get("DB_DOC_LIST_TABLE")
+    DB_FINANCIAL_DATA_TABLE = config.get("DB_FINANCIAL_DATA_TABLE")
+    DB_STANDARDIZED_TABLE = config.get("DB_STANDARDIZED_TABLE")
+    DB_STANDARDIZED_RATIOS_TABLE = config.get("DB_STANDARDIZED_RATIOS_TABLE")
+    DB_PATH = config.get("DB_PATH")
+    DB_COMPANY_INFO_TABLE = config.get("DB_COMPANY_INFO_TABLE")
+    DB_STOCK_PRICES_TABLE = config.get("DB_STOCK_PRICES_TABLE")
 
     if not edinet:
         edinet = edinet_api.Edinet()
@@ -32,7 +36,7 @@ def run(edinet=None, data=None):
             get_documents_config = config.get("get_documents_config", {})
             startDate = get_documents_config.get("startDate")
             endDate = get_documents_config.get("endDate")
-            edinet.get_All_documents_withMetadata(startDate, endDate, Database_DocumentList)
+            edinet.get_All_documents_withMetadata(startDate, endDate)
         except Exception as e:
             print(f"Error getting documents: {e}")
 
@@ -49,42 +53,36 @@ def run(edinet=None, data=None):
             filters = edinet.generate_filter("csvFlag", "=", csvFlag, filters)
             filters = edinet.generate_filter("secCode", "!=", secCode, filters)
             filters = edinet.generate_filter("Downloaded", "=", downloaded_flag, filters)
-            edinet.downloadDocs(Database_DocumentList, FinancialData, filters)
+            edinet.downloadDocs(DB_DOC_LIST_TABLE, DB_FINANCIAL_DATA_TABLE, filters)
         except Exception as e:
             print(f"Error downloading documents: {e}")
 
     if run_steps.get("standardize_data"):
         try:
             print("Standardizing data...")
-            data.copy_table_to_Standard(FinancialData, Database_Standardized )
+            data.copy_table_to_Standard(DB_FINANCIAL_DATA_TABLE, DB_STANDARDIZED_TABLE)
         except Exception as e:
             print(f"Error standardizing data: {e}")
 
     if run_steps.get("generate_financial_ratios"):
         try:
             print("Generating financial ratios...")
-            data.Generate_Financial_Ratios(Database_Standardized, Database_Standardized + "_Ratios")
+            data.Generate_Financial_Ratios(DB_STANDARDIZED_TABLE, DB_STANDARDIZED_RATIOS_TABLE)
         except Exception as e:
             print(f"Error generating financial ratios: {e}")
 
-    if run_steps.get("aggregate_ratios"):
-        try:
-            print("Aggregating ratios...")
-            data.Generate_Aggregated_Ratios(Database_Standardized + "_Ratios", Database_Standardized + "_Ratios_Aggregated")
-        except Exception as e:
-            print(f"Error aggregating ratios: {e}")
 
     if run_steps.get("update_stock_prices"):
         try:
             print("Updating stock prices...")
-            y.update_all_stock_prices(config.get("DB_PATH"))
+            y.update_all_stock_prices(DB_PATH, DB_COMPANY_INFO_TABLE, DB_STOCK_PRICES_TABLE)
         except Exception as e:
             print(f"Error updating stock prices: {e}")
 
     if run_steps.get("run_regression"):
         try:
             print("Running regression...")
-            r.Regression(config, config.get("DB_PATH"))
+            r.Regression(config, DB_PATH)
         except Exception as e:
             print(f"Error running regression: {e}")
 

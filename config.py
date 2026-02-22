@@ -16,11 +16,6 @@ class Config:
         """Loads configuration from .env and JSON files."""
         load_dotenv()
         self.settings = {}
-        try:
-            with open("config/app_config.json", "r") as file:
-                self.settings.update(json.load(file))
-        except FileNotFoundError:
-            print("Warning: app_config.json not found.")
 
         try:
             with open(self.run_config_path, "r") as file:

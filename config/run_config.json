@@ -1,8 +1,7 @@
 {
-  "doctype": "5",
   "get_documents_config": {
-    "startDate": "2025-08-01",
-    "endDate": "2026-02-15"
+    "startDate": "2026-02-15",
+    "endDate": "2026-02-21"
   },
   "download_documents_config": {
     "docTypeCode": "120",
@@ -13,10 +12,9 @@
   "run_steps": {
     "get_documents": false,
     "download_documents": false,
-    "standardize_data": false,
+    "standardize_data": true,
     "generate_financial_ratios": true,
-    "aggregate_ratios": false,
-    "update_stock_prices": false,
+    "update_stock_prices": true,
     "run_regression": true
   }
 }
