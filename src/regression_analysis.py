@@ -209,6 +209,7 @@ def Generate_SQL_Query(config: dict) -> dict:
     dep_var_config = config.get("DependentVariable")
     ind_vars_config = config.get("IndependentVariables")
     db_tables_config = config.get("DB_Tables")
+    
     num_periods = config.get("NumberOfPeriods")
     NotNullFields = config.get("NotNullFields", [])
 
@@ -285,3 +286,13 @@ def _build_from_clause(db_tables_config: list[dict], num_periods: int) -> str:
         from_clause += f" LEFT JOIN {base_table['Name']} AS {lagged_alias} {join_condition}"
         
     return from_clause
+
+
+
+# This function will generate a set of regression configs that will programatically test all combinations of independent variables
+# It will then run the list of regression configs and rank them based on R-squared and the number of significant predictors.
+# The resulting ranked list of regression configs and their results will be written to a file for review. 
+# This will help identify which independent variables are the most significant predictors of the dependent variable, and which combinations of variables yield the best model fit.
+def find_significant_predictors():
+
+    pass

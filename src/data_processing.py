@@ -9,10 +9,9 @@ import json
 class data:
     def __init__(self):
         self.config = c.Config()
-        self.baseURL = self.config.get("baseURL")
-        self.key = self.config.get("API_KEY")
-        self.Database = self.config.get("DB_PATH")
-        self.Database_DocumentList = self.config.get("DB_DOC_LIST_TABLE")
+        self.DB_PATH = self.config.get("DB_PATH")
+        self.FINANCIAL_RATIOS_CONFIG_PATH = self.config.get("FINANCIAL_RATIOS_CONFIG_PATH")
+
 
 
     def create_table(self, table_name, columns, connection=None):
@@ -24,7 +23,7 @@ class data:
         """
         try:
             if connection is None:
-                conn = sqlite3.connect(self.Database)
+                conn = sqlite3.connect(self.DB_PATH)
             else:
                 conn = connection
             cursor = conn.cursor()
@@ -51,11 +50,11 @@ class data:
         Returns:
             None
         """
-        conn = sqlite3.connect(self.Database)
+        conn = sqlite3.connect(self.DB_PATH)
         cursor = conn.cursor()
 
         # Load configuration
-        with open('config/financial_ratios_config.json', 'r') as f:
+        with open(self.FINANCIAL_RATIOS_CONFIG_PATH, 'r') as f:
             config = json.load(f)
         
         accounting_term_conditions = config['accounting_term_conditions']
@@ -113,10 +112,10 @@ class data:
         # The output will be stored in the output_table
 
         # Connect to the database
-        conn = sqlite3.connect(self.Database)
+        conn = sqlite3.connect(self.DB_PATH)
 
         # Load configuration
-        with open('config/financial_ratios_config.json', 'r') as f:
+        with open(self.FINANCIAL_RATIOS_CONFIG_PATH, 'r') as f:
             config = json.load(f)
         columns_mapping = config['mappings']
         ratios_definitions = config['ratios']
@@ -273,99 +272,6 @@ class data:
         pass
 
 
-    def Generate_Aggregated_Ratios(self, input_table, output_table):
-        """
-        This function aggregates financial ratios from the input table and stores the results in the output table.
-        It calculates the average of each ratio (columns with prefix "Ratio_") for each company and adds a column
-        for the count of periods aggregated. Additionally, it includes the latest value of the MarketCap column
-        based on the most recent period.
-        """
-        conn = sqlite3.connect(self.Database)
-        
-        # Process data in chunks to handle large datasets
-        chunk_size = 10000
-        offset = 0
-        first_chunk = True
-
-        while True:
-            # Get a chunk of data from the input table
-            df = pd.read_sql_query(f"SELECT * FROM {input_table} LIMIT {chunk_size} OFFSET {offset}", conn)
-            if df.empty:
-                break
-
-            # Filter columns with prefix "Ratio_"
-            ratio_columns = [col for col in df.columns if col.startswith("Ratio_")]
-            if not ratio_columns:
-                raise ValueError("No columns with prefix 'Ratio_' found in the input table.")
-
-            # Group by edinetCode and calculate the mean for ratio columns
-            aggregated_df = df.groupby('edinetCode')[ratio_columns].mean().reset_index()
-           
-
-            # Filter columns with prefix "PerShare_"
-            PerShare_columns = [col for col in df.columns if col.startswith("PerShare_")]
-            if not ratio_columns:
-                raise ValueError("No columns with prefix 'Ratio_' found in the input table.")
-
-            # for the pershare columns we get the standard deviation and the growth from the first period_start to the latest period_start
-            aggregated_df_PerShare = df.groupby('edinetCode')[PerShare_columns].agg(['mean', 'std']).reset_index()
-            # Flatten the MultiIndex columns
-            aggregated_df_PerShare.columns = ['_'.join(col).strip() for col in aggregated_df_PerShare.columns.values]
-            # Rename the edinet_ column back to edinetCode
-            aggregated_df_PerShare.rename(columns={'edinetCode_': 'edinetCode'}, inplace=True)
-
-            # Ensure the DataFrame is sorted by edinetCode and period_start
-            df = df.sort_values(by=['edinetCode', 'periodStart'])
-            # for the pershare columns and for each edinetcode we get the growth from the first period_start to the latest period_start
-            for col in PerShare_columns:
-                # Get the first and last periodStart for each edinetCode
-                first_value = df.groupby('edinetCode')[col].first().reset_index()
-                last_value = df.groupby('edinetCode')[col].last().reset_index()
-
-                # Calculate the growth
-                growth_col_name = f"{col}_Growth"
-                # Calculate the number of years between the first and last periodStart
-                first_period = pd.to_datetime(df.groupby('edinetCode')['periodStart'].first().reset_index()['periodStart'])
-                last_period = pd.to_datetime(df.groupby('edinetCode')['periodStart'].last().reset_index()['periodStart'])
-                years_difference = (last_period - first_period).dt.days / 365.0
-
-                # Calculate the annualized growth
-                aggregated_df_PerShare[growth_col_name] = ((last_value[col] / first_value[col]) ** (1 / years_difference)) - 1
-            
-
-            # Add a column for the count of periods aggregated
-            count_df = df.groupby('edinetCode').size().reset_index(name='number_of_Periods')
-            aggregated_df = pd.merge(aggregated_df, count_df, on='edinetCode')
-            aggregated_df = pd.merge(aggregated_df, aggregated_df_PerShare, on='edinetCode', how='left')
-
-
-            # Add the latest MarketCap value for each company based on the most recent period
-            latest_marketcap_df = df.sort_values('periodEnd').groupby('edinetCode').last().reset_index()[['edinetCode', 'MarketCap']]
-            aggregated_df = pd.merge(aggregated_df, latest_marketcap_df, on='edinetCode', how='left')
-
-            # Round the values to 2 decimal places
-            aggregated_df = aggregated_df.round(2)
-
-            # Remove duplicates if any
-            #aggregated_df = aggregated_df.drop_duplicates(subset=['edinetCode'])
-
-            # Store the aggregated data back to the database
-            aggregated_df.to_sql(output_table, conn, if_exists='replace' if first_chunk else 'append', index=False)
-            conn.commit()
-
-            offset += chunk_size
-            first_chunk = False
-
-        df = pd.read_sql_query(f"SELECT * FROM {output_table} ", conn)
-        df = df.drop_duplicates(subset=['edinetCode'])
-        df.to_sql(output_table, conn, if_exists='replace', index=False)
-        #conn.commit()
-
-
-        conn.close()
-
-
-
 
     def get_first_existing_column(self, df, columns):
         """
@@ -414,7 +320,7 @@ class data:
         """
         try:
             if connection is None:
-                conn = sqlite3.connect(self.Database)
+                conn = sqlite3.connect(self.DB_PATH)
             else:
                 conn = connection
             cursor = conn.cursor()
@@ -450,7 +356,7 @@ class data:
 
     def rename_columns_to_Standard(self, conn, table_name):
         # Load configuration
-        with open('config/financial_ratios_config.json', 'r') as f:
+        with open(self.FINANCIAL_RATIOS_CONFIG_PATH, 'r') as f:
             config = json.load(f)
         column_mapping = config['standard_column_mapping']
         self.rename_columns(conn, table_name, column_mapping)
@@ -483,7 +389,7 @@ class data:
             None
         """
         if conn is None:
-            conn = sqlite3.connect(self.Database)
+            conn = sqlite3.connect(self.DB_PATH)
         
         tempTable = "TempTable_" + random.choice("132465sadf")
         self.copy_table(conn, source_table, tempTable)
@@ -545,7 +451,7 @@ class data:
         # Store in SQLite database
         
         if connection is None:
-                conn = sqlite3.connect(self.Database)
+                conn = sqlite3.connect(self.DB_PATH)
         else:
             conn = connection
         cursor = conn.cursor()
@@ -574,7 +480,7 @@ class data:
         """
         try:
             if connection is None:
-                conn = sqlite3.connect(self.Database)
+                conn = sqlite3.connect(self.DB_PATH)
             else:
                 conn = connection
             cursor = conn.cursor()
@@ -606,7 +512,7 @@ class data:
     def SQL_to_CSV(self, input_table, CSV_Name, Query_Modifier = None , conn=None):
 
         if conn is None:
-                conn = sqlite3.connect(self.Database)
+                conn = sqlite3.connect(self.DB_PATH)
         else:
             conn = connection
         cursor = conn.cursor()
