@@ -12,9 +12,18 @@
   "run_steps": {
     "get_documents": false,
     "download_documents": false,
-    "standardize_data": true,
-    "generate_financial_ratios": true,
-    "update_stock_prices": true,
-    "run_regression": true
+    "standardize_data": false,
+    "generate_financial_ratios": false,
+    "update_stock_prices": false,
+    "run_regression": false,
+    "find_significant_predictors": true
+  },
+  "find_significant_predictors_config": {
+    "output_file": "data/ols_results/predictor_search_results.txt",
+    "winsorize_thresholds": {
+      "lower": 0.05,
+      "upper": 0.95
+    },
+    "alpha": 0.05
   }
 }

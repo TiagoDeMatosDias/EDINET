@@ -86,4 +86,33 @@ def run(edinet=None, data=None):
         except Exception as e:
             print(f"Error running regression: {e}")
 
+    if run_steps.get("find_significant_predictors"):
+        try:
+            print("Finding significant predictors...")
+            # Read optional overrides from config; fall back to the defaults
+            # defined in find_significant_predictors() when not present.
+            predictor_config = config.get("find_significant_predictors_config", {})
+            output_file = predictor_config.get(
+                "output_file",
+                "data/ols_results/predictor_search_results.txt",
+            )
+            winsorize_thresholds = predictor_config.get(
+                "winsorize_thresholds", {"lower": 0.05, "upper": 0.95}
+            )
+            winsorize_limits = (
+                winsorize_thresholds["lower"],
+                winsorize_thresholds["upper"],
+            )
+            alpha = predictor_config.get("alpha", 0.05)
+
+            r.find_significant_predictors(
+                db_path=DB_PATH,
+                table_name=DB_STANDARDIZED_RATIOS_TABLE,
+                output_file=output_file,
+                winsorize_limits=winsorize_limits,
+                alpha=alpha,
+            )
+        except Exception as e:
+            print(f"Error finding significant predictors: {e}")
+
     print('Program Ended')
