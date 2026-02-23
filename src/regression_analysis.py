@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pandas as pd
 import numpy as np
+from collections import defaultdict
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, mean_absolute_error
@@ -289,10 +290,515 @@ def _build_from_clause(db_tables_config: list[dict], num_periods: int) -> str:
 
 
 
-# This function will generate a set of regression configs that will programatically test all combinations of independent variables
-# It will then run the list of regression configs and rank them based on R-squared and the number of significant predictors.
-# The resulting ranked list of regression configs and their results will be written to a file for review. 
-# This will help identify which independent variables are the most significant predictors of the dependent variable, and which combinations of variables yield the best model fit.
-def find_significant_predictors():
+# ---------------------------------------------------------------------------
+# SIGNIFICANT PREDICTOR SEARCH
+# ---------------------------------------------------------------------------
+# The block below implements an automated exploratory analysis that tests
+# every possible single-predictor OLS regression across all numeric columns
+# in the financial-ratios table.  The goal is to surface which individual
+# variables have the strongest univariate relationship with each potential
+# dependent variable, so that more targeted multi-variable models can be
+# built afterwards.
+#
+# The public entry-point is find_significant_predictors().  The four private
+# helpers (_get_predictor_columns, _significance_stars,
+# _run_single_predictor_regression, _rank_predictor_results, and
+# _write_predictor_search_results) are intentionally small so each step
+# can be understood and tested in isolation.
+# ---------------------------------------------------------------------------
 
-    pass
+# Columns that identify rows or describe time periods rather than numeric
+# financial quantities.  They are excluded from both the dependent-variable
+# and independent-variable candidate lists.  Comparison is done in lowercase
+# so "PeriodStart" and "periodstart" are treated identically.
+_NON_PREDICTOR_COLUMNS: frozenset[str] = frozenset({
+    "index",        # row-number artefact sometimes stored by pandas .to_sql()
+    "edinetcode",   # company identifier
+    "docid",        # filing document identifier
+    "doctypecode",  # EDINET document-type code (e.g. 120 = annual report)
+    "periodstart",  # start of the reporting period
+    "periodend",    # end of the reporting period
+    "currency",     # reporting currency (almost always JPY)
+})
+
+
+def _get_predictor_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
+    """Return every column from *table_name* that is eligible as a regression variable.
+
+    Uses SQLite's ``PRAGMA table_info`` to retrieve column metadata without
+    loading any row data, then filters out the non-predictor identifiers defined
+    in ``_NON_PREDICTOR_COLUMNS`` (compared case-insensitively).
+
+    ``PRAGMA table_info`` returns one row per column in the form:
+        (cid, name, type, notnull, dflt_value, pk)
+    We only need ``name`` (index 1).
+
+    Args:
+        conn: An active SQLite connection.
+        table_name: The table to inspect (e.g. ``'Standard_Data_Ratios'``).
+
+    Returns:
+        A list of column-name strings suitable for use as dep/ind variables.
+        Returns an empty list when the table does not exist or has no columns.
+    """
+    cursor = conn.cursor()
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    columns_info = cursor.fetchall()
+
+    # col[1] is the column name; compare lowercase to the exclusion set
+    return [
+        col[1]
+        for col in columns_info
+        if col[1].lower() not in _NON_PREDICTOR_COLUMNS
+    ]
+
+
+def _significance_stars(p_value: float | None) -> str:
+    """Convert a p-value to a star-rating string for human-readable output.
+
+    Uses the conventional three-tier scheme:
+        * ``***``  –  p < 0.001  (highly significant)
+        * ``**``   –  p < 0.01   (very significant)
+        * ``*``    –  p < 0.05   (significant)
+        * ``""``   –  p ≥ 0.05 or None (not significant)
+
+    Args:
+        p_value: The p-value to evaluate.  ``None`` is treated as non-significant.
+
+    Returns:
+        A stars string (``'***'``, ``'**'``, ``'*'``, or ``''``).
+    """
+    if p_value is None:
+        return ""
+    if p_value < 0.001:
+        return "***"
+    if p_value < 0.01:
+        return "**"
+    if p_value < 0.05:
+        return "*"
+    return ""
+
+
+def _run_single_predictor_regression(
+    dep_var: str,
+    ind_var: str,
+    conn: sqlite3.Connection,
+    table_name: str,
+    winsorize_limits: tuple[float, float] = (0.05, 0.95),
+    alpha: float = 0.05,
+) -> dict:
+    """Run a single-variable OLS regression and return a compact result dict.
+
+    Fits the model:  ``dep_var  ~  const + ind_var``
+
+    A minimal SQL query is constructed that fetches only the two relevant
+    columns, then the actual data-cleaning, winsorisation, and model-fitting
+    are delegated to the existing :func:`Run_Model` function so that behaviour
+    stays consistent with the main :func:`Regression` workflow.
+
+    Args:
+        dep_var: Name of the dependent variable column in *table_name*.
+        ind_var: Name of the independent variable column in *table_name*.
+        conn: An active SQLite connection.
+        table_name: The table that contains both variables.
+        winsorize_limits: ``(lower_quantile, upper_quantile)`` bounds used to
+            trim extreme values before fitting.
+        alpha: Significance threshold used to set the ``'is_significant'`` flag.
+
+    Returns:
+        A ``dict`` with the following keys:
+
+        ==================  =====================================================
+        ``dep_var``         dependent variable name
+        ``ind_var``         independent variable name
+        ``r_squared``       OLS R² (``None`` on failure)
+        ``adj_r_squared``   Adjusted R² (``None`` on failure)
+        ``n_obs``           number of observations used in the model
+        ``coef``            coefficient of the independent variable
+        ``p_value``         p-value of the independent variable coefficient
+        ``is_significant``  ``True`` if *p_value* < *alpha*
+        ``status``          ``'success'`` or ``'failed'``
+        ==================  =====================================================
+    """
+    # Build a minimal SELECT that fetches only the two columns we need.
+    # Run_Model will silently ignore the absent edinetCode / periodStart columns
+    # because it drops them with errors='ignore'.
+    query = f"""
+    SELECT {dep_var}, {ind_var}
+    FROM   {table_name}
+    WHERE  {dep_var} IS NOT NULL
+      AND  {ind_var} IS NOT NULL
+    """
+
+    # Delegate cleaning, winsorisation, constant addition, and OLS to Run_Model.
+    results = Run_Model(
+        query,
+        conn,
+        dep_var,
+        [ind_var],
+        winsorize_limits,
+    )
+
+    # Detect an empty / failed model by checking the observation count.
+    n_obs = int(results.nobs) if results.nobs else 0
+
+    if n_obs == 0:
+        # Run_Model already prints the error; we return a 'failed' sentinel so
+        # the caller can still record and skip this combination gracefully.
+        return {
+            "dep_var": dep_var,
+            "ind_var": ind_var,
+            "r_squared": None,
+            "adj_r_squared": None,
+            "n_obs": 0,
+            "coef": None,
+            "p_value": None,
+            "is_significant": False,
+            "status": "failed",
+        }
+
+    # results.pvalues and results.params are pandas Series indexed by variable name.
+    # The independent variable's entry will be keyed exactly by ind_var.
+    p_value = float(results.pvalues.get(ind_var, 1.0))
+    coef = results.params.get(ind_var, None)
+
+    return {
+        "dep_var": dep_var,
+        "ind_var": ind_var,
+        "r_squared": float(results.rsquared),
+        "adj_r_squared": float(results.rsquared_adj),
+        "n_obs": n_obs,
+        "coef": float(coef) if coef is not None else None,
+        "p_value": p_value,
+        "is_significant": p_value < alpha,
+        "status": "success",
+    }
+
+
+def _rank_predictor_results(results: list[dict]) -> list[dict]:
+    """Sort and rank a flat list of single-predictor regression result dicts.
+
+    Sorting criteria applied in order:
+        1. **R-squared descending** – higher R² means the predictor explains
+           more variance in the dependent variable.
+        2. **p-value ascending** – lower p-value provides stronger statistical
+           evidence that the relationship is non-zero.
+
+    Failed models (``status != 'success'`` or ``r_squared is None``) are
+    appended at the end and assigned ``rank = None`` so they do not clutter
+    the top of the output.
+
+    Args:
+        results: List of result dicts produced by
+            :func:`_run_single_predictor_regression`.
+
+    Returns:
+        The same list reordered and annotated with a 1-based ``'rank'`` integer
+        (or ``None`` for failed entries).
+    """
+    # Partition into successful and failed models
+    successful = [
+        r for r in results
+        if r["status"] == "success" and r["r_squared"] is not None
+    ]
+    failed = [
+        r for r in results
+        if not (r["status"] == "success" and r["r_squared"] is not None)
+    ]
+
+    # Primary sort key: highest R² first; tiebreak: lowest p-value first
+    successful.sort(
+        key=lambda r: (
+            -r["r_squared"],
+            r["p_value"] if r["p_value"] is not None else 1.0,
+        )
+    )
+
+    # Assign 1-based ranks to successful models
+    for rank, r in enumerate(successful, start=1):
+        r["rank"] = rank
+
+    # Failed models get no rank
+    for r in failed:
+        r["rank"] = None
+
+    return successful + failed
+
+
+def _write_predictor_search_results(
+    ranked_results: list[dict],
+    output_file: str,
+    alpha: float = 0.05,
+) -> None:
+    """Write the ranked predictor search results to a human-readable text file.
+
+    The output file contains two sections:
+
+    **Section 1 – Global Ranking**
+        All ``(dep_var, ind_var)`` combinations listed from highest R² to lowest.
+        Each row shows rank, variable names, R², adjusted R², p-value, star
+        significance indicator, and observation count.
+
+    **Section 2 – Per-Dependent-Variable Breakdown**
+        For each distinct dependent variable the table is repeated, ordered
+        best-first, making it easy to identify the top single predictor for
+        each target variable.  The coefficient is included here so the
+        direction of the relationship (positive / negative) is visible.
+
+    Significance stars follow the convention:
+        * ``***``  p < 0.001
+        * ``**``   p < 0.01
+        * ``*``    p < 0.05
+
+    Args:
+        ranked_results: The output of :func:`_rank_predictor_results`.
+        output_file: Path (absolute or relative) to the file to create/overwrite.
+            The parent directory is created automatically if it does not exist.
+        alpha: The significance level used during the regressions; written into
+            the file header for traceability.
+    """
+    # Ensure the output directory exists before opening the file
+    output_dir = os.path.dirname(output_file)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    # Group results by dependent variable for the per-dep-var section
+    by_dep_var: dict[str, list[dict]] = defaultdict(list)
+    for r in ranked_results:
+        by_dep_var[r["dep_var"]].append(r)
+
+    successful_results = [r for r in ranked_results if r["status"] == "success"]
+    significant_count = sum(1 for r in successful_results if r.get("is_significant"))
+
+    # Column widths for the two table layouts
+    VAR_W = 45   # width reserved for variable names
+    NUM_W = 8    # width for numeric columns (R², etc.)
+    PVAL_W = 12  # width for p-value column
+    COEF_W = 14  # width for coefficient column (only in section 2)
+
+    with open(output_file, "w", encoding="utf-8") as f:
+
+        # ── Header ──────────────────────────────────────────────────────────
+        f.write("=" * 80 + "\n")
+        f.write("  SIGNIFICANT PREDICTOR SEARCH RESULTS\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"  Significance level (alpha)  : {alpha}\n")
+        f.write(f"  Total models evaluated      : {len(ranked_results)}\n")
+        f.write(f"  Successful models           : {len(successful_results)}\n")
+        f.write(f"  Models with sig. predictor  : {significant_count}\n")
+        f.write("=" * 80 + "\n\n")
+
+        # ── Section 1: Global Ranking ────────────────────────────────────────
+        f.write("--- SECTION 1: Global Ranking (sorted by R²) ---\n\n")
+
+        # Build header row using f-string alignment
+        hdr = (
+            f"{'Rank':<6} "
+            f"{'Dep Var':<{VAR_W}} "
+            f"{'Ind Var':<{VAR_W}} "
+            f"{'R²':>{NUM_W}} "
+            f"{'Adj R²':>{NUM_W}} "
+            f"{'P-Value':>{PVAL_W}} "
+            f"{'Sig':<5} "
+            f"{'N':>7}\n"
+        )
+        f.write(hdr)
+        f.write("-" * (len(hdr) - 1) + "\n")  # -1 to exclude the trailing \n
+
+        for r in ranked_results:
+            if r["status"] != "success":
+                continue
+            f.write(
+                f"{r['rank']:<6} "
+                f"{r['dep_var']:<{VAR_W}} "
+                f"{r['ind_var']:<{VAR_W}} "
+                f"{r['r_squared']:>{NUM_W}.4f} "
+                f"{r['adj_r_squared']:>{NUM_W}.4f} "
+                f"{r['p_value']:>{PVAL_W}.4g} "
+                f"{_significance_stars(r['p_value']):<5} "
+                f"{r['n_obs']:>7}\n"
+            )
+
+        f.write("\n")
+
+        # ── Section 2: Per-Dependent-Variable Breakdown ───────────────────────
+        f.write("--- SECTION 2: Per-Dependent-Variable Breakdown ---\n\n")
+
+        for dep_var in sorted(by_dep_var.keys()):
+            dep_results = by_dep_var[dep_var]
+
+            # Sort this dep_var's successful results best-first
+            successful_dep = sorted(
+                [r for r in dep_results if r["status"] == "success"],
+                key=lambda r: (
+                    -r["r_squared"],
+                    r["p_value"] if r["p_value"] is not None else 1.0,
+                ),
+            )
+            failed_dep = [r for r in dep_results if r["status"] != "success"]
+
+            f.write(f"Dependent Variable: {dep_var}\n")
+
+            # Sub-table header (coefficient column added here)
+            sub_hdr = (
+                f"  {'Ind Var':<{VAR_W}} "
+                f"{'R²':>{NUM_W}} "
+                f"{'Adj R²':>{NUM_W}} "
+                f"{'Coef':>{COEF_W}} "
+                f"{'P-Value':>{PVAL_W}} "
+                f"Sig\n"
+            )
+            f.write(sub_hdr)
+            f.write("  " + "-" * (len(sub_hdr) - 3) + "\n")
+
+            for r in successful_dep:
+                coef_str = f"{r['coef']:.4g}" if r["coef"] is not None else "N/A"
+                f.write(
+                    f"  {r['ind_var']:<{VAR_W}} "
+                    f"{r['r_squared']:>{NUM_W}.4f} "
+                    f"{r['adj_r_squared']:>{NUM_W}.4f} "
+                    f"{coef_str:>{COEF_W}} "
+                    f"{r['p_value']:>{PVAL_W}.4g} "
+                    f"{_significance_stars(r['p_value'])}\n"
+                )
+
+            # Note any combinations that failed to produce a model
+            if failed_dep:
+                f.write(
+                    f"  [Failed models: "
+                    + ", ".join(r["ind_var"] for r in failed_dep)
+                    + "]\n"
+                )
+
+            f.write("\n")
+
+    print(f"\nPredictor search results written to {output_file}")
+
+
+def find_significant_predictors(
+    db_path: str,
+    table_name: str,
+    output_file: str = "data/ols_results/predictor_search_results.txt",
+    winsorize_limits: tuple[float, float] = (0.05, 0.95),
+    alpha: float = 0.05,
+) -> None:
+    """Systematically test every single-predictor OLS regression in the ratios table.
+
+    This is an automated exploratory step that fits one independent variable at
+    a time against every possible dependent variable, so that the strongest
+    *univariate* relationships in the dataset can be identified before building
+    more complex multi-variable models.
+
+    Pipeline
+    --------
+    1. **Discover variables** – query ``PRAGMA table_info`` on *table_name* to
+       get all column names, then filter out identifier / metadata columns
+       (``edinetCode``, ``docID``, ``docTypeCode``, ``periodStart``,
+       ``periodEnd``).
+
+    2. **Generate configs** – for every ordered pair ``(dep_var, ind_var)``
+       where ``dep_var ≠ ind_var`` (O(n²) combinations), build a minimal SQL
+       query: ``SELECT dep_var, ind_var FROM table WHERE … IS NOT NULL``.
+
+    3. **Run models** – delegate each pair to :func:`Run_Model` (which handles
+       winsorisation, constant addition, and OLS fitting).  Results are stored
+       as dicts containing R², adjusted R², coefficient, p-value, and
+       observation count.
+
+    4. **Rank results** – sort all result dicts by R² descending, then by
+       p-value ascending.  Failed models are moved to the end.
+
+    5. **Write output** – call :func:`_write_predictor_search_results` to
+       produce a structured text file with a global ranking table and a
+       per-dependent-variable breakdown.
+
+    Args:
+        db_path: Filesystem path to the SQLite database (e.g. from
+            ``DB_PATH`` in ``.env``).
+        table_name: Name of the financial-ratios table to analyse
+            (e.g. ``'Standard_Data_Ratios'``).
+        output_file: Path where the ranked results will be written.  The
+            parent directory is created automatically if absent.
+        winsorize_limits: ``(lower_quantile, upper_quantile)`` pair passed to
+            :func:`Run_Model` for outlier trimming.  Defaults match the main
+            regression config.
+        alpha: p-value threshold below which a predictor is flagged as
+            statistically significant.
+
+    Returns:
+        ``None``.  All output is written to *output_file*; progress is printed
+        to stdout.
+
+    Notes:
+        - Runtime is O(n²) in the number of predictor columns.  A table with
+          50 columns produces ~2 450 models; with 100 columns ~9 900.  Each
+          model is fast (simple OLS), but wide tables may take several minutes.
+        - Individual model failures are caught internally by :func:`Run_Model`
+          and recorded as ``'failed'`` entries rather than aborting the search.
+    """
+    conn = sqlite3.connect(db_path)
+
+    try:
+        # ------------------------------------------------------------------
+        # Step 1 – Discover all predictor-eligible columns in the ratios table.
+        # ------------------------------------------------------------------
+        all_variables = _get_predictor_columns(conn, table_name)
+
+        if not all_variables:
+            print(f"No predictor columns found in table '{table_name}'. Exiting.")
+            return
+
+        total_pairs = len(all_variables) * (len(all_variables) - 1)
+        print(
+            f"Found {len(all_variables)} predictor variables in '{table_name}'. "
+            f"Running {total_pairs} single-variable regressions..."
+        )
+
+        # ------------------------------------------------------------------
+        # Steps 2 & 3 – For every (dep_var, ind_var) pair, run a regression
+        # and collect the result dict.
+        # ------------------------------------------------------------------
+        all_results: list[dict] = []
+        completed = 0
+
+        for dep_var in all_variables:
+            for ind_var in all_variables:
+
+                # A variable cannot meaningfully predict itself
+                if dep_var == ind_var:
+                    continue
+
+                result = _run_single_predictor_regression(
+                    dep_var=dep_var,
+                    ind_var=ind_var,
+                    conn=conn,
+                    table_name=table_name,
+                    winsorize_limits=winsorize_limits,
+                    alpha=alpha,
+                )
+                all_results.append(result)
+
+                # Print a progress update every 100 completed models so the
+                # user can track long-running searches
+                completed += 1
+                if completed % 100 == 0:
+                    print(f"  Progress: {completed}/{total_pairs} models completed...")
+
+        print(f"Finished running {len(all_results)} models.")
+
+        # ------------------------------------------------------------------
+        # Step 4 – Rank all results: R² descending, then p-value ascending.
+        # ------------------------------------------------------------------
+        ranked_results = _rank_predictor_results(all_results)
+
+        significant_count = sum(1 for r in ranked_results if r.get("is_significant"))
+        print(f"Models with a significant predictor (alpha={alpha}): {significant_count}")
+
+        # ------------------------------------------------------------------
+        # Step 5 – Write the ranked results to the output file.
+        # ------------------------------------------------------------------
+        _write_predictor_search_results(ranked_results, output_file, alpha)
+
+    finally:
+        # Always release the database connection, even if an error was raised
+        conn.close()
