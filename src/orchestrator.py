@@ -23,6 +23,7 @@ def run(edinet=None, data=None):
     DB_PATH = config.get("DB_PATH")
     DB_COMPANY_INFO_TABLE = config.get("DB_COMPANY_INFO_TABLE")
     DB_STOCK_PRICES_TABLE = config.get("DB_STOCK_PRICES_TABLE")
+    DB_SIGNIFICANT_PREDICTORS_TABLE = config.get("DB_SIGNIFICANT_PREDICTORS_TABLE")
 
     if not edinet:
         edinet = edinet_api.Edinet()
@@ -104,13 +105,18 @@ def run(edinet=None, data=None):
                 winsorize_thresholds["upper"],
             )
             alpha = predictor_config.get("alpha", 0.05)
+            # Optional list of dependent variables to restrict the search.
+            # An absent key or an empty list means 'search all variables'.
+            dependent_variables = predictor_config.get("dependent_variables") or []
 
             r.find_significant_predictors(
                 db_path=DB_PATH,
                 table_name=DB_STANDARDIZED_RATIOS_TABLE,
+                results_table_name=DB_SIGNIFICANT_PREDICTORS_TABLE,
                 output_file=output_file,
                 winsorize_limits=winsorize_limits,
                 alpha=alpha,
+                dependent_variables=dependent_variables,
             )
         except Exception as e:
             print(f"Error finding significant predictors: {e}")

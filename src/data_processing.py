@@ -222,11 +222,13 @@ class data:
                 
                 # Growth Metrics - Handle division by zero from pct_change
                 # pct_change will handle 0 values but may produce inf when dividing by 0
+                growth_1yr = series.pct_change(periods=1,fill_method=None)
                 growth_3yr = series.pct_change(periods=3,fill_method=None)
                 growth_5yr = series.pct_change(periods=5,fill_method=None)
                 growth_10yr = series.pct_change(periods=10,fill_method=None)
                 
                 # Replace inf values with NaN (occurs when previous value was 0)
+                new_cols[f"{output_col}_1Year_Growth"] = growth_1yr.replace([np.inf, -np.inf], np.nan)
                 new_cols[f"{output_col}_3Year_Growth"] = growth_3yr.replace([np.inf, -np.inf], np.nan)
                 new_cols[f"{output_col}_5Year_Growth"] = growth_5yr.replace([np.inf, -np.inf], np.nan)
                 new_cols[f"{output_col}_10Year_Growth"] = growth_10yr.replace([np.inf, -np.inf], np.nan)

@@ -24,6 +24,15 @@
       "lower": 0.05,
       "upper": 0.95
     },
-    "alpha": 0.05
+    "alpha": 0.05,
+    "dependent_variables": [
+      "Ratio_EarningsYield",
+      "Ratio_PriceSales",
+      "Ratio_PriceBook",
+      "Ratio_PriceNCAV",
+      "Ratio_FreeCashflowYield",
+      "Ratio_EnterpriseValueSales"
+
+    ]
   }
 }
