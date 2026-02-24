@@ -1,52 +1,73 @@
-# EDINET Data Downloader and Screener
+﻿# EDINET Financial Data Tool
 
-This program is designed to download financial data from the Japanese Securities Regulator (EDINET) and store it in a SQLite database. The main goal is to create a financial screener that allows users to query and analyze the data for future processing.
+Downloads financial filings from the Japanese securities regulator (EDINET), processes them into a structured SQLite database, and runs statistical analysis to identify relationships between financial ratios and stock valuations.
 
-Additionally the program can run a simple regression analysis to identify which financial ratios are most predictive of specific parameters such as stock price performance, earnings growth, or other financial metrics. The regression analysis can be configured to use different sets of independent variables (financial ratios) and dependent variables (e.g., stock price performance) based on the user's needs.
+## What it does
 
-## Key Functionality
+1. **Fetch document list**  queries the EDINET API for available filings in a given date range.
+2. **Download documents**  downloads the XBRL/CSV filings that match the filter criteria.
+3. **Standardise data**  normalises raw XBRL data into a clean, consistently named table.
+4. **Generate financial ratios**  calculates per-share values, valuation ratios, rolling averages, growth rates and z-scores for every company.
+5. **Update stock prices**  fetches historical share prices via Yahoo Finance.
+6. **Parse taxonomy**  parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
+7. **Find significant predictors**  univariate OLS sweep ranking which ratio columns best predict a given dependent variable.
+8. **Multivariate regression**  user-defined multivariate OLS regression specified as a SQL query.
 
-1. **Download Data**: Fetches financial documents from the EDINET API and stores them in a local database.
-2. **Data Processing**: Processes the downloaded data to generate financial ratios.
-3. **Database Management**: Manages the storage and retrieval of data in a SQLite database.
-4. **Regression Analysis**: Performs regression analysis to identify key financial ratios that predict specific outcomes.
+## Setup
 
-## Configuration
+### 1. Install dependencies
 
-The program requires a set of configurations to run properly. These configurations include API keys, database paths, and parameters for data processing and regression analysis. 
-
-The following files are used for configuration:
-- `config/run_config.json`: Contains settings for controlling the execution flow of the application, including which steps to run and the parameters for each step.
-- `config/app_config.json`: Contains application-specific settings such as EDINET base urls and default locations for files.
-- `config/financial_ratios_config.json`: Contains definitions and formulas for calculating financial ratios, allowing users to customize which ratios to calculate and how they are defined.
-- `config/regression_config.json`: Contains settings for the regression analysis, including which financial ratios to use as independent variables and which outcomes to predict as dependent variables.
-- `.env`: Contains environment variables such as API keys and database credentials.
-
-Most configurations are stored in JSON format for easy editing and readability. The `.env` file is used to store sensitive information such as API keys and database paths, which should not be hardcoded in the source code for security reasons.
-
-Example .Env file:
 ```
-API_KEY=[Your EDINET API Key Here]
-DB_PATH=D:\programming\EDINET\Base.db
+pip install -r requirements.txt
+```
+
+### 2. Create a `.env` file
+
+Copy the template below into a `.env` file in the project root and fill in your values.
+
+```dotenv
+# EDINET API
+API_KEY=<your_edinet_api_key>
+baseURL=https://api.edinet-fsa.go.jp/api/v2/documents
+doctype=5
+
+# File storage
+RAW_DOCUMENTS_PATH=D:\path\to\files
+
+# Database
+DB_PATH=D:\path\to\Base.db
 DB_DOC_LIST_TABLE=DocumentList
-DB_STANDARDIZED_TABLE=Standard_Data
 DB_FINANCIAL_DATA_TABLE=financialData_full
+DB_STANDARDIZED_TABLE=Standard_Data
+DB_STANDARDIZED_RATIOS_TABLE=Standard_Data_Ratios
+DB_COMPANY_INFO_TABLE=CompanyInfo
+DB_STOCK_PRICES_TABLE=Stock_Prices
+DB_TAXONOMY_TABLE=TAXONOMY_JPFS_COR
+DB_SIGNIFICANT_PREDICTORS_TABLE=Significant_Predictors
 ```
 
+### 3. Configure and run
 
-## Usage
+Edit `config/run_config.json` to enable the steps you want, then:
 
-1. **Configuration**: Ensure that the config files and `.env` file are properly set up with the necessary API keys and database paths.
-2. **Running the Script**: Execute the main.py script to start the program.
-3. **Downloading Data**: Use the provided functions to download and process data from EDINET.
-4. **Handling Data**: You can query the SQLite database to retrieve and analyze the financial data as needed. A ols regression results is generated in the relevant output folder. See config/regression_config.json for details on how to configure the regression analysis.
+```
+python main.py
+```
 
+See [RUNNING.md](RUNNING.md) for a full description of every step and its config options.
 
-# Key Document Types for Annual Reports:
-Document Type |	Japanese Name |	Document Code |
-|---|---|---|
-Securities Report (Annual Report)|	有価証券報告書	|120
-Quarterly Securities Report|	四半期報告書	|140
-Semi-Annual Securities Report|	半期報告書	|150
+## Configuration files
 
+| File | Purpose |
+|---|---|
+| `config/run_config.json` | Controls which steps run and their parameters |
+| `config/financial_ratios_config.json` | Ratio definitions and formulas |
+| `.env` | API keys, file paths, and database table names |
 
+## Key EDINET document type codes
+
+| Code | Document type |
+|---|---|
+| 120 | Securities Report (Annual Report  有価証券報告書) |
+| 140 | Quarterly Securities Report (四半期報告書) |
+| 150 | Semi-Annual Securities Report (半期報告書) |
