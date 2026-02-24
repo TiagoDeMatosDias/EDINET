@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import pandas as pd
 import numpy as np
-from collections import defaultdict
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, mean_absolute_error
@@ -528,22 +527,24 @@ def _rank_predictor_results(results: list[dict]) -> list[dict]:
 def _write_predictor_search_results(
     ranked_results: list[dict],
     output_file: str,
+    conn: sqlite3.Connection,
+    results_table_name: str,
     alpha: float = 0.05,
 ) -> None:
-    """Write the ranked predictor search results to a human-readable text file.
+    """Write the ranked predictor search results to a text summary and a DB table.
 
-    The output file contains two sections:
+    **File – Summary text file** (``output_file``)
+        Contains a header with overall statistics only: alpha, total models
+        evaluated, successful models, models with a significant predictor, and
+        the name of the DB table where full results are stored.
 
-    **Section 1 – Global Ranking**
-        All ``(dep_var, ind_var)`` combinations listed from highest R² to lowest.
-        Each row shows rank, variable names, R², adjusted R², p-value, star
-        significance indicator, and observation count.
-
-    **Section 2 – Per-Dependent-Variable Breakdown**
-        For each distinct dependent variable the table is repeated, ordered
-        best-first, making it easy to identify the top single predictor for
-        each target variable.  The coefficient is included here so the
-        direction of the relationship (positive / negative) is visible.
+    **Database – Results table** (``results_table_name``)
+        Every successful model is appended (``if_exists='append'``) to
+        *results_table_name* inside the same SQLite database used for the
+        analysis.  The table is created automatically on the first run.
+        Columns:
+        ``rank``, ``dep_var``, ``ind_var``, ``r_squared``, ``adj_r_squared``,
+        ``coef``, ``p_value``, ``significance``, ``n_obs``.
 
     Significance stars follow the convention:
         * ``***``  p < 0.001
@@ -552,33 +553,29 @@ def _write_predictor_search_results(
 
     Args:
         ranked_results: The output of :func:`_rank_predictor_results`.
-        output_file: Path (absolute or relative) to the file to create/overwrite.
-            The parent directory is created automatically if it does not exist.
+        output_file: Path to the summary text file.  The parent directory is
+            created automatically if it does not exist.
+        conn: The open SQLite connection used for the analysis.  Results are
+            appended to *results_table_name* inside this same database.
+        results_table_name: Name of the SQLite table to append results into
+            (e.g. ``'Significant_Predictors'``).
         alpha: The significance level used during the regressions; written into
             the file header for traceability.
     """
-    # Ensure the output directory exists before opening the file
+    # ── Ensure the text-file output directory exists ──────────────────────────
     output_dir = os.path.dirname(output_file)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    # Group results by dependent variable for the per-dep-var section
-    by_dep_var: dict[str, list[dict]] = defaultdict(list)
-    for r in ranked_results:
-        by_dep_var[r["dep_var"]].append(r)
-
+    # ── Pre-compute summary statistics ───────────────────────────────────────
     successful_results = [r for r in ranked_results if r["status"] == "success"]
     significant_count = sum(1 for r in successful_results if r.get("is_significant"))
 
-    # Column widths for the two table layouts
-    VAR_W = 45   # width reserved for variable names
-    NUM_W = 8    # width for numeric columns (R², etc.)
-    PVAL_W = 12  # width for p-value column
-    COEF_W = 14  # width for coefficient column (only in section 2)
-
+    # =========================================================================
+    # FILE – Summary text file: header stats only
+    # =========================================================================
     with open(output_file, "w", encoding="utf-8") as f:
 
-        # ── Header ──────────────────────────────────────────────────────────
         f.write("=" * 80 + "\n")
         f.write("  SIGNIFICANT PREDICTOR SEARCH RESULTS\n")
         f.write("=" * 80 + "\n")
@@ -586,101 +583,56 @@ def _write_predictor_search_results(
         f.write(f"  Total models evaluated      : {len(ranked_results)}\n")
         f.write(f"  Successful models           : {len(successful_results)}\n")
         f.write(f"  Models with sig. predictor  : {significant_count}\n")
-        f.write("=" * 80 + "\n\n")
+        f.write(f"  Results DB table            : {results_table_name}\n")
+        f.write("=" * 80 + "\n")
 
-        # ── Section 1: Global Ranking ────────────────────────────────────────
-        f.write("--- SECTION 1: Global Ranking (sorted by R²) ---\n\n")
+    print(f"Summary text written to      {output_file}")
 
-        # Build header row using f-string alignment
-        hdr = (
-            f"{'Rank':<6} "
-            f"{'Dep Var':<{VAR_W}} "
-            f"{'Ind Var':<{VAR_W}} "
-            f"{'R²':>{NUM_W}} "
-            f"{'Adj R²':>{NUM_W}} "
-            f"{'P-Value':>{PVAL_W}} "
-            f"{'Sig':<5} "
-            f"{'N':>7}\n"
-        )
-        f.write(hdr)
-        f.write("-" * (len(hdr) - 1) + "\n")  # -1 to exclude the trailing \n
+    # =========================================================================
+    # DATABASE – Append results to the SQLite results table.
+    # =========================================================================
 
-        for r in ranked_results:
-            if r["status"] != "success":
-                continue
-            f.write(
-                f"{r['rank']:<6} "
-                f"{r['dep_var']:<{VAR_W}} "
-                f"{r['ind_var']:<{VAR_W}} "
-                f"{r['r_squared']:>{NUM_W}.4f} "
-                f"{r['adj_r_squared']:>{NUM_W}.4f} "
-                f"{r['p_value']:>{PVAL_W}.4g} "
-                f"{_significance_stars(r['p_value']):<5} "
-                f"{r['n_obs']:>7}\n"
-            )
+    # Build a DataFrame from successful models only; rank was already assigned
+    # by _rank_predictor_results.  Failed models are excluded.
+    db_rows = [
+        {
+            "rank": r["rank"],
+            "dep_var": r["dep_var"],
+            "ind_var": r["ind_var"],
+            "r_squared": r["r_squared"],
+            "adj_r_squared": r["adj_r_squared"],
+            "coef": r["coef"],
+            "p_value": r["p_value"],
+            "significance": _significance_stars(r["p_value"]),
+            "n_obs": r["n_obs"],
+        }
+        for r in ranked_results
+        if r["status"] == "success"
+    ]
 
-        f.write("\n")
+    results_df = pd.DataFrame(db_rows, columns=[
+        "rank", "dep_var", "ind_var",
+        "r_squared", "adj_r_squared", "coef",
+        "p_value", "significance", "n_obs",
+    ])
 
-        # ── Section 2: Per-Dependent-Variable Breakdown ───────────────────────
-        f.write("--- SECTION 2: Per-Dependent-Variable Breakdown ---\n\n")
+    # if_exists='append' creates the table on the first run and appends on
+    # subsequent runs, preserving any historical results already stored.
+    # index=False prevents pandas from writing its own row-number column.
+    results_df.to_sql(results_table_name, conn, if_exists="append", index=False)
+    conn.commit()
 
-        for dep_var in sorted(by_dep_var.keys()):
-            dep_results = by_dep_var[dep_var]
-
-            # Sort this dep_var's successful results best-first
-            successful_dep = sorted(
-                [r for r in dep_results if r["status"] == "success"],
-                key=lambda r: (
-                    -r["r_squared"],
-                    r["p_value"] if r["p_value"] is not None else 1.0,
-                ),
-            )
-            failed_dep = [r for r in dep_results if r["status"] != "success"]
-
-            f.write(f"Dependent Variable: {dep_var}\n")
-
-            # Sub-table header (coefficient column added here)
-            sub_hdr = (
-                f"  {'Ind Var':<{VAR_W}} "
-                f"{'R²':>{NUM_W}} "
-                f"{'Adj R²':>{NUM_W}} "
-                f"{'Coef':>{COEF_W}} "
-                f"{'P-Value':>{PVAL_W}} "
-                f"Sig\n"
-            )
-            f.write(sub_hdr)
-            f.write("  " + "-" * (len(sub_hdr) - 3) + "\n")
-
-            for r in successful_dep:
-                coef_str = f"{r['coef']:.4g}" if r["coef"] is not None else "N/A"
-                f.write(
-                    f"  {r['ind_var']:<{VAR_W}} "
-                    f"{r['r_squared']:>{NUM_W}.4f} "
-                    f"{r['adj_r_squared']:>{NUM_W}.4f} "
-                    f"{coef_str:>{COEF_W}} "
-                    f"{r['p_value']:>{PVAL_W}.4g} "
-                    f"{_significance_stars(r['p_value'])}\n"
-                )
-
-            # Note any combinations that failed to produce a model
-            if failed_dep:
-                f.write(
-                    f"  [Failed models: "
-                    + ", ".join(r["ind_var"] for r in failed_dep)
-                    + "]\n"
-                )
-
-            f.write("\n")
-
-    print(f"\nPredictor search results written to {output_file}")
+    print(f"Results appended to DB table {results_table_name} ({len(results_df)} rows)")
 
 
 def find_significant_predictors(
     db_path: str,
     table_name: str,
+    results_table_name: str,
     output_file: str = "data/ols_results/predictor_search_results.txt",
     winsorize_limits: tuple[float, float] = (0.05, 0.95),
     alpha: float = 0.05,
+    dependent_variables: list[str] | None = None,
 ) -> None:
     """Systematically test every single-predictor OLS regression in the ratios table.
 
@@ -708,25 +660,35 @@ def find_significant_predictors(
     4. **Rank results** – sort all result dicts by R² descending, then by
        p-value ascending.  Failed models are moved to the end.
 
-    5. **Write output** – call :func:`_write_predictor_search_results` to
-       produce a structured text file with a global ranking table and a
-       per-dependent-variable breakdown.
+    5. **Store output** – call :func:`_write_predictor_search_results` to
+       write a brief stats summary to *output_file* and append full results
+       to *results_table_name* in the same SQLite database.
 
     Args:
         db_path: Filesystem path to the SQLite database (e.g. from
             ``DB_PATH`` in ``.env``).
         table_name: Name of the financial-ratios table to analyse
             (e.g. ``'Standard_Data_Ratios'``).
-        output_file: Path where the ranked results will be written.  The
-            parent directory is created automatically if absent.
+        results_table_name: Name of the SQLite table to append results into
+            (e.g. ``'Significant_Predictors'`` from ``DB_SIGNIFICANT_PREDICTORS_TABLE``
+            in ``.env``).  The table is created automatically if it does not
+            exist yet.
+        output_file: Path where the brief stats summary will be written.
+            The parent directory is created automatically if absent.
         winsorize_limits: ``(lower_quantile, upper_quantile)`` pair passed to
             :func:`Run_Model` for outlier trimming.  Defaults match the main
             regression config.
         alpha: p-value threshold below which a predictor is flagged as
             statistically significant.
+        dependent_variables: Optional explicit list of column names to use as
+            dependent variables.  When ``None`` or empty, every eligible column
+            in *table_name* is used as a dependent variable (default behaviour).
+            Independent variables are always drawn from the full set of eligible
+            columns regardless of this filter.
 
     Returns:
-        ``None``.  All output is written to *output_file*; progress is printed
+        ``None``.  Results are appended to *results_table_name* in the DB;
+        a brief summary is written to *output_file*; progress is printed
         to stdout.
 
     Notes:
@@ -748,10 +710,34 @@ def find_significant_predictors(
             print(f"No predictor columns found in table '{table_name}'. Exiting.")
             return
 
-        total_pairs = len(all_variables) * (len(all_variables) - 1)
+        # If the caller supplied a non-empty dependent_variables list, restrict
+        # the dep_var loop to only those columns.  Unknown column names are
+        # warned about but silently skipped so a typo in the config does not
+        # silently produce wrong results without any feedback.
+        if dependent_variables:
+            unknown = [v for v in dependent_variables if v not in all_variables]
+            if unknown:
+                print(
+                    f"Warning: the following dependent_variables were not found "
+                    f"in '{table_name}' and will be skipped: {unknown}"
+                )
+            dep_var_list = [v for v in dependent_variables if v in all_variables]
+        else:
+            # Default: use every eligible column as a potential dependent variable
+            dep_var_list = all_variables
+
+        if not dep_var_list:
+            print("No valid dependent variables to search. Exiting.")
+            return
+
+        # Independent variables always come from the full eligible column set.
+        # This means ind_var candidates are not restricted even when dep_var
+        # is filtered, so we still test all possible predictors.
+        total_pairs = len(dep_var_list) * (len(all_variables) - 1)
         print(
             f"Found {len(all_variables)} predictor variables in '{table_name}'. "
-            f"Running {total_pairs} single-variable regressions..."
+            f"Running {total_pairs} single-variable regressions "
+            f"({len(dep_var_list)} dependent variable(s))..."
         )
 
         # ------------------------------------------------------------------
@@ -761,7 +747,7 @@ def find_significant_predictors(
         all_results: list[dict] = []
         completed = 0
 
-        for dep_var in all_variables:
+        for dep_var in dep_var_list:
             for ind_var in all_variables:
 
                 # A variable cannot meaningfully predict itself
@@ -795,9 +781,16 @@ def find_significant_predictors(
         print(f"Models with a significant predictor (alpha={alpha}): {significant_count}")
 
         # ------------------------------------------------------------------
-        # Step 5 – Write the ranked results to the output file.
+        # Step 5 – Write summary stats to the text file and append full
+        #          results to the DB table.
         # ------------------------------------------------------------------
-        _write_predictor_search_results(ranked_results, output_file, alpha)
+        _write_predictor_search_results(
+            ranked_results,
+            output_file,
+            conn,
+            results_table_name,
+            alpha,
+        )
 
     finally:
         # Always release the database connection, even if an error was raised
