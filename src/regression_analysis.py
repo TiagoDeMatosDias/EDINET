@@ -3,60 +3,11 @@ from __future__ import annotations
 
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, mean_absolute_error
-from sklearn import preprocessing
 import statsmodels.api as sm
 import sqlite3
-import json as json
 import os
-from dotenv import load_dotenv
 
 
-def Regression(config, db_path):
-    """
-    Perform regression analysis using data from a SQLite database and configuration from a JSON file.
-
-    Steps:
-    1. Load configuration from JSON file.
-    2. Connect to the SQLite database.
-    3. Generate SQL query based on configuration.
-    4. Run regression model using the generated query.
-    5. Write regression results to a file.
-
-    Returns:
-        None
-    """
-    # Load configuration
-    load_dotenv()
-
-    if not db_path:
-        raise ValueError("DB_PATH environment variable not set or .env file not found.")
-
-    # Connect to the SQLite database
-    conn = sqlite3.connect(db_path)
-
-    # Generate SQL query based on configuration
-    generated_query = Generate_SQL_Query(config)
-
-    # get winsorize limits from config, or use defaults
-    winsorize_limits = config.get("winsorize_thresholds", {"lower": 0.01, "upper": 0.99})
-    winsorize_limits = (winsorize_limits["lower"], winsorize_limits["upper"])
-
-
-    # Run regression model
-    results = Run_Model(
-        generated_query["Query"],
-        conn,
-        generated_query["DependentVariable"],
-        generated_query["IndependentVariables"],
-        winsorize_limits
-    )
-
-    # Write regression results to a file
-    output_file = config.get("Output")
-    write_results_to_file(results, generated_query["Query"], output_file)
 
 def Run_Model(
     Query: str,
@@ -188,106 +139,6 @@ def write_results_to_file(
     print(f"\nOLS results summary written to {output_file}")
 
 
-def Generate_SQL_Query(config: dict) -> dict:
-    """
-    Dynamically generates an SQL query for a time-series regression model.
-
-    This function constructs a query by joining a table to itself multiple
-    times to create lagged variables for the independent features, based on
-    the provided configuration.
-
-    Args:
-        config: A dictionary containing the configuration for the regression,
-                including dependent/independent variables, tables, and the
-                number of historical periods to include.
-
-    Returns:
-        A dictionary containing the generated 'Query', the 'DependentVariable'
-        name, and a list of 'IndependentVariables' names.
-    """
-    # --- 1. Extract configuration details ---
-    dep_var_config = config.get("DependentVariable")
-    ind_vars_config = config.get("IndependentVariables")
-    db_tables_config = config.get("DB_Tables")
-    
-    num_periods = config.get("NumberOfPeriods")
-    NotNullFields = config.get("NotNullFields", [])
-
-    # --- 2. Define variables for the query components ---
-    dependent_variable_df_name = dep_var_config["Name"]
-    dependent_variable_sql = dep_var_config["Formula"]
-    dependent_variable_select = f'{dependent_variable_sql} AS {dependent_variable_df_name}'
-
-    # Lists to store parts of the query for independent variables
-    select_aliases = []
-    where_conditions = [f"{dependent_variable_sql} IS NOT NULL"]
-    if NotNullFields:
-        where_conditions.append(" (" + " and ".join([f"{field} IS NOT NULL" for field in NotNullFields]) + ")")
-
-    df_column_names = []
-
-    # --- 3. Build the FROM and JOIN clauses for lagged data ---
-    from_clause = _build_from_clause(db_tables_config, num_periods)
-
-    # --- 4. Build SELECT and WHERE clauses for independent variables ---
-    for i in range(max(1,num_periods)):
-        for ind_var in ind_vars_config:
-            table_alias = f"{ind_var['Table_Alias']}_{i}"
-            col_name = ind_var["Name"]
-            df_col_name = f"{col_name}_{i}"
-            
-            select_aliases.append(f"{table_alias}.{col_name} AS {df_col_name}")
-            where_conditions.append(f"{table_alias}.{col_name} IS NOT NULL")
-            df_column_names.append(df_col_name)
-
-    # --- 5. Assemble the final query ---
-    base_table_alias = db_tables_config[0]["Alias"]
-    # Create a list of all columns for the SELECT clause. This avoids a
-    # trailing comma if `select_aliases` is empty.
-    all_select_parts = [
-        f"{base_table_alias}.edinetCode",
-        f"{base_table_alias}.PeriodStart",
-        dependent_variable_select,
-    ] + select_aliases
-    all_selects = ", ".join(all_select_parts)
-
-    where_clause = " AND ".join(where_conditions)
-
-    query = f"""
-    SELECT {all_selects}
-    FROM {from_clause}
-    WHERE {where_clause}
-    """
-
-    return {
-        "Query": query,
-        "DependentVariable": dependent_variable_df_name,
-        "IndependentVariables": df_column_names,
-    }
-
-
-def _build_from_clause(db_tables_config: list[dict], num_periods: int) -> str:
-    """Helper to build the FROM and JOIN part of the SQL query."""
-    
-    # Start with the base table for the current period
-    base_table = db_tables_config[0]
-    from_clause = f"{base_table['Name']} AS {base_table['Alias']}"
-
-    # Join for each historical period
-    for i in range(max(1, num_periods)):
-        current_alias = f"{base_table['Alias']}" if i == 0 else f"{base_table['Alias']}_{i-1}"
-        lagged_alias = f"{base_table['Alias']}_{i}"
-        
-        join_condition = (
-            f"ON {current_alias}.edinetCode = {lagged_alias}.edinetCode "
-            f"AND CAST(STRFTIME('%J', {current_alias}.PeriodStart) AS INTEGER) - CAST(STRFTIME('%J', {lagged_alias}.PeriodEnd) AS INTEGER) BETWEEN 1 AND 5" # Approx 1 to 5 years
-        )
-        
-        from_clause += f" LEFT JOIN {base_table['Name']} AS {lagged_alias} {join_condition}"
-        
-    return from_clause
-
-
 
 # ---------------------------------------------------------------------------
 # SIGNIFICANT PREDICTOR SEARCH
@@ -356,10 +207,10 @@ def _significance_stars(p_value: float | None) -> str:
     """Convert a p-value to a star-rating string for human-readable output.
 
     Uses the conventional three-tier scheme:
-        * ``***``  –  p < 0.001  (highly significant)
-        * ``**``   –  p < 0.01   (very significant)
-        * ``*``    –  p < 0.05   (significant)
-        * ``""``   –  p ≥ 0.05 or None (not significant)
+        * ``***``  -  p < 0.001  (highly significant)
+        * ``**``   -  p < 0.01   (very significant)
+        * ``*``    -  p < 0.05   (significant)
+        * ``""``   -  p ≥ 0.05 or None (not significant)
 
     Args:
         p_value: The p-value to evaluate.  ``None`` is treated as non-significant.
@@ -478,9 +329,9 @@ def _rank_predictor_results(results: list[dict]) -> list[dict]:
     """Sort and rank a flat list of single-predictor regression result dicts.
 
     Sorting criteria applied in order:
-        1. **R-squared descending** – higher R² means the predictor explains
+        1. **R-squared descending** - higher R² means the predictor explains
            more variance in the dependent variable.
-        2. **p-value ascending** – lower p-value provides stronger statistical
+        2. **p-value ascending** - lower p-value provides stronger statistical
            evidence that the relationship is non-zero.
 
     Failed models (``status != 'success'`` or ``r_squared is None``) are
@@ -533,12 +384,12 @@ def _write_predictor_search_results(
 ) -> None:
     """Write the ranked predictor search results to a text summary and a DB table.
 
-    **File – Summary text file** (``output_file``)
+    **File - Summary text file** (``output_file``)
         Contains a header with overall statistics only: alpha, total models
         evaluated, successful models, models with a significant predictor, and
         the name of the DB table where full results are stored.
 
-    **Database – Results table** (``results_table_name``)
+    **Database - Results table** (``results_table_name``)
         Every successful model is appended (``if_exists='append'``) to
         *results_table_name* inside the same SQLite database used for the
         analysis.  The table is created automatically on the first run.
@@ -572,7 +423,7 @@ def _write_predictor_search_results(
     significant_count = sum(1 for r in successful_results if r.get("is_significant"))
 
     # =========================================================================
-    # FILE – Summary text file: header stats only
+    # FILE - Summary text file: header stats only
     # =========================================================================
     with open(output_file, "w", encoding="utf-8") as f:
 
@@ -589,7 +440,7 @@ def _write_predictor_search_results(
     print(f"Summary text written to      {output_file}")
 
     # =========================================================================
-    # DATABASE – Append results to the SQLite results table.
+    # DATABASE - Append results to the SQLite results table.
     # =========================================================================
 
     # Build a DataFrame from successful models only; rank was already assigned
@@ -643,24 +494,24 @@ def find_significant_predictors(
 
     Pipeline
     --------
-    1. **Discover variables** – query ``PRAGMA table_info`` on *table_name* to
+    1. **Discover variables** - query ``PRAGMA table_info`` on *table_name* to
        get all column names, then filter out identifier / metadata columns
        (``edinetCode``, ``docID``, ``docTypeCode``, ``periodStart``,
        ``periodEnd``).
 
-    2. **Generate configs** – for every ordered pair ``(dep_var, ind_var)``
+    2. **Generate configs** - for every ordered pair ``(dep_var, ind_var)``
        where ``dep_var ≠ ind_var`` (O(n²) combinations), build a minimal SQL
        query: ``SELECT dep_var, ind_var FROM table WHERE … IS NOT NULL``.
 
-    3. **Run models** – delegate each pair to :func:`Run_Model` (which handles
+    3. **Run models** - delegate each pair to :func:`Run_Model` (which handles
        winsorisation, constant addition, and OLS fitting).  Results are stored
        as dicts containing R², adjusted R², coefficient, p-value, and
        observation count.
 
-    4. **Rank results** – sort all result dicts by R² descending, then by
+    4. **Rank results** - sort all result dicts by R² descending, then by
        p-value ascending.  Failed models are moved to the end.
 
-    5. **Store output** – call :func:`_write_predictor_search_results` to
+    5. **Store output** - call :func:`_write_predictor_search_results` to
        write a brief stats summary to *output_file* and append full results
        to *results_table_name* in the same SQLite database.
 
@@ -702,7 +553,7 @@ def find_significant_predictors(
 
     try:
         # ------------------------------------------------------------------
-        # Step 1 – Discover all predictor-eligible columns in the ratios table.
+        # Step 1 - Discover all predictor-eligible columns in the ratios table.
         # ------------------------------------------------------------------
         all_variables = _get_predictor_columns(conn, table_name)
 
@@ -741,7 +592,7 @@ def find_significant_predictors(
         )
 
         # ------------------------------------------------------------------
-        # Steps 2 & 3 – For every (dep_var, ind_var) pair, run a regression
+        # Steps 2 & 3 - For every (dep_var, ind_var) pair, run a regression
         # and collect the result dict.
         # ------------------------------------------------------------------
         all_results: list[dict] = []
@@ -773,7 +624,7 @@ def find_significant_predictors(
         print(f"Finished running {len(all_results)} models.")
 
         # ------------------------------------------------------------------
-        # Step 4 – Rank all results: R² descending, then p-value ascending.
+        # Step 4 - Rank all results: R² descending, then p-value ascending.
         # ------------------------------------------------------------------
         ranked_results = _rank_predictor_results(all_results)
 
@@ -781,7 +632,7 @@ def find_significant_predictors(
         print(f"Models with a significant predictor (alpha={alpha}): {significant_count}")
 
         # ------------------------------------------------------------------
-        # Step 5 – Write summary stats to the text file and append full
+        # Step 5 - Write summary stats to the text file and append full
         #          results to the DB table.
         # ------------------------------------------------------------------
         _write_predictor_search_results(
@@ -794,4 +645,53 @@ def find_significant_predictors(
 
     finally:
         # Always release the database connection, even if an error was raised
+        conn.close()
+
+
+def multivariate_regression(config: dict, db_path: str) -> None:
+    """Run a multivariate OLS regression defined entirely by a SQL query.
+
+    The first column returned by ``SQL_Query`` is the dependent variable;
+    all remaining columns are independent variables.  This lets the model be
+    changed purely through the config without touching any code.
+
+    Winsorisation is applied only when ``winsorize_thresholds`` is present in
+    *config*.  When the key is absent, limits of ``(0.0, 1.0)`` are used,
+    which preserves every row (no clipping).
+
+    Args:
+        config: The ``Multivariate_Regression_config`` dict, containing:
+
+            * ``SQL_Query`` (str)  - SQL that returns the regression dataset.
+            * ``Output`` (str)     - Path for the results text file.
+            * ``winsorize_thresholds`` (dict, *optional*) -
+              ``{"lower": float, "upper": float}``.  Omit to skip winsorisation.
+
+        db_path: Path to the SQLite database file.
+    """
+    sql = config.get("SQL_Query")
+    output_file = config.get("Output")
+
+    if not sql:
+        raise ValueError("Multivariate_Regression_config must contain 'SQL_Query'.")
+    if not output_file:
+        raise ValueError("Multivariate_Regression_config must contain 'Output'.")
+
+    # When thresholds are absent, (0.0, 1.0) keeps every row (no clipping).
+    thresholds = config.get("winsorize_thresholds")
+    winsorize_limits = (
+        (thresholds["lower"], thresholds["upper"]) if thresholds else (0.0, 1.0)
+    )
+
+    conn = sqlite3.connect(db_path)
+    try:
+        # Derive variable names without loading the full dataset.
+        # Wrapping as a subquery handles any trailing ORDER BY / LIMIT in sql.
+        peek = pd.read_sql_query(f"SELECT * FROM ({sql}) LIMIT 0", conn)
+        dep_var = peek.columns[0]
+        ind_vars = list(peek.columns[1:])
+
+        results = Run_Model(sql, conn, dep_var, ind_vars, winsorize_limits)
+        write_results_to_file(results, sql, output_file)
+    finally:
         conn.close()

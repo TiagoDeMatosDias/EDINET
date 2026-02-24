@@ -15,8 +15,12 @@
     "standardize_data": false,
     "generate_financial_ratios": false,
     "update_stock_prices": false,
-    "run_regression": false,
-    "find_significant_predictors": true
+    "parse_taxonomy": false,
+    "find_significant_predictors": false,
+    "Multivariate_Regression": true
+  },
+  "parse_taxonomy_config": {
+    "xsd_file": "testdata/inputs/external/taxonomy/2014/jppfs/jppfs_cor/jppfs_cor_2014-03-31.xsd"
   },
   "find_significant_predictors_config": {
     "output_file": "data/ols_results/predictor_search_results.txt",
@@ -34,5 +38,15 @@
       "Ratio_EnterpriseValueSales"
 
     ]
-  }
+  },
+  "Multivariate_Regression_config":{
+    "Output":"data/ols_results/ols_results_summary.txt",
+    "winsorize_thresholds": {
+        "lower": 0.05,
+        "upper": 0.95
+    },
+    "SQL_Query": "Select PerShare_SharePrice, PerShare_BookValue * Ratio_PriceBook as Bv_Check , PerShare_Earnings / Ratio_EarningsYield as Earnings_Check, PerShare_Sales * Ratio_PriceSales as Sales_Check from Standard_Data_Ratios"
+
+}
+
 }
