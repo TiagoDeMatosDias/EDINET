@@ -24,6 +24,7 @@ def run(edinet=None, data=None):
     DB_COMPANY_INFO_TABLE = config.get("DB_COMPANY_INFO_TABLE")
     DB_STOCK_PRICES_TABLE = config.get("DB_STOCK_PRICES_TABLE")
     DB_SIGNIFICANT_PREDICTORS_TABLE = config.get("DB_SIGNIFICANT_PREDICTORS_TABLE")
+    DB_TAXONOMY_TABLE = config.get("DB_TAXONOMY_TABLE")
 
     if not edinet:
         edinet = edinet_api.Edinet()
@@ -80,12 +81,14 @@ def run(edinet=None, data=None):
         except Exception as e:
             print(f"Error updating stock prices: {e}")
 
-    if run_steps.get("run_regression"):
+    if run_steps.get("parse_taxonomy"):
         try:
-            print("Running regression...")
-            r.Regression(config, DB_PATH)
+            print("Parsing EDINET taxonomy...")
+            taxonomy_config = config.get("parse_taxonomy_config", {})
+            xsd_file = taxonomy_config.get("xsd_file")
+            data.parse_edinet_taxonomy(xsd_file, DB_TAXONOMY_TABLE)
         except Exception as e:
-            print(f"Error running regression: {e}")
+            print(f"Error parsing taxonomy: {e}")
 
     if run_steps.get("find_significant_predictors"):
         try:
@@ -120,5 +123,13 @@ def run(edinet=None, data=None):
             )
         except Exception as e:
             print(f"Error finding significant predictors: {e}")
+
+    if run_steps.get("Multivariate_Regression"):
+        try:
+            print("Running multivariate regression...")
+            mv_config = config.get("Multivariate_Regression_config", {})
+            r.multivariate_regression(mv_config, DB_PATH)
+        except Exception as e:
+            print(f"Error running multivariate regression: {e}")
 
     print('Program Ended')

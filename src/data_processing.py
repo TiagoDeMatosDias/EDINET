@@ -14,30 +14,6 @@ class data:
 
 
 
-    def create_table(self, table_name, columns, connection=None):
-        """
-        This function creates a table in the SQLite database with the given columns.
-        :param table_name: Name of the table to create
-        :param columns: List of column names
-        :return: None
-        """
-        try:
-            if connection is None:
-                conn = sqlite3.connect(self.DB_PATH)
-            else:
-                conn = connection
-            cursor = conn.cursor()
-            
-            column_definitions = ", ".join([f"{col} TEXT" for col in columns])
-            cursor.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({column_definitions})")
-            conn.commit()
-        except Exception as e:
-            print(f"An error occurred while creating table {table_name}: {e}")
-        finally:
-            
-            if connection is None:
-                conn.close()
-
     def Filter_for_Relevant(self, input_table, output_table):
         """
         Generates financial statements by querying data from the input table and
@@ -275,20 +251,6 @@ class data:
 
 
 
-    def get_first_existing_column(self, df, columns):
-        """
-        This function returns the first column from the list that contains numeric values.
-        :param df: DataFrame to search
-        :param columns: List of column names to check
-        :return: Series with the first existing column's values
-        """
-        for column in columns:
-            if column in df.columns and pd.api.types.is_numeric_dtype(df[column]) :
-                return df[column]
-        return pd.Series([np.nan] * len(df))
-
-
-
 
 
     def add_missing_columns(self, conn, table_name, df):
@@ -398,24 +360,21 @@ class data:
         self.rename_columns_to_Standard(conn, tempTable)
         self.Filter_for_Relevant(tempTable, target_table)
         self.delete_table(tempTable, conn)
-    
-
 
     def parse_edinet_taxonomy(self, xsd_file, table_name, connection=None):
         """
         Parses an EDINET Taxonomy XSD file and stores relevant elements in an SQLite database.
-        
-        :param xsd_file: Path to the EDINET XSD file.
-        :param db_file: Path to the SQLite database file.
+
+        Args:
+            xsd_file: Path to the EDINET XSD file.
+            table_name: Name of the SQLite table to write elements into.
+            connection: Optional existing SQLite connection.  A new one is
+                opened (and closed) automatically when omitted.
         """
-        # Parse the XSD file
         tree = ET.parse(xsd_file)
         root = tree.getroot()
-        
-        # Define XML namespace (assuming the namespace does not change)
         namespace = "{http://www.w3.org/2001/XMLSchema}"
-        
-        # Extract elements
+
         elements = []
         for elem in root.findall(f"{namespace}element"):
             name = elem.get("name")
@@ -424,100 +383,62 @@ class data:
             balance = elem.get("{http://www.xbrl.org/2003/instance}balance")
             period_type = elem.get("{http://www.xbrl.org/2003/instance}periodType")
 
-            Id = self.adjust_string(elem_id, "jppfs_cor_", "jppfs_cor:")
+            elem_id_adjusted = self._adjust_string(elem_id, "jppfs_cor_", "jppfs_cor:")
+
             if period_type == "instant" and abstract == "false":
-                Statement = "Balance Sheet"
+                statement = "Balance Sheet"
             elif period_type == "duration" and abstract == "false" and balance is not None:
-                Statement = "Income Statement"
+                statement = "Income Statement"
             elif period_type == "duration" and abstract == "false" and balance is None:
-                Statement = "Cashflow Statement"
+                statement = "Cashflow Statement"
             else:
-                Statement = "Other Statement"
+                statement = "Other Statement"
 
-            if Statement == "Balance Sheet" and balance == "credit":
-                Type = "Liability"
-            elif Statement == "Balance Sheet" and balance == "debit":
-                Type = "Asset"
-            elif Statement == "Income Statement" and balance == "debit":
-                Type = "Expense"
-            elif Statement == "Income Statement" and balance == "credit":
-                Type = "Income"
+            if statement == "Balance Sheet" and balance == "credit":
+                elem_type = "Liability"
+            elif statement == "Balance Sheet" and balance == "debit":
+                elem_type = "Asset"
+            elif statement == "Income Statement" and balance == "debit":
+                elem_type = "Expense"
+            elif statement == "Income Statement" and balance == "credit":
+                elem_type = "Income"
             else:
-                Type = "Other"
-                
+                elem_type = "Other"
 
-            
             if elem_id and name:
-                elements.append((Id, name, Statement, Type))
-        
-        # Store in SQLite database
-        
+                elements.append((elem_id_adjusted, name, statement, elem_type))
+
         if connection is None:
-                conn = sqlite3.connect(self.DB_PATH)
+            conn = sqlite3.connect(self.DB_PATH)
         else:
             conn = connection
-        cursor = conn.cursor()
-            
 
-
-        # Create table
-        self.create_table(table_name, ["Id", "Name", "Statement", "Type"], conn)
-
-
-        
-        # Insert data
-        self.insert_data(table_name, ["Id", "Name", "Statement", "Type"], elements, conn)
-
-        
-        conn.commit()
-        conn.close()
-
-    def insert_data(self, table_name, columns, rows, connection=None):
-        """
-        This function inserts data into a table in the SQLite database.
-        :param table_name: Name of the table to insert data into
-        :param columns: List of column names
-        :param rows: List of rows to insert
-        :return: None
-        """
         try:
-            if connection is None:
-                conn = sqlite3.connect(self.DB_PATH)
-            else:
-                conn = connection
-            cursor = conn.cursor()
-            
-            placeholders = ", ".join(["?" for _ in columns])
-            if isinstance(rows, dict):
-                cursor.executemany(f"INSERT INTO {table_name} ({', '.join(rows.keys())}) VALUES ({placeholders})", [tuple(rows.values())])
-            else:
-                cursor.executemany(f"INSERT INTO {table_name} VALUES ({placeholders})", rows)
+            self._create_table(conn, table_name, ["Id", "Name", "Statement", "Type"])
+            self._insert_data(conn, table_name, elements)
             conn.commit()
-        except Exception as e:
-            print(f"An error occurred while inserting data into table {table_name}: {e}")
         finally:
             if connection is None:
                 conn.close()
 
-    def adjust_string(self, input_string,check_substring, replace_substring ):
-        """
-        Adjusts the input string by replacing "jppfs_cor_" with "jppfs_cor:" if it starts with "jppfs_cor_".
-        
-        :param input_string: The string to adjust
-        :return: The adjusted string
-        """
-        if input_string.startswith(check_substring):
+    # ------------------------------------------------------------------
+    # Private helpers for parse_edinet_taxonomy
+    # ------------------------------------------------------------------
+
+    def _create_table(self, conn, table_name, columns):
+        """Create *table_name* with TEXT columns if it does not already exist."""
+        column_definitions = ", ".join([f"{col} TEXT" for col in columns])
+        conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({column_definitions})")
+
+    def _insert_data(self, conn, table_name, rows):
+        """Bulk-insert *rows* (list of tuples) into *table_name*."""
+        if not rows:
+            return
+        placeholders = ", ".join(["?" for _ in rows[0]])
+        conn.executemany(f"INSERT INTO {table_name} VALUES ({placeholders})", rows)
+
+    def _adjust_string(self, input_string, check_substring, replace_substring):
+        """Replace the leading *check_substring* with *replace_substring* once."""
+        if input_string and input_string.startswith(check_substring):
             return input_string.replace(check_substring, replace_substring, 1)
         return input_string
-        
-
-    def SQL_to_CSV(self, input_table, CSV_Name, Query_Modifier = None , conn=None):
-
-        if conn is None:
-                conn = sqlite3.connect(self.DB_PATH)
-        else:
-            conn = connection
-        cursor = conn.cursor()
-
-        df = pd.read_sql_query(f"SELECT * FROM {input_table} {Query_Modifier}", conn)
-        df.to_csv(CSV_Name)
