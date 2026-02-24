@@ -13,10 +13,10 @@
     "get_documents": false,
     "download_documents": false,
     "standardize_data": false,
-    "generate_financial_ratios": false,
-    "update_stock_prices": false,
     "populate_company_info": false,
+    "update_stock_prices": false,
     "parse_taxonomy": false,
+    "generate_financial_ratios": false,
     "find_significant_predictors": false,
     "Multivariate_Regression": true
   },
