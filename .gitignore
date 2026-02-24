@@ -7,3 +7,8 @@ __pycache__/
 .venv/
 .vscode/
 .env
+
+# PyInstaller
+build/
+dist/
+*.spec

@@ -112,6 +112,10 @@ def write_results_to_file(
     p_values = results.pvalues
     significant_variables = p_values[p_values < alpha]
 
+    output_dir = os.path.dirname(output_file)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
     with open(output_file, "w") as f:
         # --- Write Query ---
         f.write("---" + " SQL Query ---" + "\n")
