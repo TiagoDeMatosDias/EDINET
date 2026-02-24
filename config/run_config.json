@@ -15,12 +15,16 @@
     "standardize_data": false,
     "generate_financial_ratios": false,
     "update_stock_prices": false,
+    "populate_company_info": false,
     "parse_taxonomy": false,
     "find_significant_predictors": false,
     "Multivariate_Regression": true
   },
+  "populate_company_info_config": {
+    "csv_file": "config/EdinetcodeDlInfo.csv"
+  },
   "parse_taxonomy_config": {
-    "xsd_file": "testdata/inputs/external/taxonomy/2014/jppfs/jppfs_cor/jppfs_cor_2014-03-31.xsd"
+    "xsd_file": "config/jppfs_cor_2013-08-31.xsd"
   },
   "find_significant_predictors_config": {
     "output_file": "data/ols_results/predictor_search_results.txt",
