@@ -77,7 +77,14 @@ def Run_Model(
         # In case of any error, return an empty, fitted model. This ensures
         # that the function always returns a results object, which can
         # prevent crashes in subsequent code that expects one.
-        empty_model = sm.OLS(pd.Series(dtype=float), pd.DataFrame(dtype=float)).fit()
+        try:
+            empty_model = sm.OLS(pd.Series(dtype=float), pd.DataFrame(dtype=float)).fit()
+        except Exception:
+            # numpy 2.x raises ValueError on zero-size arrays; fall back to a
+            # two-observation dummy model so the caller always gets a valid object.
+            y_dummy = pd.Series([0.0, 0.0])
+            X_dummy = sm.add_constant(pd.Series([0.0, 0.0]))
+            empty_model = sm.OLS(y_dummy, X_dummy).fit()
         return empty_model
 
 

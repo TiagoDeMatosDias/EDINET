@@ -21,7 +21,8 @@ class TestEdinet(unittest.TestCase):
         mock_config_instance.get.side_effect = lambda key, default=None: {
             "baseURL": "http://test.com",
             "API_KEY": "test_key",
-            "DB_PATH": "dummy.db"
+            "DB_PATH": "dummy.db",
+            "DB_DOC_LIST_TABLE": "DocumentList"
         }.get(key, default)
 
         self.edinet = Edinet()
@@ -57,7 +58,7 @@ class TestEdinet(unittest.TestCase):
 
         # Assert that the database was called correctly
         mock_sqlite_connect.assert_called_with(self.edinet.Database)
-        mock_cursor.execute.assert_any_call("SELECT COUNT(*) FROM DocumentList WHERE docID = ?", ('doc1',))
+        mock_cursor.execute.assert_any_call(f"SELECT COUNT(*) FROM {self.edinet.DB_DOC_LIST_TABLE} WHERE docID = ?", ('doc1',))
         self.assertEqual(mock_conn.commit.call_count, 1)
         mock_conn.close.assert_called_once()
 
@@ -68,7 +69,7 @@ class TestEdinet(unittest.TestCase):
         # Mock the config
         mock_config_instance = mock_config.return_value
         mock_config_instance.get.side_effect = lambda key, default=None: {
-            "defaultLocation": "test_location",
+            "RAW_DOCUMENTS_PATH": "test_location",
             "baseURL": "http://test.com",
             "API_KEY": "test_key",
             "doctype": "5"
@@ -105,7 +106,7 @@ class TestEdinet(unittest.TestCase):
         # Mock the config
         mock_config_instance = mock_config.return_value
         mock_config_instance.get.side_effect = lambda key, default=None: {
-            "defaultLocation": "test_location",
+            "RAW_DOCUMENTS_PATH": "test_location",
             "DB_PATH": "dummy.db"
         }.get(key, default)
 
