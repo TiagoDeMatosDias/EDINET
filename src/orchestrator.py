@@ -81,6 +81,15 @@ def run(edinet=None, data=None):
         except Exception as e:
             print(f"Error updating stock prices: {e}")
 
+    if run_steps.get("populate_company_info"):
+        try:
+            print("Populating company info table...")
+            populate_config = config.get("populate_company_info_config", {})
+            csv_file = populate_config.get("csv_file")
+            edinet.store_edinetCodes(csv_file)
+        except Exception as e:
+            print(f"Error populating company info: {e}")
+
     if run_steps.get("parse_taxonomy"):
         try:
             print("Parsing EDINET taxonomy...")
