@@ -2,7 +2,7 @@ import json
 import src.edinet_api as edinet_api
 from config import Config
 import src.data_processing as d
-import src.yahoofinance as y
+import src.stockprice_api as y
 import src.regression_analysis as r
 
 def run(edinet=None, data=None):
