@@ -2,6 +2,7 @@ testdata/outputs/dummy_database.db
 testdata/*
 files/downloadeddocs/*
 data/
+logs/
 __pycache__/
 .idea/
 .venv/
