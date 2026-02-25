@@ -5,26 +5,37 @@ from datetime import datetime
 
 
 def generateURL(docID, config, doctype=None):
-    # Access values
+    """Build and return the full EDINET API URL for a given document.
+
+    Args:
+        docID (str): The EDINET document identifier.
+        config (Config): The application config object used to retrieve base
+            URL, document type, and API key.
+        doctype (str, optional): Override for the document type. When omitted,
+            the value from config is used.
+
+    Returns:
+        str: The fully constructed API URL including query parameters.
+    """
     baseURL = config.get("baseURL")
     if doctype is None:
         doctype = config.get("doctype")
     apikey = config.get("API_KEY")
 
-    #Generate URL
     url = baseURL + "/" + docID + "?type=" + doctype + "&Subscription-Key=" + apikey
-
-    #Return URL
     return url
 
-import csv
 
 def json_list_to_csv(json_list, csv_filename):
     """
     Writes a list of JSON objects (dictionaries) to a CSV file.
-    
-    :param json_list: List of dictionaries containing JSON data
-    :param csv_filename: Name of the CSV file to write to
+
+    Args:
+        json_list (list): List of dictionaries containing JSON data.
+        csv_filename (str): Name of the CSV file to write to.
+
+    Returns:
+        None
     """
     if not json_list:
         print("Empty JSON list provided.")
@@ -44,9 +55,13 @@ def json_list_to_csv(json_list, csv_filename):
 def get_latest_submit_datetime(csv_filename):
     """
     Reads a CSV file and returns the latest value in the 'submitDateTime' column.
-    
-    :param csv_filename: Location of the CSV file
-    :return: Latest 'submitDateTime' value as a string
+
+    Args:
+        csv_filename (str): Location of the CSV file.
+
+    Returns:
+        str: Latest 'submitDateTime' value formatted as 'YYYY-MM-DD HH:MM:SS',
+            or None if no valid datetime was found.
     """
     latest_datetime = None
     
@@ -72,11 +87,15 @@ def get_latest_submit_datetime(csv_filename):
 
 def get_list_of_Docs(csv_filename, edinetCode, docTypeCode):
     """
-    Reads a CSV file and returns the list of document IDs.
-    :param csv_filename: Location of the CSV file
-    :param edinetCode: edinet code of the company
-    :param docTypeCode: The document you want. 120 is for annual reports
-    :return: List of document IDs
+    Reads a CSV file and returns a list of document IDs matching the given filters.
+
+    Args:
+        csv_filename (str): Location of the CSV file.
+        edinetCode (str): EDINET code of the company to filter by.
+        docTypeCode (str): Document type code to filter by (e.g. '120' for annual reports).
+
+    Returns:
+        list: List of matching document ID strings.
     """
     doc_list = []
     
@@ -98,6 +117,14 @@ def get_list_of_Docs(csv_filename, edinetCode, docTypeCode):
     return doc_list
 
 def get_column_names(csv_file):
+    """Return the header row of a tab-delimited CSV file.
+
+    Args:
+        csv_file (str): Path to the CSV file.
+
+    Returns:
+        list: List of column name strings from the first row of the file.
+    """
     with open(csv_file, 'r', newline='', encoding='utf-8') as file:
         reader = csv.reader(file, delimiter='\t', quotechar='"')
         headers = next(reader)
