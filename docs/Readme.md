@@ -1,6 +1,14 @@
-# EDINET Financial Data Tool
+﻿# EDINET Financial Data Tool
 
 Downloads financial filings from the Japanese securities regulator (EDINET), processes them into a structured SQLite database, and runs statistical analysis to identify relationships between financial ratios and stock valuations.
+
+## Quick Start (Alpha Release)
+
+1. Download the latest release from [Releases](https://github.com/TiagoDeMatosDias/EDINET/releases)
+2. Extract `EDINET-0.1.0-alpha.zip`
+3. Copy `config/run_config.example.json` to `config/run_config.json` and configure your settings
+4. Create a `.env` file with your API keys (see Setup section below)
+5. Run `EDINET.exe` (Windows) or the binary for your OS
 
 ## What it does
 
@@ -8,7 +16,7 @@ Downloads financial filings from the Japanese securities regulator (EDINET), pro
 2. **Download documents** - downloads the XBRL/CSV filings that match the filter criteria.
 3. **Standardise data** - normalises raw XBRL data into a clean, consistently named table.
 4. **Generate financial ratios** - calculates per-share values, valuation ratios, rolling averages, growth rates and z-scores for every company.
-5. **Update stock prices** - fetches historical share prices via Yahoo Finance.
+5. **Update stock prices** - fetches historical share prices via Stooq API (filtered to companies with financial data).
 6. **Populate company info** - loads the EDINET company code list from CSV into the database.
 7. **Parse taxonomy** - parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
 8. **Find significant predictors** - univariate OLS sweep ranking which ratio columns best predict a given dependent variable.
@@ -16,21 +24,26 @@ Downloads financial filings from the Japanese securities regulator (EDINET), pro
 
 ## Setup
 
-### 1. Install dependencies
+### From Source
 
-\pip install -r requirements.txt
-\
-### 2. Create a \.env\ file
+#### 1. Install dependencies
 
-Copy the template below into a \.env\ file in the project root and fill in your values.
+```
+pip install -r requirements.txt
+```
 
-\API_KEY=<your_edinet_api_key>
+#### 2. Create a `.env` file
+
+Copy the template below into a `.env` file in the project root and fill in your values:
+
+```
+API_KEY=<your_edinet_api_key>
 baseURL=https://api.edinet-fsa.go.jp/api/v2/documents
 doctype=5
 
-RAW_DOCUMENTS_PATH=D:\path\to\files
+RAW_DOCUMENTS_PATH=<your_documents_path>
+DB_PATH=<your_sqlite_db_path>
 
-DB_PATH=D:\path\to\Base.db
 DB_DOC_LIST_TABLE=DocumentList
 DB_FINANCIAL_DATA_TABLE=financialData_full
 DB_STANDARDIZED_TABLE=Standard_Data
@@ -39,14 +52,29 @@ DB_COMPANY_INFO_TABLE=CompanyInfo
 DB_STOCK_PRICES_TABLE=Stock_Prices
 DB_TAXONOMY_TABLE=TAXONOMY_JPFS_COR
 DB_SIGNIFICANT_PREDICTORS_TABLE=Significant_Predictors
-\
-### 3. Configure and run
+```
 
-Edit \config/run_config.json\ to enable the steps you want, then:
+#### 3. Configure and run
 
-\python main.py
-\
-See [RUNNING.md](RUNNING.md) for a full description of every step and its config options.
+Edit `config/run_config.json` to enable the steps you want, then:
+
+```
+python main.py
+```
+
+### From Release
+
+1. Extract the release ZIP file
+2. Edit the `.env` file with your configuration
+3. Run the executable
+
+All output is logged to timestamped files in the `logs/` directory. See [LOGGING.md](LOGGING.md) for details.
+
+## Documentation
+
+- [RUNNING.md](RUNNING.md) - Full description of every step and configuration options
+- [LOGGING.md](LOGGING.md) - Logging system documentation
+- [CHANGELOG.md](../../CHANGELOG.md) - Version history and changes
 
 ## Building an executable
 
