@@ -55,6 +55,25 @@ class data:
 
 
     def evaluate_expression(self, df, expression):
+        """Recursively evaluate a nested expression config dict against a DataFrame.
+
+        Supports literal values, column references with optional fill-NA, and
+        binary arithmetic operators (``+``, ``-``, ``*``, ``/``).
+
+        Args:
+            df (pd.DataFrame): The DataFrame containing the columns referenced
+                by the expression.
+            expression (dict): A config dict describing the computation.  Valid
+                forms are:
+                - ``{"value": <literal>}`` – return a scalar constant.
+                - ``{"column": "<name>", "fillna": ...}`` – return a column
+                  series, optionally filling NaN values.
+                - ``{"operator": "<op>", "operands": [...]}`` – apply a binary
+                  arithmetic operator to two recursively evaluated operands.
+
+        Returns:
+            pd.Series or scalar: The result of evaluating the expression.
+        """
         if "value" in expression:
             return expression["value"]
 
@@ -84,9 +103,21 @@ class data:
         return None
 
     def Generate_Financial_Ratios(self, input_table, output_table):
-        # This function will take the input table and generate the financial ratios
-        # The output will be stored in the output_table
+        """Generate financial ratios for every company and store them in the database.
 
+        Reads data from ``input_table``, pivots it so that each
+        accounting-term/period combination becomes a column, applies the ratio
+        definitions from the financial-ratios config, calculates rolling
+        averages, standard deviations, growth rates, and Z-scores, then appends
+        the results to ``output_table``.
+
+        Args:
+            input_table (str): Name of the source table in the SQLite database.
+            output_table (str): Name of the destination table where ratios are stored.
+
+        Returns:
+            None
+        """
         # Connect to the database
         conn = sqlite3.connect(self.DB_PATH)
 
@@ -254,13 +285,15 @@ class data:
 
 
     def add_missing_columns(self, conn, table_name, df):
-        """
-        Adds missing columns to the SQLite table based on the DataFrame columns.
-        
-        :param conn: SQLite connection object
-        :param table_name: Name of the table to modify
-        :param df: DataFrame with the new columns
-        :return: None
+        """Add columns to the SQLite table that are present in the DataFrame but not in the table.
+
+        Args:
+            conn (sqlite3.Connection): SQLite connection object.
+            table_name (str): Name of the table to modify.
+            df (pd.DataFrame): DataFrame whose columns are compared against the table.
+
+        Returns:
+            None
         """
         cursor = conn.cursor()
         
@@ -277,10 +310,16 @@ class data:
 
 
     def delete_table(self, table_name, connection=None):
-        """
-        This function deletes a table from the SQLite database.
-        :param table_name: Name of the table to delete
-        :return: None
+        """Delete a table from the SQLite database if it exists.
+
+        Args:
+            table_name (str): Name of the table to delete.
+            connection (sqlite3.Connection, optional): Existing database
+                connection. A new connection is opened and closed automatically
+                when omitted.
+
+        Returns:
+            None
         """
         try:
             if connection is None:
@@ -303,13 +342,16 @@ class data:
 
 
     def rename_columns(self, conn, table_name, column_mapping):
-        """
-        Renames columns in the SQLite table based on the mapping provided.
-        
-        :param conn: SQLite connection object
-        :param table_name: Name of the table to modify
-        :param column_mapping: Dictionary with old column names as keys and new column names as values
-        :return: None
+        """Rename columns in a SQLite table according to the provided mapping.
+
+        Args:
+            conn (sqlite3.Connection): SQLite connection object.
+            table_name (str): Name of the table to modify.
+            column_mapping (dict): Mapping of old column names (keys) to new
+                column names (values).
+
+        Returns:
+            None
         """
         cursor = conn.cursor()
         
@@ -319,20 +361,30 @@ class data:
         conn.commit()
 
     def rename_columns_to_Standard(self, conn, table_name):
-        # Load configuration
+        """Rename columns in a table to the project's standard names using the financial-ratios config.
+
+        Args:
+            conn (sqlite3.Connection): SQLite connection object.
+            table_name (str): Name of the table whose columns will be renamed.
+
+        Returns:
+            None
+        """
         with open(self.FINANCIAL_RATIOS_CONFIG_PATH, 'r') as f:
             config = json.load(f)
         column_mapping = config['standard_column_mapping']
         self.rename_columns(conn, table_name, column_mapping)
 
     def copy_table(self, conn, source_table, target_table):
-        """
-        Copies data from one table to another in the SQLite database.
-        
-        :param conn: SQLite connection object
-        :param source_table: Name of the source table
-        :param target_table: Name of the target table
-        :return: None
+        """Copy all rows and columns from one SQLite table to a new table.
+
+        Args:
+            conn (sqlite3.Connection): SQLite connection object.
+            source_table (str): Name of the source table.
+            target_table (str): Name of the new target table to create.
+
+        Returns:
+            None
         """
         cursor = conn.cursor()        
         # Create the target table if it doesn't exist

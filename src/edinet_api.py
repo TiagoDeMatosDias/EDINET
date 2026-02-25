@@ -24,13 +24,13 @@ class Edinet:
     def get_All_documents_withMetadata(self, start_date="2015-01-01", end_date=None):
         """
         Fetch all available document IDs for a given time period from the EDINET API and store them in the database.
-        
-        Parameters:
-        - start_date (str): The start date in YYYY-MM-DD format (default: 2015-01-01).
-        - end_date (str): The end date in YYYY-MM-DD format (default: today).
-        
+
+        Args:
+            start_date (str): The start date in YYYY-MM-DD format. Defaults to '2015-01-01'.
+            end_date (str): The end date in YYYY-MM-DD format. Defaults to today's date.
+
         Returns:
-        - List of document IDs for the given company.
+            list: List of document IDs for the given date range.
         """
         
         if end_date is None:
@@ -85,7 +85,18 @@ class Edinet:
         conn.close()
 
     def downloadDoc(self, docID, fileLocation=None, docTypeCode=None):
+        """Download a single EDINET document and save it as a ZIP file.
 
+        Args:
+            docID (str): The EDINET document identifier to download.
+            fileLocation (str, optional): Directory where the ZIP file will be
+                saved. Defaults to the configured default location.
+            docTypeCode (str, optional): Override for the document type code
+                used when building the download URL.
+
+        Returns:
+            None
+        """
         if fileLocation is None:
             fileLocation = self.defaultLocation
         
@@ -105,7 +116,23 @@ class Edinet:
             return null
 
     def downloadDocs(self, input_table, output_table=None, filter=None):
-        
+        """Download all documents listed in the database that have not yet been downloaded.
+
+        Iterates over documents from ``input_table``, downloads each as a ZIP,
+        extracts the financial CSV files, loads them into ``output_table``, and
+        marks each document as downloaded.
+
+        Args:
+            input_table (str): Name of the database table containing the document list.
+            output_table (str, optional): Name of the database table where
+                extracted financial data will be stored.
+            filter (dict, optional): Filter dictionary to restrict which
+                documents are downloaded. Defaults to filtering on
+                ``Downloaded = 'False'``.
+
+        Returns:
+            None
+        """
         # Connect to the SQLite database
         if filter is None:
             filter = self.generate_filter("Downloaded", "=", "False")
@@ -146,12 +173,18 @@ class Edinet:
         print("All files downloaded successfully.")
 
     def load_financial_data(self, financialFiles, table_name, doc, connection=None):
-        """
-        This function reads the financial data from the unzipped files and loads it into the SQLite database.
-        :param financialFiles: List of financial data files
-        :param table_name: Name of the table in the SQLite database
-        :param doc: Document metadata
-        :return: None
+        """Read financial data from extracted CSV files and load it into the database.
+
+        Args:
+            financialFiles (list): List of paths to the financial data CSV files.
+            table_name (str): Name of the destination table in the SQLite database.
+            doc (dict): Document metadata dict (e.g. docID, edinetCode, periodStart).
+            connection (sqlite3.Connection, optional): Existing database
+                connection. A new connection is opened and closed automatically
+                when omitted.
+
+        Returns:
+            None
         """
         try:
             if connection is None:
@@ -196,12 +229,19 @@ class Edinet:
                 conn.close()
 
     def add_document_metadata_to_List(self, data, doc, columns=False):
-        """
-        This function adds the metadata of a document to the list of documents.
-        :param data: List of documents
-        :param doc: Document metadata
-        :param columns: determined whether only the column name is added
-        :return: None
+        """Add document metadata fields to a data dict or a columns list.
+
+        Args:
+            data (dict or list): The object to add metadata to. When
+                ``columns=True`` this should be a list; otherwise a dict.
+            doc (dict): Document metadata containing keys such as ``docID``,
+                ``edinetCode``, and ``periodStart``.
+            columns (bool): When ``True``, only the column name strings are
+                appended to ``data`` (used to build a column-headers list).
+                When ``False``, the actual metadata values are added.
+
+        Returns:
+            dict or list: The updated ``data`` object.
         """
         if columns:
             data.append("docID")
@@ -220,10 +260,14 @@ class Edinet:
         return data
 
     def clear_table(self, table_name="temp_data"):
-        """
-        This function clears the temporary table in the SQLite database.
-        :param SQLITE_DB: Location of the SQLite database
-        :return: None
+        """Drop a table from the SQLite database if it exists.
+
+        Args:
+            table_name (str): Name of the table to drop. Defaults to
+                ``'temp_data'``.
+
+        Returns:
+            None
         """
         try:
             conn = sqlite3.connect(self.Database)
@@ -240,12 +284,15 @@ class Edinet:
                 pass
 
     def list_files_in_folder(self, folder_path, recursive=False):
-        """
-        Returns a list of files in the provided folder.
-        
-        :param folder_path: Path of the folder
-        :param recursive: Boolean indicating whether to search subfolders recursively (default: False)
-        :return: List of file names
+        """Return a list of file paths found in the given folder.
+
+        Args:
+            folder_path (str): Path of the folder to search.
+            recursive (bool): When ``True``, descends into sub-folders.
+                Defaults to ``False``.
+
+        Returns:
+            list: List of absolute file path strings found in the folder.
         """
         try:
             if recursive:
@@ -266,11 +313,14 @@ class Edinet:
             return []
 
     def unzip_file(self, zip_file, output_dir):
-        """
-        This function unzips a ZIP file to the specified output directory.
-        :param zip_file: Location of the ZIP file
-        :param output_dir: Location to extract the contents of the ZIP file
-        :return: None
+        """Extract the contents of a single ZIP file to the specified directory.
+
+        Args:
+            zip_file (str): Path to the ZIP file to extract.
+            output_dir (str): Directory where the contents will be extracted.
+
+        Returns:
+            None
         """
         try:
             with zipfile.ZipFile(zip_file, 'r') as zip_ref:
@@ -281,22 +331,27 @@ class Edinet:
             print(f"An error occurred: {e}")
 
     def unzip_files(self, zip_files, output_dir):
-        """
-        This function unzips multiple ZIP files to the specified output directory.
-        :param zip_files: List of ZIP file locations
-        :param output_dir: Location to extract the contents of the ZIP files
-        :return: None
+        """Extract the contents of multiple ZIP files to the specified directory.
+
+        Args:
+            zip_files (list): List of paths to the ZIP files to extract.
+            output_dir (str): Directory where the contents will be extracted.
+
+        Returns:
+            None
         """
         print(f"Unzipping {len(zip_files)} files to {output_dir}...")
         for zip_file in zip_files:
             self.unzip_file(zip_file, output_dir)
 
     def create_folder(self, folder_path):
-        """
-        Creates a folder in the filesystem if it doesn't already exist.
-        
-        :param folder_path: Path of the folder to create
-        :return: None
+        """Create a folder at the given path if it does not already exist.
+
+        Args:
+            folder_path (str): Path of the folder to create.
+
+        Returns:
+            None
         """
         try:
             if not os.path.exists(folder_path):
@@ -308,11 +363,13 @@ class Edinet:
             print(f"An error occurred while creating folder {folder_path}: {e}")
 
     def delete_folder(self, folder_path):
-        """
-        Deletes a folder in the filesystem if it exists.
-        
-        :param folder_path: Path of the folder to delete
-        :return: None
+        """Delete a folder and all its contents from the filesystem.
+
+        Args:
+            folder_path (str): Path of the folder to delete.
+
+        Returns:
+            None
         """
         if os.path.exists(folder_path):
             shutil.rmtree(folder_path)
@@ -321,13 +378,20 @@ class Edinet:
             print(f"Folder not found: {folder_path}")
 
     def generate_filter(self, column, filter_type, value, existing_filters=None):
-        """
-        Generates a filter dictionary for querying the SQLite database.
-        :param column: Name of the column
-        :param filter_type: Type of filter (e.g., "=", "<", ">", "LIKE")
-        :param value: Value to filter on
-        :param existing_filters: Existing filter dictionary to add the new filter to (default: None)
-        :return: Dictionary with column name as key and filter tuple as value
+        """Build or extend a filter dictionary for use with database query methods.
+
+        Args:
+            column (str): Name of the column to filter on.
+            filter_type (str): Comparison operator (e.g. ``'='``, ``'<'``,
+                ``'>'``, ``'LIKE'``).
+            value: Value to compare against.
+            existing_filters (dict, optional): An existing filter dict to extend.
+                When provided a copy is made so the original is not mutated.
+                Defaults to an empty dict.
+
+        Returns:
+            dict: Updated filter dict with column names as keys and
+            ``(filter_type, value)`` tuples as values.
         """
         if existing_filters is None:
             existing_filters = {}
@@ -338,14 +402,19 @@ class Edinet:
         return existing_filters
 
     def query_database_select(self, table, filters=None, output_table=None):
-        """
-        This function executes a custom query on a SQLite database and either returns the result as a JSON object
-        or copies the data to another table if output_table is provided.
-        :param table: Name of the table to query
-        :param filters: Dictionary of column names and their corresponding filter values and types
-                Example: {"column1": ("=", value1), "column2": ("<", value2)}
-        :param output_table: Name of the table to copy the data to (default: None)
-        :return: JSON object with the query results or None if output_table is provided
+        """Query a database table with optional filters and return or store the results.
+
+        Args:
+            table (str): Name of the table to query.
+            filters (dict, optional): Column filters in the form
+                ``{"column": ("operator", value)}``.
+                Example: ``{"docTypeCode": ("=", "120"), "Downloaded": ("<", "True")}``.
+            output_table (str, optional): When provided, the query results are
+                copied into this table instead of being returned.
+
+        Returns:
+            list or None: A list of row dicts when ``output_table`` is not
+            provided, or ``None`` when results are copied to ``output_table``.
         """
         try:
             conn = sqlite3.connect(self.Database)
@@ -383,11 +452,17 @@ class Edinet:
             conn.close()
 
     def create_table(self, table_name, columns, connection=None):
-        """
-        This function creates a table in the SQLite database with the given columns.
-        :param table_name: Name of the table to create
-        :param columns: List of column names
-        :return: None
+        """Create a SQLite table with TEXT columns if it does not already exist.
+
+        Args:
+            table_name (str): Name of the table to create.
+            columns (list): List of column name strings.
+            connection (sqlite3.Connection, optional): Existing database
+                connection. A new connection is opened and closed automatically
+                when omitted.
+
+        Returns:
+            None
         """
         try:
             if connection is None:
@@ -406,12 +481,19 @@ class Edinet:
                 conn.close()
 
     def insert_data(self, table_name, columns, rows, connection=None):
-        """
-        This function inserts data into a table in the SQLite database.
-        :param table_name: Name of the table to insert data into
-        :param columns: List of column names
-        :param rows: List of rows to insert
-        :return: None
+        """Insert rows into a SQLite table.
+
+        Args:
+            table_name (str): Name of the destination table.
+            columns (list): List of column name strings matching the order of values in each row.
+            rows (list or dict): Rows to insert. Can be a list of tuples or a
+                single dict mapping column names to values.
+            connection (sqlite3.Connection, optional): Existing database
+                connection. A new connection is opened and closed automatically
+                when omitted.
+
+        Returns:
+            None
         """
         try:
             if connection is None:
@@ -448,14 +530,19 @@ class Edinet:
             return result['encoding']
 
     def query_database_setColumn(self, table, filter, column, value, connection):
-        """
-        This function executes a custom query on a SQLite database and updates the value of a specific column.
-        :param table: Name of the table to query
-        :param filter: Dictionary of column names and their corresponding filter values and types
-                Example: {"column1": ("=", value1), "column2": ("<", value2)}
-        :param column: Name of the column to update
-        :param value: New value for the column
-        :return: None
+        """Update a column value in a SQLite table for rows matching the given filter.
+
+        Args:
+            table (str): Name of the table to update.
+            filter (dict): Column filters in the form
+                ``{"column": ("operator", value)}``.
+                Example: ``{"docID": ("=", "S100ABC1")}``.
+            column (str): Name of the column to update.
+            value: New value to set in the column.
+            connection (sqlite3.Connection): Active database connection.
+
+        Returns:
+            None
         """
         try:
             if connection is None:
@@ -479,12 +566,11 @@ class Edinet:
                 conn.close()
 
     def store_edinetCodes(self, csv_file):
-        """
-        Stores EDINET codes from a CSV file into an SQLite database.
+        """Store EDINET company codes from a CSV file into the SQLite database.
+
         Args:
-            csv_file (str): The path to the CSV file containing EDINET codes.
-        Raises:
-            Exception: If there is an error in reading the CSV file or storing data into the database.
+            csv_file (str): Path to the CSV file containing EDINET codes.
+
         Returns:
             None
         """
@@ -508,6 +594,3 @@ class Edinet:
             print("EDINET codes successfully stored in the database.")
         except Exception as e:
             print(f"Error downloading or storing EDINET codes: {e}")
-
-
-    # Press the green button in the gutter to run the script.

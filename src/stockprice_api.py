@@ -3,6 +3,20 @@ import pandas as pd
 
 
 def update_all_stock_prices(db_name, Company_Table, prices_table):
+    """Fetch and store the latest stock prices for all tickers in the company table.
+
+    Iterates over every non-null ticker in ``Company_Table`` and calls
+    :func:`load_ticker_data` for each one.  If the Stooq daily request limit
+    is reached, the loop stops early to avoid unnecessary failed requests.
+
+    Args:
+        db_name (str): Path to the SQLite database file.
+        Company_Table (str): Name of the table containing company ticker symbols.
+        prices_table (str): Name of the table where stock prices are stored.
+
+    Returns:
+        None
+    """
     try:
         # Connect to the database
         conn = sqlite3.connect(db_name)
@@ -29,6 +43,21 @@ def update_all_stock_prices(db_name, Company_Table, prices_table):
 
 
 def load_ticker_data(ticker, prices_table, conn) -> bool:
+    """Download and store historical price data for a single ticker from Stooq.
+
+    Fetches price data from ``https://stooq.com`` for the given ticker,
+    starting from the last date already stored in ``prices_table``.  If the
+    data is already up to date (within 5 days), the function returns early.
+
+    Args:
+        ticker (str): The company ticker symbol (e.g. ``'7203'``).
+        prices_table (str): Name of the SQLite table where prices are stored.
+        conn (sqlite3.Connection): Active database connection.
+
+    Returns:
+        bool: ``True`` if data was fetched successfully or was already
+        up to date, ``False`` if the Stooq daily request limit was exceeded.
+    """
     try:
         baseline_ticker = ticker[:4]
         stooq_ticker = baseline_ticker + ".jp"
