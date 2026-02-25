@@ -1,1 +1,42 @@
-The GUI will be defined here.
+# GUI Application Summary
+
+This Flet application is intended to be an easy to use, modern crossplatform app that will allow a regular user to quickly and easily configure and run the application.
+
+
+# Design Style
+
+The application is in a modern, material design with both light and dark mode.
+
+
+# Main Screen
+
+The application should be a single page, with the following functionality:
+
+A top bar with:
+
+    - Database selection (Sets the path defined in the .ENV file DB_PATH)
+        - A dropdown with previously selected databases
+        - A + sign to create a new database -> This opens a dialog allowing the user to select where the DB will be placed in the filesystem
+        - A "load database" to load an existing database that has not yet been selected -> This opens a dialog allowing users to select an existing database in the filesystem
+
+    - API key config (API_KEY in the .env file)
+        - A button that opens a popup with a text box allowing users to paste the key to set it
+
+    - An icon to toggle dark mode
+
+A main panel with:
+
+    - Check boxes with entries for each of the run steps (it should be possible for a user to drag and drop to reorder things)
+        - The checkboxes should be green/red depending on if they are active
+        - If a checkbox is selected that means that step will run
+        - if a checkbox is selected, a button should appear that when clicked will show a pop up with the relevant config details to be filled for that specific run step (steps without configs should not have the button)
+    
+    - A button that allows users to set a specific financial_ratios_config.json file (that is defined in the .ENV)
+
+    - A button allowing The saving of the existing setup
+
+    - A button allowing the loading of previously saved setups (with a dropdown for prior setups)
+
+    - A button titled "Run" that will trigger the application to run the selected steps
+
+
