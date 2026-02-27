@@ -1,15 +1,4 @@
 {
-  "run_steps": {
-    "get_documents": false,
-    "download_documents": false,
-    "standardize_data": false,
-    "populate_company_info": false,
-    "update_stock_prices": false,
-    "parse_taxonomy": false,
-    "generate_financial_ratios": false,
-    "find_significant_predictors": false,
-    "Multivariate_Regression": true
-  },
   "get_documents_config": {
     "startDate": "2026-02-15",
     "endDate": "2026-02-21"
@@ -20,11 +9,22 @@
     "secCode": "",
     "Downloaded": "False"
   },
+  "run_steps": {
+    "get_documents": false,
+    "download_documents": false,
+    "standardize_data": false,
+    "update_stock_prices": false,
+    "populate_company_info": false,
+    "parse_taxonomy": false,
+    "generate_financial_ratios": false,
+    "find_significant_predictors": false,
+    "Multivariate_Regression": false
+  },
   "populate_company_info_config": {
-    "csv_file": "config/EdinetcodeDlInfo.csv"
+    "csv_file": "config/reference/EdinetcodeDlInfo.csv"
   },
   "parse_taxonomy_config": {
-    "xsd_file": "config/jppfs_cor_2013-08-31.xsd"
+    "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd"
   },
   "find_significant_predictors_config": {
     "output_file": "data/ols_results/predictor_search_results.txt",
@@ -49,6 +49,5 @@
       "upper": 0.95
     },
     "SQL_Query": "Select PerShare_SharePrice, PerShare_BookValue * Ratio_PriceBook as Bv_Check , PerShare_Earnings / Ratio_EarningsYield as Earnings_Check, PerShare_Sales * Ratio_PriceSales as Sales_Check from Standard_Data_Ratios"
-  },
-  "financial_ratios_config_path": "config\\financial_ratios_config.json"
+  }
 }

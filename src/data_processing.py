@@ -1,4 +1,5 @@
 import config as c
+import logging
 import pandas as pd
 import sqlite3
 import xml.etree.ElementTree as ET
@@ -6,15 +7,24 @@ import random
 import numpy as np
 import json
 
+logger = logging.getLogger(__name__)
+
 class data:
     def __init__(self):
         self.config = c.Config()
         self.DB_PATH = self.config.get("DB_PATH")
         self.FINANCIAL_RATIOS_CONFIG_PATH = self.config.get("FINANCIAL_RATIOS_CONFIG_PATH")
 
+    def _table_exists(self, conn, table_name):
+        """Return True if *table_name* exists in the SQLite database."""
+        cur = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        )
+        return cur.fetchone() is not None
 
 
-    def Filter_for_Relevant(self, input_table, output_table):
+    def Filter_for_Relevant(self, input_table, output_table, conn=None):
         """
         Generates financial statements by querying data from the input table and
         storing the results in the output table, keeping only specific columns.
@@ -22,11 +32,15 @@ class data:
         Args:
             input_table (str): The name of the input table to query data from.
             output_table (str): The name of the output table to store the results.
+            conn (sqlite3.Connection, optional): Existing database connection.
+                A new connection is opened and closed automatically when omitted.
 
         Returns:
             None
         """
-        conn = sqlite3.connect(self.DB_PATH)
+        own_conn = conn is None
+        if own_conn:
+            conn = sqlite3.connect(self.DB_PATH)
         cursor = conn.cursor()
 
         # Load configuration
@@ -51,7 +65,8 @@ class data:
         # Execute the query
         cursor.execute(query)
         conn.commit()
-        conn.close()
+        if own_conn:
+            conn.close()
 
 
     def evaluate_expression(self, df, expression):
@@ -102,7 +117,7 @@ class data:
             return operands[0] / operands[1]
         return None
 
-    def Generate_Financial_Ratios(self, input_table, output_table):
+    def Generate_Financial_Ratios(self, input_table, output_table, overwrite=False):
         """Generate financial ratios for every company and store them in the database.
 
         Reads data from ``input_table``, pivots it so that each
@@ -111,15 +126,33 @@ class data:
         averages, standard deviations, growth rates, and Z-scores, then appends
         the results to ``output_table``.
 
+        In incremental mode (``overwrite=False``, the default) documents whose
+        ``docID`` already appears in *output_table* are skipped.  When
+        ``overwrite=True`` the table is dropped first so all data is
+        reprocessed.
+
         Args:
             input_table (str): Name of the source table in the SQLite database.
             output_table (str): Name of the destination table where ratios are stored.
+            overwrite (bool): Drop and recreate output table when True.
 
         Returns:
             None
         """
         # Connect to the database
         conn = sqlite3.connect(self.DB_PATH)
+
+        if overwrite:
+            logger.info("Overwrite enabled - dropping '%s' if it exists.", output_table)
+            self.delete_table(output_table, conn)
+
+        # Collect already-processed docIDs so we can skip them
+        existing_doc_ids: set = set()
+        if self._table_exists(conn, output_table):
+            existing_df = pd.read_sql_query(
+                f"SELECT DISTINCT docID FROM {output_table}", conn,
+            )
+            existing_doc_ids = set(existing_df["docID"].tolist())
 
         # Load configuration
         with open(self.FINANCIAL_RATIOS_CONFIG_PATH, 'r') as f:
@@ -130,9 +163,18 @@ class data:
         # Get the list of companies
         companies = self.get_companyList(input_table, conn)
         exists = False
+        skipped = 0
+        processed = 0
         for company in companies:
             # Get the data for the company
             df = pd.read_sql_query(f"""SELECT * FROM {input_table} WHERE edinetCode = '{company}' """, conn)
+
+            # Incremental: drop rows for docIDs already in the output table
+            if existing_doc_ids:
+                df = df[~df['docID'].isin(existing_doc_ids)]
+                if df.empty:
+                    skipped += 1
+                    continue
 
             # Create a combined column for AccountingTerm and Period
             df['AccountingTerm_Period'] = df['AccountingTerm'] + '_' + df['Period']
@@ -275,10 +317,14 @@ class data:
             RatiosTable.to_sql(output_table, conn, if_exists='append')
             conn.commit()
             exists = True
+            processed += 1
         
+        logger.info(
+            "Generate_Financial_Ratios: processed %d company/ies, "
+            "skipped %d (already in '%s').",
+            processed, skipped, output_table,
+        )
         conn.close()
-
-        pass
 
 
 
@@ -392,26 +438,66 @@ class data:
         
         conn.commit()
 
-    def copy_table_to_Standard(self, source_table, target_table,conn=None):
+    def copy_table_to_Standard(self, source_table, target_table, conn=None, overwrite=False):
         """
-        Copies data from a source table to a target table with standardized column names and generates financial statements.
+        Copies data from a source table to a target table with standardized
+        column names and generates financial statements.
+
+        In incremental mode (``overwrite=False``, the default) only rows whose
+        ``docID`` is not already present in *target_table* are inserted.
+        When ``overwrite=True`` the target table is dropped and rebuilt from
+        scratch.
 
         Args:
-            conn: Database connection object.
-            source_table (str): Name of the source table from which data is to be copied.
-            target_table (str): Name of the target table to which data is to be copied.
+            source_table (str): Name of the source table.
+            target_table (str): Name of the target table.
+            conn: Optional database connection.
+            overwrite (bool): Drop and recreate target table when True.
 
         Returns:
             None
         """
-        if conn is None:
+        own_conn = conn is None
+        if own_conn:
             conn = sqlite3.connect(self.DB_PATH)
-        
-        tempTable = "TempTable_" + random.choice("132465sadf")
-        self.copy_table(conn, source_table, tempTable)
-        self.rename_columns_to_Standard(conn, tempTable)
-        self.Filter_for_Relevant(tempTable, target_table)
-        self.delete_table(tempTable, conn)
+
+        if overwrite:
+            logger.info("Overwrite enabled - dropping '%s' if it exists.", target_table)
+            self.delete_table(target_table, conn)
+
+        table_exists = self._table_exists(conn, target_table)
+
+        suffix = str(random.randint(1000, 9999))
+        tempCopy = f"_tmp_copy_{suffix}"
+        self.copy_table(conn, source_table, tempCopy)
+        self.rename_columns_to_Standard(conn, tempCopy)
+
+        if not table_exists:
+            # First run - create the target from the filtered temp data
+            self.Filter_for_Relevant(tempCopy, target_table, conn)
+            logger.info("Created '%s' from '%s'.", target_table, source_table)
+        else:
+            # Incremental - filter into a second temp, then INSERT only new docIDs
+            filteredTemp = f"_tmp_filtered_{suffix}"
+            self.Filter_for_Relevant(tempCopy, filteredTemp, conn)
+
+            cursor = conn.cursor()
+            cursor.execute(
+                f"INSERT INTO {target_table} SELECT * FROM {filteredTemp} "
+                f"WHERE docID NOT IN (SELECT DISTINCT docID FROM {target_table})"
+            )
+            new_rows = cursor.rowcount
+            conn.commit()
+            logger.info(
+                "Incremental standardize: inserted %d new row(s) into '%s'.",
+                new_rows, target_table,
+            )
+            self.delete_table(filteredTemp, conn)
+
+        self.delete_table(tempCopy, conn)
+
+        if own_conn:
+            conn.close()
 
     def parse_edinet_taxonomy(self, xsd_file, table_name, connection=None):
         """

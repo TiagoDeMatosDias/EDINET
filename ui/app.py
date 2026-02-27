@@ -29,9 +29,11 @@ def _base_dir() -> Path:
 BASE_DIR = _base_dir()
 ENV_PATH = BASE_DIR / ".env"
 CONFIG_DIR = BASE_DIR / "config"
-RUN_CONFIG_PATH = CONFIG_DIR / "run_config.json"
-SAVED_SETUPS_DIR = CONFIG_DIR / "saved_setups"
-APP_STATE_PATH = CONFIG_DIR / "app_state.json"
+STATE_DIR = CONFIG_DIR / "state"
+REFERENCE_DIR = CONFIG_DIR / "reference"
+RUN_CONFIG_PATH = STATE_DIR / "run_config.json"
+SAVED_SETUPS_DIR = STATE_DIR / "saved_setups"
+APP_STATE_PATH = STATE_DIR / "app_state.json"
 ASSETS_DIR = BASE_DIR / "assets"
 
 # ── Step metadata ─────────────────────────────────────────────────────────────
@@ -75,10 +77,10 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "Downloaded": "False",
     },
     "populate_company_info": {
-        "csv_file": "config/EdinetcodeDlInfo.csv",
+        "csv_file": "config/reference/EdinetcodeDlInfo.csv",
     },
     "parse_taxonomy": {
-        "xsd_file": "config/jppfs_cor_2013-08-31.xsd",
+        "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd",
     },
     "find_significant_predictors": {
         "output_file": "data/ols_results/predictor_search_results.txt",
@@ -119,7 +121,7 @@ def _load_app_state() -> dict:
 
 def _save_app_state(state: dict):
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
         with open(APP_STATE_PATH, "w") as f:
             json.dump(state, f, indent=2)
     except OSError:
@@ -137,7 +139,7 @@ def _load_run_config() -> dict:
 
 
 def _save_run_config(cfg: dict):
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
     with open(RUN_CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
 
@@ -206,6 +208,12 @@ def main(page: ft.Page):
 
     is_running = [False]
 
+    overwrite_cb = ft.Checkbox(
+        label="Overwrite existing data",
+        value=run_cfg.get("overwrite_data", False),
+        active_color=ft.Colors.ORANGE_700,
+    )
+
     # ── File picker (Service in Flet ≥ 0.80) ─────────────────────────────
     fp = ft.FilePicker()
     page.services.append(fp)
@@ -251,6 +259,7 @@ def main(page: ft.Page):
     def _current_config() -> dict:
         cfg: dict = {}
         cfg["run_steps"] = {name: enabled for name, enabled in steps}
+        cfg["overwrite_data"] = overwrite_cb.value
         for sname, cfg_key in STEP_CONFIG_KEY.items():
             if step_configs.get(sname):
                 cfg[cfg_key] = step_configs[sname]
@@ -607,6 +616,8 @@ def main(page: ft.Page):
                 step_configs[sn] = loaded.get(cfg_key, copy.deepcopy(
                     DEFAULT_STEP_CONFIGS.get(sn, {})
                 ))
+            # Restore overwrite flag
+            overwrite_cb.value = loaded.get("overwrite_data", False)
             # Restore financial-ratios config path
             ratios = loaded.get("financial_ratios_config_path", "")
             if ratios:
@@ -687,8 +698,6 @@ def main(page: ft.Page):
                     datefmt="%H:%M:%S",
                 )
             )
-            root_logger = logging.getLogger()
-            root_logger.addHandler(handler)
             try:
                 proj = str(BASE_DIR)
                 if proj not in sys.path:
@@ -699,6 +708,12 @@ def main(page: ft.Page):
 
                 from src.logger import setup_logging
                 setup_logging()
+
+                # Add UI handler AFTER setup_logging so it isn't
+                # removed by the handler cleanup in setup_logging().
+                root_logger = logging.getLogger()
+                root_logger.addHandler(handler)
+                handler.setLevel(logging.INFO)
 
                 import src.orchestrator as orchestrator
                 orchestrator.run()
@@ -713,7 +728,11 @@ def main(page: ft.Page):
                     + f"\n❌ Error: {ex}\n"
                 )
             finally:
-                root_logger.removeHandler(handler)
+                # root_logger may not be bound if setup_logging() failed
+                try:
+                    logging.getLogger().removeHandler(handler)
+                except Exception:
+                    pass
                 is_running[0] = False
                 run_btn.disabled = False
                 progress.visible = False
@@ -838,6 +857,7 @@ def main(page: ft.Page):
                             on_click=on_load_setup,
                         ),
                         ft.Container(expand=True),
+                        overwrite_cb,
                         run_btn,
                     ],
                 ),

@@ -8,11 +8,11 @@ __pycache__/
 .venv/
 .vscode/
 .env
-config\saved_setups\*
+# Runtime state (user-specific, not committed)
+config/state/*
 
 # PyInstaller
 build/
 dist/
 *.spec
-config/saved_setups/*
 scripts/*

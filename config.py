@@ -22,7 +22,7 @@ class Config:
     def __new__(cls, run_config_path=None):
         if cls._instance is None:
             if run_config_path is None:
-                run_config_path = os.path.join(_base_dir(), "config", "run_config.json")
+                run_config_path = os.path.join(_base_dir(), "config", "state", "run_config.json")
             cls._instance = super(Config, cls).__new__(cls)
             cls._instance.run_config_path = run_config_path
             cls._instance._load_config()
@@ -40,7 +40,7 @@ class Config:
         except FileNotFoundError:
             print(f"Warning: {self.run_config_path} not found.")
 
-        regression_config = os.path.join(base, "config", "config_Regression.json")
+        regression_config = os.path.join(base, "config", "reference", "config_Regression.json")
         try:
             with open(regression_config, "r") as file:
                 self.settings.update(json.load(file))

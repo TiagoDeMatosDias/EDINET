@@ -53,7 +53,8 @@ def _execute_step(step_name, config, edinet, data):
 
     elif step_name == "standardize_data":
         logger.info("Standardizing data...")
-        data.copy_table_to_Standard(DB_FINANCIAL_DATA_TABLE, DB_STANDARDIZED_TABLE)
+        overwrite = config.get("overwrite_data", False)
+        data.copy_table_to_Standard(DB_FINANCIAL_DATA_TABLE, DB_STANDARDIZED_TABLE, overwrite=overwrite)
 
     elif step_name == "populate_company_info":
         logger.info("Populating company info table...")
@@ -63,7 +64,8 @@ def _execute_step(step_name, config, edinet, data):
 
     elif step_name == "generate_financial_ratios":
         logger.info("Generating financial ratios...")
-        data.Generate_Financial_Ratios(DB_STANDARDIZED_TABLE, DB_STANDARDIZED_RATIOS_TABLE)
+        overwrite = config.get("overwrite_data", False)
+        data.Generate_Financial_Ratios(DB_STANDARDIZED_TABLE, DB_STANDARDIZED_RATIOS_TABLE, overwrite=overwrite)
 
     elif step_name == "update_stock_prices":
         logger.info("Updating stock prices...")
@@ -100,6 +102,7 @@ def _execute_step(step_name, config, edinet, data):
             winsorize_limits=winsorize_limits,
             alpha=alpha,
             dependent_variables=dependent_variables,
+            overwrite=config.get("overwrite_data", False),
         )
 
     elif step_name == "Multivariate_Regression":

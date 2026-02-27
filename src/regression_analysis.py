@@ -1,11 +1,14 @@
 # importing modules and packages
 from __future__ import annotations
 
+import logging
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 import sqlite3
 import os
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -495,6 +498,7 @@ def find_significant_predictors(
     winsorize_limits: tuple[float, float] = (0.05, 0.95),
     alpha: float = 0.05,
     dependent_variables: list[str] | None = None,
+    overwrite: bool = True,
 ) -> None:
     """Systematically test every single-predictor OLS regression in the ratios table.
 
@@ -563,6 +567,29 @@ def find_significant_predictors(
     conn = sqlite3.connect(db_path)
 
     try:
+        # Handle overwrite / skip logic for the results table
+        if overwrite:
+            logger.info("Overwrite enabled - dropping '%s' if it exists.", results_table_name)
+            conn.execute(f"DROP TABLE IF EXISTS {results_table_name}")
+            conn.commit()
+        else:
+            # Check whether the results table already has data
+            cur = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (results_table_name,),
+            )
+            if cur.fetchone() is not None:
+                row_count = conn.execute(
+                    f"SELECT COUNT(*) FROM {results_table_name}"
+                ).fetchone()[0]
+                if row_count > 0:
+                    logger.info(
+                        "Results table '%s' already has %d rows - skipping "
+                        "(enable overwrite to re-run).",
+                        results_table_name, row_count,
+                    )
+                    return
+
         # ------------------------------------------------------------------
         # Step 1 - Discover all predictor-eligible columns in the ratios table.
         # ------------------------------------------------------------------

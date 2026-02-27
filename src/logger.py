@@ -73,8 +73,18 @@ class LogSetup:
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
-        # Suppress verbose DEBUG logs from third-party libraries
-        logging.getLogger("chardet.charsetprober").setLevel(logging.WARNING)
+        # Suppress verbose DEBUG logs from third-party libraries.
+        # statsmodels in particular is extremely chatty at DEBUG level and
+        # will generate gigabytes of log output when running hundreds/thousands
+        # of OLS regressions (e.g. find_significant_predictors).
+        for noisy_logger in (
+            "chardet.charsetprober",
+            "statsmodels",
+            "matplotlib",
+            "PIL",
+            "urllib3",
+        ):
+            logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
         return logger, log_filepath
 

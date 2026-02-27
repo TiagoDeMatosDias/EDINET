@@ -1,0 +1,62 @@
+{
+  "run_steps": {
+    "get_documents": false,
+    "download_documents": false,
+    "standardize_data": false,
+    "populate_company_info": false,
+    "update_stock_prices": false,
+    "parse_taxonomy": false,
+    "generate_financial_ratios": false,
+    "find_significant_predictors": false,
+    "Multivariate_Regression": true
+  },
+  "overwrite_data": true,
+  "get_documents_config": {
+    "startDate": "2026-02-15",
+    "endDate": "2026-02-21"
+  },
+  "download_documents_config": {
+    "docTypeCode": "120",
+    "csvFlag": "1",
+    "secCode": "",
+    "Downloaded": "False"
+  },
+  "populate_company_info_config": {
+    "csv_file": "config/EdinetcodeDlInfo.csv"
+  },
+  "parse_taxonomy_config": {
+    "xsd_file": "config/jppfs_cor_2013-08-31.xsd"
+  },
+  "find_significant_predictors_config": {
+    "output_file": "data/ols_results/predictor_search_results.txt",
+    "winsorize_thresholds": {
+      "lower": 0.05,
+      "upper": 0.95
+    },
+    "alpha": 0.05,
+    "dependent_variables": [
+      "Ratio_EarningsYield",
+      "Ratio_PriceSales",
+      "Ratio_PriceBook",
+      "Ratio_PriceNCAV",
+      "Ratio_FreeCashflowYield",
+      "Ratio_EnterpriseValueSales",
+      "PerShare_SharePrice",
+      "PerShare_BookValue_5Year_Growth",
+      "PerShare_BookValue_3Year_Growth",
+      "PerShare_BookValue_10Year_Growth",
+      "PerShare_Sales_3Year_Growth",
+      "PerShare_Sales_10Year_Growth",
+      "PerShare_Sales_5Year_Growth"
+    ]
+  },
+  "Multivariate_Regression_config": {
+    "Output": "data/ols_results/ols_results_summary.txt",
+    "winsorize_thresholds": {
+      "lower": 0.05,
+      "upper": 0.95
+    },
+    "SQL_Query": "\rSELECT PerShare_SharePrice AS PerShare_SharePrice,\r       PerShare_BookValue_3Year_Average,\r       PerShare_Sales_3Year_Average,\r       PerShare_Sales_10Year_Std,\r       Ratio_NetProfitMargin_3Year_Average,\r       PerShare_Sales_5Year_Growth\r  FROM Standard_Data_Ratios"
+  },
+  "financial_ratios_config_path": "config\\financial_ratios_config.json"
+}
