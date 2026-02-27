@@ -1,19 +1,19 @@
 {
   "run_steps": {
-    "get_documents": false,
-    "download_documents": false,
-    "standardize_data": false,
+    "get_documents": true,
+    "download_documents": true,
+    "standardize_data": true,
     "populate_company_info": false,
-    "update_stock_prices": false,
+    "update_stock_prices": true,
     "parse_taxonomy": false,
-    "generate_financial_ratios": false,
-    "find_significant_predictors": false,
+    "generate_financial_ratios": true,
+    "find_significant_predictors": true,
     "Multivariate_Regression": true
   },
   "overwrite_data": true,
   "get_documents_config": {
     "startDate": "2026-02-15",
-    "endDate": "2026-02-21"
+    "endDate": "2026-02-27"
   },
   "download_documents_config": {
     "docTypeCode": "120",
@@ -22,10 +22,10 @@
     "Downloaded": "False"
   },
   "populate_company_info_config": {
-    "csv_file": "config/EdinetcodeDlInfo.csv"
+    "csv_file": "config/reference/EdinetcodeDlInfo.csv"
   },
   "parse_taxonomy_config": {
-    "xsd_file": "config/jppfs_cor_2013-08-31.xsd"
+    "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd"
   },
   "find_significant_predictors_config": {
     "output_file": "data/ols_results/predictor_search_results.txt",
@@ -40,14 +40,7 @@
       "Ratio_PriceBook",
       "Ratio_PriceNCAV",
       "Ratio_FreeCashflowYield",
-      "Ratio_EnterpriseValueSales",
-      "PerShare_SharePrice",
-      "PerShare_BookValue_5Year_Growth",
-      "PerShare_BookValue_3Year_Growth",
-      "PerShare_BookValue_10Year_Growth",
-      "PerShare_Sales_3Year_Growth",
-      "PerShare_Sales_10Year_Growth",
-      "PerShare_Sales_5Year_Growth"
+      "Ratio_EnterpriseValueSales"
     ]
   },
   "Multivariate_Regression_config": {
@@ -56,7 +49,7 @@
       "lower": 0.05,
       "upper": 0.95
     },
-    "SQL_Query": "\rSELECT PerShare_SharePrice AS PerShare_SharePrice,\r       PerShare_BookValue_3Year_Average,\r       PerShare_Sales_3Year_Average,\r       PerShare_Sales_10Year_Std,\r       Ratio_NetProfitMargin_3Year_Average,\r       PerShare_Sales_5Year_Growth\r  FROM Standard_Data_Ratios"
+    "SQL_Query": "Select PerShare_SharePrice, PerShare_BookValue * Ratio_PriceBook as Bv_Check , PerShare_Earnings / Ratio_EarningsYield as Earnings_Check, PerShare_Sales * Ratio_PriceSales as Sales_Check from Standard_Data_Ratios"
   },
-  "financial_ratios_config_path": "config\\financial_ratios_config.json"
+  "financial_ratios_config_path": "config\\reference\\financial_ratios_config.json"
 }
