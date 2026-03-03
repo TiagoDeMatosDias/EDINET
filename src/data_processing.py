@@ -178,9 +178,11 @@ class data:
 
             # Create a combined column for AccountingTerm and Period
             df['AccountingTerm_Period'] = df['AccountingTerm'] + '_' + df['Period']
+
+            index_cols = ['edinetCode', 'docID', 'docTypeCode', 'periodStart', 'periodEnd']
                     
             RatiosTable = df.pivot_table(
-                index=['edinetCode', 'docID',  'docTypeCode', 'periodStart', 'periodEnd'],
+                index=index_cols,
                 columns=['AccountingTerm_Period'],
                 values='Amount',
                 aggfunc='first'
@@ -249,8 +251,9 @@ class data:
             pd.set_option('future.no_silent_downcasting', True)
 
             new_cols = {}
-            for ratio_def in ratios_definitions:
-                output_col = ratio_def["output"]
+            value_cols = [col for col in RatiosTable.columns if col not in index_cols ]
+
+            for output_col in value_cols:
                 series = RatiosTable[output_col]
                 
                 # Convert series to numeric type (handles object dtype)
