@@ -460,31 +460,45 @@ class data:
         own_conn = conn is None
         if own_conn:
             conn = sqlite3.connect(self.DB_PATH)
+        cursor = conn.cursor()
 
+        # 1 - If overwrite, drop the target table
         if overwrite:
             logger.info("Overwrite enabled - dropping '%s' if it exists.", target_table)
             self.delete_table(target_table, conn)
 
-        table_exists = self._table_exists(conn, target_table)
+        target_exists = self._table_exists(conn, target_table)
 
+        # 2 - Create a temp table with only rows whose docID is new
         suffix = str(random.randint(1000, 9999))
-        tempCopy = f"_tmp_copy_{suffix}"
-        self.copy_table(conn, source_table, tempCopy)
-        self.rename_columns_to_Standard(conn, tempCopy)
+        temp_table = f"_tmp_std_{suffix}"
+        if target_exists:
+            cursor.execute(
+                f"CREATE TABLE {temp_table} AS SELECT * FROM {source_table} "
+                f"WHERE docID NOT IN (SELECT DISTINCT docID FROM {target_table})"
+            )
+        else:
+            cursor.execute(
+                f"CREATE TABLE {temp_table} AS SELECT * FROM {source_table}"
+            )
+        conn.commit()
 
-        if not table_exists:
-            # First run - create the target from the filtered temp data
-            self.Filter_for_Relevant(tempCopy, target_table, conn)
+        # 3 - Rename columns in the temp table to standard names
+        self.rename_columns_to_Standard(conn, temp_table)
+
+        # 4 - Filter the temp table for relevant rows (replace in-place via a swap)
+        temp_filtered = f"_tmp_filt_{suffix}"
+        self.Filter_for_Relevant(temp_table, temp_filtered, conn)
+        self.delete_table(temp_table, conn)
+
+        # 5 - Merge into the target table and clean up
+        if not target_exists:
+            cursor.execute(f"ALTER TABLE {temp_filtered} RENAME TO {target_table}")
+            conn.commit()
             logger.info("Created '%s' from '%s'.", target_table, source_table)
         else:
-            # Incremental - filter into a second temp, then INSERT only new docIDs
-            filteredTemp = f"_tmp_filtered_{suffix}"
-            self.Filter_for_Relevant(tempCopy, filteredTemp, conn)
-
-            cursor = conn.cursor()
             cursor.execute(
-                f"INSERT INTO {target_table} SELECT * FROM {filteredTemp} "
-                f"WHERE docID NOT IN (SELECT DISTINCT docID FROM {target_table})"
+                f"INSERT INTO {target_table} SELECT * FROM {temp_filtered}"
             )
             new_rows = cursor.rowcount
             conn.commit()
@@ -492,9 +506,7 @@ class data:
                 "Incremental standardize: inserted %d new row(s) into '%s'.",
                 new_rows, target_table,
             )
-            self.delete_table(filteredTemp, conn)
-
-        self.delete_table(tempCopy, conn)
+            self.delete_table(temp_filtered, conn)
 
         if own_conn:
             conn.close()

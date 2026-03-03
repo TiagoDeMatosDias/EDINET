@@ -1,16 +1,15 @@
 {
   "run_steps": {
-    "get_documents": true,
-    "download_documents": true,
-    "standardize_data": true,
-    "populate_company_info": false,
-    "update_stock_prices": true,
-    "parse_taxonomy": false,
-    "generate_financial_ratios": true,
-    "find_significant_predictors": true,
-    "Multivariate_Regression": true
+    "get_documents": {"enabled": true, "overwrite": false},
+    "download_documents": {"enabled": true, "overwrite": false},
+    "standardize_data": {"enabled": true, "overwrite": true},
+    "populate_company_info": {"enabled": false, "overwrite": false},
+    "update_stock_prices": {"enabled": true, "overwrite": false},
+    "parse_taxonomy": {"enabled": false, "overwrite": false},
+    "generate_financial_ratios": {"enabled": true, "overwrite": true},
+    "find_significant_predictors": {"enabled": true, "overwrite": true},
+    "Multivariate_Regression": {"enabled": true, "overwrite": false}
   },
-  "overwrite_data": true,
   "get_documents_config": {
     "startDate": "2026-02-15",
     "endDate": "2026-02-27"

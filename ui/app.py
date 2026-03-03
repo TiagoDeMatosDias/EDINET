@@ -63,6 +63,12 @@ STEP_DISPLAY: dict[str, str] = {
 
 DEFAULT_STEPS = list(STEP_DISPLAY.keys())
 
+STEPS_WITH_OVERWRITE: set[str] = {
+    "standardize_data",
+    "generate_financial_ratios",
+    "find_significant_predictors",
+}
+
 # Default config templates so the ⚙ dialog is never empty for a
 # configurable step, even if the run_config.json hasn't been set up yet.
 DEFAULT_STEP_CONFIGS: dict[str, dict] = {
@@ -189,13 +195,15 @@ def main(page: ft.Page):
             dbs.insert(0, current_db)
             _save_app_state(app_state)
 
-    # Ordered list of [step_name, enabled]
-    steps: list[list] = [
-        [name, bool(enabled)]
-        for name, enabled in run_cfg.get("run_steps", {}).items()
-    ]
+    # Ordered list of [step_name, enabled, overwrite]
+    steps: list[list] = []
+    for name, val in run_cfg.get("run_steps", {}).items():
+        if isinstance(val, dict):
+            steps.append([name, bool(val.get("enabled", False)), bool(val.get("overwrite", False))])
+        else:
+            steps.append([name, bool(val), False])
     if not steps:
-        steps = [[s, False] for s in DEFAULT_STEPS]
+        steps = [[s, False, False] for s in DEFAULT_STEPS]
 
     # Per-step configuration dicts
     step_configs: dict[str, dict] = {}
@@ -207,12 +215,6 @@ def main(page: ft.Page):
         )
 
     is_running = [False]
-
-    overwrite_cb = ft.Checkbox(
-        label="Overwrite existing data",
-        value=run_cfg.get("overwrite_data", False),
-        active_color=ft.Colors.ORANGE_700,
-    )
 
     # ── File picker (Service in Flet ≥ 0.80) ─────────────────────────────
     fp = ft.FilePicker()
@@ -258,8 +260,10 @@ def main(page: ft.Page):
 
     def _current_config() -> dict:
         cfg: dict = {}
-        cfg["run_steps"] = {name: enabled for name, enabled in steps}
-        cfg["overwrite_data"] = overwrite_cb.value
+        cfg["run_steps"] = {
+            name: {"enabled": enabled, "overwrite": overwrite}
+            for name, enabled, overwrite in steps
+        }
         for sname, cfg_key in STEP_CONFIG_KEY.items():
             if step_configs.get(sname):
                 cfg[cfg_key] = step_configs[sname]
@@ -466,11 +470,14 @@ def main(page: ft.Page):
         steps[idx][1] = value
         _rebuild_steps()
 
+    def _toggle_overwrite(idx: int, value: bool):
+        steps[idx][2] = value
+
     def _rebuild_steps():
         """Rebuild the compact step list UI."""
         steps_column.controls.clear()
 
-        for idx, (sname, enabled) in enumerate(steps):
+        for idx, (sname, enabled, overwrite) in enumerate(steps):
             has_cfg = sname in STEP_CONFIG_KEY
             display = STEP_DISPLAY.get(sname, sname)
             accent = ft.Colors.GREEN_700 if enabled else ft.Colors.RED_400
@@ -496,6 +503,16 @@ def main(page: ft.Page):
                         tooltip="Configure step",
                         style=ft.ButtonStyle(padding=4),
                         on_click=lambda _, sn=sname: open_step_config(sn),
+                    )
+                )
+
+            if sname in STEPS_WITH_OVERWRITE and enabled:
+                row_items.append(
+                    ft.Checkbox(
+                        label="Overwrite",
+                        value=overwrite,
+                        active_color=ft.Colors.ORANGE_700,
+                        on_change=lambda e, i=idx: _toggle_overwrite(i, e.control.value),
                     )
                 )
 
@@ -609,15 +626,16 @@ def main(page: ft.Page):
             loaded = _load_named_setup(name)
             # Update steps
             steps.clear()
-            for sn, en in loaded.get("run_steps", {}).items():
-                steps.append([sn, bool(en)])
+            for sn, val in loaded.get("run_steps", {}).items():
+                if isinstance(val, dict):
+                    steps.append([sn, bool(val.get("enabled", False)), bool(val.get("overwrite", False))])
+                else:
+                    steps.append([sn, bool(val), False])
             # Update step configs
             for sn, cfg_key in STEP_CONFIG_KEY.items():
                 step_configs[sn] = loaded.get(cfg_key, copy.deepcopy(
                     DEFAULT_STEP_CONFIGS.get(sn, {})
                 ))
-            # Restore overwrite flag
-            overwrite_cb.value = loaded.get("overwrite_data", False)
             # Restore financial-ratios config path
             ratios = loaded.get("financial_ratios_config_path", "")
             if ratios:
@@ -857,7 +875,6 @@ def main(page: ft.Page):
                             on_click=on_load_setup,
                         ),
                         ft.Container(expand=True),
-                        overwrite_cb,
                         run_btn,
                     ],
                 ),

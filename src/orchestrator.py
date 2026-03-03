@@ -9,7 +9,7 @@ import src.regression_analysis as r
 logger = logging.getLogger(__name__)
 
 
-def _execute_step(step_name, config, edinet, data):
+def _execute_step(step_name, config, edinet, data, overwrite=False):
     """
     Execute a single orchestration step.
     
@@ -18,6 +18,7 @@ def _execute_step(step_name, config, edinet, data):
         config: Configuration object
         edinet: Edinet API instance
         data: Data processing instance
+        overwrite: Whether to overwrite existing data for this step
     """
     # Database table names
     DB_DOC_LIST_TABLE = config.get("DB_DOC_LIST_TABLE")
@@ -53,7 +54,6 @@ def _execute_step(step_name, config, edinet, data):
 
     elif step_name == "standardize_data":
         logger.info("Standardizing data...")
-        overwrite = config.get("overwrite_data", False)
         data.copy_table_to_Standard(DB_FINANCIAL_DATA_TABLE, DB_STANDARDIZED_TABLE, overwrite=overwrite)
 
     elif step_name == "populate_company_info":
@@ -64,7 +64,6 @@ def _execute_step(step_name, config, edinet, data):
 
     elif step_name == "generate_financial_ratios":
         logger.info("Generating financial ratios...")
-        overwrite = config.get("overwrite_data", False)
         data.Generate_Financial_Ratios(DB_STANDARDIZED_TABLE, DB_STANDARDIZED_RATIOS_TABLE, overwrite=overwrite)
 
     elif step_name == "update_stock_prices":
@@ -102,7 +101,7 @@ def _execute_step(step_name, config, edinet, data):
             winsorize_limits=winsorize_limits,
             alpha=alpha,
             dependent_variables=dependent_variables,
-            overwrite=config.get("overwrite_data", False),
+            overwrite=overwrite,
         )
 
     elif step_name == "Multivariate_Regression":
@@ -132,10 +131,16 @@ def run(edinet=None, data=None):
 
     # Execute steps in order as defined in run_steps
     logger.info(f"Steps to execute (in order): {list(run_steps.keys())}")
-    for step_name, is_enabled in run_steps.items():
+    for step_name, step_val in run_steps.items():
+        if isinstance(step_val, dict):
+            is_enabled = step_val.get("enabled", False)
+            overwrite = step_val.get("overwrite", False)
+        else:
+            is_enabled = bool(step_val)
+            overwrite = False
         if is_enabled:
             try:
-                _execute_step(step_name, config, edinet, data)
+                _execute_step(step_name, config, edinet, data, overwrite=overwrite)
             except Exception as e:
                 logger.error(f"Error executing step '{step_name}': {e}", exc_info=True)
         else:
