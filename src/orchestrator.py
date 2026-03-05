@@ -5,6 +5,7 @@ from config import Config
 import src.data_processing as d
 import src.stockprice_api as y
 import src.regression_analysis as r
+import src.backtesting as bt
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,17 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
         logger.info("Running multivariate regression...")
         mv_config = config.get("Multivariate_Regression_config", {})
         r.multivariate_regression(mv_config, DB_PATH)
+
+    elif step_name == "backtest":
+        logger.info("Running backtesting...")
+        backtesting_config = config.get("backtesting_config", {})
+        bt.run_backtest(
+            backtesting_config,
+            db_path=DB_PATH,
+            prices_table=DB_STOCK_PRICES_TABLE,
+            ratios_table=DB_STANDARDIZED_RATIOS_TABLE,
+            company_table=DB_COMPANY_INFO_TABLE,
+        )
 
     else:
         logger.warning(f"Unknown step: {step_name}")

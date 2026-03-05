@@ -8,7 +8,8 @@
     "parse_taxonomy": {"enabled": false, "overwrite": false},
     "generate_financial_ratios": {"enabled": true, "overwrite": true},
     "find_significant_predictors": {"enabled": true, "overwrite": true},
-    "Multivariate_Regression": {"enabled": true, "overwrite": false}
+    "Multivariate_Regression": {"enabled": true, "overwrite": false},
+    "backtest": {"enabled": false, "overwrite": false}
   },
   "get_documents_config": {
     "startDate": "2026-02-15",
@@ -49,6 +50,13 @@
       "upper": 0.95
     },
     "SQL_Query": "Select PerShare_SharePrice, PerShare_BookValue * Ratio_PriceBook as Bv_Check , PerShare_Earnings / Ratio_EarningsYield as Earnings_Check, PerShare_Sales * Ratio_PriceSales as Sales_Check from Standard_Data_Ratios"
+  },
+  "backtesting_config": {
+    "start_date": "2023-01-01",
+    "end_date": "2025-12-31",
+    "portfolio": {},
+    "benchmark_ticker": "",
+    "output_file": "data/backtest_results/backtest_report.txt"
   },
   "financial_ratios_config_path": "config\\reference\\financial_ratios_config.json"
 }
