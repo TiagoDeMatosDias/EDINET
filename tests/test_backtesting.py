@@ -469,6 +469,37 @@ class TestRunBacktest(unittest.TestCase):
         self.assertIn("Benchmark", content)
         self.assertIn("Excess Return", content)
 
+    def test_empty_portfolio_raises(self):
+        config = {
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-05",
+            "portfolio": {},
+            "output_file": os.path.join(self.tmp_dir, "report.txt"),
+        }
+        with self.assertRaises(ValueError) as ctx:
+            run_backtest(config, self.db_path)
+        self.assertIn("empty", str(ctx.exception).lower())
+
+    def test_missing_dates_raises(self):
+        config = {
+            "portfolio": {"1001": 1.0},
+            "output_file": os.path.join(self.tmp_dir, "report.txt"),
+        }
+        with self.assertRaises(ValueError) as ctx:
+            run_backtest(config, self.db_path)
+        self.assertIn("start_date", str(ctx.exception))
+
+    def test_weights_not_summing_to_one_raises(self):
+        config = {
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-05",
+            "portfolio": {"1001": 0.3, "2002": 0.3},
+            "output_file": os.path.join(self.tmp_dir, "report.txt"),
+        }
+        with self.assertRaises(ValueError) as ctx:
+            run_backtest(config, self.db_path)
+        self.assertIn("sum to 1.0", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

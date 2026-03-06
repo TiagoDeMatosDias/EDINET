@@ -377,13 +377,33 @@ def run_backtest(
     Returns:
         Metrics dictionary produced by :func:`calculate_metrics`.
     """
-    start_date = backtesting_config["start_date"]
-    end_date = backtesting_config["end_date"]
-    portfolio_weights = backtesting_config["portfolio"]
+    start_date = backtesting_config.get("start_date")
+    end_date = backtesting_config.get("end_date")
+    portfolio_weights = backtesting_config.get("portfolio", {})
     benchmark_ticker = backtesting_config.get("benchmark_ticker")
     output_file = backtesting_config.get(
         "output_file", "data/backtest_results/backtest_report.txt"
     )
+
+    # ── Validate configuration ────────────────────────────────────────────
+    if not start_date or not end_date:
+        raise ValueError(
+            "Backtesting config must include 'start_date' and 'end_date'."
+        )
+
+    if not portfolio_weights:
+        raise ValueError(
+            "Backtesting config 'portfolio' is empty. "
+            "Add at least one ticker with a weight (e.g. {\"7203\": 0.5, \"6758\": 0.5})."
+        )
+
+    weight_sum = sum(portfolio_weights.values())
+    if abs(weight_sum - 1.0) > 0.01:
+        raise ValueError(
+            f"Portfolio weights must sum to 1.0 (100%), "
+            f"but they sum to {weight_sum:.4f} ({weight_sum * 100:.1f}%). "
+            f"Adjust the weights and try again."
+        )
 
     tickers = list(portfolio_weights.keys())
     all_tickers = list(tickers)

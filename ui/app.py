@@ -47,6 +47,7 @@ STEP_CONFIG_KEY: dict[str, str] = {
     "parse_taxonomy":             "parse_taxonomy_config",
     "find_significant_predictors": "find_significant_predictors_config",
     "Multivariate_Regression":    "Multivariate_Regression_config",
+    "backtest":                   "backtesting_config",
 }
 
 STEP_DISPLAY: dict[str, str] = {
@@ -59,6 +60,7 @@ STEP_DISPLAY: dict[str, str] = {
     "generate_financial_ratios":  "Generate Financial Ratios",
     "find_significant_predictors": "Find Significant Predictors",
     "Multivariate_Regression":    "Multivariate Regression",
+    "backtest":                   "Backtest Portfolio",
 }
 
 DEFAULT_STEPS = list(STEP_DISPLAY.keys())
@@ -98,6 +100,13 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "Output": "data/ols_results/ols_results_summary.txt",
         "winsorize_thresholds": {"lower": 0.05, "upper": 0.95},
         "SQL_Query": "",
+    },
+    "backtest": {
+        "start_date": "2023-01-01",
+        "end_date": "2025-12-31",
+        "portfolio": {},
+        "benchmark_ticker": "",
+        "output_file": "data/backtest_results/backtest_report.txt",
     },
 }
 
@@ -265,8 +274,9 @@ def main(page: ft.Page):
             for name, enabled, overwrite in steps
         }
         for sname, cfg_key in STEP_CONFIG_KEY.items():
-            if step_configs.get(sname):
-                cfg[cfg_key] = step_configs[sname]
+            scfg = step_configs.get(sname)
+            if scfg:
+                cfg[cfg_key] = scfg
         # Persist the financial-ratios config path
         ratios = env.get("FINANCIAL_RATIOS_CONFIG_PATH", "")
         if ratios:
@@ -416,6 +426,10 @@ def main(page: ft.Page):
         return result
 
     def open_step_config(step_name: str):
+        if step_name == "backtest":
+            _open_backtest_config()
+            return
+
         current = step_configs.get(step_name, {})
         if not current:
             current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get(step_name, {}))
@@ -441,6 +455,154 @@ def main(page: ft.Page):
                 scroll=ft.ScrollMode.AUTO,
                 width=500,
                 height=400,
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda _: _pop()),
+                ft.Button("Save", on_click=save),
+            ],
+        ))
+
+    # ── Custom backtest config dialog ─────────────────────────────────
+
+    def _open_backtest_config():
+        """Open a dedicated dialog for backtesting configuration."""
+        current = step_configs.get("backtest", {})
+        if not current:
+            current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("backtest", {}))
+        portfolio: dict[str, float] = dict(current.get("portfolio", {}))
+
+        start_tf = ft.TextField(
+            label="Start Date (YYYY-MM-DD)",
+            value=current.get("start_date", ""),
+            dense=True,
+            width=220,
+        )
+        end_tf = ft.TextField(
+            label="End Date (YYYY-MM-DD)",
+            value=current.get("end_date", ""),
+            dense=True,
+            width=220,
+        )
+        bench_tf = ft.TextField(
+            label="Benchmark Ticker (optional)",
+            value=current.get("benchmark_ticker", ""),
+            dense=True,
+            width=220,
+        )
+        output_tf = ft.TextField(
+            label="Output File",
+            value=current.get("output_file", "data/backtest_results/backtest_report.txt"),
+            dense=True,
+            width=460,
+        )
+
+        # Portfolio management
+        ticker_tf = ft.TextField(label="Ticker", dense=True, width=160)
+        weight_tf = ft.TextField(label="Weight %", dense=True, width=100)
+        portfolio_list = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO, height=160)
+        weight_total_text = ft.Text("", size=12)
+
+        def _update_weight_total():
+            total = sum(portfolio.values())
+            pct = total * 100
+            if abs(pct - 100.0) < 0.01:
+                weight_total_text.value = f"Total weight: {pct:.1f}% ✓"
+                weight_total_text.color = ft.Colors.GREEN_700
+            else:
+                weight_total_text.value = f"Total weight: {pct:.1f}% (must be 100%)"
+                weight_total_text.color = ft.Colors.RED_400
+
+        def _rebuild_portfolio_list():
+            portfolio_list.controls.clear()
+            for tk, wt in portfolio.items():
+                portfolio_list.controls.append(
+                    ft.Row(
+                        [
+                            ft.Text(tk, width=120, size=13),
+                            ft.Text(f"{wt * 100:.1f}%", width=80, size=13),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE,
+                                icon_size=16,
+                                icon_color=ft.Colors.RED_400,
+                                tooltip="Remove",
+                                on_click=lambda _, t=tk: _remove_ticker(t),
+                            ),
+                        ],
+                        spacing=4,
+                    )
+                )
+            _update_weight_total()
+            page.update()
+
+        def _add_ticker(_):
+            tk = ticker_tf.value.strip()
+            wt_raw = weight_tf.value.strip()
+            if not tk:
+                _snack("Enter a ticker symbol")
+                return
+            try:
+                wt_pct = float(wt_raw)
+            except ValueError:
+                _snack("Weight must be a number (percentage, e.g. 50)")
+                return
+            if wt_pct <= 0 or wt_pct > 100:
+                _snack("Weight must be between 0 and 100")
+                return
+            portfolio[tk] = wt_pct / 100.0
+            ticker_tf.value = ""
+            weight_tf.value = ""
+            _rebuild_portfolio_list()
+
+        def _remove_ticker(tk: str):
+            portfolio.pop(tk, None)
+            _rebuild_portfolio_list()
+
+        add_btn = ft.IconButton(
+            icon=ft.Icons.ADD_CIRCLE,
+            icon_color=ft.Colors.GREEN_700,
+            tooltip="Add ticker",
+            on_click=_add_ticker,
+        )
+
+        _rebuild_portfolio_list()
+
+        def save(_):
+            # Validate
+            if not portfolio:
+                _snack("Portfolio is empty — add at least one ticker")
+                return
+            total = sum(portfolio.values())
+            if abs(total - 1.0) > 0.01:
+                _snack(f"Portfolio weights must sum to 100% (currently {total * 100:.1f}%)")
+                return
+            step_configs["backtest"] = {
+                "start_date": start_tf.value.strip(),
+                "end_date": end_tf.value.strip(),
+                "portfolio": dict(portfolio),
+                "benchmark_ticker": bench_tf.value.strip(),
+                "output_file": output_tf.value.strip(),
+            }
+            _pop()
+            _snack("Backtest config updated")
+
+        _show(ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Configure: Backtest Portfolio"),
+            content=ft.Column(
+                [
+                    ft.Row([start_tf, end_tf], spacing=16),
+                    bench_tf,
+                    output_tf,
+                    ft.Divider(height=1),
+                    ft.Text("Portfolio", weight=ft.FontWeight.BOLD, size=14),
+                    ft.Row([ticker_tf, weight_tf, add_btn], spacing=8),
+                    portfolio_list,
+                    weight_total_text,
+                ],
+                scroll=ft.ScrollMode.AUTO,
+                width=500,
+                height=460,
+                spacing=8,
             ),
             actions=[
                 ft.TextButton("Cancel", on_click=lambda _: _pop()),

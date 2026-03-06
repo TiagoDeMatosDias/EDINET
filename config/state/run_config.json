@@ -1,15 +1,45 @@
 {
   "run_steps": {
-    "get_documents": {"enabled": true, "overwrite": false},
-    "download_documents": {"enabled": true, "overwrite": false},
-    "standardize_data": {"enabled": true, "overwrite": true},
-    "populate_company_info": {"enabled": false, "overwrite": false},
-    "update_stock_prices": {"enabled": true, "overwrite": false},
-    "parse_taxonomy": {"enabled": false, "overwrite": false},
-    "generate_financial_ratios": {"enabled": true, "overwrite": true},
-    "find_significant_predictors": {"enabled": true, "overwrite": true},
-    "Multivariate_Regression": {"enabled": true, "overwrite": false},
-    "backtest": {"enabled": false, "overwrite": false}
+    "get_documents": {
+      "enabled": false,
+      "overwrite": false
+    },
+    "download_documents": {
+      "enabled": false,
+      "overwrite": false
+    },
+    "standardize_data": {
+      "enabled": false,
+      "overwrite": true
+    },
+    "populate_company_info": {
+      "enabled": false,
+      "overwrite": false
+    },
+    "update_stock_prices": {
+      "enabled": false,
+      "overwrite": false
+    },
+    "parse_taxonomy": {
+      "enabled": false,
+      "overwrite": false
+    },
+    "generate_financial_ratios": {
+      "enabled": false,
+      "overwrite": true
+    },
+    "find_significant_predictors": {
+      "enabled": false,
+      "overwrite": true
+    },
+    "Multivariate_Regression": {
+      "enabled": false,
+      "overwrite": false
+    },
+    "backtest": {
+      "enabled": true,
+      "overwrite": false
+    }
   },
   "get_documents_config": {
     "startDate": "2026-02-15",
@@ -54,9 +84,12 @@
   "backtesting_config": {
     "start_date": "2023-01-01",
     "end_date": "2025-12-31",
-    "portfolio": {},
-    "benchmark_ticker": "",
+    "portfolio": {
+      "75750": 0.5,
+      "59110": 0.25,
+      "59840": 0.25
+    },
+    "benchmark_ticker": "59110",
     "output_file": "data/backtest_results/backtest_report.txt"
-  },
-  "financial_ratios_config_path": "config\\reference\\financial_ratios_config.json"
+  }
 }

@@ -136,6 +136,54 @@ def run(edinet=None, data=None):
     config = Config()
     run_steps = config.get("run_steps", {})
 
+    # ── Pre-flight checks ────────────────────────────────────────────────
+    # Map each step to the config / .env keys it requires at runtime.
+    STEP_REQUIRED_KEYS: dict[str, list[str]] = {
+        "get_documents":              ["baseURL", "API_KEY"],
+        "download_documents":         ["DB_DOC_LIST_TABLE", "DB_FINANCIAL_DATA_TABLE",
+                                       "RAW_DOCUMENTS_PATH", "baseURL", "API_KEY"],
+        "standardize_data":           ["DB_FINANCIAL_DATA_TABLE", "DB_STANDARDIZED_TABLE"],
+        "populate_company_info":      ["DB_COMPANY_INFO_TABLE"],
+        "generate_financial_ratios":  ["DB_STANDARDIZED_TABLE", "DB_STANDARDIZED_RATIOS_TABLE"],
+        "update_stock_prices":        ["DB_PATH", "DB_COMPANY_INFO_TABLE",
+                                       "DB_STOCK_PRICES_TABLE", "DB_STANDARDIZED_TABLE"],
+        "parse_taxonomy":             ["DB_TAXONOMY_TABLE"],
+        "find_significant_predictors": ["DB_PATH", "DB_STANDARDIZED_RATIOS_TABLE",
+                                        "DB_SIGNIFICANT_PREDICTORS_TABLE"],
+        "Multivariate_Regression":    ["DB_PATH"],
+        "backtest":                   ["DB_PATH", "DB_STOCK_PRICES_TABLE",
+                                       "DB_STANDARDIZED_RATIOS_TABLE",
+                                       "DB_COMPANY_INFO_TABLE"],
+    }
+
+    enabled_steps = []
+    for step_name, step_val in run_steps.items():
+        if isinstance(step_val, dict):
+            is_enabled = step_val.get("enabled", False)
+        else:
+            is_enabled = bool(step_val)
+        if is_enabled:
+            enabled_steps.append(step_name)
+
+    missing_map: dict[str, list[str]] = {}
+    for step_name in enabled_steps:
+        required = STEP_REQUIRED_KEYS.get(step_name, [])
+        for key in required:
+            val = config.get(key)
+            if not val:
+                missing_map.setdefault(key, []).append(step_name)
+
+    if missing_map:
+        lines = ["The following required settings are missing from .env / config:"]
+        for key, steps_needing in sorted(missing_map.items()):
+            lines.append(f"  • {key}  (needed by: {', '.join(steps_needing)})")
+        lines.append("")
+        lines.append("Set them in the UI (top-bar database selector / API Key) ")
+        lines.append("or add them to the .env file in the project root.")
+        msg = "\n".join(lines)
+        logger.error(msg)
+        raise RuntimeError(msg)
+
     if not edinet:
         edinet = edinet_api.Edinet()
     if not data:
