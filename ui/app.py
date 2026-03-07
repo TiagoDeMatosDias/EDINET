@@ -116,6 +116,7 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "portfolio": {},
         "benchmark_ticker": "",
         "output_file": "data/backtest_results/backtest_report.txt",
+        "risk_free_rate": 0.0,
     },
 }
 
@@ -617,6 +618,20 @@ def main(page: ft.Page):
             dense=True,
             width=460,
         )
+        risk_free_tf = ft.TextField(
+            label="Risk-Free Rate (%)",
+            value=str(current.get("risk_free_rate", 0.0) * 100),
+            dense=True,
+            width=220,
+            hint_text="e.g. 2.5 for 2.5%",
+        )
+        capital_tf = ft.TextField(
+            label="Initial Capital (0 = omit)",
+            value=str(int(current.get("initial_capital", 0))),
+            dense=True,
+            width=220,
+            hint_text="e.g. 1000000",
+        )
 
         # Portfolio management
         ticker_tf = ft.TextField(label="Ticker", dense=True, width=160)
@@ -697,12 +712,22 @@ def main(page: ft.Page):
             if abs(total - 1.0) > 0.01:
                 _snack(f"Portfolio weights must sum to 100% (currently {total * 100:.1f}%)")
                 return
+            try:
+                rf = float(risk_free_tf.value.strip()) / 100.0
+            except ValueError:
+                rf = 0.0
+            try:
+                cap = float(capital_tf.value.strip())
+            except ValueError:
+                cap = 0.0
             step_configs["backtest"] = {
                 "start_date": start_tf.value.strip(),
                 "end_date": end_tf.value.strip(),
                 "portfolio": dict(portfolio),
                 "benchmark_ticker": bench_tf.value.strip(),
                 "output_file": output_tf.value.strip(),
+                "risk_free_rate": rf,
+                "initial_capital": cap,
             }
             _pop()
             _snack("Backtest config updated")
@@ -713,7 +738,8 @@ def main(page: ft.Page):
             content=ft.Column(
                 [
                     ft.Row([start_tf, end_tf], spacing=16),
-                    bench_tf,
+                    ft.Row([bench_tf, risk_free_tf], spacing=16),
+                    capital_tf,
                     output_tf,
                     ft.Divider(height=1),
                     ft.Text("Portfolio", weight=ft.FontWeight.BOLD, size=14),
