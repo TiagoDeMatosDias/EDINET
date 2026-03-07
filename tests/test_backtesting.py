@@ -32,8 +32,11 @@ from src.backtesting import (
     get_dividend_data,
     calculate_portfolio_returns,
     calculate_benchmark_returns,
+    calculate_return_decomposition,
+    calculate_per_company_returns,
     calculate_metrics,
     generate_report,
+    generate_backtest_charts,
     run_backtest,
 )
 
@@ -265,6 +268,244 @@ class TestCalculateBenchmarkReturns(unittest.TestCase):
         # (1.05) * (110/105) ≈ 1.10
         self.assertAlmostEqual(result["cumulative_return"].iloc[-1], 1.10, places=4)
 
+    def test_price_return_columns_present(self):
+        prices = self._make_prices()
+        result = calculate_benchmark_returns(prices, "BM")
+        for col in ("price_return", "cum_price_return",
+                     "dividend_return", "cum_dividend_return"):
+            self.assertIn(col, result.columns)
+
+    def test_no_dividends_means_price_equals_total(self):
+        prices = self._make_prices()
+        result = calculate_benchmark_returns(prices, "BM")
+        # Without dividends, total and price-only should be identical
+        self.assertAlmostEqual(
+            result["cumulative_return"].iloc[-1],
+            result["cum_price_return"].iloc[-1],
+            places=6,
+        )
+        self.assertAlmostEqual(
+            result["cum_dividend_return"].iloc[-1], 1.0, places=6,
+        )
+
+    def test_with_dividends(self):
+        prices = self._make_prices()
+        dividends = pd.DataFrame({
+            "Ticker": ["BM"],
+            "periodEnd": pd.to_datetime(["2024-01-02"]),
+            "PerShare_Dividends": [5.0],
+        })
+        result = calculate_benchmark_returns(prices, "BM", dividends)
+        # Day 2: price return 5% + dividend 5/105 ≈ 4.76%
+        expected_total = 0.05 + 5.0 / 105.0
+        self.assertAlmostEqual(
+            result["benchmark_return"].iloc[0], expected_total, places=4
+        )
+        # Dividend cumulative should be > 1
+        self.assertGreater(result["cum_dividend_return"].iloc[0], 1.0)
+
+
+# ---------------------------------------------------------------------------
+# calculate_return_decomposition
+# ---------------------------------------------------------------------------
+
+class TestCalculateReturnDecomposition(unittest.TestCase):
+
+    def _make_prices_df(self):
+        return pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-01", "2024-01-02", "2024-01-03",
+                "2024-01-01", "2024-01-02", "2024-01-03",
+            ]),
+            "Ticker": ["A", "A", "A", "B", "B", "B"],
+            "Price": [100.0, 110.0, 121.0, 200.0, 210.0, 220.0],
+        })
+
+    def test_returns_three_keys(self):
+        prices = self._make_prices_df()
+        result = calculate_return_decomposition(prices, {"A": 0.5, "B": 0.5})
+        self.assertIn("total", result)
+        self.assertIn("price_only", result)
+        self.assertIn("dividend_only", result)
+
+    def test_no_dividends_means_dividend_component_neutral(self):
+        prices = self._make_prices_df()
+        result = calculate_return_decomposition(prices, {"A": 1.0})
+        # Without dividends, dividend component should be ~0
+        div = result["dividend_only"]
+        if not div.empty:
+            self.assertAlmostEqual(
+                div["cumulative_return"].iloc[-1], 1.0, places=6
+            )
+
+    def test_with_dividends_total_exceeds_price_only(self):
+        prices = self._make_prices_df()
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-02"]),
+            "PerShare_Dividends": [10.0],
+        })
+        result = calculate_return_decomposition(
+            prices, {"A": 1.0}, dividends
+        )
+        total_ret = result["total"]["cumulative_return"].iloc[-1]
+        price_ret = result["price_only"]["cumulative_return"].iloc[-1]
+        self.assertGreater(total_ret, price_ret)
+
+    def test_total_matches_calculate_portfolio_returns(self):
+        prices = self._make_prices_df()
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-02"]),
+            "PerShare_Dividends": [5.0],
+        })
+        decomp = calculate_return_decomposition(
+            prices, {"A": 0.5, "B": 0.5}, dividends
+        )
+        direct = calculate_portfolio_returns(
+            prices, {"A": 0.5, "B": 0.5}, dividends
+        )
+        self.assertAlmostEqual(
+            decomp["total"]["cumulative_return"].iloc[-1],
+            direct["cumulative_return"].iloc[-1],
+            places=6,
+        )
+
+
+# ---------------------------------------------------------------------------
+# calculate_per_company_returns
+# ---------------------------------------------------------------------------
+
+class TestCalculatePerCompanyReturns(unittest.TestCase):
+
+    def _make_prices_df(self):
+        return pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-01", "2024-01-02", "2024-01-03",
+                "2024-01-01", "2024-01-02", "2024-01-03",
+            ]),
+            "Ticker": ["A", "A", "A", "B", "B", "B"],
+            "Price": [100.0, 110.0, 120.0, 200.0, 210.0, 220.0],
+        })
+
+    def test_returns_all_tickers(self):
+        prices = self._make_prices_df()
+        result = calculate_per_company_returns(
+            prices, {"A": 0.6, "B": 0.4}
+        )
+        self.assertEqual(set(result["Ticker"]), {"A", "B"})
+
+    def test_price_return_correct(self):
+        prices = self._make_prices_df()
+        result = calculate_per_company_returns(prices, {"A": 1.0})
+        row = result[result["Ticker"] == "A"].iloc[0]
+        # A: 100 → 120 = +20%
+        self.assertAlmostEqual(row["price_return"], 0.20, places=4)
+
+    def test_dividend_return(self):
+        prices = self._make_prices_df()
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-02"]),
+            "PerShare_Dividends": [11.0],  # 11 / 110 = 10%
+        })
+        result = calculate_per_company_returns(
+            prices, {"A": 1.0}, dividends
+        )
+        row = result[result["Ticker"] == "A"].iloc[0]
+        self.assertAlmostEqual(row["dividend_return"], 0.10, places=4)
+
+    def test_weighted_contribution(self):
+        prices = self._make_prices_df()
+        result = calculate_per_company_returns(
+            prices, {"A": 0.6, "B": 0.4}
+        )
+        a_row = result[result["Ticker"] == "A"].iloc[0]
+        # A: price_return=20%, weight=60% → weighted_price = 12%
+        self.assertAlmostEqual(a_row["weighted_price"], 0.12, places=4)
+
+    def test_columns_present(self):
+        prices = self._make_prices_df()
+        result = calculate_per_company_returns(prices, {"A": 1.0})
+        expected_cols = {
+            "Ticker", "start_price", "end_price", "price_return",
+            "dividend_return", "total_return", "weight",
+            "weighted_price", "weighted_dividend", "weighted_total",
+        }
+        self.assertTrue(expected_cols.issubset(set(result.columns)))
+
+    def test_empty_prices(self):
+        prices = pd.DataFrame({"Date": [], "Ticker": [], "Price": []})
+        prices["Date"] = pd.to_datetime(prices["Date"])
+        result = calculate_per_company_returns(prices, {"A": 1.0})
+        self.assertTrue(result.empty)
+
+
+# ---------------------------------------------------------------------------
+# generate_backtest_charts
+# ---------------------------------------------------------------------------
+
+class TestGenerateBacktestCharts(unittest.TestCase):
+
+    def _make_decomposition(self):
+        dates = pd.date_range("2024-01-02", periods=4)
+        total = pd.DataFrame({
+            "daily_return": [0.02, 0.01, -0.005, 0.015],
+            "cumulative_return": np.cumprod([1.02, 1.01, 0.995, 1.015]),
+        }, index=dates)
+        price_only = pd.DataFrame({
+            "daily_return": [0.02, 0.01, -0.005, 0.01],
+            "cumulative_return": np.cumprod([1.02, 1.01, 0.995, 1.01]),
+        }, index=dates)
+        div_only = pd.DataFrame({
+            "daily_return": [0.0, 0.0, 0.0, 0.005],
+            "cumulative_return": np.cumprod([1.0, 1.0, 1.0, 1.005]),
+        }, index=dates)
+        return {"total": total, "price_only": price_only, "dividend_only": div_only}
+
+    def _make_per_company(self):
+        return pd.DataFrame({
+            "Ticker": ["A", "B"],
+            "start_price": [100.0, 200.0],
+            "end_price": [110.0, 210.0],
+            "price_return": [0.10, 0.05],
+            "dividend_return": [0.02, 0.01],
+            "total_return": [0.12, 0.06],
+            "weight": [0.6, 0.4],
+            "weighted_price": [0.06, 0.02],
+            "weighted_dividend": [0.012, 0.004],
+            "weighted_total": [0.072, 0.024],
+        })
+
+    def test_creates_chart_files(self):
+        decomp = self._make_decomposition()
+        per_co = self._make_per_company()
+        with tempfile.TemporaryDirectory() as tmp:
+            files = generate_backtest_charts(
+                decomp, None, per_co, tmp, "2024-01-01", "2024-01-05"
+            )
+            self.assertTrue(len(files) >= 3)
+            for f in files:
+                self.assertTrue(os.path.isfile(f))
+
+    def test_creates_charts_with_benchmark(self):
+        decomp = self._make_decomposition()
+        dates = pd.date_range("2024-01-02", periods=4)
+        bench = pd.DataFrame({
+            "benchmark_return": [0.01, 0.005, -0.002, 0.008],
+            "cumulative_return": np.cumprod([1.01, 1.005, 0.998, 1.008]),
+            "price_return": [0.01, 0.005, -0.002, 0.008],
+            "cum_price_return": np.cumprod([1.01, 1.005, 0.998, 1.008]),
+            "dividend_return": [0.0, 0.0, 0.0, 0.0],
+            "cum_dividend_return": [1.0, 1.0, 1.0, 1.0],
+        }, index=dates)
+        with tempfile.TemporaryDirectory() as tmp:
+            files = generate_backtest_charts(
+                decomp, bench, None, tmp, "2024-01-01", "2024-01-05"
+            )
+            # Should have cumulative + drawdown + decomposition (no per_company)
+            self.assertTrue(len(files) >= 3)
+
 
 # ---------------------------------------------------------------------------
 # calculate_metrics
@@ -285,6 +526,10 @@ class TestCalculateMetrics(unittest.TestCase):
         return pd.DataFrame({
             "benchmark_return": returns,
             "cumulative_return": cum,
+            "price_return": returns,
+            "cum_price_return": cum,
+            "dividend_return": [0.0] * len(returns),
+            "cum_dividend_return": [1.0] * len(returns),
         }, index=pd.date_range("2024-01-02", periods=len(returns)))
 
     def test_total_return(self):
@@ -304,6 +549,8 @@ class TestCalculateMetrics(unittest.TestCase):
         metrics = calculate_metrics(pf, None, "2024-01-01", "2024-01-02")
         self.assertIsNone(metrics["benchmark_total_return"])
         self.assertIsNone(metrics["excess_return"])
+        self.assertIsNone(metrics["benchmark_price_return"])
+        self.assertIsNone(metrics["benchmark_dividend_return"])
 
     def test_max_drawdown(self):
         # Up 10%, then down 20% from peak
@@ -432,6 +679,20 @@ class TestRunBacktest(unittest.TestCase):
         self.assertIn("excess_return", metrics)
         self.assertTrue(os.path.isfile(config["output_file"]))
 
+        # New decomposition fields
+        self.assertIn("portfolio_price_return", metrics)
+        self.assertIn("portfolio_dividend_return", metrics)
+        self.assertIn("benchmark_price_return", metrics)
+        self.assertIn("benchmark_dividend_return", metrics)
+        self.assertIn("per_company", metrics)
+        self.assertIsInstance(metrics["per_company"], list)
+        self.assertTrue(len(metrics["per_company"]) > 0)
+
+        # Chart files should have been created
+        self.assertIn("chart_files", metrics)
+        for f in metrics["chart_files"]:
+            self.assertTrue(os.path.isfile(f))
+
     def test_backtest_without_benchmark(self):
         config = {
             "start_date": "2024-01-01",
@@ -468,6 +729,30 @@ class TestRunBacktest(unittest.TestCase):
         self.assertIn("BACKTESTING REPORT", content)
         self.assertIn("Benchmark", content)
         self.assertIn("Excess Return", content)
+        # New decomposition sections
+        self.assertIn("Portfolio Return Decomposition", content)
+        self.assertIn("Per-Company Breakdown", content)
+        self.assertIn("1001", content)
+        self.assertIn("2002", content)
+
+    def test_backtest_decomposition_values(self):
+        """Price + dividend return should sum close to total return."""
+        config = {
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-05",
+            "portfolio": {"1001": 1.0},
+            "output_file": os.path.join(self.tmp_dir, "report.txt"),
+        }
+        metrics = run_backtest(config, self.db_path)
+        # Price return should be 10% (100 → 110)
+        self.assertAlmostEqual(
+            metrics["portfolio_price_return"], 0.10, places=2
+        )
+        # Dividend return should be positive (5 JPY on 101 or similar)
+        self.assertGreater(metrics["portfolio_dividend_return"], 0.0)
+        # Per-company list should have 1 entry
+        self.assertEqual(len(metrics["per_company"]), 1)
+        self.assertEqual(metrics["per_company"][0]["Ticker"], "1001")
 
     def test_empty_portfolio_raises(self):
         config = {

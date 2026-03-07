@@ -44,6 +44,7 @@ STEP_CONFIG_KEY: dict[str, str] = {
     "get_documents":              "get_documents_config",
     "download_documents":         "download_documents_config",
     "populate_company_info":      "populate_company_info_config",
+    "import_stock_prices_csv":    "import_stock_prices_csv_config",
     "parse_taxonomy":             "parse_taxonomy_config",
     "find_significant_predictors": "find_significant_predictors_config",
     "Multivariate_Regression":    "Multivariate_Regression_config",
@@ -55,6 +56,7 @@ STEP_DISPLAY: dict[str, str] = {
     "download_documents":         "Download Documents",
     "standardize_data":           "Standardize Data",
     "populate_company_info":      "Populate Company Info",
+    "import_stock_prices_csv":    "Import Stock Prices (CSV)",
     "update_stock_prices":        "Update Stock Prices",
     "parse_taxonomy":             "Parse Taxonomy",
     "generate_financial_ratios":  "Generate Financial Ratios",
@@ -86,6 +88,13 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
     },
     "populate_company_info": {
         "csv_file": "config/reference/EdinetcodeDlInfo.csv",
+    },
+    "import_stock_prices_csv": {
+        "csv_file": "",
+        "ticker": "",
+        "currency": "JPY",
+        "date_column": "Date",
+        "price_column": "Close",
     },
     "parse_taxonomy": {
         "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd",
@@ -429,6 +438,9 @@ def main(page: ft.Page):
         if step_name == "backtest":
             _open_backtest_config()
             return
+        if step_name == "import_stock_prices_csv":
+            _open_import_csv_config()
+            return
 
         current = step_configs.get(step_name, {})
         if not current:
@@ -455,6 +467,116 @@ def main(page: ft.Page):
                 scroll=ft.ScrollMode.AUTO,
                 width=500,
                 height=400,
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda _: _pop()),
+                ft.Button("Save", on_click=save),
+            ],
+        ))
+
+    # ── Custom CSV stock-price import config dialog ─────────────────────
+
+    def _open_import_csv_config():
+        """Open a dedicated dialog for configuring CSV stock-price import."""
+        current = step_configs.get("import_stock_prices_csv", {})
+        if not current:
+            current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("import_stock_prices_csv", {}))
+
+        csv_path_tf = ft.TextField(
+            label="CSV File Path",
+            value=current.get("csv_file", ""),
+            dense=True,
+            width=380,
+            read_only=True,
+        )
+
+        async def _pick_csv(_):
+            files = await fp.pick_files(
+                dialog_title="Select stock-price CSV file",
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["csv"],
+                allow_multiple=False,
+            )
+            if files:
+                csv_path_tf.value = files[0].path
+                page.update()
+
+        browse_btn = ft.IconButton(
+            icon=ft.Icons.FOLDER_OPEN,
+            tooltip="Browse for CSV file",
+            on_click=_pick_csv,
+        )
+
+        ticker_tf = ft.TextField(
+            label="Ticker",
+            value=current.get("ticker", ""),
+            dense=True,
+            width=200,
+            hint_text="e.g. 7203",
+        )
+        currency_tf = ft.TextField(
+            label="Currency",
+            value=current.get("currency", "JPY"),
+            dense=True,
+            width=200,
+            hint_text="e.g. JPY, USD",
+        )
+        date_col_tf = ft.TextField(
+            label="Date Column",
+            value=current.get("date_column", "Date"),
+            dense=True,
+            width=200,
+            hint_text="CSV column for date",
+        )
+        price_col_tf = ft.TextField(
+            label="Price Column",
+            value=current.get("price_column", "Close"),
+            dense=True,
+            width=200,
+            hint_text="CSV column for price",
+        )
+
+        def save(_):
+            if not csv_path_tf.value.strip():
+                _snack("Please select a CSV file")
+                return
+            if not ticker_tf.value.strip():
+                _snack("Please enter a ticker symbol")
+                return
+            step_configs["import_stock_prices_csv"] = {
+                "csv_file": csv_path_tf.value.strip(),
+                "ticker": ticker_tf.value.strip(),
+                "currency": currency_tf.value.strip() or "JPY",
+                "date_column": date_col_tf.value.strip() or "Date",
+                "price_column": price_col_tf.value.strip() or "Close",
+            }
+            _pop()
+            _snack("Import CSV config updated")
+
+        _show(ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Configure: Import Stock Prices (CSV)"),
+            content=ft.Column(
+                [
+                    ft.Text(
+                        "Select a CSV file and map its columns to the database fields.",
+                        size=12, color=ft.Colors.GREY_500,
+                    ),
+                    ft.Row([csv_path_tf, browse_btn], spacing=4),
+                    ft.Divider(height=1),
+                    ft.Row([ticker_tf, currency_tf], spacing=16),
+                    ft.Divider(height=1),
+                    ft.Text("Column Mapping", weight=ft.FontWeight.BOLD, size=13),
+                    ft.Text(
+                        "Specify which columns in the CSV correspond to Date and Price.",
+                        size=11, color=ft.Colors.GREY_500,
+                    ),
+                    ft.Row([date_col_tf, price_col_tf], spacing=16),
+                ],
+                scroll=ft.ScrollMode.AUTO,
+                width=500,
+                height=320,
+                spacing=8,
             ),
             actions=[
                 ft.TextButton("Cancel", on_click=lambda _: _pop()),

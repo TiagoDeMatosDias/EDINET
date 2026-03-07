@@ -165,7 +165,13 @@ class data:
         exists = False
         skipped = 0
         processed = 0
-        for company in companies:
+        total_companies = len(companies)
+        for i, company in enumerate(companies, 1):
+            if i % 100 == 0:
+                logger.info(
+                    "Generate_Financial_Ratios: progress %d/%d companies processed so far.",
+                    i, total_companies,
+                )
             # Get the data for the company
             df = pd.read_sql_query(f"""SELECT * FROM {input_table} WHERE edinetCode = '{company}' """, conn)
 

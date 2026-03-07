@@ -67,6 +67,19 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
         logger.info("Generating financial ratios...")
         data.Generate_Financial_Ratios(DB_STANDARDIZED_TABLE, DB_STANDARDIZED_RATIOS_TABLE, overwrite=overwrite)
 
+    elif step_name == "import_stock_prices_csv":
+        logger.info("Importing stock prices from CSV...")
+        csv_config = config.get("import_stock_prices_csv_config", {})
+        csv_path = csv_config.get("csv_file", "")
+        ticker = csv_config.get("ticker", "")
+        currency = csv_config.get("currency", "JPY")
+        date_column = csv_config.get("date_column", "Date")
+        price_column = csv_config.get("price_column", "Close")
+        y.import_stock_prices_csv(
+            DB_PATH, DB_STOCK_PRICES_TABLE, csv_path,
+            ticker, currency, date_column, price_column,
+        )
+
     elif step_name == "update_stock_prices":
         logger.info("Updating stock prices...")
         y.update_all_stock_prices(DB_PATH, DB_COMPANY_INFO_TABLE, DB_STOCK_PRICES_TABLE, DB_STANDARDIZED_TABLE)
@@ -145,6 +158,7 @@ def run(edinet=None, data=None):
         "standardize_data":           ["DB_FINANCIAL_DATA_TABLE", "DB_STANDARDIZED_TABLE"],
         "populate_company_info":      ["DB_COMPANY_INFO_TABLE"],
         "generate_financial_ratios":  ["DB_STANDARDIZED_TABLE", "DB_STANDARDIZED_RATIOS_TABLE"],
+        "import_stock_prices_csv":    ["DB_PATH", "DB_STOCK_PRICES_TABLE"],
         "update_stock_prices":        ["DB_PATH", "DB_COMPANY_INFO_TABLE",
                                        "DB_STOCK_PRICES_TABLE", "DB_STANDARDIZED_TABLE"],
         "parse_taxonomy":             ["DB_TAXONOMY_TABLE"],

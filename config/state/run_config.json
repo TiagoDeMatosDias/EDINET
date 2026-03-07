@@ -20,13 +20,17 @@
       "enabled": false,
       "overwrite": false
     },
+    "import_stock_prices_csv": {
+      "enabled": false,
+      "overwrite": false
+    },
     "parse_taxonomy": {
       "enabled": false,
       "overwrite": false
     },
     "generate_financial_ratios": {
       "enabled": false,
-      "overwrite": true
+      "overwrite": false
     },
     "find_significant_predictors": {
       "enabled": false,
@@ -53,6 +57,13 @@
   },
   "populate_company_info_config": {
     "csv_file": "config/reference/EdinetcodeDlInfo.csv"
+  },
+  "import_stock_prices_csv_config": {
+    "csv_file": "C:\\Users\\PC\\Downloads\\^tpx_d.csv",
+    "ticker": "TPX",
+    "currency": "JPY",
+    "date_column": "Date",
+    "price_column": "Close"
   },
   "parse_taxonomy_config": {
     "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd"
@@ -82,14 +93,22 @@
     "SQL_Query": "Select PerShare_SharePrice, PerShare_BookValue * Ratio_PriceBook as Bv_Check , PerShare_Earnings / Ratio_EarningsYield as Earnings_Check, PerShare_Sales * Ratio_PriceSales as Sales_Check from Standard_Data_Ratios"
   },
   "backtesting_config": {
-    "start_date": "2023-01-01",
+    "start_date": "2020-01-01",
     "end_date": "2025-12-31",
     "portfolio": {
-      "75750": 0.5,
-      "59110": 0.25,
-      "59840": 0.25
+      "47460": 0.1,
+      "53020": 0.1,
+      "71720": 0.1,
+      "83660": 0.1,
+      "94360": 0.1,
+      "19670": 0.1,
+      "61610": 0.1,
+      "85950": 0.1,
+      "83640": 0.1,
+      "80350": 0.1
     },
-    "benchmark_ticker": "59110",
+    "benchmark_ticker": "TPX",
     "output_file": "data/backtest_results/backtest_report.txt"
-  }
+  },
+  "financial_ratios_config_path": "config\\reference\\financial_ratios_config.json"
 }
