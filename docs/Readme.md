@@ -24,6 +24,10 @@ Downloads financial filings from the Japanese securities regulator (EDINET), pro
 10. **Multivariate regression** – user-defined multivariate OLS regression specified as a SQL query.
 11. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
 
+## Screenshot
+
+![EDINET Application](images/image.png)
+
 ## GUI & CLI Modes
 
 The application can run in two modes:

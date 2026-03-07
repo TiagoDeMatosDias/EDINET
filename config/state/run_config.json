@@ -81,7 +81,12 @@
       "Ratio_PriceBook",
       "Ratio_PriceNCAV",
       "Ratio_FreeCashflowYield",
-      "Ratio_EnterpriseValueSales"
+      "Ratio_EnterpriseValueSales",
+      "Ratio_PriceEarnings_3Year_Growth",
+      "Ratio_PriceEarnings_1Year_Growth",
+      "Ratio_PriceBook_1Year_Growth",
+      "Ratio_PriceBook_3Year_Growth",
+      "Ratio_PriceBook_5Year_Growth"
     ]
   },
   "Multivariate_Regression_config": {
@@ -90,25 +95,29 @@
       "lower": 0.05,
       "upper": 0.95
     },
-    "SQL_Query": "Select PerShare_SharePrice, PerShare_BookValue * Ratio_PriceBook as Bv_Check , PerShare_Earnings / Ratio_EarningsYield as Earnings_Check, PerShare_Sales * Ratio_PriceSales as Sales_Check from Standard_Data_Ratios"
+    "SQL_Query": "Select \rPerShare_SharePrice_3Year_Growth\r,\r Ratio_PriceSales ,\r Ratio_PriceBook,\r Ratio_ReturnOnAssets_ZScore,\r Ratio_OperatingMargin_ZScore\r\r from Standard_Data_Ratios"
   },
   "backtesting_config": {
-    "start_date": "2020-01-01",
-    "end_date": "2025-12-31",
+    "start_date": "2025-03-01",
+    "end_date": "2026-02-10",
     "portfolio": {
-      "47460": 0.1,
-      "53020": 0.1,
-      "71720": 0.1,
-      "83660": 0.1,
-      "94360": 0.1,
-      "19670": 0.1,
-      "61610": 0.1,
-      "85950": 0.1,
-      "83640": 0.1,
-      "80350": 0.1
+      "34360": 0.083,
+      "40470": 0.083,
+      "40820": 0.083,
+      "45520": 0.083,
+      "59670": 0.083,
+      "61570": 0.083,
+      "61580": 0.083,
+      "61610": 0.083,
+      "64580": 0.083,
+      "64880": 0.083,
+      "78200": 0.083,
+      "19940": 0.087
     },
     "benchmark_ticker": "TPX",
-    "output_file": "data/backtest_results/backtest_report.txt"
+    "output_file": "data/backtest_results/backtest_report.txt",
+    "risk_free_rate": 0.02,
+    "initial_capital": 1350000.0
   },
   "financial_ratios_config_path": "config\\reference\\financial_ratios_config.json"
 }
