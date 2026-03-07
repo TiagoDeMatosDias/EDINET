@@ -364,6 +364,7 @@ def calculate_per_company_returns(
             rec["capital_invested"] = capital_invested
             rec["shares_purchased"] = shares
             rec["dividends_received"] = shares * (div_return * start_price)
+            rec["market_value"] = shares * end_price
 
         records.append(rec)
 
@@ -375,7 +376,8 @@ def calculate_per_company_returns(
         "weight", "weighted_price", "weighted_dividend", "weighted_total",
     ]
     if initial_capital > 0:
-        cols += ["capital_invested", "shares_purchased", "dividends_received"]
+        cols += ["capital_invested", "shares_purchased", "dividends_received",
+                 "market_value"]
     return pd.DataFrame(columns=cols)
 
 
@@ -752,31 +754,78 @@ def generate_report(
 
     # ── Per-company breakdown ─────────────────────────────────────────
     if per_company is not None and not per_company.empty:
+        has_capital = "market_value" in per_company.columns
         lines.append("")
         lines.append("--- Per-Company Breakdown ---")
-        header = (
-            f"{'Ticker':<10} {'Weight':>8} {'Price':>10} "
-            f"{'Dividend':>10} {'Total':>10} {'Wtd Cont.':>10}"
-        )
-        lines.append(header)
-        lines.append("-" * len(header))
-        for _, row in per_company.iterrows():
-            lines.append(
-                f"{row['Ticker']:<10} {row['weight']:>7.1%} "
-                f"{row['price_return']:>+9.2%} "
-                f"{row['dividend_return']:>+9.2%} "
-                f"{row['total_return']:>+9.2%} "
-                f"{row['weighted_total']:>+9.2%}"
+
+        if has_capital:
+            header = (
+                f"{'Ticker':<10} {'Weight':>8} "
+                f"{'Start':>10} {'Cost Basis':>14} "
+                f"{'End':>10} {'Mkt Value':>14} "
+                f"{'Cap Gains':>14} {'Cum Divs':>12} {'Total Ret':>14} "
+                f"{'Price':>10} {'Dividend':>10} {'Total':>10} {'Wtd Cont.':>10}"
             )
-        # Totals row
-        lines.append("-" * len(header))
-        lines.append(
-            f"{'TOTAL':<10} {per_company['weight'].sum():>7.1%} "
-            f"{per_company['weighted_price'].sum():>+9.2%} "
-            f"{per_company['weighted_dividend'].sum():>+9.2%} "
-            f"{per_company['weighted_total'].sum():>+9.2%} "
-            f"{per_company['weighted_total'].sum():>+9.2%}"
-        )
+            lines.append(header)
+            lines.append("-" * len(header))
+            for _, row in per_company.iterrows():
+                cap_gains = row['market_value'] - row['capital_invested']
+                total_ret_cash = cap_gains + row['dividends_received']
+                lines.append(
+                    f"{row['Ticker']:<10} {row['weight']:>7.1%} "
+                    f"{row['start_price']:>10,.2f} "
+                    f"{row['capital_invested']:>14,.0f} "
+                    f"{row['end_price']:>10,.2f} "
+                    f"{row['market_value']:>14,.0f} "
+                    f"{cap_gains:>+14,.0f} "
+                    f"{row['dividends_received']:>12,.0f} "
+                    f"{total_ret_cash:>+14,.0f} "
+                    f"{row['price_return']:>+9.2%} "
+                    f"{row['dividend_return']:>+9.2%} "
+                    f"{row['total_return']:>+9.2%} "
+                    f"{row['weighted_total']:>+9.2%}"
+                )
+            lines.append("-" * len(header))
+            total_cap_gains = per_company['market_value'].sum() - per_company['capital_invested'].sum()
+            total_divs = per_company['dividends_received'].sum()
+            total_ret_cash_all = total_cap_gains + total_divs
+            lines.append(
+                f"{'TOTAL':<10} {per_company['weight'].sum():>7.1%} "
+                f"{'':>10} "
+                f"{per_company['capital_invested'].sum():>14,.0f} "
+                f"{'':>10} "
+                f"{per_company['market_value'].sum():>14,.0f} "
+                f"{total_cap_gains:>+14,.0f} "
+                f"{total_divs:>12,.0f} "
+                f"{total_ret_cash_all:>+14,.0f} "
+                f"{per_company['weighted_price'].sum():>+9.2%} "
+                f"{per_company['weighted_dividend'].sum():>+9.2%} "
+                f"{per_company['weighted_total'].sum():>+9.2%} "
+                f"{per_company['weighted_total'].sum():>+9.2%}"
+            )
+        else:
+            header = (
+                f"{'Ticker':<10} {'Weight':>8} {'Price':>10} "
+                f"{'Dividend':>10} {'Total':>10} {'Wtd Cont.':>10}"
+            )
+            lines.append(header)
+            lines.append("-" * len(header))
+            for _, row in per_company.iterrows():
+                lines.append(
+                    f"{row['Ticker']:<10} {row['weight']:>7.1%} "
+                    f"{row['price_return']:>+9.2%} "
+                    f"{row['dividend_return']:>+9.2%} "
+                    f"{row['total_return']:>+9.2%} "
+                    f"{row['weighted_total']:>+9.2%}"
+                )
+            lines.append("-" * len(header))
+            lines.append(
+                f"{'TOTAL':<10} {per_company['weight'].sum():>7.1%} "
+                f"{per_company['weighted_price'].sum():>+9.2%} "
+                f"{per_company['weighted_dividend'].sum():>+9.2%} "
+                f"{per_company['weighted_total'].sum():>+9.2%} "
+                f"{per_company['weighted_total'].sum():>+9.2%}"
+            )
 
     # ── Yearly returns ────────────────────────────────────────────────
     if yearly_returns is not None and not yearly_returns.empty:

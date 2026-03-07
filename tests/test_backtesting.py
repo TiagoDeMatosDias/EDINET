@@ -441,7 +441,8 @@ class TestCalculatePerCompanyReturns(unittest.TestCase):
         result = calculate_per_company_returns(
             prices, {"A": 0.6, "B": 0.4}, initial_capital=1_000_000
         )
-        for col in ("capital_invested", "shares_purchased", "dividends_received"):
+        for col in ("capital_invested", "shares_purchased", "dividends_received",
+                     "market_value"):
             self.assertIn(col, result.columns)
 
     def test_shares_purchased(self):
@@ -457,6 +458,12 @@ class TestCalculatePerCompanyReturns(unittest.TestCase):
         # B: 40% of 1M = 400,000 / 200 = 2,000 shares
         self.assertAlmostEqual(b_row["capital_invested"], 400_000, places=0)
         self.assertAlmostEqual(b_row["shares_purchased"], 2_000, places=0)
+
+        # Market value = shares × end_price
+        # A: 6,000 × 120 = 720,000
+        self.assertAlmostEqual(a_row["market_value"], 720_000, places=0)
+        # B: 2,000 × 220 = 440,000
+        self.assertAlmostEqual(b_row["market_value"], 440_000, places=0)
 
     def test_dividends_received(self):
         prices = self._make_prices_df()
