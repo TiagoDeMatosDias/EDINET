@@ -483,6 +483,22 @@ class TestCalculatePerCompanyReturns(unittest.TestCase):
         result = calculate_per_company_returns(prices, {"A": 1.0})
         self.assertTrue(result.empty)
 
+    def test_dividend_on_first_day_still_positive(self):
+        """Dividends with periodEnd on the first price date must still
+        produce a total cumulative return >= price-only return."""
+        prices = self._make_prices_df()
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-01"]),  # day 0
+            "PerShare_Dividends": [10.0],
+        })
+        with_div = calculate_portfolio_returns(prices, {"A": 1.0}, dividends)
+        without_div = calculate_portfolio_returns(prices, {"A": 1.0})
+        self.assertGreater(
+            with_div["cumulative_return"].iloc[-1],
+            without_div["cumulative_return"].iloc[-1],
+        )
+
 
 # ---------------------------------------------------------------------------
 # calculate_yearly_returns
@@ -497,8 +513,8 @@ class TestCalculateYearlyReturns(unittest.TestCase):
                 "2025-01-02", "2025-06-01",
             ])
             total = pd.DataFrame({
-                "daily_return": [0.01, 0.005, 0.02, 0.01, -0.005],
-                "cumulative_return": [1.01, 1.015, 1.035, 1.045, 1.040],
+                "daily_return": [0.01, 0.005, 0.02, 0.013, -0.003],
+                "cumulative_return": [1.01, 1.015, 1.035, 1.048, 1.045],
             }, index=dates)
             price_only = pd.DataFrame({
                 "daily_return": [0.01, 0.005, 0.015, 0.008, -0.003],
@@ -515,9 +531,15 @@ class TestCalculateYearlyReturns(unittest.TestCase):
                 "cumulative_return": np.cumprod([1.02, 1.01, 0.995, 1.01]),
             }, index=dates)
 
+        # Derive dividend_only consistently from total - price_only
+        div_contribution = (
+            total["cumulative_return"].values
+            - price_only["cumulative_return"].values
+        )
+        div_daily = np.diff(div_contribution, prepend=0.0)
         div_only = pd.DataFrame({
-            "daily_return": [0.0] * len(dates),
-            "cumulative_return": [1.0] * len(dates),
+            "daily_return": div_daily,
+            "cumulative_return": 1.0 + div_contribution,
         }, index=dates)
         return {"total": total, "price_only": price_only, "dividend_only": div_only}
 
@@ -558,6 +580,18 @@ class TestCalculateYearlyReturns(unittest.TestCase):
         }
         result = calculate_yearly_returns(decomp)
         self.assertTrue(result.empty)
+
+    def test_yearly_dividend_returns_non_negative(self):
+        """With realistic (non-decreasing) dividend contribution, yearly
+        dividend returns must never be negative."""
+        decomp = self._make_decomposition(multi_year=True)
+        result = calculate_yearly_returns(decomp)
+        for _, row in result.iterrows():
+            self.assertGreaterEqual(
+                row["Dividend Return"], 0.0,
+                f"Dividend return for {int(row['Year'])} is negative: "
+                f"{row['Dividend Return']:.6f}",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +645,32 @@ class TestCalculateDividendsByCompanyYear(unittest.TestCase):
         result = calculate_dividends_by_company_year(dividends)
         self.assertAlmostEqual(result.loc[2024, "A"], 10.0)
         self.assertAlmostEqual(result.loc[2024, "Total"], 10.0)
+
+    def test_with_shares_purchased(self):
+        """When shares_purchased is given, values should be cash amounts."""
+        dividends = pd.DataFrame({
+            "Ticker": ["A", "B"],
+            "periodEnd": pd.to_datetime(["2024-03-01", "2024-06-01"]),
+            "PerShare_Dividends": [5.0, 3.0],
+        })
+        shares = {"A": 100.0, "B": 200.0}  # 100 shares of A, 200 of B
+        result = calculate_dividends_by_company_year(
+            dividends, shares_purchased=shares
+        )
+        # A: 5.0 * 100 = 500, B: 3.0 * 200 = 600
+        self.assertAlmostEqual(result.loc[2024, "A"], 500.0)
+        self.assertAlmostEqual(result.loc[2024, "B"], 600.0)
+        self.assertAlmostEqual(result.loc[2024, "Total"], 1100.0)
+
+    def test_without_shares_shows_per_share(self):
+        """Without shares_purchased, values remain per-share amounts."""
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-03-01"]),
+            "PerShare_Dividends": [5.0],
+        })
+        result = calculate_dividends_by_company_year(dividends)
+        self.assertAlmostEqual(result.loc[2024, "A"], 5.0)
 
 
 # ---------------------------------------------------------------------------

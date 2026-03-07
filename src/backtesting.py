@@ -187,6 +187,11 @@ def calculate_portfolio_returns(
     # Portfolio value = weighted sum of normalised price series
     portfolio_value = normalised.mul(weights, axis=1).sum(axis=1)
 
+    # Save the price-only initial value (before adding dividends) so that
+    # cumulative_return is always measured relative to the original
+    # investment, not an inflated base that includes day-0 dividend cash.
+    initial_portfolio_value = portfolio_value.iloc[0]
+
     # Add cumulative dividend cash flows (held as cash, not reinvested)
     if dividends_df is not None and not dividends_df.empty:
         div_cash = pd.Series(0.0, index=portfolio_value.index)
@@ -204,7 +209,7 @@ def calculate_portfolio_returns(
 
     # Derive daily returns and cumulative return from the value series
     daily_returns = portfolio_value.pct_change()
-    cumulative_return = portfolio_value / portfolio_value.iloc[0]
+    cumulative_return = portfolio_value / initial_portfolio_value
 
     result = pd.DataFrame(
         {
@@ -397,11 +402,13 @@ def calculate_yearly_returns(
             columns=["Year", "Price Return", "Dividend Return", "Total Return"]
         )
 
+    div_df = decomposition.get("dividend_only")
+
     years = sorted(total_df.index.year.unique())
     records: list[dict] = []
 
     prev_total_cum = 1.0
-    prev_price_cum = 1.0
+    prev_div_cum = 1.0
 
     for year in years:
         year_total = total_df[total_df.index.year == year]
@@ -411,16 +418,19 @@ def calculate_yearly_returns(
         end_total_cum = float(year_total["cumulative_return"].iloc[-1])
         total_ret = end_total_cum / prev_total_cum - 1
 
-        # Price return for this year
-        price_ret = total_ret  # fallback
-        if price_df is not None and not price_df.empty:
-            year_price = price_df[price_df.index.year == year]
-            if not year_price.empty:
-                end_price_cum = float(year_price["cumulative_return"].iloc[-1])
-                price_ret = end_price_cum / prev_price_cum - 1
-                prev_price_cum = end_price_cum
+        # Dividend contribution: new dividend cash received this year,
+        # expressed as a return relative to portfolio value at year start.
+        div_ret = 0.0
+        if div_df is not None and not div_df.empty:
+            year_div = div_df[div_df.index.year == year]
+            if not year_div.empty:
+                end_div_cum = float(year_div["cumulative_return"].iloc[-1])
+                new_div_cash = end_div_cum - prev_div_cum
+                if prev_total_cum > 0:
+                    div_ret = new_div_cash / prev_total_cum
+                prev_div_cum = end_div_cum
 
-        div_ret = total_ret - price_ret
+        price_ret = total_ret - div_ret
         prev_total_cum = end_total_cum
 
         records.append({
@@ -435,16 +445,25 @@ def calculate_yearly_returns(
 
 def calculate_dividends_by_company_year(
     dividends_df: pd.DataFrame | None,
+    shares_purchased: dict[str, float] | None = None,
 ) -> pd.DataFrame:
-    """Pivot per-share dividends into a Year × Ticker table.
+    """Pivot dividends into a Year × Ticker table.
+
+    When *shares_purchased* is provided the values represent total cash
+    dividends received (per-share dividend × shares held).  Otherwise the
+    raw per-share dividend amounts are shown.
 
     Args:
         dividends_df: DataFrame with ``Ticker``, ``periodEnd``,
             ``PerShare_Dividends``.
+        shares_purchased: Optional mapping of ticker → number of shares
+            held.  When given, each per-share dividend is multiplied by
+            the corresponding share count so that values (and the
+            ``Total`` column) represent actual cash received.
 
     Returns:
         DataFrame with years as the index, one column per ticker, and a
-        ``Total`` column.  Values are summed per-share dividends for the year.
+        ``Total`` column.
     """
     if dividends_df is None or dividends_df.empty:
         return pd.DataFrame()
@@ -452,10 +471,20 @@ def calculate_dividends_by_company_year(
     df = dividends_df.copy()
     df["Year"] = df["periodEnd"].dt.year
 
+    if shares_purchased:
+        df["DividendCash"] = df.apply(
+            lambda row: row["PerShare_Dividends"]
+            * shares_purchased.get(row["Ticker"], 0.0),
+            axis=1,
+        )
+        value_col = "DividendCash"
+    else:
+        value_col = "PerShare_Dividends"
+
     pivot = df.pivot_table(
         index="Year",
         columns="Ticker",
-        values="PerShare_Dividends",
+        values=value_col,
         aggfunc="sum",
         fill_value=0.0,
     )
@@ -782,8 +811,8 @@ def generate_report(
         for year, row in dividends_by_year.iterrows():
             line = f"{int(year):<6}"
             for col in ticker_cols:
-                line += f" {row[col]:>{col_w}.2f}"
-            line += f" {row['Total']:>{col_w}.2f}"
+                line += f" {row[col]:>{col_w},.2f}"
+            line += f" {row['Total']:>{col_w},.2f}"
             lines.append(line)
 
     lines.append("")
@@ -1198,8 +1227,15 @@ def run_backtest(
         # 5a. Yearly returns breakdown
         yearly_returns = calculate_yearly_returns(decomposition)
 
-        # 5b. Dividends by company by year
-        dividends_by_year = calculate_dividends_by_company_year(dividends_df)
+        # 5b. Dividends by company by year (use cash amounts when possible)
+        shares_map = None
+        if per_company is not None and "shares_purchased" in per_company.columns:
+            shares_map = dict(
+                zip(per_company["Ticker"], per_company["shares_purchased"])
+            )
+        dividends_by_year = calculate_dividends_by_company_year(
+            dividends_df, shares_purchased=shares_map,
+        )
 
         # 6. Benchmark returns (with dividend decomposition)
         benchmark_df = None

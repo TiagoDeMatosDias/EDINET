@@ -98,26 +98,26 @@
     "SQL_Query": "Select \rPerShare_SharePrice_3Year_Growth\r,\r Ratio_PriceSales ,\r Ratio_PriceBook,\r Ratio_ReturnOnAssets_ZScore,\r Ratio_OperatingMargin_ZScore\r\r from Standard_Data_Ratios"
   },
   "backtesting_config": {
-    "start_date": "2025-03-01",
+    "start_date": "2025-03-30",
     "end_date": "2026-02-10",
     "portfolio": {
-      "34360": 0.083,
-      "40470": 0.083,
-      "40820": 0.083,
-      "45520": 0.083,
-      "59670": 0.083,
-      "61570": 0.083,
-      "61580": 0.083,
-      "61610": 0.083,
-      "64580": 0.083,
-      "64880": 0.083,
-      "78200": 0.083,
-      "19940": 0.087
+      "34360": 0.08199999999999999,
+      "19940": 0.077,
+      "40470": 0.068,
+      "40820": 0.10800000000000001,
+      "45520": 0.076,
+      "59670": 0.079,
+      "61570": 0.11599999999999999,
+      "61580": 0.071,
+      "61610": 0.065,
+      "64580": 0.08800000000000001,
+      "64880": 0.107,
+      "7820": 0.063
     },
     "benchmark_ticker": "TPX",
     "output_file": "data/backtest_results/backtest_report.txt",
     "risk_free_rate": 0.02,
-    "initial_capital": 1350000.0
+    "initial_capital": 1320000.0
   },
   "financial_ratios_config_path": "config\\reference\\financial_ratios_config.json"
 }
