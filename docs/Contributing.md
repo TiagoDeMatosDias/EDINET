@@ -10,8 +10,11 @@ Following these guidelines helps to communicate that you respect the time of the
 - Keep files organized. Each type of file should be in its relevant folder:
     - Documentation in `docs/`
     - Tests in `tests/`
-    - Configuration files in `config/`
+    - Configuration reference files in `config/reference/`
+    - Configuration state (runtime config, saved setups) in `config/state/`
+    - Configuration examples in `config/examples/`
     - Source code in `src/`
+    - UI code in `ui/`
     - Data files in `data/`
 
 ## Your First Contribution

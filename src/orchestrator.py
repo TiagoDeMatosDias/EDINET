@@ -5,11 +5,12 @@ from config import Config
 import src.data_processing as d
 import src.stockprice_api as y
 import src.regression_analysis as r
+import src.backtesting as bt
 
 logger = logging.getLogger(__name__)
 
 
-def _execute_step(step_name, config, edinet, data):
+def _execute_step(step_name, config, edinet, data, overwrite=False):
     """
     Execute a single orchestration step.
     
@@ -18,6 +19,7 @@ def _execute_step(step_name, config, edinet, data):
         config: Configuration object
         edinet: Edinet API instance
         data: Data processing instance
+        overwrite: Whether to overwrite existing data for this step
     """
     # Database table names
     DB_DOC_LIST_TABLE = config.get("DB_DOC_LIST_TABLE")
@@ -53,7 +55,6 @@ def _execute_step(step_name, config, edinet, data):
 
     elif step_name == "standardize_data":
         logger.info("Standardizing data...")
-        overwrite = config.get("overwrite_data", False)
         data.copy_table_to_Standard(DB_FINANCIAL_DATA_TABLE, DB_STANDARDIZED_TABLE, overwrite=overwrite)
 
     elif step_name == "populate_company_info":
@@ -64,8 +65,20 @@ def _execute_step(step_name, config, edinet, data):
 
     elif step_name == "generate_financial_ratios":
         logger.info("Generating financial ratios...")
-        overwrite = config.get("overwrite_data", False)
         data.Generate_Financial_Ratios(DB_STANDARDIZED_TABLE, DB_STANDARDIZED_RATIOS_TABLE, overwrite=overwrite)
+
+    elif step_name == "import_stock_prices_csv":
+        logger.info("Importing stock prices from CSV...")
+        csv_config = config.get("import_stock_prices_csv_config", {})
+        csv_path = csv_config.get("csv_file", "")
+        ticker = csv_config.get("ticker", "")
+        currency = csv_config.get("currency", "JPY")
+        date_column = csv_config.get("date_column", "Date")
+        price_column = csv_config.get("price_column", "Close")
+        y.import_stock_prices_csv(
+            DB_PATH, DB_STOCK_PRICES_TABLE, csv_path,
+            ticker, currency, date_column, price_column,
+        )
 
     elif step_name == "update_stock_prices":
         logger.info("Updating stock prices...")
@@ -102,13 +115,24 @@ def _execute_step(step_name, config, edinet, data):
             winsorize_limits=winsorize_limits,
             alpha=alpha,
             dependent_variables=dependent_variables,
-            overwrite=config.get("overwrite_data", False),
+            overwrite=overwrite,
         )
 
     elif step_name == "Multivariate_Regression":
         logger.info("Running multivariate regression...")
         mv_config = config.get("Multivariate_Regression_config", {})
         r.multivariate_regression(mv_config, DB_PATH)
+
+    elif step_name == "backtest":
+        logger.info("Running backtesting...")
+        backtesting_config = config.get("backtesting_config", {})
+        bt.run_backtest(
+            backtesting_config,
+            db_path=DB_PATH,
+            prices_table=DB_STOCK_PRICES_TABLE,
+            ratios_table=DB_STANDARDIZED_RATIOS_TABLE,
+            company_table=DB_COMPANY_INFO_TABLE,
+        )
 
     else:
         logger.warning(f"Unknown step: {step_name}")
@@ -125,6 +149,55 @@ def run(edinet=None, data=None):
     config = Config()
     run_steps = config.get("run_steps", {})
 
+    # ── Pre-flight checks ────────────────────────────────────────────────
+    # Map each step to the config / .env keys it requires at runtime.
+    STEP_REQUIRED_KEYS: dict[str, list[str]] = {
+        "get_documents":              ["baseURL", "API_KEY"],
+        "download_documents":         ["DB_DOC_LIST_TABLE", "DB_FINANCIAL_DATA_TABLE",
+                                       "RAW_DOCUMENTS_PATH", "baseURL", "API_KEY"],
+        "standardize_data":           ["DB_FINANCIAL_DATA_TABLE", "DB_STANDARDIZED_TABLE"],
+        "populate_company_info":      ["DB_COMPANY_INFO_TABLE"],
+        "generate_financial_ratios":  ["DB_STANDARDIZED_TABLE", "DB_STANDARDIZED_RATIOS_TABLE"],
+        "import_stock_prices_csv":    ["DB_PATH", "DB_STOCK_PRICES_TABLE"],
+        "update_stock_prices":        ["DB_PATH", "DB_COMPANY_INFO_TABLE",
+                                       "DB_STOCK_PRICES_TABLE", "DB_STANDARDIZED_TABLE"],
+        "parse_taxonomy":             ["DB_TAXONOMY_TABLE"],
+        "find_significant_predictors": ["DB_PATH", "DB_STANDARDIZED_RATIOS_TABLE",
+                                        "DB_SIGNIFICANT_PREDICTORS_TABLE"],
+        "Multivariate_Regression":    ["DB_PATH"],
+        "backtest":                   ["DB_PATH", "DB_STOCK_PRICES_TABLE",
+                                       "DB_STANDARDIZED_RATIOS_TABLE",
+                                       "DB_COMPANY_INFO_TABLE"],
+    }
+
+    enabled_steps = []
+    for step_name, step_val in run_steps.items():
+        if isinstance(step_val, dict):
+            is_enabled = step_val.get("enabled", False)
+        else:
+            is_enabled = bool(step_val)
+        if is_enabled:
+            enabled_steps.append(step_name)
+
+    missing_map: dict[str, list[str]] = {}
+    for step_name in enabled_steps:
+        required = STEP_REQUIRED_KEYS.get(step_name, [])
+        for key in required:
+            val = config.get(key)
+            if not val:
+                missing_map.setdefault(key, []).append(step_name)
+
+    if missing_map:
+        lines = ["The following required settings are missing from .env / config:"]
+        for key, steps_needing in sorted(missing_map.items()):
+            lines.append(f"  • {key}  (needed by: {', '.join(steps_needing)})")
+        lines.append("")
+        lines.append("Set them in the UI (top-bar database selector / API Key) ")
+        lines.append("or add them to the .env file in the project root.")
+        msg = "\n".join(lines)
+        logger.error(msg)
+        raise RuntimeError(msg)
+
     if not edinet:
         edinet = edinet_api.Edinet()
     if not data:
@@ -132,10 +205,16 @@ def run(edinet=None, data=None):
 
     # Execute steps in order as defined in run_steps
     logger.info(f"Steps to execute (in order): {list(run_steps.keys())}")
-    for step_name, is_enabled in run_steps.items():
+    for step_name, step_val in run_steps.items():
+        if isinstance(step_val, dict):
+            is_enabled = step_val.get("enabled", False)
+            overwrite = step_val.get("overwrite", False)
+        else:
+            is_enabled = bool(step_val)
+            overwrite = False
         if is_enabled:
             try:
-                _execute_step(step_name, config, edinet, data)
+                _execute_step(step_name, config, edinet, data, overwrite=overwrite)
             except Exception as e:
                 logger.error(f"Error executing step '{step_name}': {e}", exc_info=True)
         else:

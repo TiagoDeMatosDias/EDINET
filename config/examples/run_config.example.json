@@ -10,15 +10,16 @@
     "Downloaded": "False"
   },
   "run_steps": {
-    "get_documents": false,
-    "download_documents": false,
-    "standardize_data": false,
-    "update_stock_prices": false,
-    "populate_company_info": false,
-    "parse_taxonomy": false,
-    "generate_financial_ratios": false,
-    "find_significant_predictors": false,
-    "Multivariate_Regression": false
+    "get_documents": {"enabled": false, "overwrite": false},
+    "download_documents": {"enabled": false, "overwrite": false},
+    "standardize_data": {"enabled": false, "overwrite": false},
+    "update_stock_prices": {"enabled": false, "overwrite": false},
+    "populate_company_info": {"enabled": false, "overwrite": false},
+    "parse_taxonomy": {"enabled": false, "overwrite": false},
+    "generate_financial_ratios": {"enabled": false, "overwrite": false},
+    "find_significant_predictors": {"enabled": false, "overwrite": false},
+    "Multivariate_Regression": {"enabled": false, "overwrite": false},
+    "backtest": {"enabled": false, "overwrite": false}
   },
   "populate_company_info_config": {
     "csv_file": "config/reference/EdinetcodeDlInfo.csv"
@@ -49,5 +50,15 @@
       "upper": 0.95
     },
     "SQL_Query": "Select PerShare_SharePrice, PerShare_BookValue * Ratio_PriceBook as Bv_Check , PerShare_Earnings / Ratio_EarningsYield as Earnings_Check, PerShare_Sales * Ratio_PriceSales as Sales_Check from Standard_Data_Ratios"
+  },
+  "backtesting_config": {
+    "start_date": "2023-01-01",
+    "end_date": "2025-12-31",
+    "portfolio": {
+      "7203": 0.5,
+      "6758": 0.5
+    },
+    "benchmark_ticker": "",
+    "output_file": "data/backtest_results/backtest_report.txt"
   }
 }

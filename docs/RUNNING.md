@@ -1,12 +1,32 @@
 ﻿# Running the Application
 
-All execution is controlled by `config/run_config.json`. Set a step to `true` to enable it, `false` to skip it, then run:
+## Execution Modes
 
-```
-python main.py
+The application supports two execution modes:
+
+- **GUI mode** (default): `python main.py` — launches the Flet desktop UI where you can configure steps, reorder them, and run the pipeline visually.
+- **CLI mode**: `python main.py --cli` — reads `config/state/run_config.json` and executes enabled steps headlessly.
+
+## Configuration Format
+
+All execution is controlled by `config/state/run_config.json`. Each step is an object with `enabled` and `overwrite` flags:
+
+```json
+"run_steps": {
+  "get_documents": { "enabled": true, "overwrite": false },
+  "standardize_data": { "enabled": true, "overwrite": true },
+  ...
+}
 ```
 
-Steps execute in the order listed below. Each step is independent  you can enable any subset.
+- `enabled` — set to `true` to run the step, `false` to skip it.
+- `overwrite` — when `true`, the step drops and recreates its output table. Only supported by: `standardize_data`, `generate_financial_ratios`, `find_significant_predictors`.
+
+Steps execute in the order they appear in the `run_steps` object. In the GUI, you can reorder steps by dragging them.
+
+## Pre-flight Validation
+
+Before any step runs, the orchestrator checks that all required `.env` / config keys are set for every enabled step. If anything is missing, execution halts with a clear error listing the missing keys and which steps need them.
 
 ---
 
@@ -36,25 +56,63 @@ Downloads filings for documents already in the document list that match the filt
 }
 ```
 
-- `docTypeCode`  EDINET document type (e.g. `120` = annual report).
-- `csvFlag`  `"1"` to download the XBRL-to-CSV version.
-- `secCode`  filter by security code; leave blank for all.
-- `Downloaded`  `"False"` to skip already-downloaded documents.
+- `docTypeCode` — EDINET document type (e.g. `120` = annual report).
+- `csvFlag` — `"1"` to download the XBRL-to-CSV version.
+- `secCode` — filter by security code; leave blank for all.
+- `Downloaded` — `"False"` to skip already-downloaded documents.
 
 ---
 
 ### `standardize_data`
-Normalises raw XBRL data into a clean, consistently named table. No additional config required.
+Normalises raw XBRL data into a clean, consistently named table.
+
+Supports `overwrite` — when enabled, the target table is dropped and fully rebuilt.
+
+No additional config required.
 
 ---
 
-### `generate_financial_ratios`
-Calculates per-share values, valuation ratios, rolling averages/std, growth rates and z-scores for every company. Ratio definitions live in `config/financial_ratios_config.json`. No additional run-config parameters required.
+### `populate_company_info`
+Loads the EDINET company code list from a CSV file into the database.
+
+```json
+"populate_company_info_config": {
+  "csv_file": "config/reference/EdinetcodeDlInfo.csv"
+}
+```
+
+---
+
+### `import_stock_prices_csv`
+Imports historical stock prices from a user-supplied CSV file into the `stock_prices` database table. Duplicate dates for the same ticker are automatically skipped.
+
+```json
+"import_stock_prices_csv_config": {
+  "csv_file": "C:/path/to/prices.csv",
+  "ticker": "TPX",
+  "currency": "JPY",
+  "date_column": "Date",
+  "price_column": "Close"
+}
+```
+
+- `csv_file` — absolute path to the CSV file. In the GUI, use the file picker in the config dialog.
+- `ticker` — ticker symbol to assign to every imported row.
+- `currency` — currency code (e.g. `JPY`, `USD`).
+- `date_column` — name of the CSV column that contains dates.
+- `price_column` — name of the CSV column that contains the price values (e.g. `Close`, `Open`, `High`).
+
+Example CSV format:
+```
+Date,Open,High,Low,Close,Volume
+2015-01-05,1400.87,1410.26,1388.37,1401.09,2044459904
+2015-01-06,1377.53,1377.88,1361.14,1361.14,2684290816
+```
 
 ---
 
 ### `update_stock_prices`
-Fetches historical share prices from Yahoo Finance for all companies in the database. No additional config required.
+Fetches historical share prices from the Stooq API for all companies in the database that have standardised financial data. No additional config required.
 
 ---
 
@@ -63,14 +121,27 @@ Parses an EDINET XBRL taxonomy XSD file and stores element metadata (name, state
 
 ```json
 "parse_taxonomy_config": {
-  "xsd_file": "path/to/jppfs_cor_2014-03-31.xsd"
+  "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd"
 }
 ```
 
 ---
 
+### `generate_financial_ratios`
+Calculates per-share values, valuation ratios, rolling averages/std, growth rates and z-scores for every company. Ratio definitions live in `config/reference/financial_ratios_config.json` (or whatever path is set via `FINANCIAL_RATIOS_CONFIG_PATH` in `.env`).
+
+Supports `overwrite`. In incremental mode (the default), documents already processed are skipped.
+
+Progress is logged every 100 companies.
+
+No additional run-config parameters required.
+
+---
+
 ### `find_significant_predictors`
-Runs an automated univariate OLS sweep  every eligible ratio column against every specified dependent variable  and writes a summary to a text file and full results to the database.
+Runs an automated univariate OLS sweep — every eligible ratio column against every specified dependent variable — and writes a summary to a text file and full results to the database.
+
+Supports `overwrite`.
 
 ```json
 "find_significant_predictors_config": {
@@ -84,8 +155,8 @@ Runs an automated univariate OLS sweep  every eligible ratio column against ever
 }
 ```
 
-- `winsorize_thresholds`  quantile bounds for outlier trimming. Omit the key entirely to skip winsorisation.
-- `dependent_variables`  columns to use as dependent variables. Leave empty to test all columns.
+- `winsorize_thresholds` — quantile bounds for outlier trimming. Omit the key entirely to skip winsorisation.
+- `dependent_variables` — columns to use as dependent variables. Leave empty to test all columns.
 
 ---
 
@@ -100,5 +171,42 @@ Runs a multivariate OLS regression defined entirely by a SQL query. The **first 
 }
 ```
 
-- `winsorize_thresholds`  optional; omit the key entirely to skip winsorisation.
-- `SQL_Query`  any valid SQLite `SELECT`. Change this to adjust the model without touching any code.
+- `winsorize_thresholds` — optional; omit the key entirely to skip winsorisation.
+- `SQL_Query` — any valid SQLite `SELECT`. Change this to adjust the model without touching any code.
+
+---
+
+### `backtest`
+Runs a portfolio backtesting simulation over a date range. Calculates weighted daily returns (price + dividends), cumulative performance, and compares against an optional benchmark ticker.
+
+```json
+"backtesting_config": {
+  "start_date": "2020-01-01",
+  "end_date": "2025-12-31",
+  "portfolio": {
+    "47460": 0.1,
+    "53020": 0.1,
+    "71720": 0.1,
+    "83660": 0.1,
+    "94360": 0.1,
+    "19670": 0.1,
+    "61610": 0.1,
+    "85950": 0.1,
+    "83640": 0.1,
+    "80350": 0.1
+  },
+  "benchmark_ticker": "TPX",
+  "output_file": "data/backtest_results/backtest_report.txt"
+}
+```
+
+- `portfolio` — mapping of ticker symbol → weight (values must sum to 1.0). In the GUI, a dedicated dialog lets you add/remove tickers and validates the total weight.
+- `benchmark_ticker` — optional ticker to compare portfolio performance against. Leave blank to skip benchmark comparison.
+- `output_file` — path for the text report.
+
+The backtesting engine:
+- Retrieves daily prices from the `stock_prices` table.
+- Looks up per-share dividends from the ratios table.
+- Computes daily weighted returns with dividend adjustments.
+- Calculates cumulative returns over the period.
+- If a benchmark ticker is given, computes the same metrics for the benchmark and reports relative performance.

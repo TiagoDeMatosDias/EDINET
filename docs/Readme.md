@@ -6,21 +6,32 @@ Downloads financial filings from the Japanese securities regulator (EDINET), pro
 
 1. Download the latest release from [Releases](https://github.com/TiagoDeMatosDias/EDINET/releases)
 2. Extract `EDINET-0.1.0-alpha.zip`
-3. Copy `config/run_config.example.json` to `config/run_config.json` and configure your settings
+3. Copy `config/examples/run_config.example.json` to `config/state/run_config.json` and configure your settings
 4. Create a `.env` file with your API keys (see Setup section below)
 5. Run `EDINET.exe` (Windows) or the binary for your OS
 
 ## What it does
 
-1. **Fetch document list** - queries the EDINET API for available filings in a given date range.
-2. **Download documents** - downloads the XBRL/CSV filings that match the filter criteria.
-3. **Standardise data** - normalises raw XBRL data into a clean, consistently named table.
-4. **Generate financial ratios** - calculates per-share values, valuation ratios, rolling averages, growth rates and z-scores for every company.
-5. **Update stock prices** - fetches historical share prices via Stooq API (filtered to companies with financial data).
-6. **Populate company info** - loads the EDINET company code list from CSV into the database.
-7. **Parse taxonomy** - parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
-8. **Find significant predictors** - univariate OLS sweep ranking which ratio columns best predict a given dependent variable.
-9. **Multivariate regression** - user-defined multivariate OLS regression specified as a SQL query.
+1. **Fetch document list** – queries the EDINET API for available filings in a given date range.
+2. **Download documents** – downloads the XBRL/CSV filings that match the filter criteria.
+3. **Standardise data** – normalises raw XBRL data into a clean, consistently named table.
+4. **Populate company info** – loads the EDINET company code list from CSV into the database.
+5. **Import stock prices (CSV)** – imports historical prices from a user-supplied CSV file with configurable column mapping.
+6. **Update stock prices** – fetches historical share prices via Stooq API (filtered to companies with financial data).
+7. **Parse taxonomy** – parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
+8. **Generate financial ratios** – calculates per-share values, valuation ratios, rolling averages, growth rates and z-scores for every company.
+9. **Find significant predictors** – univariate OLS sweep ranking which ratio columns best predict a given dependent variable.
+10. **Multivariate regression** – user-defined multivariate OLS regression specified as a SQL query.
+11. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
+
+## GUI & CLI Modes
+
+The application can run in two modes:
+
+- **GUI mode** (default) — Launch the Flet desktop application with `python main.py`. The GUI provides drag-and-drop step ordering, per-step configuration dialogs, light/dark theme switching, database selection, and a live log output panel.
+- **CLI mode** — Run headless from the terminal with `python main.py --cli`. This reads `config/state/run_config.json` directly and executes the enabled steps in order.
+
+> **Note:** The GUI requires the `flet` package. If it is not installed, the application will print an error and suggest running with `--cli`.
 
 ## Setup
 
@@ -52,14 +63,17 @@ DB_COMPANY_INFO_TABLE=CompanyInfo
 DB_STOCK_PRICES_TABLE=Stock_Prices
 DB_TAXONOMY_TABLE=TAXONOMY_JPFS_COR
 DB_SIGNIFICANT_PREDICTORS_TABLE=Significant_Predictors
+
+FINANCIAL_RATIOS_CONFIG_PATH=config/reference/financial_ratios_config.json
 ```
 
 #### 3. Configure and run
 
-Edit `config/run_config.json` to enable the steps you want, then:
+Edit `config/state/run_config.json` to enable the steps you want, then:
 
 ```
-python main.py
+python main.py          # launches the GUI
+python main.py --cli    # headless / terminal mode
 ```
 
 ### From Release
@@ -72,59 +86,88 @@ All output is logged to timestamped files in the `logs/` directory. See [LOGGING
 
 ## Documentation
 
-- [RUNNING.md](RUNNING.md) - Full description of every step and configuration options
-- [LOGGING.md](LOGGING.md) - Logging system documentation
-- [CHANGELOG.md](../../CHANGELOG.md) - Version history and changes
+- [RUNNING.md](RUNNING.md) – Full description of every step and configuration options
+- [LOGGING.md](LOGGING.md) – Logging system documentation
+- [Contributing.md](Contributing.md) – Contribution guidelines
+- [CHANGELOG.md](CHANGELOG.md) – Version history and changes
 
 ## Building an executable
 
-The project can be packaged into a single \.exe\ with [PyInstaller](https://pyinstaller.org).
-The exe resolves all config paths relative to the folder it lives in, so \config/\, \.env\,
-and the output \data/\ folder just need to sit alongside it.
+The project can be packaged into a single `.exe` with [PyInstaller](https://pyinstaller.org).
+The exe resolves all config paths relative to the folder it lives in, so `config/`, `.env`,
+and the output `data/` folder just need to sit alongside it.
 
 ### 1. Install PyInstaller
 
-\pip install pyinstaller
-\
+```
+pip install pyinstaller
+```
+
 ### 2. Build
 
 Run from the project root:
 
-\pyinstaller --onefile --name EDINET main.py
-\
-The exe is written to \dist/EDINET.exe\.
+```
+pyinstaller --onefile --name EDINET main.py
+```
+
+The exe is written to `dist/EDINET.exe`.
 
 ### 3. Prepare the distribution folder
 
 Create a deployment folder and copy the required items into it:
 
-\EDINET.exe                        <- built by PyInstaller (from dist/)
-.env                              <- your API keys and DB paths
+```
+EDINET.exe                                   <- built by PyInstaller (from dist/)
+.env                                         <- your API keys and DB paths
 config/
-    run_config.json
-    financial_ratios_config.json
-    EdinetcodeDlInfo.csv
-    jppfs_cor_2013-08-31.xsd
+    reference/
+        financial_ratios_config.json
+        EdinetcodeDlInfo.csv
+        jppfs_cor_2013-08-31.xsd
+    state/
+        run_config.json
+    examples/
+        run_config.example.json
 data/
-    ols_results/                  <- must exist for regression output steps
-\
+    ols_results/                             <- must exist for regression output steps
+    backtest_results/                        <- must exist for backtest output
+```
+
 ### 4. Run
 
-Double-click \EDINET.exe\ or launch it from a terminal.
-It will look for \config/\ and \.env\ in the same folder as the exe.
+Double-click `EDINET.exe` or launch it from a terminal.
+It will look for `config/` and `.env` in the same folder as the exe.
 
-> **Note:** Large dependencies (pandas, statsmodels, scipy) make the final exe around 200-300 MB.
+> **Note:** Large dependencies (pandas, statsmodels, scipy, flet) make the final exe around 200-300 MB.
 > Build time is a few minutes on the first run.
 
 ## Configuration files
 
 | File | Purpose |
 |---|---|
-| \config/run_config.json\ | Controls which steps run and their parameters |
-| \config/financial_ratios_config.json\ | Ratio definitions and formulas |
-| \config/EdinetcodeDlInfo.csv\ | EDINET company code list (used by populate_company_info) |
-| \config/jppfs_cor_2013-08-31.xsd\ | XBRL taxonomy file (used by parse_taxonomy) |
-| \.env\ | API keys, file paths, and database table names |
+| `config/state/run_config.json` | Controls which steps run, their order, and step-specific parameters |
+| `config/reference/financial_ratios_config.json` | Ratio definitions and formulas |
+| `config/reference/EdinetcodeDlInfo.csv` | EDINET company code list (used by populate_company_info) |
+| `config/reference/jppfs_cor_2013-08-31.xsd` | XBRL taxonomy file (used by parse_taxonomy) |
+| `config/examples/run_config.example.json` | Example run configuration for new users |
+| `config/state/saved_setups/` | Named setup files saved from the GUI |
+| `.env` | API keys, file paths, and database table names |
+
+## GUI Features
+
+The Flet-based GUI provides:
+
+- **Database selector** – create or open SQLite databases from the top bar; recently used databases are remembered.
+- **API Key dialog** – securely set the EDINET API key without editing `.env` manually.
+- **Drag-and-drop step ordering** – reorder pipeline steps by dragging them.
+- **Per-step enable/disable** – check or uncheck each step.
+- **Per-step configuration dialogs** – click the ⚙ icon to configure a step's parameters. Steps like Backtest and Import CSV have dedicated custom dialogs.
+- **Overwrite toggle** – steps that support it (Standardize Data, Generate Financial Ratios, Find Significant Predictors) show an "Overwrite" checkbox.
+- **Save / Load setups** – persist and recall named configurations from `config/state/saved_setups/`.
+- **Financial Ratios Config selector** – pick the JSON file that defines ratio formulas.
+- **Live log output** – see real-time log messages during execution in the output panel.
+- **Light / Dark theme** – toggle between light and dark mode.
 
 ## Key EDINET document type codes
 
