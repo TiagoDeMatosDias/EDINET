@@ -101,23 +101,59 @@
     "start_date": "2025-03-30",
     "end_date": "2026-02-10",
     "portfolio": {
-      "34360": 0.08199999999999999,
-      "19940": 0.077,
-      "40470": 0.068,
-      "40820": 0.10800000000000001,
-      "45520": 0.076,
-      "59670": 0.079,
-      "61570": 0.11599999999999999,
-      "61580": 0.071,
-      "61610": 0.065,
-      "64580": 0.08800000000000001,
-      "64880": 0.107,
-      "7820": 0.063
+      "19940": {
+        "mode": "shares",
+        "value": 200.0
+      },
+      "34360": {
+        "mode": "shares",
+        "value": 100.0
+      },
+      "40820": {
+        "mode": "shares",
+        "value": 200.0
+      },
+      "40470": {
+        "mode": "shares",
+        "value": 100.0
+      },
+      "45520": {
+        "mode": "shares",
+        "value": 200.0
+      },
+      "59670": {
+        "mode": "shares",
+        "value": 200.0
+      },
+      "61570": {
+        "mode": "shares",
+        "value": 200.0
+      },
+      "61580": {
+        "mode": "shares",
+        "value": 100.0
+      },
+      "61610": {
+        "mode": "shares",
+        "value": 100.0
+      },
+      "64580": {
+        "mode": "shares",
+        "value": 100.0
+      },
+      "64880": {
+        "mode": "shares",
+        "value": 200.0
+      },
+      "78200": {
+        "mode": "shares",
+        "value": 100.0
+      }
     },
     "benchmark_ticker": "TPX",
     "output_file": "data/backtest_results/backtest_report.txt",
     "risk_free_rate": 0.02,
-    "initial_capital": 1320000.0
+    "initial_capital": 1293450.0
   },
   "financial_ratios_config_path": "config\\reference\\financial_ratios_config.json"
 }

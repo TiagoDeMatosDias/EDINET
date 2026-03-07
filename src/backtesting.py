@@ -28,6 +28,147 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Portfolio allocation modes
+# ---------------------------------------------------------------------------
+
+# Each portfolio entry can be:
+#   - a plain float  (backward compat, treated as a weight fraction)
+#   - a dict with {"mode": "weight"|"shares"|"value", "value": <number>}
+ALLOCATION_MODES = ("weight", "shares", "value")
+
+
+def _normalise_portfolio_entry(
+    spec,
+) -> tuple[str, float]:
+    """Return ``(mode, numeric_value)`` from a portfolio entry.
+
+    Handles both the legacy plain-float format (treated as ``weight``) and the
+    new ``{"mode": ..., "value": ...}`` format.
+    """
+    if isinstance(spec, (int, float)):
+        return ("weight", float(spec))
+    if isinstance(spec, dict):
+        mode = spec.get("mode", "weight")
+        val = float(spec.get("value", 0))
+        if mode not in ALLOCATION_MODES:
+            logger.warning(
+                "Unknown allocation mode '%s', falling back to 'weight'.",
+                mode,
+            )
+            mode = "weight"
+        return (mode, val)
+    raise ValueError(f"Unexpected portfolio entry type: {type(spec)}")
+
+
+def resolve_portfolio_allocations(
+    portfolio_config: dict,
+    start_prices: dict[str, float],
+    initial_capital: float = 0.0,
+) -> tuple[dict[str, float], float, list[str]]:
+    """Resolve a mixed-mode portfolio config into normalised weights.
+
+    Supports three allocation modes per ticker:
+
+    * ``weight`` – fraction of total portfolio (e.g. 0.5 = 50 %).
+    * ``shares`` – fixed number of shares (requires start price).
+    * ``value``  – fixed currency amount (e.g. 10 000 JPY).
+
+    When the portfolio contains *only* weight-mode entries **and** no
+    ``initial_capital`` is provided, the weights are returned as-is
+    (classic behaviour).  Otherwise all allocations are converted to
+    capital amounts and then normalised.
+
+    Args:
+        portfolio_config: Mapping of ticker → allocation spec.
+        start_prices: Mapping of ticker → opening price on the first day.
+        initial_capital: User-specified starting capital.  ``0`` means
+            "derive automatically".
+
+    Returns:
+        A 3-tuple ``(portfolio_weights, effective_capital, warnings)``:
+
+        * **portfolio_weights** – ``dict[str, float]`` normalised weights
+          that sum to 1.0.
+        * **effective_capital** – the total capital implied by the
+          allocations (equals *initial_capital* when provided).
+        * **warnings** – list of human-readable warning strings.
+    """
+    weight_entries: dict[str, float] = {}   # ticker → weight fraction
+    fixed_entries: dict[str, float] = {}    # ticker → capital amount
+    warnings: list[str] = []
+
+    for ticker, spec in portfolio_config.items():
+        mode, val = _normalise_portfolio_entry(spec)
+
+        if mode == "weight":
+            weight_entries[ticker] = val
+        elif mode == "shares":
+            price = start_prices.get(ticker, 0.0)
+            if price > 0:
+                fixed_entries[ticker] = val * price
+            else:
+                warnings.append(
+                    f"No start-price data for '{ticker}' — "
+                    f"cannot convert {val:.0f} shares to capital; skipping."
+                )
+        elif mode == "value":
+            fixed_entries[ticker] = val
+
+    total_weight_frac = sum(weight_entries.values())
+    total_fixed_capital = sum(fixed_entries.values())
+
+    # ── Fast path: pure weight-only portfolio, no initial_capital ─────
+    all_weight_only = (not fixed_entries)
+    if all_weight_only and initial_capital <= 0:
+        # Classic behaviour — return weights directly, normalised
+        w_sum = total_weight_frac or 1.0
+        weights = {t: w / w_sum for t, w in weight_entries.items()}
+        return weights, 0.0, warnings
+
+    # ── Mixed or fixed allocations: convert everything to capital ─────
+    if initial_capital > 0:
+        effective_capital = initial_capital
+    elif total_weight_frac < 1.0 and total_fixed_capital > 0:
+        # Derive: weight_frac * C + fixed = C  →  C = fixed / (1 - W)
+        effective_capital = total_fixed_capital / (1.0 - total_weight_frac)
+    elif total_fixed_capital > 0:
+        # Weights already ≥ 100 %, treat fixed as additional
+        effective_capital = total_fixed_capital
+        if total_weight_frac > 0:
+            warnings.append(
+                f"Weight-mode tickers sum to {total_weight_frac * 100:.1f}% "
+                f"(≥ 100 %); fixed allocations are added on top."
+            )
+    else:
+        # Only weight-mode with explicit initial_capital=0 — use nominal
+        effective_capital = 1_000_000.0
+
+    allocations: dict[str, float] = {}
+    for ticker, frac in weight_entries.items():
+        allocations[ticker] = frac * effective_capital
+    for ticker, cap in fixed_entries.items():
+        allocations[ticker] = cap
+
+    total_allocated = sum(allocations.values())
+
+    if initial_capital > 0 and abs(total_allocated - initial_capital) > 0.01:
+        warnings.append(
+            f"Total allocated capital ({total_allocated:,.0f}) differs from "
+            f"initial capital ({initial_capital:,.0f}). "
+            f"Weights will be normalised to the allocated total."
+        )
+
+    if total_allocated > 0:
+        portfolio_weights = {
+            t: c / total_allocated for t, c in allocations.items()
+        }
+    else:
+        portfolio_weights = {}
+
+    return portfolio_weights, total_allocated, warnings
+
+
+# ---------------------------------------------------------------------------
 # Data retrieval
 # ---------------------------------------------------------------------------
 
@@ -1180,7 +1321,7 @@ def run_backtest(
     """
     start_date = backtesting_config.get("start_date")
     end_date = backtesting_config.get("end_date")
-    portfolio_weights = backtesting_config.get("portfolio", {})
+    portfolio_config = backtesting_config.get("portfolio", {})
     benchmark_ticker = backtesting_config.get("benchmark_ticker")
     output_file = backtesting_config.get(
         "output_file", "data/backtest_results/backtest_report.txt"
@@ -1194,21 +1335,39 @@ def run_backtest(
             "Backtesting config must include 'start_date' and 'end_date'."
         )
 
-    if not portfolio_weights:
+    if not portfolio_config:
         raise ValueError(
             "Backtesting config 'portfolio' is empty. "
-            "Add at least one ticker with a weight (e.g. {\"7203\": 0.5, \"6758\": 0.5})."
+            "Add at least one ticker with an allocation "
+            "(e.g. {\"7203\": 0.5} or "
+            "{\"7203\": {\"mode\": \"shares\", \"value\": 100}})."
         )
 
-    weight_sum = sum(portfolio_weights.values())
-    if abs(weight_sum - 1.0) > 0.01:
-        raise ValueError(
-            f"Portfolio weights must sum to 1.0 (100%), "
-            f"but they sum to {weight_sum:.4f} ({weight_sum * 100:.1f}%). "
-            f"Adjust the weights and try again."
-        )
+    # Detect whether the portfolio uses only plain weight-mode entries
+    # so we can provide the legacy strict validation as a warning.
+    has_non_weight = any(
+        isinstance(v, dict) and v.get("mode", "weight") != "weight"
+        for v in portfolio_config.values()
+    )
 
-    tickers = list(portfolio_weights.keys())
+    if not has_non_weight:
+        # Legacy / pure-weight portfolio — validate sum (warning only)
+        raw_weights = {
+            t: float(v) if isinstance(v, (int, float))
+            else float(v.get("value", 0))
+            for t, v in portfolio_config.items()
+        }
+        weight_sum = sum(raw_weights.values())
+        if abs(weight_sum - 1.0) > 0.01:
+            logger.warning(
+                "Portfolio weights sum to %.4f (%.1f%%), not 100%%. "
+                "Weights will be normalised automatically.",
+                weight_sum, weight_sum * 100,
+            )
+
+    # Portfolio weights will be resolved after price data is available.
+    # For now, extract ticker symbols so we can fetch prices.
+    tickers = list(portfolio_config.keys())
     all_tickers = list(tickers)
     if benchmark_ticker and benchmark_ticker not in all_tickers:
         all_tickers.append(benchmark_ticker)
@@ -1236,6 +1395,29 @@ def run_backtest(
             )
             generate_report(empty_metrics, output_file)
             return empty_metrics
+
+        # 1b. Resolve mixed portfolio allocations into weights
+        start_prices: dict[str, float] = {}
+        for tk in tickers:
+            tk_prices = prices_df[prices_df["Ticker"] == tk].sort_values("Date")
+            if not tk_prices.empty:
+                start_prices[tk] = float(tk_prices["Price"].iloc[0])
+
+        portfolio_weights, effective_capital, alloc_warnings = (
+            resolve_portfolio_allocations(
+                portfolio_config, start_prices, initial_capital,
+            )
+        )
+        for w in alloc_warnings:
+            logger.warning(w)
+
+        # Use the resolved effective capital when one was derived and the
+        # user did not supply an explicit value.
+        if effective_capital > 0 and initial_capital <= 0:
+            initial_capital = effective_capital
+        elif effective_capital > 0 and initial_capital > 0:
+            # Keep user-supplied capital, but log if it differs
+            pass  # warning already emitted by resolve_portfolio_allocations
 
         # 2. Fetch dividends (for portfolio tickers)
         dividends_df = get_dividend_data(

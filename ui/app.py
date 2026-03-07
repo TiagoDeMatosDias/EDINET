@@ -592,7 +592,23 @@ def main(page: ft.Page):
         current = step_configs.get("backtest", {})
         if not current:
             current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("backtest", {}))
-        portfolio: dict[str, float] = dict(current.get("portfolio", {}))
+        raw_portfolio = current.get("portfolio", {})
+
+        # Normalise legacy plain-float entries to the new dict format
+        portfolio: dict[str, dict] = {}
+        for tk, spec in raw_portfolio.items():
+            if isinstance(spec, (int, float)):
+                portfolio[tk] = {"mode": "weight", "value": spec * 100}
+            elif isinstance(spec, dict):
+                mode = spec.get("mode", "weight")
+                val = spec.get("value", 0)
+                # Store weight values as percentages for display
+                if mode == "weight":
+                    portfolio[tk] = {"mode": "weight", "value": val * 100}
+                else:
+                    portfolio[tk] = {"mode": mode, "value": val}
+            else:
+                portfolio[tk] = {"mode": "weight", "value": 0}
 
         start_tf = ft.TextField(
             label="Start Date (YYYY-MM-DD)",
@@ -634,29 +650,89 @@ def main(page: ft.Page):
         )
 
         # Portfolio management
-        ticker_tf = ft.TextField(label="Ticker", dense=True, width=160)
-        weight_tf = ft.TextField(label="Weight %", dense=True, width=100)
-        portfolio_list = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO, height=160)
+        ticker_tf = ft.TextField(label="Ticker", dense=True, width=130)
+        mode_dd = ft.Dropdown(
+            label="Mode",
+            value="weight",
+            options=[
+                ft.dropdown.Option("weight", "Weight %"),
+                ft.dropdown.Option("shares", "Shares"),
+                ft.dropdown.Option("value", "Value (¥)"),
+            ],
+            dense=True,
+            width=130,
+        )
+        alloc_tf = ft.TextField(label="Amount", dense=True, width=110)
+        portfolio_list = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO, height=180)
         weight_total_text = ft.Text("", size=12)
 
+        _MODE_LABELS = {"weight": "%", "shares": "shares", "value": "¥"}
+
         def _update_weight_total():
-            total = sum(portfolio.values())
-            pct = total * 100
-            if abs(pct - 100.0) < 0.01:
-                weight_total_text.value = f"Total weight: {pct:.1f}% ✓"
-                weight_total_text.color = ft.Colors.GREEN_700
-            else:
-                weight_total_text.value = f"Total weight: {pct:.1f}% (must be 100%)"
-                weight_total_text.color = ft.Colors.RED_400
+            weight_sum = sum(
+                e["value"] for e in portfolio.values() if e["mode"] == "weight"
+            )
+            has_fixed = any(
+                e["mode"] in ("shares", "value") for e in portfolio.values()
+            )
+            if not portfolio:
+                weight_total_text.value = ""
+                weight_total_text.color = None
+                return
+            parts = []
+            if weight_sum > 0:
+                if abs(weight_sum - 100.0) < 0.01 and not has_fixed:
+                    parts.append(f"Weight total: {weight_sum:.1f}% ✓")
+                    weight_total_text.color = ft.Colors.GREEN_700
+                elif has_fixed:
+                    parts.append(f"Weight total: {weight_sum:.1f}%")
+                    weight_total_text.color = ft.Colors.BLUE_400
+                else:
+                    parts.append(
+                        f"Weight total: {weight_sum:.1f}% "
+                        f"(will be normalised)"
+                    )
+                    weight_total_text.color = ft.Colors.ORANGE_400
+            if has_fixed:
+                n_shares = sum(
+                    1 for e in portfolio.values() if e["mode"] == "shares"
+                )
+                n_value = sum(
+                    1 for e in portfolio.values() if e["mode"] == "value"
+                )
+                fixed_parts = []
+                if n_shares:
+                    fixed_parts.append(f"{n_shares} by shares")
+                if n_value:
+                    fixed_parts.append(f"{n_value} by value")
+                parts.append("Fixed: " + ", ".join(fixed_parts))
+                if not weight_sum:
+                    weight_total_text.color = ft.Colors.GREEN_700
+            weight_total_text.value = "  |  ".join(parts)
 
         def _rebuild_portfolio_list():
             portfolio_list.controls.clear()
-            for tk, wt in portfolio.items():
+            for tk, entry in portfolio.items():
+                mode = entry["mode"]
+                val = entry["value"]
+                lbl = _MODE_LABELS.get(mode, "")
+                if mode == "weight":
+                    display = f"{val:.1f}{lbl}"
+                elif mode == "shares":
+                    display = f"{val:g} {lbl}"
+                else:
+                    display = f"{lbl}{val:,.0f}"
                 portfolio_list.controls.append(
                     ft.Row(
                         [
-                            ft.Text(tk, width=120, size=13),
-                            ft.Text(f"{wt * 100:.1f}%", width=80, size=13),
+                            ft.Text(tk, width=100, size=13),
+                            ft.Text(
+                                mode.capitalize(),
+                                width=60,
+                                size=11,
+                                color=ft.Colors.BLUE_400,
+                            ),
+                            ft.Text(display, width=100, size=13),
                             ft.IconButton(
                                 icon=ft.Icons.DELETE,
                                 icon_size=16,
@@ -673,21 +749,25 @@ def main(page: ft.Page):
 
         def _add_ticker(_):
             tk = ticker_tf.value.strip()
-            wt_raw = weight_tf.value.strip()
+            mode = mode_dd.value or "weight"
+            raw = alloc_tf.value.strip()
             if not tk:
                 _snack("Enter a ticker symbol")
                 return
             try:
-                wt_pct = float(wt_raw)
+                val = float(raw)
             except ValueError:
-                _snack("Weight must be a number (percentage, e.g. 50)")
+                _snack("Amount must be a number")
                 return
-            if wt_pct <= 0 or wt_pct > 100:
-                _snack("Weight must be between 0 and 100")
+            if val <= 0:
+                _snack("Amount must be positive")
                 return
-            portfolio[tk] = wt_pct / 100.0
+            if mode == "weight" and val > 100:
+                _snack("Weight cannot exceed 100%")
+                return
+            portfolio[tk] = {"mode": mode, "value": val}
             ticker_tf.value = ""
-            weight_tf.value = ""
+            alloc_tf.value = ""
             _rebuild_portfolio_list()
 
         def _remove_ticker(tk: str):
@@ -708,10 +788,21 @@ def main(page: ft.Page):
             if not portfolio:
                 _snack("Portfolio is empty — add at least one ticker")
                 return
-            total = sum(portfolio.values())
-            if abs(total - 1.0) > 0.01:
-                _snack(f"Portfolio weights must sum to 100% (currently {total * 100:.1f}%)")
-                return
+
+            # Check weight-only portfolios for sum, but only warn
+            weight_sum = sum(
+                e["value"] for e in portfolio.values() if e["mode"] == "weight"
+            )
+            has_fixed = any(
+                e["mode"] in ("shares", "value") for e in portfolio.values()
+            )
+            if not has_fixed and abs(weight_sum - 100.0) > 0.01:
+                _snack(
+                    f"⚠ Weights sum to {weight_sum:.1f}% (not 100%). "
+                    f"They will be normalised at run time."
+                )
+                # Still allow saving — just a warning
+
             try:
                 rf = float(risk_free_tf.value.strip()) / 100.0
             except ValueError:
@@ -720,10 +811,28 @@ def main(page: ft.Page):
                 cap = float(capital_tf.value.strip())
             except ValueError:
                 cap = 0.0
+
+            # Convert portfolio to the storage format expected by backtesting
+            saved_portfolio: dict = {}
+            for tk, entry in portfolio.items():
+                mode = entry["mode"]
+                val = entry["value"]
+                if mode == "weight":
+                    # Store as fraction (0.0–1.0) for weight mode
+                    saved_portfolio[tk] = {
+                        "mode": "weight",
+                        "value": val / 100.0,
+                    }
+                else:
+                    saved_portfolio[tk] = {
+                        "mode": mode,
+                        "value": val,
+                    }
+
             step_configs["backtest"] = {
                 "start_date": start_tf.value.strip(),
                 "end_date": end_tf.value.strip(),
-                "portfolio": dict(portfolio),
+                "portfolio": saved_portfolio,
                 "benchmark_ticker": bench_tf.value.strip(),
                 "output_file": output_tf.value.strip(),
                 "risk_free_rate": rf,
@@ -743,13 +852,16 @@ def main(page: ft.Page):
                     output_tf,
                     ft.Divider(height=1),
                     ft.Text("Portfolio", weight=ft.FontWeight.BOLD, size=14),
-                    ft.Row([ticker_tf, weight_tf, add_btn], spacing=8),
+                    ft.Row(
+                        [ticker_tf, mode_dd, alloc_tf, add_btn],
+                        spacing=8,
+                    ),
                     portfolio_list,
                     weight_total_text,
                 ],
                 scroll=ft.ScrollMode.AUTO,
-                width=500,
-                height=460,
+                width=520,
+                height=500,
                 spacing=8,
             ),
             actions=[
