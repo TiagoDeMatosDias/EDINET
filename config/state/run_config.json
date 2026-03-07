@@ -34,7 +34,7 @@
     },
     "find_significant_predictors": {
       "enabled": false,
-      "overwrite": true
+      "overwrite": false
     },
     "Multivariate_Regression": {
       "enabled": false,
@@ -76,17 +76,9 @@
     },
     "alpha": 0.05,
     "dependent_variables": [
-      "Ratio_EarningsYield",
-      "Ratio_PriceSales",
-      "Ratio_PriceBook",
-      "Ratio_PriceNCAV",
-      "Ratio_FreeCashflowYield",
-      "Ratio_EnterpriseValueSales",
-      "Ratio_PriceEarnings_3Year_Growth",
-      "Ratio_PriceEarnings_1Year_Growth",
-      "Ratio_PriceBook_1Year_Growth",
-      "Ratio_PriceBook_3Year_Growth",
-      "Ratio_PriceBook_5Year_Growth"
+      "PerShare_SharePrice_1Year_Growth",
+      "PerShare_SharePrice_3Year_Growth",
+      "PerShare_SharePrice_5Year_Growth"
     ]
   },
   "Multivariate_Regression_config": {
@@ -95,59 +87,51 @@
       "lower": 0.05,
       "upper": 0.95
     },
-    "SQL_Query": "Select \rPerShare_SharePrice_3Year_Growth\r,\r Ratio_PriceSales ,\r Ratio_PriceBook,\r Ratio_ReturnOnAssets_ZScore,\r Ratio_OperatingMargin_ZScore\r\r from Standard_Data_Ratios"
+    "SQL_Query": "Select \rPerShare_SharePrice_1Year_Growth\r,\r Ratio_NetProfitMargin_ZScore,\r Ratio_PriceBook_ZScore,\rRatio_PriceSales_ZScore,\rRatio_ReturnOnEquity_ZScore,\rRatio_OperatingMargin_ZScore\r\r\r from Standard_Data_Ratios"
   },
   "backtesting_config": {
     "start_date": "2025-03-30",
     "end_date": "2026-02-10",
     "portfolio": {
-      "19940": {
-        "mode": "shares",
-        "value": 200.0
+      "96290": {
+        "mode": "weight",
+        "value": 0.1
       },
-      "34360": {
-        "mode": "shares",
-        "value": 100.0
+      "48160": {
+        "mode": "weight",
+        "value": 0.1
       },
-      "40820": {
-        "mode": "shares",
-        "value": 200.0
+      "96970": {
+        "mode": "weight",
+        "value": 0.1
       },
-      "40470": {
-        "mode": "shares",
-        "value": 100.0
+      "48000": {
+        "mode": "weight",
+        "value": 0.1
       },
-      "45520": {
-        "mode": "shares",
-        "value": 200.0
+      "39540": {
+        "mode": "weight",
+        "value": 0.1
       },
-      "59670": {
-        "mode": "shares",
-        "value": 200.0
+      "97680": {
+        "mode": "weight",
+        "value": 0.1
       },
-      "61570": {
-        "mode": "shares",
-        "value": 200.0
+      "24330": {
+        "mode": "weight",
+        "value": 0.1
       },
-      "61580": {
-        "mode": "shares",
-        "value": 100.0
+      "75950": {
+        "mode": "weight",
+        "value": 0.1
       },
-      "61610": {
-        "mode": "shares",
-        "value": 100.0
+      "38540": {
+        "mode": "weight",
+        "value": 0.1
       },
-      "64580": {
-        "mode": "shares",
-        "value": 100.0
-      },
-      "64880": {
-        "mode": "shares",
-        "value": 200.0
-      },
-      "78200": {
-        "mode": "shares",
-        "value": 100.0
+      "42860": {
+        "mode": "weight",
+        "value": 0.1
       }
     },
     "benchmark_ticker": "TPX",
