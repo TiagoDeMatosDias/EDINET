@@ -87,57 +87,29 @@
       "lower": 0.05,
       "upper": 0.95
     },
-    "SQL_Query": "Select \rPerShare_SharePrice_1Year_Growth\r,\r Ratio_NetProfitMargin_ZScore,\r Ratio_PriceBook_ZScore,\rRatio_PriceSales_ZScore,\rRatio_ReturnOnEquity_ZScore,\rRatio_OperatingMargin_ZScore\r\r\r from Standard_Data_Ratios"
+    "SQL_Query": "Select \rPerShare_SharePrice_3Year_Growth\r,\r Ratio_PriceBook_ZScore,\rRatio_PriceSales_ZScore,\rRatio_ReturnOnEquity_ZScore,\rRatio_OperatingMargin_ZScore\r\r\r from Standard_Data_Ratios"
   },
   "backtesting_config": {
-    "start_date": "2025-03-30",
+    "start_date": "2020-01-01",
     "end_date": "2026-02-10",
     "portfolio": {
-      "96290": {
-        "mode": "weight",
-        "value": 0.1
+      "59110": {
+        "mode": "shares",
+        "value": 100.0
       },
-      "48160": {
-        "mode": "weight",
-        "value": 0.1
+      "59840": {
+        "mode": "shares",
+        "value": 300.0
       },
-      "96970": {
+      "75750": {
         "mode": "weight",
-        "value": 0.1
-      },
-      "48000": {
-        "mode": "weight",
-        "value": 0.1
-      },
-      "39540": {
-        "mode": "weight",
-        "value": 0.1
-      },
-      "97680": {
-        "mode": "weight",
-        "value": 0.1
-      },
-      "24330": {
-        "mode": "weight",
-        "value": 0.1
-      },
-      "75950": {
-        "mode": "weight",
-        "value": 0.1
-      },
-      "38540": {
-        "mode": "weight",
-        "value": 0.1
-      },
-      "42860": {
-        "mode": "weight",
-        "value": 0.1
+        "value": 0.5
       }
     },
     "benchmark_ticker": "TPX",
     "output_file": "data/backtest_results/backtest_report.txt",
     "risk_free_rate": 0.02,
-    "initial_capital": 1293450.0
+    "initial_capital": 0.0
   },
   "financial_ratios_config_path": "config\\reference\\financial_ratios_config.json"
 }

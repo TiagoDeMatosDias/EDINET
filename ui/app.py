@@ -649,37 +649,60 @@ def main(page: ft.Page):
             hint_text="e.g. 1000000",
         )
 
-        # Portfolio management
-        ticker_tf = ft.TextField(label="Ticker", dense=True, width=130)
-        mode_dd = ft.Dropdown(
-            label="Mode",
-            value="weight",
-            options=[
-                ft.dropdown.Option("weight", "Weight %"),
-                ft.dropdown.Option("shares", "Shares"),
-                ft.dropdown.Option("value", "Value (¥)"),
-            ],
-            dense=True,
-            width=130,
-        )
-        alloc_tf = ft.TextField(label="Amount", dense=True, width=110)
-        portfolio_list = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO, height=180)
+        # ── Portfolio management (Excel-like editable grid) ────────────────
+        MIN_EMPTY_ROWS = 3
+
+        # Working copy as a flat list so row order is stable and empty rows
+        # can live at the bottom.  Each element:
+        #   {"ticker": str, "type": str, "amount": str}
+        grid_rows: list[dict[str, str]] = []
+        for tk, entry in sorted(portfolio.items()):
+            grid_rows.append({
+                "ticker": tk,
+                "type": entry["mode"],
+                "amount": str(entry["value"]),
+            })
+
+        def _ensure_empty_rows():
+            """Keep MIN_EMPTY_ROWS blank rows at the bottom for new input."""
+            empty = sum(1 for r in grid_rows if not r["ticker"].strip())
+            while empty < MIN_EMPTY_ROWS:
+                grid_rows.append({"ticker": "", "type": "weight", "amount": ""})
+                empty += 1
+
+        _ensure_empty_rows()
+
         weight_total_text = ft.Text("", size=12)
+        grid_column = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, height=250)
 
-        _MODE_LABELS = {"weight": "%", "shares": "shares", "value": "¥"}
-
+        # ── weight / status indicator ──────────────────────────────────
         def _update_weight_total():
-            weight_sum = sum(
-                e["value"] for e in portfolio.values() if e["mode"] == "weight"
-            )
-            has_fixed = any(
-                e["mode"] in ("shares", "value") for e in portfolio.values()
-            )
-            if not portfolio:
+            filled = [r for r in grid_rows if r["ticker"].strip()]
+            if not filled:
                 weight_total_text.value = ""
                 weight_total_text.color = None
                 return
-            parts = []
+
+            weight_sum = 0.0
+            has_fixed = False
+            n_shares = 0
+            n_value = 0
+            for r in filled:
+                mode = r["type"]
+                try:
+                    val = float(r["amount"])
+                except (ValueError, TypeError):
+                    val = 0
+                if mode == "weight":
+                    weight_sum += val
+                elif mode == "shares":
+                    has_fixed = True
+                    n_shares += 1
+                elif mode == "value":
+                    has_fixed = True
+                    n_value += 1
+
+            parts: list[str] = []
             if weight_sum > 0:
                 if abs(weight_sum - 100.0) < 0.01 and not has_fixed:
                     parts.append(f"Weight total: {weight_sum:.1f}% ✓")
@@ -689,119 +712,314 @@ def main(page: ft.Page):
                     weight_total_text.color = ft.Colors.BLUE_400
                 else:
                     parts.append(
-                        f"Weight total: {weight_sum:.1f}% "
-                        f"(will be normalised)"
+                        f"Weight total: {weight_sum:.1f}% (will be normalised)"
                     )
                     weight_total_text.color = ft.Colors.ORANGE_400
             if has_fixed:
-                n_shares = sum(
-                    1 for e in portfolio.values() if e["mode"] == "shares"
-                )
-                n_value = sum(
-                    1 for e in portfolio.values() if e["mode"] == "value"
-                )
-                fixed_parts = []
+                fp: list[str] = []
                 if n_shares:
-                    fixed_parts.append(f"{n_shares} by shares")
+                    fp.append(f"{n_shares} by shares")
                 if n_value:
-                    fixed_parts.append(f"{n_value} by value")
-                parts.append("Fixed: " + ", ".join(fixed_parts))
+                    fp.append(f"{n_value} by value")
+                parts.append("Fixed: " + ", ".join(fp))
                 if not weight_sum:
                     weight_total_text.color = ft.Colors.GREEN_700
             weight_total_text.value = "  |  ".join(parts)
 
-        def _rebuild_portfolio_list():
-            portfolio_list.controls.clear()
-            for tk, entry in portfolio.items():
-                mode = entry["mode"]
-                val = entry["value"]
-                lbl = _MODE_LABELS.get(mode, "")
-                if mode == "weight":
-                    display = f"{val:.1f}{lbl}"
-                elif mode == "shares":
-                    display = f"{val:g} {lbl}"
-                else:
-                    display = f"{lbl}{val:,.0f}"
-                portfolio_list.controls.append(
-                    ft.Row(
+        # ── cell styling ───────────────────────────────────────────────
+        _CELL_BORDER = ft.border.only(
+            right=ft.BorderSide(1, ft.Colors.GREY_300),
+            bottom=ft.BorderSide(1, ft.Colors.GREY_200),
+        )
+        _HEADER_BORDER = ft.border.only(
+            right=ft.BorderSide(1, ft.Colors.GREY_400),
+            bottom=ft.BorderSide(2, ft.Colors.GREY_500),
+        )
+
+        def _cell_tf(
+            value: str, width: int, *, row_idx: int, col: str,
+        ) -> ft.Container:
+            """Return a borderless TextField inside a Container that looks
+            like a spreadsheet cell."""
+            tf = ft.TextField(
+                value=value,
+                border=ft.InputBorder.NONE,
+                text_size=12,
+                dense=True,
+                content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
+                on_change=lambda e, i=row_idx, c=col: _on_cell_change(
+                    i, c, e.control.value,
+                ),
+                on_blur=lambda e, i=row_idx, c=col: _on_cell_blur(
+                    i, c, e.control.value,
+                ),
+                hint_text="weight" if (col == "type" and not value) else None,
+            )
+            return ft.Container(content=tf, width=width, border=_CELL_BORDER)
+
+        # ── build / rebuild the grid ───────────────────────────────────
+        def _rebuild_grid():
+            grid_column.controls.clear()
+
+            # Header row
+            grid_column.controls.append(
+                ft.Container(
+                    content=ft.Row(
                         [
-                            ft.Text(tk, width=100, size=13),
-                            ft.Text(
-                                mode.capitalize(),
-                                width=60,
-                                size=11,
-                                color=ft.Colors.BLUE_400,
+                            ft.Container(
+                                ft.Text("Ticker", weight=ft.FontWeight.BOLD, size=12),
+                                width=130,
+                                padding=ft.padding.symmetric(horizontal=8, vertical=6),
+                                border=_HEADER_BORDER,
                             ),
-                            ft.Text(display, width=100, size=13),
-                            ft.IconButton(
-                                icon=ft.Icons.DELETE,
-                                icon_size=16,
-                                icon_color=ft.Colors.RED_400,
-                                tooltip="Remove",
-                                on_click=lambda _, t=tk: _remove_ticker(t),
+                            ft.Container(
+                                ft.Text("Type", weight=ft.FontWeight.BOLD, size=12),
+                                width=100,
+                                padding=ft.padding.symmetric(horizontal=8, vertical=6),
+                                border=_HEADER_BORDER,
                             ),
+                            ft.Container(
+                                ft.Text("Amount", weight=ft.FontWeight.BOLD, size=12),
+                                width=110,
+                                padding=ft.padding.symmetric(horizontal=8, vertical=6),
+                                border=_HEADER_BORDER,
+                            ),
+                            ft.Container(width=36),
                         ],
-                        spacing=4,
+                        spacing=0,
+                    ),
+                    bgcolor=ft.Colors.BLUE_GREY_50,
+                )
+            )
+
+            for idx, row_data in enumerate(grid_rows):
+                is_empty = not row_data["ticker"].strip()
+                row_bg = ft.Colors.WHITE if idx % 2 == 0 else ft.Colors.GREY_50
+
+                delete_btn = ft.IconButton(
+                    icon=ft.Icons.CLOSE,
+                    icon_size=14,
+                    icon_color=(
+                        ft.Colors.RED_400 if not is_empty
+                        else ft.Colors.TRANSPARENT
+                    ),
+                    tooltip="Delete row" if not is_empty else None,
+                    on_click=(
+                        (lambda _, i=idx: _delete_row(i))
+                        if not is_empty else None
+                    ),
+                    disabled=is_empty,
+                )
+
+                grid_column.controls.append(
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                _cell_tf(
+                                    row_data["ticker"], 130,
+                                    row_idx=idx, col="ticker",
+                                ),
+                                _cell_tf(
+                                    row_data["type"], 100,
+                                    row_idx=idx, col="type",
+                                ),
+                                _cell_tf(
+                                    row_data["amount"], 110,
+                                    row_idx=idx, col="amount",
+                                ),
+                                ft.Container(content=delete_btn, width=36),
+                            ],
+                            spacing=0,
+                        ),
+                        bgcolor=row_bg,
                     )
                 )
+
             _update_weight_total()
             page.update()
 
-        def _add_ticker(_):
-            tk = ticker_tf.value.strip()
-            mode = mode_dd.value or "weight"
-            raw = alloc_tf.value.strip()
-            if not tk:
-                _snack("Enter a ticker symbol")
+        # ── cell event handlers ────────────────────────────────────────
+        _COL_ORDER = ["ticker", "type", "amount"]
+
+        def _on_cell_change(idx: int, col: str, value: str):
+            """Detect a multi-cell paste (tabs / newlines) in *any* cell
+            and distribute the data across columns and rows like Excel."""
+            if "\t" not in value and "\n" not in value:
+                return  # normal single-cell keystroke — handled by on_blur
+
+            col_start = _COL_ORDER.index(col) if col in _COL_ORDER else 0
+            lines = value.replace("\r", "").split("\n")
+
+            for li, line in enumerate(lines):
+                if not line.strip():
+                    continue
+                parts = line.split("\t") if "\t" in line else line.split()
+                target_row = idx + li
+                while target_row >= len(grid_rows):
+                    grid_rows.append({"ticker": "", "type": "weight", "amount": ""})
+                for pi, part in enumerate(parts):
+                    ci = col_start + pi
+                    if ci >= len(_COL_ORDER):
+                        break
+                    col_name = _COL_ORDER[ci]
+                    val = part.strip()
+                    if col_name == "ticker":
+                        grid_rows[target_row]["ticker"] = val.upper()
+                    elif col_name == "type":
+                        v = val.lower()
+                        grid_rows[target_row]["type"] = (
+                            v if v in ("weight", "shares", "value") else "weight"
+                        )
+                    elif col_name == "amount":
+                        grid_rows[target_row]["amount"] = val
+
+            _ensure_empty_rows()
+            _rebuild_grid()
+
+        def _on_cell_blur(idx: int, col: str, value: str):
+            """Persist a cell edit back into grid_rows on blur."""
+            if idx >= len(grid_rows):
                 return
+            if col == "ticker":
+                grid_rows[idx]["ticker"] = value.strip().upper()
+            elif col == "type":
+                v = value.strip().lower()
+                grid_rows[idx]["type"] = (
+                    v if v in ("weight", "shares", "value") else "weight"
+                )
+            elif col == "amount":
+                grid_rows[idx]["amount"] = value.strip()
+
+            _ensure_empty_rows()
+            _update_weight_total()
+            page.update()
+
+        def _delete_row(idx: int):
+            if idx < len(grid_rows):
+                grid_rows.pop(idx)
+                _ensure_empty_rows()
+                _rebuild_grid()
+
+        # ── toolbar buttons ────────────────────────────────────────────
+        def _add_row(_):
+            grid_rows.append({"ticker": "", "type": "weight", "amount": ""})
+            _rebuild_grid()
+
+        async def _paste_from_clipboard(_):
+            """Read the system clipboard and insert rows."""
             try:
-                val = float(raw)
-            except ValueError:
-                _snack("Amount must be a number")
+                text = await page.clipboard.get()
+            except Exception:
+                _snack("Could not read clipboard")
                 return
-            if val <= 0:
-                _snack("Amount must be positive")
+            if not text or not text.strip():
+                _snack("Clipboard is empty")
                 return
-            if mode == "weight" and val > 100:
-                _snack("Weight cannot exceed 100%")
-                return
-            portfolio[tk] = {"mode": mode, "value": val}
-            ticker_tf.value = ""
-            alloc_tf.value = ""
-            _rebuild_portfolio_list()
 
-        def _remove_ticker(tk: str):
-            portfolio.pop(tk, None)
-            _rebuild_portfolio_list()
+            imported = 0
+            errors: list[str] = []
+            for line_num, line in enumerate(text.strip().split("\n"), 1):
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("\t") if "\t" in line else line.split()
+                if len(parts) < 3:
+                    errors.append(f"Line {line_num}: need 3 fields")
+                    continue
+                ticker = parts[0].strip().upper()
+                mode = parts[1].strip().lower()
+                amount_str = parts[2].strip()
+                if mode not in ("weight", "shares", "value"):
+                    errors.append(f"Line {line_num}: invalid type '{mode}'")
+                    continue
 
-        add_btn = ft.IconButton(
-            icon=ft.Icons.ADD_CIRCLE,
-            icon_color=ft.Colors.GREEN_700,
-            tooltip="Add ticker",
-            on_click=_add_ticker,
+                # Fill first empty row, or append
+                placed = False
+                for r in grid_rows:
+                    if not r["ticker"].strip():
+                        r["ticker"] = ticker
+                        r["type"] = mode
+                        r["amount"] = amount_str
+                        placed = True
+                        break
+                if not placed:
+                    grid_rows.append({
+                        "ticker": ticker, "type": mode, "amount": amount_str,
+                    })
+                imported += 1
+
+            _ensure_empty_rows()
+            _rebuild_grid()
+            if errors:
+                _snack(
+                    f"Imported {imported}. Errors: " + "; ".join(errors[:3])
+                )
+            elif imported:
+                _snack(f"Imported {imported} entries")
+
+        def _clear_all(_):
+            grid_rows.clear()
+            _ensure_empty_rows()
+            _rebuild_grid()
+
+        add_row_btn = ft.IconButton(
+            icon=ft.Icons.ADD_CIRCLE, icon_color=ft.Colors.GREEN_700,
+            tooltip="Add row", on_click=_add_row,
+        )
+        paste_btn = ft.IconButton(
+            icon=ft.Icons.CONTENT_PASTE, icon_color=ft.Colors.BLUE_700,
+            tooltip="Paste from clipboard  (Ticker  Type  Amount)",
+            on_click=_paste_from_clipboard,
+        )
+        clear_btn = ft.IconButton(
+            icon=ft.Icons.DELETE_SWEEP, icon_color=ft.Colors.RED_400,
+            tooltip="Clear all rows", on_click=_clear_all,
         )
 
-        _rebuild_portfolio_list()
+        _rebuild_grid()
 
+        # ── save handler ───────────────────────────────────────────────
         def save(_):
-            # Validate
-            if not portfolio:
+            # Collect filled rows from the grid
+            table_portfolio: dict[str, dict] = {}
+            for r in grid_rows:
+                tk = r["ticker"].strip().upper()
+                if not tk:
+                    continue
+                mode = r["type"].strip().lower()
+                if mode not in ("weight", "shares", "value"):
+                    mode = "weight"
+                raw = r["amount"].strip()
+                try:
+                    val = float(raw)
+                except (ValueError, TypeError):
+                    _snack(f"Invalid amount for {tk}")
+                    return
+                if val <= 0:
+                    _snack(f"Amount for {tk} must be positive")
+                    return
+                if mode == "weight" and val > 100:
+                    _snack(f"Weight for {tk} cannot exceed 100%")
+                    return
+                table_portfolio[tk] = {"mode": mode, "value": val}
+
+            if not table_portfolio:
                 _snack("Portfolio is empty — add at least one ticker")
                 return
 
-            # Check weight-only portfolios for sum, but only warn
             weight_sum = sum(
-                e["value"] for e in portfolio.values() if e["mode"] == "weight"
+                e["value"] for e in table_portfolio.values()
+                if e["mode"] == "weight"
             )
             has_fixed = any(
-                e["mode"] in ("shares", "value") for e in portfolio.values()
+                e["mode"] in ("shares", "value")
+                for e in table_portfolio.values()
             )
             if not has_fixed and abs(weight_sum - 100.0) > 0.01:
                 _snack(
                     f"⚠ Weights sum to {weight_sum:.1f}% (not 100%). "
                     f"They will be normalised at run time."
                 )
-                # Still allow saving — just a warning
 
             try:
                 rf = float(risk_free_tf.value.strip()) / 100.0
@@ -812,22 +1030,14 @@ def main(page: ft.Page):
             except ValueError:
                 cap = 0.0
 
-            # Convert portfolio to the storage format expected by backtesting
             saved_portfolio: dict = {}
-            for tk, entry in portfolio.items():
+            for tk, entry in table_portfolio.items():
                 mode = entry["mode"]
                 val = entry["value"]
                 if mode == "weight":
-                    # Store as fraction (0.0–1.0) for weight mode
-                    saved_portfolio[tk] = {
-                        "mode": "weight",
-                        "value": val / 100.0,
-                    }
+                    saved_portfolio[tk] = {"mode": "weight", "value": val / 100.0}
                 else:
-                    saved_portfolio[tk] = {
-                        "mode": mode,
-                        "value": val,
-                    }
+                    saved_portfolio[tk] = {"mode": mode, "value": val}
 
             step_configs["backtest"] = {
                 "start_date": start_tf.value.strip(),
@@ -853,15 +1063,19 @@ def main(page: ft.Page):
                     ft.Divider(height=1),
                     ft.Text("Portfolio", weight=ft.FontWeight.BOLD, size=14),
                     ft.Row(
-                        [ticker_tf, mode_dd, alloc_tf, add_btn],
-                        spacing=8,
+                        [add_row_btn, paste_btn, clear_btn],
+                        spacing=0,
                     ),
-                    portfolio_list,
+                    ft.Container(
+                        content=grid_column,
+                        border=ft.border.all(1, ft.Colors.GREY_400),
+                        border_radius=4,
+                    ),
                     weight_total_text,
                 ],
                 scroll=ft.ScrollMode.AUTO,
                 width=520,
-                height=500,
+                height=580,
                 spacing=8,
             ),
             actions=[
