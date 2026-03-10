@@ -651,9 +651,9 @@ def main(page: ft.Page):
 
         # ── Portfolio management (Excel-like editable grid) ────────────────
         MIN_EMPTY_ROWS = 3
+        _COL_ORDER = ["ticker", "type", "amount"]
 
-        # Working copy as a flat list so row order is stable and empty rows
-        # can live at the bottom.  Each element:
+        # Working copy as a flat list.  Each element:
         #   {"ticker": str, "type": str, "amount": str}
         grid_rows: list[dict[str, str]] = []
         for tk, entry in sorted(portfolio.items()):
@@ -663,8 +663,14 @@ def main(page: ft.Page):
                 "amount": str(entry["value"]),
             })
 
+        # Track which cell is focused so Ctrl+V knows where to start.
+        _focused_cell: dict = {"row": 0, "col": "ticker"}
+        # Track selected rows for Ctrl+C copy.
+        _selected_rows: set[int] = set()
+        # Remember the last-clicked row for shift-click range selection.
+        _last_clicked_row: dict = {"idx": None}
+
         def _ensure_empty_rows():
-            """Keep MIN_EMPTY_ROWS blank rows at the bottom for new input."""
             empty = sum(1 for r in grid_rows if not r["ticker"].strip())
             while empty < MIN_EMPTY_ROWS:
                 grid_rows.append({"ticker": "", "type": "weight", "amount": ""})
@@ -673,7 +679,7 @@ def main(page: ft.Page):
         _ensure_empty_rows()
 
         weight_total_text = ft.Text("", size=12)
-        grid_column = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, height=250)
+        grid_column = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, height=280)
 
         # ── weight / status indicator ──────────────────────────────────
         def _update_weight_total():
@@ -682,11 +688,9 @@ def main(page: ft.Page):
                 weight_total_text.value = ""
                 weight_total_text.color = None
                 return
-
             weight_sum = 0.0
             has_fixed = False
-            n_shares = 0
-            n_value = 0
+            n_shares = n_value = 0
             for r in filled:
                 mode = r["type"]
                 try:
@@ -696,11 +700,9 @@ def main(page: ft.Page):
                 if mode == "weight":
                     weight_sum += val
                 elif mode == "shares":
-                    has_fixed = True
-                    n_shares += 1
+                    has_fixed = True; n_shares += 1
                 elif mode == "value":
-                    has_fixed = True
-                    n_value += 1
+                    has_fixed = True; n_value += 1
 
             parts: list[str] = []
             if weight_sum > 0:
@@ -735,21 +737,25 @@ def main(page: ft.Page):
             right=ft.BorderSide(1, ft.Colors.GREY_400),
             bottom=ft.BorderSide(2, ft.Colors.GREY_500),
         )
+        _SEL_BG   = ft.Colors.LIGHT_BLUE_50
+        _EVEN_BG  = ft.Colors.WHITE
+        _ODD_BG   = ft.Colors.GREY_50
+
+        def _row_bg(idx: int) -> str:
+            if idx in _selected_rows:
+                return _SEL_BG
+            return _EVEN_BG if idx % 2 == 0 else _ODD_BG
 
         def _cell_tf(
             value: str, width: int, *, row_idx: int, col: str,
         ) -> ft.Container:
-            """Return a borderless TextField inside a Container that looks
-            like a spreadsheet cell."""
             tf = ft.TextField(
                 value=value,
                 border=ft.InputBorder.NONE,
                 text_size=12,
                 dense=True,
                 content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
-                on_change=lambda e, i=row_idx, c=col: _on_cell_change(
-                    i, c, e.control.value,
-                ),
+                on_focus=lambda _, i=row_idx, c=col: _on_cell_focus(i, c),
                 on_blur=lambda e, i=row_idx, c=col: _on_cell_blur(
                     i, c, e.control.value,
                 ),
@@ -767,8 +773,14 @@ def main(page: ft.Page):
                     content=ft.Row(
                         [
                             ft.Container(
+                                ft.Text("#", weight=ft.FontWeight.BOLD, size=11),
+                                width=30,
+                                padding=ft.padding.symmetric(horizontal=4, vertical=6),
+                                border=_HEADER_BORDER,
+                            ),
+                            ft.Container(
                                 ft.Text("Ticker", weight=ft.FontWeight.BOLD, size=12),
-                                width=130,
+                                width=120,
                                 padding=ft.padding.symmetric(horizontal=8, vertical=6),
                                 border=_HEADER_BORDER,
                             ),
@@ -794,7 +806,6 @@ def main(page: ft.Page):
 
             for idx, row_data in enumerate(grid_rows):
                 is_empty = not row_data["ticker"].strip()
-                row_bg = ft.Colors.WHITE if idx % 2 == 0 else ft.Colors.GREY_50
 
                 delete_btn = ft.IconButton(
                     icon=ft.Icons.CLOSE,
@@ -811,12 +822,32 @@ def main(page: ft.Page):
                     disabled=is_empty,
                 )
 
+                # Row-number cell — click to select / shift-click to extend
+                row_num_cell = ft.Container(
+                    content=ft.Text(
+                        str(idx + 1), size=10,
+                        color=(ft.Colors.BLUE_700 if idx in _selected_rows
+                               else ft.Colors.GREY_500),
+                        weight=(ft.FontWeight.BOLD if idx in _selected_rows
+                                else None),
+                    ),
+                    width=30,
+                    padding=ft.padding.symmetric(horizontal=4, vertical=6),
+                    border=_CELL_BORDER,
+                    on_click=lambda _, i=idx: _on_row_click(i),
+                    bgcolor=(
+                        ft.Colors.LIGHT_BLUE_100 if idx in _selected_rows
+                        else None
+                    ),
+                )
+
                 grid_column.controls.append(
                     ft.Container(
                         content=ft.Row(
                             [
+                                row_num_cell,
                                 _cell_tf(
-                                    row_data["ticker"], 130,
+                                    row_data["ticker"], 120,
                                     row_idx=idx, col="ticker",
                                 ),
                                 _cell_tf(
@@ -831,53 +862,30 @@ def main(page: ft.Page):
                             ],
                             spacing=0,
                         ),
-                        bgcolor=row_bg,
+                        bgcolor=_row_bg(idx),
                     )
                 )
 
             _update_weight_total()
             page.update()
 
-        # ── cell event handlers ────────────────────────────────────────
-        _COL_ORDER = ["ticker", "type", "amount"]
+        # ── focus tracking ─────────────────────────────────────────────
+        def _on_cell_focus(row_idx: int, col: str):
+            _focused_cell["row"] = row_idx
+            _focused_cell["col"] = col
 
-        def _on_cell_change(idx: int, col: str, value: str):
-            """Detect a multi-cell paste (tabs / newlines) in *any* cell
-            and distribute the data across columns and rows like Excel."""
-            if "\t" not in value and "\n" not in value:
-                return  # normal single-cell keystroke — handled by on_blur
-
-            col_start = _COL_ORDER.index(col) if col in _COL_ORDER else 0
-            lines = value.replace("\r", "").split("\n")
-
-            for li, line in enumerate(lines):
-                if not line.strip():
-                    continue
-                parts = line.split("\t") if "\t" in line else line.split()
-                target_row = idx + li
-                while target_row >= len(grid_rows):
-                    grid_rows.append({"ticker": "", "type": "weight", "amount": ""})
-                for pi, part in enumerate(parts):
-                    ci = col_start + pi
-                    if ci >= len(_COL_ORDER):
-                        break
-                    col_name = _COL_ORDER[ci]
-                    val = part.strip()
-                    if col_name == "ticker":
-                        grid_rows[target_row]["ticker"] = val.upper()
-                    elif col_name == "type":
-                        v = val.lower()
-                        grid_rows[target_row]["type"] = (
-                            v if v in ("weight", "shares", "value") else "weight"
-                        )
-                    elif col_name == "amount":
-                        grid_rows[target_row]["amount"] = val
-
-            _ensure_empty_rows()
+        # ── row selection (click row number) ───────────────────────────
+        def _on_row_click(idx: int):
+            # Simple toggle; no shift-click detection in Flet Container click
+            if idx in _selected_rows:
+                _selected_rows.discard(idx)
+            else:
+                _selected_rows.add(idx)
+            _last_clicked_row["idx"] = idx
             _rebuild_grid()
 
+        # ── cell blur (persist single-cell edits) ─────────────────────
         def _on_cell_blur(idx: int, col: str, value: str):
-            """Persist a cell edit back into grid_rows on blur."""
             if idx >= len(grid_rows):
                 return
             if col == "ticker":
@@ -889,7 +897,6 @@ def main(page: ft.Page):
                 )
             elif col == "amount":
                 grid_rows[idx]["amount"] = value.strip()
-
             _ensure_empty_rows()
             _update_weight_total()
             page.update()
@@ -897,68 +904,114 @@ def main(page: ft.Page):
         def _delete_row(idx: int):
             if idx < len(grid_rows):
                 grid_rows.pop(idx)
+                _selected_rows.discard(idx)
+                # Shift selection indices above the deleted row
+                new_sel = {(s - 1 if s > idx else s) for s in _selected_rows if s != idx}
+                _selected_rows.clear()
+                _selected_rows.update(new_sel)
                 _ensure_empty_rows()
                 _rebuild_grid()
+
+        # ── clipboard paste (Ctrl+V) ──────────────────────────────────
+        def _distribute_paste(text: str, start_row: int, start_col: str):
+            """Parse TSV/space-separated text and fill the grid starting
+            from (start_row, start_col), exactly like Excel paste."""
+            col_start = (
+                _COL_ORDER.index(start_col)
+                if start_col in _COL_ORDER else 0
+            )
+            lines = text.replace("\r", "").split("\n")
+            for li, line in enumerate(lines):
+                if not line.strip():
+                    continue
+                parts = line.split("\t") if "\t" in line else line.split()
+                target_row = start_row + li
+                while target_row >= len(grid_rows):
+                    grid_rows.append({
+                        "ticker": "", "type": "weight", "amount": "",
+                    })
+                for pi, part in enumerate(parts):
+                    ci = col_start + pi
+                    if ci >= len(_COL_ORDER):
+                        break
+                    col_name = _COL_ORDER[ci]
+                    val = part.strip()
+                    if col_name == "ticker":
+                        grid_rows[target_row]["ticker"] = val.upper()
+                    elif col_name == "type":
+                        v = val.lower()
+                        grid_rows[target_row]["type"] = (
+                            v if v in ("weight", "shares", "value")
+                            else "weight"
+                        )
+                    elif col_name == "amount":
+                        grid_rows[target_row]["amount"] = val
+            _ensure_empty_rows()
+            _rebuild_grid()
+
+        # ── keyboard handler (Ctrl+V / Ctrl+C / Ctrl+A) ───────────────
+        _prev_kb_handler = page.on_keyboard_event  # save existing handler
+
+        async def _grid_keyboard_handler(e: ft.KeyboardEvent):
+            if e.ctrl and e.key.lower() == "v":
+                # ── PASTE ──────────────────────────────────────────────
+                try:
+                    text = await page.clipboard.get()
+                except Exception:
+                    return
+                if text and text.strip():
+                    _distribute_paste(
+                        text,
+                        _focused_cell["row"],
+                        _focused_cell["col"],
+                    )
+
+            elif e.ctrl and e.key.lower() == "c":
+                # ── COPY selected rows (or all filled rows) ───────────
+                rows_to_copy: list[int] = sorted(_selected_rows) if _selected_rows else [
+                    i for i, r in enumerate(grid_rows) if r["ticker"].strip()
+                ]
+                if not rows_to_copy:
+                    return
+                lines: list[str] = []
+                for i in rows_to_copy:
+                    r = grid_rows[i]
+                    lines.append(f"{r['ticker']}\t{r['type']}\t{r['amount']}")
+                try:
+                    await page.clipboard.set("\n".join(lines))
+                    _snack(f"Copied {len(lines)} rows")
+                except Exception:
+                    pass
+
+            elif e.ctrl and e.key.lower() == "a":
+                # ── SELECT ALL filled rows ─────────────────────────────
+                _selected_rows.clear()
+                for i, r in enumerate(grid_rows):
+                    if r["ticker"].strip():
+                        _selected_rows.add(i)
+                _rebuild_grid()
+
+        page.on_keyboard_event = _grid_keyboard_handler
 
         # ── toolbar buttons ────────────────────────────────────────────
         def _add_row(_):
             grid_rows.append({"ticker": "", "type": "weight", "amount": ""})
             _rebuild_grid()
 
-        async def _paste_from_clipboard(_):
-            """Read the system clipboard and insert rows."""
-            try:
-                text = await page.clipboard.get()
-            except Exception:
-                _snack("Could not read clipboard")
-                return
-            if not text or not text.strip():
-                _snack("Clipboard is empty")
-                return
-
-            imported = 0
-            errors: list[str] = []
-            for line_num, line in enumerate(text.strip().split("\n"), 1):
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split("\t") if "\t" in line else line.split()
-                if len(parts) < 3:
-                    errors.append(f"Line {line_num}: need 3 fields")
-                    continue
-                ticker = parts[0].strip().upper()
-                mode = parts[1].strip().lower()
-                amount_str = parts[2].strip()
-                if mode not in ("weight", "shares", "value"):
-                    errors.append(f"Line {line_num}: invalid type '{mode}'")
-                    continue
-
-                # Fill first empty row, or append
-                placed = False
-                for r in grid_rows:
-                    if not r["ticker"].strip():
-                        r["ticker"] = ticker
-                        r["type"] = mode
-                        r["amount"] = amount_str
-                        placed = True
-                        break
-                if not placed:
-                    grid_rows.append({
-                        "ticker": ticker, "type": mode, "amount": amount_str,
-                    })
-                imported += 1
-
-            _ensure_empty_rows()
+        def _select_all(_):
+            _selected_rows.clear()
+            for i, r in enumerate(grid_rows):
+                if r["ticker"].strip():
+                    _selected_rows.add(i)
             _rebuild_grid()
-            if errors:
-                _snack(
-                    f"Imported {imported}. Errors: " + "; ".join(errors[:3])
-                )
-            elif imported:
-                _snack(f"Imported {imported} entries")
+
+        def _deselect_all(_):
+            _selected_rows.clear()
+            _rebuild_grid()
 
         def _clear_all(_):
             grid_rows.clear()
+            _selected_rows.clear()
             _ensure_empty_rows()
             _rebuild_grid()
 
@@ -966,10 +1019,13 @@ def main(page: ft.Page):
             icon=ft.Icons.ADD_CIRCLE, icon_color=ft.Colors.GREEN_700,
             tooltip="Add row", on_click=_add_row,
         )
-        paste_btn = ft.IconButton(
-            icon=ft.Icons.CONTENT_PASTE, icon_color=ft.Colors.BLUE_700,
-            tooltip="Paste from clipboard  (Ticker  Type  Amount)",
-            on_click=_paste_from_clipboard,
+        select_all_btn = ft.IconButton(
+            icon=ft.Icons.SELECT_ALL, icon_color=ft.Colors.BLUE_700,
+            tooltip="Select all rows (for copy)", on_click=_select_all,
+        )
+        deselect_btn = ft.IconButton(
+            icon=ft.Icons.DESELECT, icon_color=ft.Colors.GREY_600,
+            tooltip="Deselect all", on_click=_deselect_all,
         )
         clear_btn = ft.IconButton(
             icon=ft.Icons.DELETE_SWEEP, icon_color=ft.Colors.RED_400,
@@ -979,6 +1035,10 @@ def main(page: ft.Page):
         _rebuild_grid()
 
         # ── save handler ───────────────────────────────────────────────
+        def _restore_kb_handler():
+            """Restore the previous keyboard handler when the dialog closes."""
+            page.on_keyboard_event = _prev_kb_handler
+
         def save(_):
             # Collect filled rows from the grid
             table_portfolio: dict[str, dict] = {}
@@ -1048,8 +1108,13 @@ def main(page: ft.Page):
                 "risk_free_rate": rf,
                 "initial_capital": cap,
             }
+            _restore_kb_handler()
             _pop()
             _snack("Backtest config updated")
+
+        def _cancel(_):
+            _restore_kb_handler()
+            _pop()
 
         _show(ft.AlertDialog(
             modal=True,
@@ -1062,8 +1127,14 @@ def main(page: ft.Page):
                     output_tf,
                     ft.Divider(height=1),
                     ft.Text("Portfolio", weight=ft.FontWeight.BOLD, size=14),
+                    ft.Text(
+                        "Click cells to edit  •  Ctrl+V to paste  •  "
+                        "Click row # to select  •  Ctrl+C to copy  •  "
+                        "Ctrl+A select all",
+                        size=10, color=ft.Colors.GREY_600,
+                    ),
                     ft.Row(
-                        [add_row_btn, paste_btn, clear_btn],
+                        [add_row_btn, select_all_btn, deselect_btn, clear_btn],
                         spacing=0,
                     ),
                     ft.Container(
@@ -1074,12 +1145,12 @@ def main(page: ft.Page):
                     weight_total_text,
                 ],
                 scroll=ft.ScrollMode.AUTO,
-                width=520,
-                height=580,
+                width=540,
+                height=620,
                 spacing=8,
             ),
             actions=[
-                ft.TextButton("Cancel", on_click=lambda _: _pop()),
+                ft.TextButton("Cancel", on_click=_cancel),
                 ft.Button("Save", on_click=save),
             ],
         ))
