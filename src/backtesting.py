@@ -90,7 +90,8 @@ def resolve_portfolio_allocations(
         * **portfolio_weights** – ``dict[str, float]`` normalised weights
           that sum to 1.0.
         * **effective_capital** – the total capital implied by the
-          allocations (equals *initial_capital* when provided).
+          resolved allocations (may differ from *initial_capital*
+          depending on the input configuration).
         * **warnings** – list of human-readable warning strings.
     """
     weight_entries: dict[str, float] = {}   # ticker → weight fraction
