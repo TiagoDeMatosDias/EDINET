@@ -4,7 +4,7 @@
       "enabled": false,
       "overwrite": false
     },
-    "download_documents": {
+    "populate_company_info": {
       "enabled": false,
       "overwrite": false
     },
@@ -12,7 +12,7 @@
       "enabled": false,
       "overwrite": true
     },
-    "populate_company_info": {
+    "download_documents": {
       "enabled": false,
       "overwrite": false
     },
@@ -37,7 +37,7 @@
       "overwrite": false
     },
     "Multivariate_Regression": {
-      "enabled": false,
+      "enabled": true,
       "overwrite": false
     },
     "backtest": {
