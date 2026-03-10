@@ -132,13 +132,16 @@ def write_results_to_file(
         # --- Scoring Query ---
         f.write("---" + " Scoring Query ---" + "\n")
 
-        f.write(f"( " + "\n")
+        f.write("( " + "\n")
+        terms = []
         for var, coef in results.params.items():
             c = round(coef, 4)
             if var == "const":
-                f.write(f"{c} +" + "\n")
+                terms.append(f"{c}")
             else:
-                f.write(f"{var} * {c} +" + "\n")
+                terms.append(f"{var} * {c}")
+        if terms:
+            f.write(" +\n".join(terms) + "\n")
         f.write(")" + "\n")
 
 
