@@ -1,6 +1,5 @@
 import logging
 import sys
-import threading
 
 import flet as ft
 
@@ -27,7 +26,7 @@ def create_run_controls(
         filled=True,
     )
 
-    progress = ft.ProgressBar(visible=False)
+    progress = ft.ProgressBar(visible=False, value=0)
 
     class _UILogHandler(logging.Handler):
         def emit(self, record):
@@ -44,6 +43,7 @@ def create_run_controls(
         is_running[0] = True
         run_btn.disabled = True
         progress.visible = True
+        progress.value = None  # Indeterminate progress
         log_output.value = ""
         page.update()
 
@@ -68,6 +68,8 @@ def create_run_controls(
                 from src.logger import setup_logging
                 setup_logging()
 
+                # Add UI handler AFTER setup_logging, because
+                # setup_logging removes all existing handlers.
                 root_logger = logging.getLogger()
                 root_logger.addHandler(handler)
                 handler.setLevel(logging.INFO)
@@ -86,9 +88,10 @@ def create_run_controls(
                 is_running[0] = False
                 run_btn.disabled = False
                 progress.visible = False
+                progress.value = 0
                 page.update()
 
-        threading.Thread(target=_do_run, daemon=True).start()
+        page.run_thread(_do_run)
 
     run_btn = ft.Button(
         "Run",
