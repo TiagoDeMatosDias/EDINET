@@ -615,11 +615,8 @@ def calculate_dividends_by_company_year(
     df["Year"] = df["periodEnd"].dt.year
 
     if shares_purchased:
-        df["DividendCash"] = df.apply(
-            lambda row: row["PerShare_Dividends"]
-            * shares_purchased.get(row["Ticker"], 0.0),
-            axis=1,
-        )
+        shares_series = df["Ticker"].map(shares_purchased).fillna(0.0)
+        df["DividendCash"] = df["PerShare_Dividends"] * shares_series
         value_col = "DividendCash"
     else:
         value_col = "PerShare_Dividends"
