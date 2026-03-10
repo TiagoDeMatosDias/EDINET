@@ -28,6 +28,148 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Portfolio allocation modes
+# ---------------------------------------------------------------------------
+
+# Each portfolio entry can be:
+#   - a plain float  (backward compat, treated as a weight fraction)
+#   - a dict with {"mode": "weight"|"shares"|"value", "value": <number>}
+ALLOCATION_MODES = ("weight", "shares", "value")
+
+
+def _normalise_portfolio_entry(
+    spec,
+) -> tuple[str, float]:
+    """Return ``(mode, numeric_value)`` from a portfolio entry.
+
+    Handles both the legacy plain-float format (treated as ``weight``) and the
+    new ``{"mode": ..., "value": ...}`` format.
+    """
+    if isinstance(spec, (int, float)):
+        return ("weight", float(spec))
+    if isinstance(spec, dict):
+        mode = spec.get("mode", "weight")
+        val = float(spec.get("value", 0))
+        if mode not in ALLOCATION_MODES:
+            logger.warning(
+                "Unknown allocation mode '%s', falling back to 'weight'.",
+                mode,
+            )
+            mode = "weight"
+        return (mode, val)
+    raise ValueError(f"Unexpected portfolio entry type: {type(spec)}")
+
+
+def resolve_portfolio_allocations(
+    portfolio_config: dict,
+    start_prices: dict[str, float],
+    initial_capital: float = 0.0,
+) -> tuple[dict[str, float], float, list[str]]:
+    """Resolve a mixed-mode portfolio config into normalised weights.
+
+    Supports three allocation modes per ticker:
+
+    * ``weight`` – fraction of total portfolio (e.g. 0.5 = 50 %).
+    * ``shares`` – fixed number of shares (requires start price).
+    * ``value``  – fixed currency amount (e.g. 10 000 JPY).
+
+    When the portfolio contains *only* weight-mode entries **and** no
+    ``initial_capital`` is provided, the weights are returned as-is
+    (classic behaviour).  Otherwise all allocations are converted to
+    capital amounts and then normalised.
+
+    Args:
+        portfolio_config: Mapping of ticker → allocation spec.
+        start_prices: Mapping of ticker → opening price on the first day.
+        initial_capital: User-specified starting capital.  ``0`` means
+            "derive automatically".
+
+    Returns:
+        A 3-tuple ``(portfolio_weights, effective_capital, warnings)``:
+
+        * **portfolio_weights** – ``dict[str, float]`` normalised weights
+          that sum to 1.0.
+        * **effective_capital** – the total capital implied by the
+          resolved allocations (may differ from *initial_capital*
+          depending on the input configuration).
+        * **warnings** – list of human-readable warning strings.
+    """
+    weight_entries: dict[str, float] = {}   # ticker → weight fraction
+    fixed_entries: dict[str, float] = {}    # ticker → capital amount
+    warnings: list[str] = []
+
+    for ticker, spec in portfolio_config.items():
+        mode, val = _normalise_portfolio_entry(spec)
+
+        if mode == "weight":
+            weight_entries[ticker] = val
+        elif mode == "shares":
+            price = start_prices.get(ticker, 0.0)
+            if price > 0:
+                fixed_entries[ticker] = val * price
+            else:
+                warnings.append(
+                    f"No start-price data for '{ticker}' — "
+                    f"cannot convert {val:.0f} shares to capital; skipping."
+                )
+        elif mode == "value":
+            fixed_entries[ticker] = val
+
+    total_weight_frac = sum(weight_entries.values())
+    total_fixed_capital = sum(fixed_entries.values())
+
+    # ── Fast path: pure weight-only portfolio, no initial_capital ─────
+    all_weight_only = (not fixed_entries)
+    if all_weight_only and initial_capital <= 0:
+        # Classic behaviour — return weights directly, normalised
+        w_sum = total_weight_frac or 1.0
+        weights = {t: w / w_sum for t, w in weight_entries.items()}
+        return weights, 0.0, warnings
+
+    # ── Mixed or fixed allocations: convert everything to capital ─────
+    if initial_capital > 0:
+        effective_capital = initial_capital
+    elif total_weight_frac < 1.0 and total_fixed_capital > 0:
+        # Derive: weight_frac * C + fixed = C  →  C = fixed / (1 - W)
+        effective_capital = total_fixed_capital / (1.0 - total_weight_frac)
+    elif total_fixed_capital > 0:
+        # Weights already ≥ 100 %, treat fixed as additional
+        effective_capital = total_fixed_capital
+        if total_weight_frac > 0:
+            warnings.append(
+                f"Weight-mode tickers sum to {total_weight_frac * 100:.1f}% "
+                f"(≥ 100 %); fixed allocations are added on top."
+            )
+    else:
+        # Only weight-mode with explicit initial_capital=0 — use nominal
+        effective_capital = 1_000_000.0
+
+    allocations: dict[str, float] = {}
+    for ticker, frac in weight_entries.items():
+        allocations[ticker] = frac * effective_capital
+    for ticker, cap in fixed_entries.items():
+        allocations[ticker] = cap
+
+    total_allocated = sum(allocations.values())
+
+    if initial_capital > 0 and abs(total_allocated - initial_capital) > 0.01:
+        warnings.append(
+            f"Total allocated capital ({total_allocated:,.0f}) differs from "
+            f"initial capital ({initial_capital:,.0f}). "
+            f"Weights will be normalised to the allocated total."
+        )
+
+    if total_allocated > 0:
+        portfolio_weights = {
+            t: c / total_allocated for t, c in allocations.items()
+        }
+    else:
+        portfolio_weights = {}
+
+    return portfolio_weights, total_allocated, warnings
+
+
+# ---------------------------------------------------------------------------
 # Data retrieval
 # ---------------------------------------------------------------------------
 
@@ -187,6 +329,11 @@ def calculate_portfolio_returns(
     # Portfolio value = weighted sum of normalised price series
     portfolio_value = normalised.mul(weights, axis=1).sum(axis=1)
 
+    # Save the price-only initial value (before adding dividends) so that
+    # cumulative_return is always measured relative to the original
+    # investment, not an inflated base that includes day-0 dividend cash.
+    initial_portfolio_value = portfolio_value.iloc[0]
+
     # Add cumulative dividend cash flows (held as cash, not reinvested)
     if dividends_df is not None and not dividends_df.empty:
         div_cash = pd.Series(0.0, index=portfolio_value.index)
@@ -204,7 +351,7 @@ def calculate_portfolio_returns(
 
     # Derive daily returns and cumulative return from the value series
     daily_returns = portfolio_value.pct_change()
-    cumulative_return = portfolio_value / portfolio_value.iloc[0]
+    cumulative_return = portfolio_value / initial_portfolio_value
 
     result = pd.DataFrame(
         {
@@ -359,6 +506,7 @@ def calculate_per_company_returns(
             rec["capital_invested"] = capital_invested
             rec["shares_purchased"] = shares
             rec["dividends_received"] = shares * (div_return * start_price)
+            rec["market_value"] = shares * end_price
 
         records.append(rec)
 
@@ -370,7 +518,8 @@ def calculate_per_company_returns(
         "weight", "weighted_price", "weighted_dividend", "weighted_total",
     ]
     if initial_capital > 0:
-        cols += ["capital_invested", "shares_purchased", "dividends_received"]
+        cols += ["capital_invested", "shares_purchased", "dividends_received",
+                 "market_value"]
     return pd.DataFrame(columns=cols)
 
 
@@ -397,11 +546,13 @@ def calculate_yearly_returns(
             columns=["Year", "Price Return", "Dividend Return", "Total Return"]
         )
 
+    div_df = decomposition.get("dividend_only")
+
     years = sorted(total_df.index.year.unique())
     records: list[dict] = []
 
     prev_total_cum = 1.0
-    prev_price_cum = 1.0
+    prev_div_cum = 1.0
 
     for year in years:
         year_total = total_df[total_df.index.year == year]
@@ -411,16 +562,19 @@ def calculate_yearly_returns(
         end_total_cum = float(year_total["cumulative_return"].iloc[-1])
         total_ret = end_total_cum / prev_total_cum - 1
 
-        # Price return for this year
-        price_ret = total_ret  # fallback
-        if price_df is not None and not price_df.empty:
-            year_price = price_df[price_df.index.year == year]
-            if not year_price.empty:
-                end_price_cum = float(year_price["cumulative_return"].iloc[-1])
-                price_ret = end_price_cum / prev_price_cum - 1
-                prev_price_cum = end_price_cum
+        # Dividend contribution: new dividend cash received this year,
+        # expressed as a return relative to portfolio value at year start.
+        div_ret = 0.0
+        if div_df is not None and not div_df.empty:
+            year_div = div_df[div_df.index.year == year]
+            if not year_div.empty:
+                end_div_cum = float(year_div["cumulative_return"].iloc[-1])
+                new_div_cash = end_div_cum - prev_div_cum
+                if prev_total_cum > 0:
+                    div_ret = new_div_cash / prev_total_cum
+                prev_div_cum = end_div_cum
 
-        div_ret = total_ret - price_ret
+        price_ret = total_ret - div_ret
         prev_total_cum = end_total_cum
 
         records.append({
@@ -435,16 +589,25 @@ def calculate_yearly_returns(
 
 def calculate_dividends_by_company_year(
     dividends_df: pd.DataFrame | None,
+    shares_purchased: dict[str, float] | None = None,
 ) -> pd.DataFrame:
-    """Pivot per-share dividends into a Year × Ticker table.
+    """Pivot dividends into a Year × Ticker table.
+
+    When *shares_purchased* is provided the values represent total cash
+    dividends received (per-share dividend × shares held).  Otherwise the
+    raw per-share dividend amounts are shown.
 
     Args:
         dividends_df: DataFrame with ``Ticker``, ``periodEnd``,
             ``PerShare_Dividends``.
+        shares_purchased: Optional mapping of ticker → number of shares
+            held.  When given, each per-share dividend is multiplied by
+            the corresponding share count so that values (and the
+            ``Total`` column) represent actual cash received.
 
     Returns:
         DataFrame with years as the index, one column per ticker, and a
-        ``Total`` column.  Values are summed per-share dividends for the year.
+        ``Total`` column.
     """
     if dividends_df is None or dividends_df.empty:
         return pd.DataFrame()
@@ -452,10 +615,17 @@ def calculate_dividends_by_company_year(
     df = dividends_df.copy()
     df["Year"] = df["periodEnd"].dt.year
 
+    if shares_purchased:
+        shares_series = df["Ticker"].map(shares_purchased).fillna(0.0)
+        df["DividendCash"] = df["PerShare_Dividends"] * shares_series
+        value_col = "DividendCash"
+    else:
+        value_col = "PerShare_Dividends"
+
     pivot = df.pivot_table(
         index="Year",
         columns="Ticker",
-        values="PerShare_Dividends",
+        values=value_col,
         aggfunc="sum",
         fill_value=0.0,
     )
@@ -723,31 +893,78 @@ def generate_report(
 
     # ── Per-company breakdown ─────────────────────────────────────────
     if per_company is not None and not per_company.empty:
+        has_capital = "market_value" in per_company.columns
         lines.append("")
         lines.append("--- Per-Company Breakdown ---")
-        header = (
-            f"{'Ticker':<10} {'Weight':>8} {'Price':>10} "
-            f"{'Dividend':>10} {'Total':>10} {'Wtd Cont.':>10}"
-        )
-        lines.append(header)
-        lines.append("-" * len(header))
-        for _, row in per_company.iterrows():
-            lines.append(
-                f"{row['Ticker']:<10} {row['weight']:>7.1%} "
-                f"{row['price_return']:>+9.2%} "
-                f"{row['dividend_return']:>+9.2%} "
-                f"{row['total_return']:>+9.2%} "
-                f"{row['weighted_total']:>+9.2%}"
+
+        if has_capital:
+            header = (
+                f"{'Ticker':<10} {'Weight':>8} "
+                f"{'Start':>10} {'Cost Basis':>14} "
+                f"{'End':>10} {'Mkt Value':>14} "
+                f"{'Cap Gains':>14} {'Cum Divs':>12} {'Total Ret':>14} "
+                f"{'Price':>10} {'Dividend':>10} {'Total':>10} {'Wtd Cont.':>10}"
             )
-        # Totals row
-        lines.append("-" * len(header))
-        lines.append(
-            f"{'TOTAL':<10} {per_company['weight'].sum():>7.1%} "
-            f"{per_company['weighted_price'].sum():>+9.2%} "
-            f"{per_company['weighted_dividend'].sum():>+9.2%} "
-            f"{per_company['weighted_total'].sum():>+9.2%} "
-            f"{per_company['weighted_total'].sum():>+9.2%}"
-        )
+            lines.append(header)
+            lines.append("-" * len(header))
+            for _, row in per_company.iterrows():
+                cap_gains = row['market_value'] - row['capital_invested']
+                total_ret_cash = cap_gains + row['dividends_received']
+                lines.append(
+                    f"{row['Ticker']:<10} {row['weight']:>7.1%} "
+                    f"{row['start_price']:>10,.2f} "
+                    f"{row['capital_invested']:>14,.0f} "
+                    f"{row['end_price']:>10,.2f} "
+                    f"{row['market_value']:>14,.0f} "
+                    f"{cap_gains:>+14,.0f} "
+                    f"{row['dividends_received']:>12,.0f} "
+                    f"{total_ret_cash:>+14,.0f} "
+                    f"{row['price_return']:>+9.2%} "
+                    f"{row['dividend_return']:>+9.2%} "
+                    f"{row['total_return']:>+9.2%} "
+                    f"{row['weighted_total']:>+9.2%}"
+                )
+            lines.append("-" * len(header))
+            total_cap_gains = per_company['market_value'].sum() - per_company['capital_invested'].sum()
+            total_divs = per_company['dividends_received'].sum()
+            total_ret_cash_all = total_cap_gains + total_divs
+            lines.append(
+                f"{'TOTAL':<10} {per_company['weight'].sum():>7.1%} "
+                f"{'':>10} "
+                f"{per_company['capital_invested'].sum():>14,.0f} "
+                f"{'':>10} "
+                f"{per_company['market_value'].sum():>14,.0f} "
+                f"{total_cap_gains:>+14,.0f} "
+                f"{total_divs:>12,.0f} "
+                f"{total_ret_cash_all:>+14,.0f} "
+                f"{per_company['weighted_price'].sum():>+9.2%} "
+                f"{per_company['weighted_dividend'].sum():>+9.2%} "
+                f"{per_company['weighted_total'].sum():>+9.2%} "
+                f"{per_company['weighted_total'].sum():>+9.2%}"
+            )
+        else:
+            header = (
+                f"{'Ticker':<10} {'Weight':>8} {'Price':>10} "
+                f"{'Dividend':>10} {'Total':>10} {'Wtd Cont.':>10}"
+            )
+            lines.append(header)
+            lines.append("-" * len(header))
+            for _, row in per_company.iterrows():
+                lines.append(
+                    f"{row['Ticker']:<10} {row['weight']:>7.1%} "
+                    f"{row['price_return']:>+9.2%} "
+                    f"{row['dividend_return']:>+9.2%} "
+                    f"{row['total_return']:>+9.2%} "
+                    f"{row['weighted_total']:>+9.2%}"
+                )
+            lines.append("-" * len(header))
+            lines.append(
+                f"{'TOTAL':<10} {per_company['weight'].sum():>7.1%} "
+                f"{per_company['weighted_price'].sum():>+9.2%} "
+                f"{per_company['weighted_dividend'].sum():>+9.2%} "
+                f"{per_company['weighted_total'].sum():>+9.2%} "
+                f"{per_company['weighted_total'].sum():>+9.2%}"
+            )
 
     # ── Yearly returns ────────────────────────────────────────────────
     if yearly_returns is not None and not yearly_returns.empty:
@@ -782,8 +999,8 @@ def generate_report(
         for year, row in dividends_by_year.iterrows():
             line = f"{int(year):<6}"
             for col in ticker_cols:
-                line += f" {row[col]:>{col_w}.2f}"
-            line += f" {row['Total']:>{col_w}.2f}"
+                line += f" {row[col]:>{col_w},.2f}"
+            line += f" {row['Total']:>{col_w},.2f}"
             lines.append(line)
 
     lines.append("")
@@ -1102,7 +1319,7 @@ def run_backtest(
     """
     start_date = backtesting_config.get("start_date")
     end_date = backtesting_config.get("end_date")
-    portfolio_weights = backtesting_config.get("portfolio", {})
+    portfolio_config = backtesting_config.get("portfolio", {})
     benchmark_ticker = backtesting_config.get("benchmark_ticker")
     output_file = backtesting_config.get(
         "output_file", "data/backtest_results/backtest_report.txt"
@@ -1116,21 +1333,39 @@ def run_backtest(
             "Backtesting config must include 'start_date' and 'end_date'."
         )
 
-    if not portfolio_weights:
+    if not portfolio_config:
         raise ValueError(
             "Backtesting config 'portfolio' is empty. "
-            "Add at least one ticker with a weight (e.g. {\"7203\": 0.5, \"6758\": 0.5})."
+            "Add at least one ticker with an allocation "
+            "(e.g. {\"7203\": 0.5} or "
+            "{\"7203\": {\"mode\": \"shares\", \"value\": 100}})."
         )
 
-    weight_sum = sum(portfolio_weights.values())
-    if abs(weight_sum - 1.0) > 0.01:
-        raise ValueError(
-            f"Portfolio weights must sum to 1.0 (100%), "
-            f"but they sum to {weight_sum:.4f} ({weight_sum * 100:.1f}%). "
-            f"Adjust the weights and try again."
-        )
+    # Detect whether the portfolio uses only plain weight-mode entries
+    # so we can provide the legacy strict validation as a warning.
+    has_non_weight = any(
+        isinstance(v, dict) and v.get("mode", "weight") != "weight"
+        for v in portfolio_config.values()
+    )
 
-    tickers = list(portfolio_weights.keys())
+    if not has_non_weight:
+        # Legacy / pure-weight portfolio — validate sum (warning only)
+        raw_weights = {
+            t: float(v) if isinstance(v, (int, float))
+            else float(v.get("value", 0))
+            for t, v in portfolio_config.items()
+        }
+        weight_sum = sum(raw_weights.values())
+        if abs(weight_sum - 1.0) > 0.01:
+            logger.warning(
+                "Portfolio weights sum to %.4f (%.1f%%), not 100%%. "
+                "Weights will be normalised automatically.",
+                weight_sum, weight_sum * 100,
+            )
+
+    # Portfolio weights will be resolved after price data is available.
+    # For now, extract ticker symbols so we can fetch prices.
+    tickers = list(portfolio_config.keys())
     all_tickers = list(tickers)
     if benchmark_ticker and benchmark_ticker not in all_tickers:
         all_tickers.append(benchmark_ticker)
@@ -1158,6 +1393,29 @@ def run_backtest(
             )
             generate_report(empty_metrics, output_file)
             return empty_metrics
+
+        # 1b. Resolve mixed portfolio allocations into weights
+        start_prices: dict[str, float] = {}
+        for tk in tickers:
+            tk_prices = prices_df[prices_df["Ticker"] == tk].sort_values("Date")
+            if not tk_prices.empty:
+                start_prices[tk] = float(tk_prices["Price"].iloc[0])
+
+        portfolio_weights, effective_capital, alloc_warnings = (
+            resolve_portfolio_allocations(
+                portfolio_config, start_prices, initial_capital,
+            )
+        )
+        for w in alloc_warnings:
+            logger.warning(w)
+
+        # Use the resolved effective capital when one was derived and the
+        # user did not supply an explicit value.
+        if effective_capital > 0 and initial_capital <= 0:
+            initial_capital = effective_capital
+        elif effective_capital > 0 and initial_capital > 0:
+            # Keep user-supplied capital, but log if it differs
+            pass  # warning already emitted by resolve_portfolio_allocations
 
         # 2. Fetch dividends (for portfolio tickers)
         dividends_df = get_dividend_data(
@@ -1198,8 +1456,15 @@ def run_backtest(
         # 5a. Yearly returns breakdown
         yearly_returns = calculate_yearly_returns(decomposition)
 
-        # 5b. Dividends by company by year
-        dividends_by_year = calculate_dividends_by_company_year(dividends_df)
+        # 5b. Dividends by company by year (use cash amounts when possible)
+        shares_map = None
+        if per_company is not None and "shares_purchased" in per_company.columns:
+            shares_map = dict(
+                zip(per_company["Ticker"], per_company["shares_purchased"])
+            )
+        dividends_by_year = calculate_dividends_by_company_year(
+            dividends_df, shares_purchased=shares_map,
+        )
 
         # 6. Benchmark returns (with dividend decomposition)
         benchmark_df = None

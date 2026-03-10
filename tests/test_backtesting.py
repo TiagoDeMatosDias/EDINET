@@ -40,6 +40,7 @@ from src.backtesting import (
     generate_report,
     generate_backtest_charts,
     run_backtest,
+    resolve_portfolio_allocations,
 )
 
 
@@ -441,7 +442,8 @@ class TestCalculatePerCompanyReturns(unittest.TestCase):
         result = calculate_per_company_returns(
             prices, {"A": 0.6, "B": 0.4}, initial_capital=1_000_000
         )
-        for col in ("capital_invested", "shares_purchased", "dividends_received"):
+        for col in ("capital_invested", "shares_purchased", "dividends_received",
+                     "market_value"):
             self.assertIn(col, result.columns)
 
     def test_shares_purchased(self):
@@ -457,6 +459,12 @@ class TestCalculatePerCompanyReturns(unittest.TestCase):
         # B: 40% of 1M = 400,000 / 200 = 2,000 shares
         self.assertAlmostEqual(b_row["capital_invested"], 400_000, places=0)
         self.assertAlmostEqual(b_row["shares_purchased"], 2_000, places=0)
+
+        # Market value = shares × end_price
+        # A: 6,000 × 120 = 720,000
+        self.assertAlmostEqual(a_row["market_value"], 720_000, places=0)
+        # B: 2,000 × 220 = 440,000
+        self.assertAlmostEqual(b_row["market_value"], 440_000, places=0)
 
     def test_dividends_received(self):
         prices = self._make_prices_df()
@@ -483,6 +491,22 @@ class TestCalculatePerCompanyReturns(unittest.TestCase):
         result = calculate_per_company_returns(prices, {"A": 1.0})
         self.assertTrue(result.empty)
 
+    def test_dividend_on_first_day_still_positive(self):
+        """Dividends with periodEnd on the first price date must still
+        produce a total cumulative return >= price-only return."""
+        prices = self._make_prices_df()
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-01"]),  # day 0
+            "PerShare_Dividends": [10.0],
+        })
+        with_div = calculate_portfolio_returns(prices, {"A": 1.0}, dividends)
+        without_div = calculate_portfolio_returns(prices, {"A": 1.0})
+        self.assertGreater(
+            with_div["cumulative_return"].iloc[-1],
+            without_div["cumulative_return"].iloc[-1],
+        )
+
 
 # ---------------------------------------------------------------------------
 # calculate_yearly_returns
@@ -497,8 +521,8 @@ class TestCalculateYearlyReturns(unittest.TestCase):
                 "2025-01-02", "2025-06-01",
             ])
             total = pd.DataFrame({
-                "daily_return": [0.01, 0.005, 0.02, 0.01, -0.005],
-                "cumulative_return": [1.01, 1.015, 1.035, 1.045, 1.040],
+                "daily_return": [0.01, 0.005, 0.02, 0.013, -0.003],
+                "cumulative_return": [1.01, 1.015, 1.035, 1.048, 1.045],
             }, index=dates)
             price_only = pd.DataFrame({
                 "daily_return": [0.01, 0.005, 0.015, 0.008, -0.003],
@@ -515,9 +539,15 @@ class TestCalculateYearlyReturns(unittest.TestCase):
                 "cumulative_return": np.cumprod([1.02, 1.01, 0.995, 1.01]),
             }, index=dates)
 
+        # Derive dividend_only consistently from total - price_only
+        div_contribution = (
+            total["cumulative_return"].values
+            - price_only["cumulative_return"].values
+        )
+        div_daily = np.diff(div_contribution, prepend=0.0)
         div_only = pd.DataFrame({
-            "daily_return": [0.0] * len(dates),
-            "cumulative_return": [1.0] * len(dates),
+            "daily_return": div_daily,
+            "cumulative_return": 1.0 + div_contribution,
         }, index=dates)
         return {"total": total, "price_only": price_only, "dividend_only": div_only}
 
@@ -558,6 +588,18 @@ class TestCalculateYearlyReturns(unittest.TestCase):
         }
         result = calculate_yearly_returns(decomp)
         self.assertTrue(result.empty)
+
+    def test_yearly_dividend_returns_non_negative(self):
+        """With realistic (non-decreasing) dividend contribution, yearly
+        dividend returns must never be negative."""
+        decomp = self._make_decomposition(multi_year=True)
+        result = calculate_yearly_returns(decomp)
+        for _, row in result.iterrows():
+            self.assertGreaterEqual(
+                row["Dividend Return"], 0.0,
+                f"Dividend return for {int(row['Year'])} is negative: "
+                f"{row['Dividend Return']:.6f}",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +653,32 @@ class TestCalculateDividendsByCompanyYear(unittest.TestCase):
         result = calculate_dividends_by_company_year(dividends)
         self.assertAlmostEqual(result.loc[2024, "A"], 10.0)
         self.assertAlmostEqual(result.loc[2024, "Total"], 10.0)
+
+    def test_with_shares_purchased(self):
+        """When shares_purchased is given, values should be cash amounts."""
+        dividends = pd.DataFrame({
+            "Ticker": ["A", "B"],
+            "periodEnd": pd.to_datetime(["2024-03-01", "2024-06-01"]),
+            "PerShare_Dividends": [5.0, 3.0],
+        })
+        shares = {"A": 100.0, "B": 200.0}  # 100 shares of A, 200 of B
+        result = calculate_dividends_by_company_year(
+            dividends, shares_purchased=shares
+        )
+        # A: 5.0 * 100 = 500, B: 3.0 * 200 = 600
+        self.assertAlmostEqual(result.loc[2024, "A"], 500.0)
+        self.assertAlmostEqual(result.loc[2024, "B"], 600.0)
+        self.assertAlmostEqual(result.loc[2024, "Total"], 1100.0)
+
+    def test_without_shares_shows_per_share(self):
+        """Without shares_purchased, values remain per-share amounts."""
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-03-01"]),
+            "PerShare_Dividends": [5.0],
+        })
+        result = calculate_dividends_by_company_year(dividends)
+        self.assertAlmostEqual(result.loc[2024, "A"], 5.0)
 
 
 # ---------------------------------------------------------------------------
@@ -949,16 +1017,183 @@ class TestRunBacktest(unittest.TestCase):
             run_backtest(config, self.db_path)
         self.assertIn("start_date", str(ctx.exception))
 
-    def test_weights_not_summing_to_one_raises(self):
+    def test_weights_not_summing_to_one_warns_and_normalises(self):
+        """Weights that don't sum to 100% should still run (normalised)."""
         config = {
             "start_date": "2024-01-01",
             "end_date": "2024-01-05",
             "portfolio": {"1001": 0.3, "2002": 0.3},
             "output_file": os.path.join(self.tmp_dir, "report.txt"),
         }
-        with self.assertRaises(ValueError) as ctx:
-            run_backtest(config, self.db_path)
-        self.assertIn("sum to 1.0", str(ctx.exception))
+        # Should NOT raise — weights are auto-normalised
+        metrics = run_backtest(config, self.db_path)
+        self.assertIn("total_return", metrics)
+
+
+# ---------------------------------------------------------------------------
+# resolve_portfolio_allocations
+# ---------------------------------------------------------------------------
+
+class TestResolvePortfolioAllocations(unittest.TestCase):
+    """Tests for the mixed-mode portfolio resolution logic."""
+
+    def test_plain_float_backward_compat(self):
+        """Legacy dict[str, float] format is treated as weight mode."""
+        config = {"A": 0.6, "B": 0.4}
+        weights, cap, warns = resolve_portfolio_allocations(config, {})
+        self.assertAlmostEqual(weights["A"], 0.6)
+        self.assertAlmostEqual(weights["B"], 0.4)
+        self.assertEqual(cap, 0.0)  # no capital derived for pure weight
+        self.assertEqual(warns, [])
+
+    def test_new_weight_format(self):
+        """New dict-of-dict weight entries work like plain floats."""
+        config = {
+            "A": {"mode": "weight", "value": 0.7},
+            "B": {"mode": "weight", "value": 0.3},
+        }
+        weights, cap, warns = resolve_portfolio_allocations(config, {})
+        self.assertAlmostEqual(weights["A"], 0.7)
+        self.assertAlmostEqual(weights["B"], 0.3)
+
+    def test_shares_mode(self):
+        """Shares are converted to capital using start prices."""
+        config = {
+            "A": {"mode": "shares", "value": 100},
+            "B": {"mode": "shares", "value": 200},
+        }
+        prices = {"A": 10.0, "B": 5.0}  # A=1000, B=1000
+        weights, cap, warns = resolve_portfolio_allocations(config, prices)
+        self.assertAlmostEqual(weights["A"], 0.5)
+        self.assertAlmostEqual(weights["B"], 0.5)
+        self.assertAlmostEqual(cap, 2000.0)
+
+    def test_value_mode(self):
+        """Fixed currency amounts are converted to weights."""
+        config = {
+            "A": {"mode": "value", "value": 30000},
+            "B": {"mode": "value", "value": 10000},
+        }
+        weights, cap, warns = resolve_portfolio_allocations(config, {})
+        self.assertAlmostEqual(weights["A"], 0.75)
+        self.assertAlmostEqual(weights["B"], 0.25)
+        self.assertAlmostEqual(cap, 40000.0)
+
+    def test_mixed_weight_and_shares(self):
+        """Weight + shares mix: implied capital derived correctly."""
+        # A = 50% weight, B = 100 shares @ 1000 = 100,000
+        # 50% of total = A, so total = 100,000 / 0.5 = 200,000
+        # A = 100,000, B = 100,000 → each 50%
+        config = {
+            "A": {"mode": "weight", "value": 0.5},
+            "B": {"mode": "shares", "value": 100},
+        }
+        prices = {"B": 1000.0}
+        weights, cap, warns = resolve_portfolio_allocations(config, prices)
+        self.assertAlmostEqual(cap, 200000.0)
+        self.assertAlmostEqual(weights["A"], 0.5)
+        self.assertAlmostEqual(weights["B"], 0.5)
+
+    def test_mixed_weight_shares_value(self):
+        """All three modes combined."""
+        # A = 50% weight, B = 100 shares @ 500, C = 25000 value
+        # Fixed capital = 50,000 + 25,000 = 75,000
+        # 50% means: 0.5 * total = A_capital
+        # total = fixed / (1 - 0.5) = 75,000 / 0.5 = 150,000
+        # A = 75,000, B = 50,000, C = 25,000
+        config = {
+            "A": {"mode": "weight", "value": 0.5},
+            "B": {"mode": "shares", "value": 100},
+            "C": {"mode": "value", "value": 25000},
+        }
+        prices = {"B": 500.0}
+        weights, cap, warns = resolve_portfolio_allocations(config, prices)
+        self.assertAlmostEqual(cap, 150000.0)
+        self.assertAlmostEqual(weights["A"], 75000 / 150000)
+        self.assertAlmostEqual(weights["B"], 50000 / 150000)
+        self.assertAlmostEqual(weights["C"], 25000 / 150000)
+
+    def test_explicit_initial_capital(self):
+        """When initial_capital is given, weight-mode uses it as base."""
+        config = {
+            "A": {"mode": "weight", "value": 0.5},
+            "B": {"mode": "value", "value": 100000},
+        }
+        # With 1M capital: A = 500k, B = 100k → total allocated = 600k
+        weights, cap, warns = resolve_portfolio_allocations(
+            config, {}, initial_capital=1_000_000
+        )
+        self.assertAlmostEqual(weights["A"], 500000 / 600000, places=4)
+        self.assertAlmostEqual(weights["B"], 100000 / 600000, places=4)
+        # Warning about mismatch
+        self.assertTrue(any("differs" in w for w in warns))
+
+    def test_missing_price_for_shares_warns(self):
+        """Shares mode without price data emits a warning and skips."""
+        config = {
+            "A": {"mode": "shares", "value": 100},
+            "B": {"mode": "value", "value": 5000},
+        }
+        weights, cap, warns = resolve_portfolio_allocations(
+            config, {}  # no prices!
+        )
+        self.assertNotIn("A", weights)
+        self.assertIn("B", weights)
+        self.assertTrue(any("No start-price" in w for w in warns))
+
+    def test_run_backtest_with_shares_mode(self):
+        """End-to-end backtest using shares allocation mode."""
+        tmp_dir = tempfile.mkdtemp()
+        db_path = os.path.join(tmp_dir, "test.db")
+        conn = sqlite3.connect(db_path)
+        _seed_prices(conn)
+        _seed_company_info(conn)
+        _seed_ratios(conn)
+        conn.commit()
+        conn.close()
+        try:
+            config = {
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-05",
+                "portfolio": {
+                    "1001": {"mode": "shares", "value": 50},
+                    "2002": {"mode": "shares", "value": 25},
+                },
+                "output_file": os.path.join(tmp_dir, "report.txt"),
+            }
+            metrics = run_backtest(config, db_path)
+            self.assertIn("total_return", metrics)
+            self.assertGreater(metrics["total_return"], 0)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_run_backtest_with_mixed_modes(self):
+        """End-to-end backtest with weight + shares + value."""
+        tmp_dir = tempfile.mkdtemp()
+        db_path = os.path.join(tmp_dir, "test.db")
+        conn = sqlite3.connect(db_path)
+        _seed_prices(conn)
+        _seed_company_info(conn)
+        _seed_ratios(conn)
+        conn.commit()
+        conn.close()
+        try:
+            config = {
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-05",
+                "portfolio": {
+                    "1001": {"mode": "weight", "value": 0.5},
+                    "2002": {"mode": "value", "value": 10000},
+                },
+                "benchmark_ticker": "BENCH",
+                "output_file": os.path.join(tmp_dir, "report.txt"),
+            }
+            metrics = run_backtest(config, db_path)
+            self.assertIn("total_return", metrics)
+            self.assertIn("per_company", metrics)
+            self.assertEqual(len(metrics["per_company"]), 2)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

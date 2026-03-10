@@ -39,13 +39,18 @@ def Run_Model(
         df = pd.read_sql_query(Query, conn)
 
         # --- Data Cleaning ---
+        # Ensure all model variables are numeric (convert from object/string if needed)
+        all_vars = [dependent_variable_df_name] + independent_variables_df_names
+        for col in all_vars:
+            if col in df.columns:
+                # Convert to numeric, coercing errors to NaN
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
         # Replace infinite values with NaN so they can be dropped.
         df_cleaned = df.replace([np.inf, -np.inf], np.nan)
 
-
         # Drop rows with missing values in any of the model's variables.
         # This ensures the regression is run on a complete dataset.
-        all_vars = [dependent_variable_df_name] + independent_variables_df_names
         df_cleaned = df_cleaned.dropna(subset=all_vars)
 
         # drop the edinetCode and PeriodStart columns as they are not needed for regression
@@ -123,6 +128,23 @@ def write_results_to_file(
         # --- Write Query ---
         f.write("---" + " SQL Query ---" + "\n")
         f.write(query.strip() + "\n\n")
+
+        # --- Scoring Query ---
+        f.write("---" + " Scoring Query ---" + "\n")
+
+        f.write("( " + "\n")
+        terms = []
+        for var, coef in results.params.items():
+            c = round(coef, 4)
+            if var == "const":
+                terms.append(f"{c}")
+            else:
+                terms.append(f"{var} * {c}")
+        if terms:
+            f.write(" +\n".join(terms) + "\n")
+        f.write(")" + "\n")
+
+
 
         # --- Write OLS Summary ---
         f.write("---" + " OLS Regression Results ---" + "\n")
@@ -567,7 +589,9 @@ def find_significant_predictors(
     conn = sqlite3.connect(db_path)
 
     try:
-        # Handle overwrite / skip logic for the results table
+        # Handle overwrite / append logic for the results table
+        existing_pairs: set[tuple[str, str]] = set()
+
         if overwrite:
             logger.info("Overwrite enabled - dropping '%s' if it exists.", results_table_name)
             conn.execute(f"DROP TABLE IF EXISTS {results_table_name}")
@@ -583,12 +607,17 @@ def find_significant_predictors(
                     f"SELECT COUNT(*) FROM {results_table_name}"
                 ).fetchone()[0]
                 if row_count > 0:
+                    # Load existing (dep_var, ind_var) pairs so we can skip
+                    # them and only run new combinations.
+                    rows = conn.execute(
+                        f"SELECT dep_var, ind_var FROM {results_table_name}"
+                    ).fetchall()
+                    existing_pairs = {(r[0], r[1]) for r in rows}
                     logger.info(
-                        "Results table '%s' already has %d rows - skipping "
-                        "(enable overwrite to re-run).",
+                        "Overwrite disabled - '%s' already has %d rows. "
+                        "New predictor pairs will be appended.",
                         results_table_name, row_count,
                     )
-                    return
 
         # ------------------------------------------------------------------
         # Step 1 - Discover all predictor-eligible columns in the ratios table.
@@ -636,11 +665,18 @@ def find_significant_predictors(
         all_results: list[dict] = []
         completed = 0
 
+        skipped = 0
         for dep_var in dep_var_list:
             for ind_var in all_variables:
 
                 # A variable cannot meaningfully predict itself
                 if dep_var == ind_var:
+                    continue
+
+                # When appending, skip pairs that are already in the DB
+                if (dep_var, ind_var) in existing_pairs:
+                    skipped += 1
+                    completed += 1
                     continue
 
                 result = _run_single_predictor_regression(
@@ -659,7 +695,13 @@ def find_significant_predictors(
                 if completed % 100 == 0:
                     print(f"  Progress: {completed}/{total_pairs} models completed...")
 
-        print(f"Finished running {len(all_results)} models.")
+        if skipped:
+            print(f"Skipped {skipped} existing pairs (overwrite disabled).")
+        print(f"Finished running {len(all_results)} new models.")
+
+        if not all_results:
+            print("No new predictor pairs to evaluate. Nothing to write.")
+            return
 
         # ------------------------------------------------------------------
         # Step 4 - Rank all results: R² descending, then p-value ascending.
