@@ -37,10 +37,14 @@
       "overwrite": false
     },
     "Multivariate_Regression": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": false
     },
     "backtest": {
+      "enabled": false,
+      "overwrite": false
+    },
+    "backtest_set": {
       "enabled": true,
       "overwrite": false
     }
@@ -108,6 +112,13 @@
     },
     "benchmark_ticker": "TPX",
     "output_file": "data/backtest_results/backtest_report.txt",
+    "risk_free_rate": 0.02,
+    "initial_capital": 0.0
+  },
+  "backtest_set_config": {
+    "csv_file": "C:\\programming\\Finance\\EDINET\\EDINET\\data\\ols_results\\ols_results_summary_top10.csv",
+    "benchmark_ticker": "TPX",
+    "output_dir": "data/backtest_set_results",
     "risk_free_rate": 0.02,
     "initial_capital": 0.0
   },

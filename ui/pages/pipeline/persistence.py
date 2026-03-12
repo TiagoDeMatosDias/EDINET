@@ -32,6 +32,7 @@ STEP_CONFIG_KEY: dict[str, str] = {
     "find_significant_predictors": "find_significant_predictors_config",
     "Multivariate_Regression": "Multivariate_Regression_config",
     "backtest": "backtesting_config",
+    "backtest_set": "backtest_set_config",
 }
 
 STEP_DISPLAY: dict[str, str] = {
@@ -46,6 +47,7 @@ STEP_DISPLAY: dict[str, str] = {
     "find_significant_predictors": "Find Significant Predictors",
     "Multivariate_Regression": "Multivariate Regression",
     "backtest": "Backtest Portfolio",
+    "backtest_set": "Backtest Set (CSV)",
 }
 
 DEFAULT_STEPS = list(STEP_DISPLAY.keys())
@@ -91,6 +93,13 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "benchmark_ticker": "",
         "output_file": "data/backtest_results/backtest_report.txt",
         "risk_free_rate": 0.0,
+    },
+    "backtest_set": {
+        "csv_file": "",
+        "benchmark_ticker": "",
+        "output_dir": "data/backtest_set_results",
+        "risk_free_rate": 0.0,
+        "initial_capital": 0.0,
     },
 }
 

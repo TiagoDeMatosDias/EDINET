@@ -7,6 +7,119 @@ from ui.pages.pipeline.persistence import DEFAULT_STEP_CONFIGS, STEP_DISPLAY
 from ui.shared.dialog_fields import build_fields, read_fields
 
 
+def open_backtest_set_config(
+    page: ft.Page,
+    fp: ft.FilePicker,
+    step_configs: dict[str, dict],
+    snack: Callable[[str], None],
+    show: Callable[[ft.AlertDialog], None],
+    pop: Callable[[], None],
+):
+    """Dialog for configuring the 'backtest_set' step."""
+    current = step_configs.get("backtest_set", {})
+    if not current:
+        current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("backtest_set", {}))
+
+    csv_path_tf = ft.TextField(
+        label="CSV File Path",
+        value=current.get("csv_file", ""),
+        dense=True,
+        width=380,
+        read_only=True,
+        hint_text="Select a top-10 CSV file",
+    )
+
+    async def _pick_csv(_):
+        files = await fp.pick_files(
+            dialog_title="Select backtest set CSV file",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["csv"],
+            allow_multiple=False,
+        )
+        if files:
+            csv_path_tf.value = files[0].path
+            page.update()
+
+    browse_btn = ft.IconButton(
+        icon=ft.Icons.FOLDER_OPEN,
+        tooltip="Browse for CSV file",
+        on_click=_pick_csv,
+    )
+
+    bench_tf = ft.TextField(
+        label="Benchmark Ticker",
+        value=current.get("benchmark_ticker", ""),
+        dense=True, width=220,
+        hint_text="e.g. TPX",
+    )
+    output_tf = ft.TextField(
+        label="Output Directory",
+        value=current.get("output_dir", "data/backtest_set_results"),
+        dense=True, width=460,
+    )
+    risk_free_tf = ft.TextField(
+        label="Risk-Free Rate (%)",
+        value=str(current.get("risk_free_rate", 0.0) * 100),
+        dense=True, width=220,
+        hint_text="e.g. 2.5 for 2.5%",
+    )
+    capital_tf = ft.TextField(
+        label="Initial Capital (0 = omit)",
+        value=str(int(current.get("initial_capital", 0))),
+        dense=True, width=220,
+        hint_text="e.g. 1000000",
+    )
+
+    def save(_):
+        if not csv_path_tf.value.strip():
+            snack("Please select a CSV file")
+            return
+        try:
+            rf = float(risk_free_tf.value.strip()) / 100.0
+        except ValueError:
+            rf = 0.0
+        try:
+            cap = float(capital_tf.value.strip())
+        except ValueError:
+            cap = 0.0
+        step_configs["backtest_set"] = {
+            "csv_file": csv_path_tf.value.strip(),
+            "benchmark_ticker": bench_tf.value.strip(),
+            "output_dir": output_tf.value.strip() or "data/backtest_set_results",
+            "risk_free_rate": rf,
+            "initial_capital": cap,
+        }
+        pop()
+        snack("Backtest Set config updated")
+
+    show(ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configure: Backtest Set (CSV)"),
+        content=ft.Column(
+            [
+                ft.Text(
+                    "Select a CSV file with columns: Year, Tickers, Type, Amount.\n"
+                    "For each year, 1yr / 2yr / 3yr / 5yr / 10yr backtests will be run.",
+                    size=12, color=ft.Colors.GREY_500,
+                ),
+                ft.Row([csv_path_tf, browse_btn], spacing=4),
+                ft.Divider(height=1),
+                ft.Row([bench_tf, risk_free_tf], spacing=16),
+                capital_tf,
+                output_tf,
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            width=520,
+            height=320,
+            spacing=8,
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: pop()),
+            ft.Button("Save", on_click=save),
+        ],
+    ))
+
+
 def open_generic_step_config(
     page: ft.Page,
     step_name: str,

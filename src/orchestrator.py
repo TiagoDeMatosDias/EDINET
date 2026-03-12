@@ -121,13 +121,28 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
     elif step_name == "Multivariate_Regression":
         logger.info("Running multivariate regression...")
         mv_config = config.get("Multivariate_Regression_config", {})
-        r.multivariate_regression(mv_config, DB_PATH)
+        r.multivariate_regression(
+            mv_config, DB_PATH,
+            ratios_table=DB_STANDARDIZED_RATIOS_TABLE,
+            company_table=DB_COMPANY_INFO_TABLE,
+        )
 
     elif step_name == "backtest":
         logger.info("Running backtesting...")
         backtesting_config = config.get("backtesting_config", {})
         bt.run_backtest(
             backtesting_config,
+            db_path=DB_PATH,
+            prices_table=DB_STOCK_PRICES_TABLE,
+            ratios_table=DB_STANDARDIZED_RATIOS_TABLE,
+            company_table=DB_COMPANY_INFO_TABLE,
+        )
+
+    elif step_name == "backtest_set":
+        logger.info("Running backtest set...")
+        bs_config = config.get("backtest_set_config", {})
+        bt.run_backtest_set(
+            bs_config,
             db_path=DB_PATH,
             prices_table=DB_STOCK_PRICES_TABLE,
             ratios_table=DB_STANDARDIZED_RATIOS_TABLE,
@@ -166,6 +181,9 @@ def run(edinet=None, data=None):
                                         "DB_SIGNIFICANT_PREDICTORS_TABLE"],
         "Multivariate_Regression":    ["DB_PATH"],
         "backtest":                   ["DB_PATH", "DB_STOCK_PRICES_TABLE",
+                                       "DB_STANDARDIZED_RATIOS_TABLE",
+                                       "DB_COMPANY_INFO_TABLE"],
+        "backtest_set":               ["DB_PATH", "DB_STOCK_PRICES_TABLE",
                                        "DB_STANDARDIZED_RATIOS_TABLE",
                                        "DB_COMPANY_INFO_TABLE"],
     }

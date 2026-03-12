@@ -101,21 +101,38 @@ def write_results_to_file(
     query: str,
     output_file: str,
     alpha: float = 0.05,
+    conn: sqlite3.Connection | None = None,
+    ratios_table: str = "Standard_Data_Ratios",
+    company_table: str = "companyInfo",
 ) -> None:
     """
     Writes the OLS regression summary and a significance analysis to a file.
 
     The output file is structured with the following sections:
     1. The SQL query used for the model.
-    2. The full OLS regression results summary.
-    3. A significance analysis, listing variables and predictors that are
+    2. A full scoring SQL query with FROM and WHERE clauses that can be
+       executed directly against the database.
+    3. The full OLS regression results summary.
+    4. A significance analysis, listing variables and predictors that are
        statistically significant at the given alpha level.
+
+    When *conn* is provided, the scoring query is executed and a CSV file
+    (``<output_file_stem>_top10.csv``) is written listing the top 10
+    companies per year by predicted score.  The CSV has columns
+    ``Year``, ``Tickers``, ``Type``, ``Amount`` and is designed to feed
+    directly into batch-backtest workflows.
 
     Args:
         results: The fitted OLS model results from statsmodels.
         query: The SQL query used to generate the data for the model.
         output_file: The path to the file where results will be saved.
         alpha: The significance level for identifying significant variables.
+        conn: Optional open SQLite connection.  When provided the scoring
+            query is executed and the top-10 CSV is generated.
+        ratios_table: Name of the financial-ratios table (used in the
+            scoring query FROM clause).
+        company_table: Name of the company-info table (joined to map
+            ``edinetCode`` to ``Company_Ticker``).
     """
     p_values = results.pvalues
     significant_variables = p_values[p_values < alpha]
@@ -132,17 +149,39 @@ def write_results_to_file(
         # --- Scoring Query ---
         f.write("---" + " Scoring Query ---" + "\n")
 
-        f.write("( " + "\n")
+        # Build scoring expression and collect independent variable names
         terms = []
+        ind_vars = []
         for var, coef in results.params.items():
             c = round(coef, 4)
             if var == "const":
                 terms.append(f"{c}")
             else:
-                terms.append(f"{var} * {c}")
-        if terms:
-            f.write(" +\n".join(terms) + "\n")
-        f.write(")" + "\n")
+                terms.append(f"r.{var} * {c}")
+                ind_vars.append(var)
+
+        score_expr = " + ".join(terms) if terms else "0"
+
+        # WHERE restrictions ensuring all independent variables are not empty
+        where_conditions = [f"r.{var} IS NOT NULL" for var in ind_vars]
+        where_clause = (
+            "\n      AND ".join(where_conditions)
+            if where_conditions
+            else "1=1"
+        )
+
+        scoring_sql = (
+            f"SELECT\n"
+            f"    c.Company_Ticker AS Tickers,\n"
+            f"    SUBSTR(r.periodEnd, 1, 4) AS Year,\n"
+            f"    ({score_expr}) AS Score\n"
+            f"FROM {ratios_table} r\n"
+            f"JOIN {company_table} c ON c.edinetCode = r.edinetCode\n"
+            f"WHERE {where_clause}\n"
+            f"ORDER BY Year, Score DESC"
+        )
+
+        f.write(scoring_sql + "\n")
 
 
 
@@ -174,6 +213,33 @@ def write_results_to_file(
 
     print(f"\nOLS results summary written to {output_file}")
 
+    # --- Generate top-10 companies CSV by year ---
+    if conn is not None:
+        csv_output = os.path.splitext(output_file)[0] + "_top10.csv"
+        try:
+            scoring_df = pd.read_sql_query(scoring_sql, conn)
+            if not scoring_df.empty:
+                # Rank within each year and keep top 10
+                top10 = (
+                    scoring_df
+                    .sort_values(["Year", "Score"], ascending=[True, False])
+                    .groupby("Year")
+                    .head(10)
+                )
+                # Assign equal weights within each year group
+                counts = top10.groupby("Year")["Tickers"].transform("count")
+                top10 = top10.assign(
+                    Type="weight",
+                    Amount=(1.0 / counts).round(4),
+                )
+                top10[["Year", "Tickers", "Type", "Amount"]].to_csv(
+                    csv_output, index=False,
+                )
+                print(f"Top 10 companies by year written to {csv_output}")
+            else:
+                print("Scoring query returned no results; CSV not generated.")
+        except Exception as e:
+            print(f"Warning: could not generate top-10 CSV: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -728,7 +794,12 @@ def find_significant_predictors(
         conn.close()
 
 
-def multivariate_regression(config: dict, db_path: str) -> None:
+def multivariate_regression(
+    config: dict,
+    db_path: str,
+    ratios_table: str = "Standard_Data_Ratios",
+    company_table: str = "companyInfo",
+) -> None:
     """Run a multivariate OLS regression defined entirely by a SQL query.
 
     The first column returned by ``SQL_Query`` is the dependent variable;
@@ -772,6 +843,11 @@ def multivariate_regression(config: dict, db_path: str) -> None:
         ind_vars = list(peek.columns[1:])
 
         results = Run_Model(sql, conn, dep_var, ind_vars, winsorize_limits)
-        write_results_to_file(results, sql, output_file)
+        write_results_to_file(
+            results, sql, output_file,
+            conn=conn,
+            ratios_table=ratios_table,
+            company_table=company_table,
+        )
     finally:
         conn.close()

@@ -15,6 +15,7 @@ from ui.pages.pipeline.persistence import (
 )
 from ui.pages.pipeline.step_dialogs import (
     open_backtest_config,
+    open_backtest_set_config,
     open_generic_step_config,
     open_import_csv_config,
 )
@@ -164,6 +165,9 @@ class AppController:
     def open_step_config(self, step_name: str):
         if step_name == "backtest":
             open_backtest_config(self.page, self.step_configs, self.snack, self.show, self.pop)
+            return
+        if step_name == "backtest_set":
+            open_backtest_set_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)
             return
         if step_name == "import_stock_prices_csv":
             open_import_csv_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)

@@ -1534,7 +1534,318 @@ def run_backtest(
         return metrics
 
     finally:
-        conn.close() 
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Batch backtest from CSV ("backtest set")
+# ---------------------------------------------------------------------------
+
+_BACKTEST_DURATIONS: dict[str, int] = {
+    "1yr": 1,
+    "2yr": 2,
+    "3yr": 3,
+    "5yr": 5,
+    "10yr": 10,
+}
+
+
+def _generate_set_summary(
+    all_results: list[dict],
+    output_file: str,
+) -> None:
+    """Write an aggregate summary report for the entire backtest set.
+
+    Args:
+        all_results: List of result dicts, one per individual backtest,
+            each containing ``year``, ``duration``, ``metrics`` (the dict
+            returned by :func:`run_backtest`) and ``tickers``.
+        output_file: Path to write the summary text file.
+    """
+    output_dir = os.path.dirname(output_file)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    lines: list[str] = []
+    lines.append("=" * 80)
+    lines.append("  BACKTEST SET — AGGREGATE SUMMARY")
+    lines.append("=" * 80)
+    lines.append("")
+
+    total_runs = len(all_results)
+    successful = [r for r in all_results if r.get("metrics")]
+    failed = total_runs - len(successful)
+
+    lines.append(f"  Total backtests scheduled : {total_runs}")
+    lines.append(f"  Successful               : {len(successful)}")
+    if failed:
+        lines.append(f"  Failed / no data         : {failed}")
+    lines.append("")
+
+    # ── Benchmark comparison ──────────────────────────────────────────
+    has_bench = [
+        r for r in successful
+        if r["metrics"].get("benchmark_total_return") is not None
+    ]
+    outperformed = [
+        r for r in has_bench
+        if r["metrics"]["total_return"] > r["metrics"]["benchmark_total_return"]
+    ]
+    underperformed = [
+        r for r in has_bench
+        if r["metrics"]["total_return"] <= r["metrics"]["benchmark_total_return"]
+    ]
+
+    if has_bench:
+        lines.append("--- Benchmark Comparison ---")
+        lines.append(f"  Backtests with benchmark : {len(has_bench)}")
+        lines.append(
+            f"  Outperformed benchmark   : {len(outperformed)}  "
+            f"({len(outperformed) / len(has_bench) * 100:.0f}%)"
+        )
+        lines.append(
+            f"  Underperformed benchmark : {len(underperformed)}  "
+            f"({len(underperformed) / len(has_bench) * 100:.0f}%)"
+        )
+        lines.append("")
+
+        # Breakdown by duration
+        lines.append("  By duration:")
+        durations_seen = sorted({r["duration"] for r in has_bench})
+        for dur in durations_seen:
+            dur_results = [r for r in has_bench if r["duration"] == dur]
+            dur_out = [
+                r for r in dur_results
+                if r["metrics"]["total_return"]
+                > r["metrics"]["benchmark_total_return"]
+            ]
+            lines.append(
+                f"    {dur:<6}  {len(dur_out)}/{len(dur_results)} outperformed"
+            )
+        lines.append("")
+
+    # ── Aggregate statistics ──────────────────────────────────────────
+    if successful:
+        returns = [r["metrics"]["total_return"] for r in successful]
+        ann_returns = [r["metrics"]["annualized_return"] for r in successful]
+        sharpes = [r["metrics"]["sharpe_ratio"] for r in successful]
+        drawdowns = [r["metrics"]["max_drawdown"] for r in successful]
+
+        lines.append("--- Aggregate Statistics (across all successful backtests) ---")
+        lines.append(f"  {'Metric':<28} {'Mean':>10} {'Median':>10} {'Min':>10} {'Max':>10}")
+        lines.append("  " + "-" * 70)
+
+        def _row(label: str, vals: list[float], fmt: str = "+.2%"):
+            arr = np.array(vals)
+            mean_s = format(np.mean(arr), fmt).rjust(10)
+            med_s = format(np.median(arr), fmt).rjust(10)
+            min_s = format(np.min(arr), fmt).rjust(10)
+            max_s = format(np.max(arr), fmt).rjust(10)
+            lines.append(f"  {label:<28} {mean_s} {med_s} {min_s} {max_s}")
+
+        _row("Total Return", returns)
+        _row("Annualized Return", ann_returns)
+        _row("Sharpe Ratio", sharpes, fmt=".4f")
+        _row("Max Drawdown", drawdowns)
+
+        if has_bench:
+            excess = [
+                r["metrics"]["total_return"]
+                - r["metrics"]["benchmark_total_return"]
+                for r in has_bench
+            ]
+            lines.append("")
+            _row("Excess Return (vs bench)", excess)
+        lines.append("")
+
+    # ── Per-backtest detail table ─────────────────────────────────────
+    if successful:
+        lines.append("--- Individual Backtest Results ---")
+        header = (
+            f"  {'Year':<6} {'Duration':<10} {'Period':<25} "
+            f"{'Total':>10} {'Ann.':>10} {'Sharpe':>8} {'MaxDD':>10} "
+            f"{'Bench':>10} {'Excess':>10} {'Beat?':>6}"
+        )
+        lines.append(header)
+        lines.append("  " + "-" * (len(header) - 2))
+        for r in sorted(successful, key=lambda x: (x["year"], x["duration"])):
+            m = r["metrics"]
+            bench_str = (
+                f"{m['benchmark_total_return']:+.2%}"
+                if m.get("benchmark_total_return") is not None
+                else "N/A"
+            )
+            excess_str = (
+                f"{m['excess_return']:+.2%}"
+                if m.get("excess_return") is not None
+                else "N/A"
+            )
+            beat_str = ""
+            if m.get("benchmark_total_return") is not None:
+                beat_str = (
+                    "  ✓"
+                    if m["total_return"] > m["benchmark_total_return"]
+                    else "  ✗"
+                )
+            period = f"{m['start_date']} → {m['end_date']}"
+            lines.append(
+                f"  {r['year']:<6} {r['duration']:<10} {period:<25} "
+                f"{m['total_return']:>+9.2%} "
+                f"{m['annualized_return']:>+9.2%} "
+                f"{m['sharpe_ratio']:>7.4f} "
+                f"{m['max_drawdown']:>+9.2%} "
+                f"{bench_str:>10} "
+                f"{excess_str:>10} "
+                f"{beat_str:>6}"
+            )
+        lines.append("")
+
+    lines.append("=" * 80)
+
+    report_text = "\n".join(lines)
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(report_text)
+    logger.info("Backtest set summary written to %s", output_file)
+    print(f"Backtest set summary written to {output_file}")
+
+
+def run_backtest_set(
+    config: dict,
+    db_path: str,
+    prices_table: str = "stock_prices",
+    ratios_table: str = "Standard_Data_Ratios",
+    company_table: str = "companyInfo",
+) -> list[dict]:
+    """Run a batch of backtests from a CSV file of scored companies.
+
+    For each year found in the CSV, five backtests are executed with
+    horizons of 1, 2, 3, 5 and 10 years using the tickers and weights
+    listed for that year.  Results are written to individual report files
+    inside a dedicated output folder, and an aggregate summary is
+    generated.
+
+    Args:
+        config: Dictionary with the following keys:
+
+            * ``csv_file`` (str) — path to the CSV with columns
+              ``Year``, ``Tickers``, ``Type``, ``Amount``.
+            * ``benchmark_ticker`` (str) — ticker symbol of the benchmark.
+            * ``output_dir`` (str, optional) — base directory for results.
+              Defaults to ``data/backtest_set_results``.
+            * ``risk_free_rate`` (float, optional) — annual risk-free rate
+              (default 0.0).
+            * ``initial_capital`` (float, optional) — starting capital
+              (default 0).
+
+        db_path: Path to the SQLite database file.
+        prices_table: Name of the stock-prices table.
+        ratios_table: Name of the standardised-ratios table.
+        company_table: Name of the company-info table.
+
+    Returns:
+        List of result dicts, one per individual backtest.
+    """
+    csv_file = config.get("csv_file", "")
+    benchmark_ticker = config.get("benchmark_ticker", "")
+    output_dir = config.get("output_dir", "data/backtest_set_results")
+    risk_free_rate = config.get("risk_free_rate", 0.0)
+    initial_capital = config.get("initial_capital", 0.0)
+
+    if not csv_file:
+        raise ValueError("backtest_set_config must contain 'csv_file'.")
+
+    # ── Read and validate CSV ─────────────────────────────────────────
+    df = pd.read_csv(csv_file)
+    required_cols = {"Year", "Tickers", "Type", "Amount"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"CSV is missing required columns: {missing}. "
+            f"Expected: {required_cols}"
+        )
+
+    df["Year"] = df["Year"].astype(str).str.strip()
+    years = sorted(df["Year"].unique())
+
+    logger.info(
+        "Backtest set: %d year(s), %d durations each → %d backtests.",
+        len(years), len(_BACKTEST_DURATIONS), len(years) * len(_BACKTEST_DURATIONS),
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    all_results: list[dict] = []
+
+    for year_str in years:
+        year_df = df[df["Year"] == year_str]
+
+        # Build portfolio dict from CSV rows
+        portfolio: dict[str, dict] = {}
+        for _, row in year_df.iterrows():
+            ticker = str(row["Tickers"]).strip()
+            mode = str(row["Type"]).strip().lower()
+            if mode not in ALLOCATION_MODES:
+                mode = "weight"
+            amount = float(row["Amount"])
+            portfolio[ticker] = {"mode": mode, "value": amount}
+
+        if not portfolio:
+            logger.warning("Year %s: no portfolio entries found, skipping.", year_str)
+            continue
+
+        for dur_label, dur_years in _BACKTEST_DURATIONS.items():
+            start_date = f"{year_str}-01-01"
+            end_year = int(year_str) + dur_years
+            end_date = f"{end_year}-01-01"
+
+            # Per-backtest output folder
+            run_dir = os.path.join(output_dir, f"{year_str}_{dur_label}")
+            os.makedirs(run_dir, exist_ok=True)
+            run_output = os.path.join(run_dir, "backtest_report.txt")
+
+            bt_config: dict = {
+                "start_date": start_date,
+                "end_date": end_date,
+                "portfolio": portfolio,
+                "benchmark_ticker": benchmark_ticker,
+                "output_file": run_output,
+                "risk_free_rate": risk_free_rate,
+                "initial_capital": initial_capital,
+            }
+
+            result_entry: dict = {
+                "year": year_str,
+                "duration": dur_label,
+                "start_date": start_date,
+                "end_date": end_date,
+                "tickers": list(portfolio.keys()),
+                "metrics": None,
+            }
+
+            try:
+                metrics = run_backtest(
+                    bt_config,
+                    db_path=db_path,
+                    prices_table=prices_table,
+                    ratios_table=ratios_table,
+                    company_table=company_table,
+                )
+                result_entry["metrics"] = metrics
+                logger.info(
+                    "  %s %s: total return %.2f%%",
+                    year_str, dur_label, metrics["total_return"] * 100,
+                )
+            except Exception as e:
+                logger.error(
+                    "  %s %s: backtest failed — %s", year_str, dur_label, e,
+                )
+
+            all_results.append(result_entry)
+
+    # ── Generate aggregate summary ────────────────────────────────────
+    summary_file = os.path.join(output_dir, "backtest_set_summary.txt")
+    _generate_set_summary(all_results, summary_file)
+
+    return all_results 
 
 
 
