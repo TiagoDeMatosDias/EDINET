@@ -15,6 +15,7 @@ Strategy
 """
 import os
 import sys
+import json
 import sqlite3
 import tempfile
 import textwrap
@@ -398,6 +399,226 @@ class TestCopyTableToStandard(unittest.TestCase):
         # First delete_table call should be for the target table
         first_call_args = md.call_args_list[0]
         self.assertEqual(first_call_args[0][0], "dst_tbl")
+
+
+class TestGenerateFinancialStatements(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.source_db = os.path.join(self.tmpdir.name, "source.db")
+        self.target_db = os.path.join(self.tmpdir.name, "target.db")
+        self.mappings_file = os.path.join(self.tmpdir.name, "mappings.json")
+
+        source_conn = sqlite3.connect(self.source_db)
+        source_conn.executescript(
+            """
+            CREATE TABLE Standard_Data (
+                AccountingTerm TEXT,
+                Period TEXT,
+                Amount TEXT,
+                docID TEXT,
+                edinetCode TEXT,
+                docTypeCode TEXT,
+                periodStart TEXT,
+                periodEnd TEXT
+            );
+            """
+        )
+        rows = [
+            ("jppfs_cor:NetSales", "CurrentYearDuration", "1000", "DOC1", "E00001", "120", "2024-01-01", "2024-12-31"),
+            ("jppfs_cor:CashAndDeposits", "CurrentYearInstant", "250", "DOC1", "E00001", "120", "2024-01-01", "2024-12-31"),
+            ("jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults", "CurrentYearInstant", "500", "DOC1", "E00001", "120", "2024-01-01", "2024-12-31"),
+        ]
+        source_conn.executemany(
+            "INSERT INTO Standard_Data VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        source_conn.commit()
+        source_conn.close()
+
+        target_conn = sqlite3.connect(self.target_db)
+        target_conn.executescript(
+            """
+            CREATE TABLE companyInfo (
+                EdinetCode TEXT,
+                Company_Ticker TEXT
+            );
+            CREATE TABLE stock_prices (
+                Date TEXT,
+                Ticker TEXT,
+                Currency TEXT,
+                Price REAL
+            );
+            """
+        )
+        target_conn.executemany(
+            "INSERT INTO companyInfo (EdinetCode, Company_Ticker) VALUES (?, ?)",
+            [("E00001", "7203")],
+        )
+        target_conn.executemany(
+            "INSERT INTO stock_prices (Date, Ticker, Currency, Price) VALUES (?, ?, ?, ?)",
+            [
+                ("2024-06-30", "7203", "JPY", 98.0),
+                ("2024-12-31", "7203", "JPY", 123.0),
+                ("2025-01-15", "7203", "JPY", 130.0),
+            ],
+        )
+        target_conn.commit()
+        target_conn.close()
+
+        mappings = {
+            "Mappings": [
+                {
+                    "Name": "SharesOutstanding",
+                    "Table": "FinancialStatements",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults"],
+                },
+                {
+                    "Name": "netSales",
+                    "Table": "IncomeStatement",
+                    "periods": ["CurrentYearDuration"],
+                    "Terms": ["jppfs_cor:NetSales"],
+                },
+                {
+                    "Name": "cash",
+                    "Table": "BalanceSheet",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jppfs_cor:CashAndDeposits"],
+                },
+            ]
+        }
+        with open(self.mappings_file, "w", encoding="utf-8") as f:
+            json.dump(mappings, f)
+
+        self.d = _make_data_instance()
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_generates_tables_and_rows(self):
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            fs = conn.execute(
+                "SELECT docID, edinetCode, SharesOutstanding, SharePrice FROM FinancialStatements"
+            ).fetchall()
+            inc = conn.execute(
+                "SELECT docID, netSales FROM IncomeStatement"
+            ).fetchall()
+            bal = conn.execute(
+                "SELECT docID, cash FROM BalanceSheet"
+            ).fetchall()
+
+            self.assertEqual(fs, [("DOC1", "E00001", 500.0, 123.0)])
+            self.assertEqual(inc, [("DOC1", 1000.0)])
+            self.assertEqual(bal, [("DOC1", 250.0)])
+        finally:
+            conn.close()
+
+    def test_rerun_is_idempotent(self):
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            counts = {
+                "FinancialStatements": conn.execute("SELECT COUNT(*) FROM FinancialStatements").fetchone()[0],
+                "IncomeStatement": conn.execute("SELECT COUNT(*) FROM IncomeStatement").fetchone()[0],
+                "BalanceSheet": conn.execute("SELECT COUNT(*) FROM BalanceSheet").fetchone()[0],
+                "CashflowStatement": conn.execute("SELECT COUNT(*) FROM CashflowStatement").fetchone()[0],
+            }
+            self.assertEqual(counts["FinancialStatements"], 1)
+            self.assertEqual(counts["IncomeStatement"], 1)
+            self.assertEqual(counts["BalanceSheet"], 1)
+            self.assertEqual(counts["CashflowStatement"], 1)
+        finally:
+            conn.close()
+
+    def test_shareprice_falls_back_to_source_db(self):
+        # Remove lookup tables from target DB
+        target_conn = sqlite3.connect(self.target_db)
+        target_conn.executescript(
+            """
+            DROP TABLE IF EXISTS companyInfo;
+            DROP TABLE IF EXISTS stock_prices;
+            """
+        )
+        target_conn.commit()
+        target_conn.close()
+
+        # Create lookup tables in source DB (fallback path)
+        source_conn = sqlite3.connect(self.source_db)
+        source_conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS companyInfo (
+                EdinetCode TEXT,
+                Company_Ticker TEXT
+            );
+            CREATE TABLE IF NOT EXISTS stock_prices (
+                Date TEXT,
+                Ticker TEXT,
+                Currency TEXT,
+                Price REAL
+            );
+            """
+        )
+        source_conn.executemany(
+            "INSERT INTO companyInfo (EdinetCode, Company_Ticker) VALUES (?, ?)",
+            [("E00001", "7203")],
+        )
+        source_conn.executemany(
+            "INSERT INTO stock_prices (Date, Ticker, Currency, Price) VALUES (?, ?, ?, ?)",
+            [
+                ("2024-12-30", "7203", "JPY", 122.0),
+                ("2024-12-31", "7203", "JPY", 123.0),
+            ],
+        )
+        source_conn.commit()
+        source_conn.close()
+
+        # Intentionally use different case for company table name
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            company_table="CompanyInfo",
+            prices_table="stock_prices",
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            fs = conn.execute(
+                "SELECT docID, SharePrice FROM FinancialStatements"
+            ).fetchall()
+            self.assertEqual(fs, [("DOC1", 123.0)])
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

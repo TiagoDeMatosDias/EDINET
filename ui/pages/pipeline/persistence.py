@@ -29,6 +29,7 @@ STEP_CONFIG_KEY: dict[str, str] = {
     "populate_company_info": "populate_company_info_config",
     "import_stock_prices_csv": "import_stock_prices_csv_config",
     "parse_taxonomy": "parse_taxonomy_config",
+    "generate_financial_statements": "generate_financial_statements_config",
     "find_significant_predictors": "find_significant_predictors_config",
     "Multivariate_Regression": "Multivariate_Regression_config",
     "backtest": "backtesting_config",
@@ -43,6 +44,7 @@ STEP_DISPLAY: dict[str, str] = {
     "import_stock_prices_csv": "Import Stock Prices (CSV)",
     "update_stock_prices": "Update Stock Prices",
     "parse_taxonomy": "Parse Taxonomy",
+    "generate_financial_statements": "Generate Financial Statements",
     "generate_financial_ratios": "Generate Financial Ratios",
     "find_significant_predictors": "Find Significant Predictors",
     "Multivariate_Regression": "Multivariate Regression",
@@ -54,6 +56,7 @@ DEFAULT_STEPS = list(STEP_DISPLAY.keys())
 
 STEPS_WITH_OVERWRITE: set[str] = {
     "standardize_data",
+    "generate_financial_statements",
     "generate_financial_ratios",
     "find_significant_predictors",
 }
@@ -66,7 +69,10 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "secCode": "",
         "Downloaded": "False",
     },
-    "populate_company_info": {"csv_file": "config/reference/EdinetcodeDlInfo.csv"},
+    "populate_company_info": {
+        "csv_file": "config/reference/EdinetcodeDlInfo.csv",
+        "Target_Database": "",
+    },
     "import_stock_prices_csv": {
         "csv_file": "",
         "ticker": "",
@@ -75,6 +81,15 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "price_column": "Close",
     },
     "parse_taxonomy": {"xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd"},
+    "generate_financial_statements": {
+        "Source_Database": "",
+        "Source_Table": "Standard_Data",
+        "Target_Database": "",
+        "Company_Info_Table": "",
+        "Stock_Prices_Table": "",
+        "Mappings_Config": "config/reference/financial_statements_mappings_config.json",
+        "batch_size": 2500,
+    },
     "find_significant_predictors": {
         "output_file": "data/ols_results/predictor_search_results.txt",
         "winsorize_thresholds": {"lower": 0.05, "upper": 0.95},

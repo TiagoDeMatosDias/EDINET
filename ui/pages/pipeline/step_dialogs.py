@@ -120,6 +120,162 @@ def open_backtest_set_config(
     ))
 
 
+def open_generate_financial_statements_config(
+    page: ft.Page,
+    fp: ft.FilePicker,
+    step_configs: dict[str, dict],
+    snack: Callable[[str], None],
+    show: Callable[[ft.AlertDialog], None],
+    pop: Callable[[], None],
+):
+    """Dialog for configuring the 'generate_financial_statements' step."""
+    current = step_configs.get("generate_financial_statements", {})
+    if not current:
+        current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("generate_financial_statements", {}))
+
+    source_db_tf = ft.TextField(
+        label="Source_Database (blank = DB_PATH)",
+        value=current.get("Source_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+    source_table_tf = ft.TextField(
+        label="Source_Table",
+        value=current.get("Source_Table", "Standard_Data"),
+        dense=True,
+        width=420,
+    )
+    target_db_tf = ft.TextField(
+        label="Target_Database (blank = DB_PATH)",
+        value=current.get("Target_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+    company_table_tf = ft.TextField(
+        label="Company_Info_Table (blank = DB_COMPANY_INFO_TABLE)",
+        value=current.get("Company_Info_Table", ""),
+        dense=True,
+        width=420,
+    )
+    prices_table_tf = ft.TextField(
+        label="Stock_Prices_Table (blank = DB_STOCK_PRICES_TABLE)",
+        value=current.get("Stock_Prices_Table", ""),
+        dense=True,
+        width=420,
+    )
+    mappings_tf = ft.TextField(
+        label="Mappings_Config",
+        value=current.get("Mappings_Config", "config/reference/financial_statements_mappings_config.json"),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+    batch_size_tf = ft.TextField(
+        label="Batch Size",
+        value=str(current.get("batch_size", 2500)),
+        dense=True,
+        width=180,
+    )
+
+    async def _pick_source_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select source database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            source_db_tf.value = files[0].path
+            page.update()
+
+    async def _pick_target_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select target database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            target_db_tf.value = files[0].path
+            page.update()
+
+    async def _pick_mappings(_):
+        files = await fp.pick_files(
+            dialog_title="Select mappings config JSON",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["json"],
+            allow_multiple=False,
+        )
+        if files:
+            mappings_tf.value = files[0].path
+            page.update()
+
+    def save(_):
+        try:
+            batch = int(float(batch_size_tf.value.strip() or "2500"))
+            batch = max(1, batch)
+        except ValueError:
+            batch = 2500
+
+        mappings_val = mappings_tf.value.strip()
+        if not mappings_val:
+            snack("Please select a mappings config JSON file")
+            return
+
+        step_configs["generate_financial_statements"] = {
+            "Source_Database": source_db_tf.value.strip(),
+            "Source_Table": source_table_tf.value.strip() or "Standard_Data",
+            "Target_Database": target_db_tf.value.strip(),
+            "Company_Info_Table": company_table_tf.value.strip(),
+            "Stock_Prices_Table": prices_table_tf.value.strip(),
+            "Mappings_Config": mappings_val,
+            "batch_size": batch,
+        }
+        pop()
+        snack("Generate Financial Statements config updated")
+
+    show(ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configure: Generate Financial Statements"),
+        content=ft.Column(
+            [
+                ft.Text(
+                    "Build FinancialStatements / IncomeStatement / BalanceSheet / CashflowStatement\n"
+                    "from the source table using the mappings config. Leave DB fields blank to use DB_PATH.",
+                    size=12,
+                    color=ft.Colors.GREY_500,
+                ),
+                ft.Row([
+                    source_db_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select source DB", on_click=_pick_source_db),
+                ], spacing=4),
+                source_table_tf,
+                ft.Row([
+                    target_db_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select target DB", on_click=_pick_target_db),
+                ], spacing=4),
+                company_table_tf,
+                prices_table_tf,
+                ft.Row([
+                    mappings_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select mappings JSON", on_click=_pick_mappings),
+                ], spacing=4),
+                batch_size_tf,
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            width=560,
+            height=350,
+            spacing=8,
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: pop()),
+            ft.Button("Save", on_click=save),
+        ],
+    ))
+
+
 def open_generic_step_config(
     page: ft.Page,
     step_name: str,

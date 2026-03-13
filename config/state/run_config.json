@@ -5,11 +5,15 @@
       "overwrite": false
     },
     "populate_company_info": {
-      "enabled": false,
+      "enabled": true,
       "overwrite": false
     },
     "standardize_data": {
-      "enabled": true,
+      "enabled": false,
+      "overwrite": true
+    },
+    "generate_financial_statements": {
+      "enabled": false,
       "overwrite": true
     },
     "download_documents": {
@@ -29,7 +33,7 @@
       "overwrite": false
     },
     "generate_financial_ratios": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": true
     },
     "find_significant_predictors": {
@@ -37,7 +41,7 @@
       "overwrite": false
     },
     "Multivariate_Regression": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": false
     },
     "backtest": {
@@ -45,7 +49,7 @@
       "overwrite": false
     },
     "backtest_set": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": false
     }
   },
@@ -60,7 +64,8 @@
     "Downloaded": "False"
   },
   "populate_company_info_config": {
-    "csv_file": "config/reference/EdinetcodeDlInfo.csv"
+    "csv_file": "config/reference/EdinetcodeDlInfo.csv",
+    "Target_Database": ""
   },
   "import_stock_prices_csv_config": {
     "csv_file": "C:\\Users\\PC\\Downloads\\^tpx_d.csv",
@@ -71,6 +76,15 @@
   },
   "parse_taxonomy_config": {
     "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd"
+  },
+  "generate_financial_statements_config": {
+    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Base.db",
+    "Source_Table": "Standard_Data",
+    "Target_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "Company_Info_Table": "",
+    "Stock_Prices_Table": "",
+    "Mappings_Config": "C:\\programming\\Finance\\EDINET\\EDINET\\config\\reference\\financial_statements_mappings_config.json",
+    "batch_size": 2500
   },
   "find_significant_predictors_config": {
     "output_file": "data/ols_results/predictor_search_results.txt",

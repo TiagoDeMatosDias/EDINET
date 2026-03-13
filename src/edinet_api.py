@@ -565,11 +565,15 @@ class Edinet:
             if connection is None:
                 conn.close()
 
-    def store_edinetCodes(self, csv_file):
+    def store_edinetCodes(self, csv_file, target_database=None, table_name=None):
         """Store EDINET company codes from a CSV file into the SQLite database.
 
         Args:
             csv_file (str): Path to the CSV file containing EDINET codes.
+            target_database (str, optional): Destination SQLite DB path.
+                Defaults to the configured DB path.
+            table_name (str, optional): Destination table name.
+                Defaults to configured company-info table.
 
         Returns:
             None
@@ -581,12 +585,14 @@ class Edinet:
             df = pd.read_csv(csv_file, encoding=self.detect_file_encoding(csv_file))
             
             # Connect to SQLite database
-            conn = sqlite3.connect(self.Database)
+            destination_db = target_database or self.Database
+            destination_table = table_name or self.DB_COMPANY_INFO_TABLE
+            conn = sqlite3.connect(destination_db)
             cursor = conn.cursor()
             
             
             # Insert data into the table
-            df.to_sql(self.DB_COMPANY_INFO_TABLE, conn, if_exists="replace", index=False)
+            df.to_sql(destination_table, conn, if_exists="replace", index=False)
             
             # Commit and close
             conn.commit()

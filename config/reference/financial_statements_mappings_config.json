@@ -1,0 +1,311 @@
+{
+  "Mappings": [
+    {
+      "Name": "SharesOutstanding",
+      "Table": "FinancialStatements",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember",
+        "FilingDateInstant"
+      ],
+      "Terms": [
+        "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+        "jpcrp_cor:NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
+        "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc"
+      ]
+    },
+    {
+      "Name": "netSales",
+      "Table": "IncomeStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:NetSales",
+        "jppfs_cor:OperatingRevenue1"
+      ]
+    },
+    {
+      "Name": "costOfSales",
+      "Table": "IncomeStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:CostOfSales"
+      ]
+    },
+    {
+      "Name": "grossProfit",
+      "Table": "IncomeStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:GrossProfit"
+      ]
+    },
+    {
+      "Name": "operatingIncome",
+      "Table": "IncomeStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:OperatingIncome"
+      ]
+    },
+    {
+      "Name": "incomeBeforeTaxes",
+      "Table": "IncomeStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:IncomeBeforeIncomeTaxes"
+      ]
+    },
+    {
+      "Name": "incomeTaxes",
+      "Table": "IncomeStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:IncomeTaxes"
+      ]
+    },
+    {
+      "Name": "netIncome",
+      "Table": "IncomeStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:NetIncome",
+        "jppfs_cor:ProfitLoss"
+      ]
+    },
+    {
+      "Name": "cash",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults",
+        "jppfs_cor:CashAndDeposits",
+        "jppfs_cor:CashAndCashEquivalents"
+      ]
+    },
+    {
+      "Name": "inventories",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:Inventories"
+      ]
+    },
+    {
+      "Name": "currentAssets",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:CurrentAssets"
+      ]
+    },
+    {
+      "Name": "ppe",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:PropertyPlantAndEquipment"
+      ]
+    },
+    {
+      "Name": "intangibleAssets",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:IntangibleAssets"
+      ]
+    },
+    {
+      "Name": "totalAssets",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:Assets",
+        "jppfs_cor:TotalAssets"
+      ]
+    },
+    {
+      "Name": "shareholdersEquity",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:ShareholdersEquity"
+      ]
+    },
+    {
+      "Name": "currentLiabilities",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:CurrentLiabilities"
+      ]
+    },
+    {
+      "Name": "NonCurrentLiabilities",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:NoncurrentLiabilities"
+      ]
+    },
+    {
+      "Name": "LongTermDebt",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:LongTermLoansPayable",
+        "jppfs_cor:TotalDebt"
+      ]
+    },
+    {
+      "Name": "TotalLiabilities",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:Liabilities",
+        "jppfs_cor:TotalLiabilities"
+      ]
+    },
+    {
+      "Name": "operatingCashflow",
+      "Table": "CashflowStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:NetCashProvidedByUsedInOperatingActivities"
+      ]
+    },
+    {
+      "Name": "depreciation",
+      "Table": "CashflowStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:DepreciationAndAmortizationOpeCF"
+      ]
+    },
+    {
+      "Name": "cashflowInventories",
+      "Table": "CashflowStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:DecreaseIncreaseInInventoriesOpeCF"
+      ]
+    },
+    {
+      "Name": "investmentCashflow",
+      "Table": "CashflowStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:NetCashProvidedByUsedInInvestmentActivities"
+      ]
+    },
+    {
+      "Name": "capex",
+      "Table": "CashflowStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:PurchaseOfPropertyPlantAndEquipmentInvCF"
+      ]
+    },
+    {
+      "Name": "financingCashflow",
+      "Table": "CashflowStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:NetCashProvidedByUsedInFinancingActivities"
+      ]
+    },
+    {
+      "Name": "dividends",
+      "Table": "CashflowStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:CashDividendsPaidFinCF"
+      ]
+    },
+    {
+      "Name": "buybacks",
+      "Table": "CashflowStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:PurchaseOfTreasuryStockFinCF"
+      ]
+    }
+  ]
+}

@@ -164,6 +164,29 @@ class TestEdinet(unittest.TestCase):
         # Assert that the to_sql method was called on the dataframe
         mock_to_sql.assert_called()
 
+    @patch('src.edinet_api.c.Config')
+    @patch('src.edinet_api.pd.read_csv')
+    @patch('src.edinet_api.Edinet.detect_file_encoding')
+    @patch('src.edinet_api.sqlite3.connect')
+    @patch('pandas.DataFrame.to_sql')
+    def test_store_edinetCodes_uses_target_database(self, mock_to_sql, mock_sqlite_connect, mock_detect_encoding, mock_read_csv, mock_config):
+        mock_config_instance = mock_config.return_value
+        mock_config_instance.get.side_effect = lambda key, default=None: {
+            "DB_PATH": "default.db",
+            "DB_COMPANY_INFO_TABLE": "companyInfo",
+        }.get(key, default)
+
+        self.edinet = Edinet()
+        mock_detect_encoding.return_value = "utf-8"
+        mock_read_csv.return_value = pd.DataFrame({"A": [1]})
+        mock_conn = MagicMock()
+        mock_sqlite_connect.return_value = mock_conn
+
+        self.edinet.store_edinetCodes("codes.csv", target_database="custom.db")
+
+        mock_sqlite_connect.assert_called_with("custom.db")
+        mock_to_sql.assert_called_with("companyInfo", mock_conn, if_exists="replace", index=False)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -13,6 +13,7 @@
     "get_documents": {"enabled": false, "overwrite": false},
     "download_documents": {"enabled": false, "overwrite": false},
     "standardize_data": {"enabled": false, "overwrite": false},
+    "generate_financial_statements": {"enabled": false, "overwrite": false},
     "update_stock_prices": {"enabled": false, "overwrite": false},
     "populate_company_info": {"enabled": false, "overwrite": false},
     "parse_taxonomy": {"enabled": false, "overwrite": false},
@@ -22,10 +23,20 @@
     "backtest": {"enabled": false, "overwrite": false}
   },
   "populate_company_info_config": {
-    "csv_file": "config/reference/EdinetcodeDlInfo.csv"
+    "csv_file": "config/reference/EdinetcodeDlInfo.csv",
+    "Target_Database": ""
   },
   "parse_taxonomy_config": {
     "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd"
+  },
+  "generate_financial_statements_config": {
+    "Source_Database": "",
+    "Source_Table": "Standard_Data",
+    "Target_Database": "",
+    "Company_Info_Table": "",
+    "Stock_Prices_Table": "",
+    "Mappings_Config": "config/reference/financial_statements_mappings_config.json",
+    "batch_size": 2500
   },
   "find_significant_predictors_config": {
     "output_file": "data/ols_results/predictor_search_results.txt",

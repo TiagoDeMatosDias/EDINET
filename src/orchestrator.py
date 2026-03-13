@@ -61,11 +61,37 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
         logger.info("Populating company info table...")
         populate_config = config.get("populate_company_info_config", {})
         csv_file = populate_config.get("csv_file")
-        edinet.store_edinetCodes(csv_file)
+        target_database = populate_config.get("Target_Database") or DB_PATH
+        edinet.store_edinetCodes(csv_file, target_database=target_database)
 
     elif step_name == "generate_financial_ratios":
         logger.info("Generating financial ratios...")
         data.Generate_Financial_Ratios(DB_STANDARDIZED_TABLE, DB_STANDARDIZED_RATIOS_TABLE, overwrite=overwrite)
+
+    elif step_name in ("generate_financial_statements", "Generate Financial Statements"):
+        logger.info("Generating financial statements...")
+        fs_config = config.get("generate_financial_statements_config", {})
+        source_database = fs_config.get("Source_Database") or DB_PATH
+        source_table = fs_config.get("Source_Table") or DB_STANDARDIZED_TABLE
+        target_database = fs_config.get("Target_Database") or DB_PATH
+        company_table = fs_config.get("Company_Info_Table") or DB_COMPANY_INFO_TABLE
+        prices_table = fs_config.get("Stock_Prices_Table") or DB_STOCK_PRICES_TABLE
+        mappings_config = fs_config.get(
+            "Mappings_Config",
+            "config/reference/financial_statements_mappings_config.json",
+        )
+        batch_size = fs_config.get("batch_size", 2500)
+
+        data.generate_financial_statements(
+            source_database=source_database,
+            source_table=source_table,
+            target_database=target_database,
+            mappings_config=mappings_config,
+            company_table=company_table,
+            prices_table=prices_table,
+            overwrite=overwrite,
+            batch_size=batch_size,
+        )
 
     elif step_name == "import_stock_prices_csv":
         logger.info("Importing stock prices from CSV...")
@@ -177,6 +203,7 @@ def run(edinet=None, data=None):
         "update_stock_prices":        ["DB_PATH", "DB_COMPANY_INFO_TABLE",
                                        "DB_STOCK_PRICES_TABLE", "DB_STANDARDIZED_TABLE"],
         "parse_taxonomy":             ["DB_TAXONOMY_TABLE"],
+        "generate_financial_statements": [],
         "find_significant_predictors": ["DB_PATH", "DB_STANDARDIZED_RATIOS_TABLE",
                                         "DB_SIGNIFICANT_PREDICTORS_TABLE"],
         "Multivariate_Regression":    ["DB_PATH"],

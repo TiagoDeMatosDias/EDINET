@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 import random
 import numpy as np
 import json
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,377 @@ class data:
             (table_name,),
         )
         return cur.fetchone() is not None
+
+    def _resolve_table_name_in_schema(self, conn, schema_name, table_name):
+        """Return actual table name in schema using case-insensitive match, else None."""
+        if schema_name == "main":
+            sql = (
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND lower(name)=lower(?) LIMIT 1"
+            )
+        else:
+            sql = (
+                f"SELECT name FROM {self._sql_ident(schema_name)}.sqlite_master "
+                "WHERE type='table' AND lower(name)=lower(?) LIMIT 1"
+            )
+        row = conn.execute(sql, (table_name,)).fetchone()
+        return row[0] if row else None
+
+    def _sql_ident(self, name):
+        """Safely quote an SQLite identifier (table/column/schema name)."""
+        return '"' + str(name).replace('"', '""') + '"'
+
+    def _sql_literal(self, value):
+        """Safely quote a SQL literal value."""
+        return "'" + str(value).replace("'", "''") + "'"
+
+    def _load_financial_statement_mappings(self, mappings_config_path):
+        """Load mappings config and normalize into {table: {column: mapping_dict}}."""
+        with open(mappings_config_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+
+        mappings = raw.get("Mappings", [])
+        normalized = {
+            "FinancialStatements": {},
+            "IncomeStatement": {},
+            "BalanceSheet": {},
+            "CashflowStatement": {},
+        }
+
+        for entry in mappings:
+            if not isinstance(entry, dict):
+                continue
+            table = entry.get("Table")
+            name = entry.get("Name")
+            if table not in normalized or not name:
+                continue
+            normalized[table][name] = {
+                "Terms": entry.get("Terms", []) or [],
+                "periods": entry.get("periods", []) or [],
+            }
+
+        return normalized
+
+    def _build_amount_case_expr(self, mapping, source_alias="s"):
+        """Build MAX(CASE WHEN ... THEN CAST(Amount AS REAL) END) SQL expression."""
+        if not mapping:
+            return "NULL"
+
+        terms = mapping.get("Terms", []) or []
+        periods = mapping.get("periods", []) or []
+        if not terms:
+            return "NULL"
+
+        term_list = ", ".join(self._sql_literal(t) for t in terms)
+        conditions = [f"{source_alias}.AccountingTerm IN ({term_list})"]
+
+        if periods:
+            period_list = ", ".join(self._sql_literal(p) for p in periods)
+            conditions.append(f"{source_alias}.Period IN ({period_list})")
+
+        condition_sql = " AND ".join(conditions)
+        return (
+            f"MAX(CASE WHEN {condition_sql} "
+            f"THEN CAST({source_alias}.Amount AS REAL) END)"
+        )
+
+    def _create_financial_statement_tables(self, conn):
+        """Create target financial statement tables and docID uniqueness indexes."""
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS FinancialStatements (
+              edinetCode TEXT,
+              docID TEXT,
+              docTypeCode TEXT,
+              periodStart TEXT,
+              periodEnd TIMESTAMP,
+              SharesOutstanding REAL,
+              SharePrice REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS IncomeStatement (
+              docID TEXT,
+              netSales REAL,
+              costOfSales REAL,
+              grossProfit REAL,
+              operatingIncome REAL,
+              incomeBeforeTaxes REAL,
+              incomeTaxes REAL,
+              netIncome REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS BalanceSheet (
+              docID TEXT,
+              cash REAL,
+              inventories REAL,
+              currentAssets REAL,
+              ppe REAL,
+              intangibleAssets REAL,
+              totalAssets REAL,
+              shareholdersEquity REAL,
+              currentLiabilities REAL,
+              NonCurrentLiabilities REAL,
+              LongTermDebt REAL,
+              TotalLiabilities REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS CashflowStatement (
+              docID TEXT,
+              operatingCashflow REAL,
+              depreciation REAL,
+              cashflowInventories REAL,
+              investmentCashflow REAL,
+              capex REAL,
+              financingCashflow REAL,
+              dividends REAL,
+              buybacks REAL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_fs_docid ON FinancialStatements(docID);
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_is_docid ON IncomeStatement(docID);
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_bs_docid ON BalanceSheet(docID);
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_cf_docid ON CashflowStatement(docID);
+            """
+        )
+
+    def _insert_base_financial_statements(
+                self,
+                conn,
+                source_ref,
+                temp_docids,
+                mappings,
+            company_ref,
+            prices_ref,
+        ):
+                """Insert/update FinancialStatements base rows for the current docID batch."""
+                fs_map = mappings.get("FinancialStatements", {})
+                shares_expr = self._build_amount_case_expr(fs_map.get("SharesOutstanding"))
+
+                sql = f"""
+                WITH base AS (
+                        SELECT
+                            MAX(s.edinetCode) AS edinetCode,
+                            s.docID AS docID,
+                            MAX(s.docTypeCode) AS docTypeCode,
+                            MIN(s.periodStart) AS periodStart,
+                            MAX(s.periodEnd) AS periodEnd,
+                            {shares_expr} AS SharesOutstanding
+                        FROM {source_ref} s
+                        INNER JOIN {temp_docids} t ON t.docID = s.docID
+                        GROUP BY s.docID
+                )
+                INSERT OR REPLACE INTO FinancialStatements
+                    (edinetCode, docID, docTypeCode, periodStart, periodEnd, SharesOutstanding, SharePrice)
+                SELECT
+                    b.edinetCode,
+                    b.docID,
+                    b.docTypeCode,
+                    b.periodStart,
+                    b.periodEnd,
+                    b.SharesOutstanding,
+                    (
+                        SELECT sp.Price
+                        FROM {prices_ref} sp
+                        JOIN {company_ref} c ON c.Company_Ticker = sp.Ticker
+                        WHERE c.EdinetCode = b.edinetCode
+                            AND sp.Date <= b.periodEnd
+                        ORDER BY sp.Date DESC
+                        LIMIT 1
+                    ) AS SharePrice
+                FROM base b
+                """
+                conn.execute(sql)
+
+    def _insert_statement_table_rows(self, conn, source_ref, temp_docids, table_name, ordered_columns, mappings):
+        """Insert/update one statement table from config mappings for current docID batch."""
+        table_mappings = mappings.get(table_name, {})
+
+        select_exprs = ["s.docID AS docID"]
+        for col in ordered_columns:
+            expr = self._build_amount_case_expr(table_mappings.get(col))
+            select_exprs.append(f"{expr} AS {self._sql_ident(col)}")
+
+        col_list = ", ".join([self._sql_ident("docID")] + [self._sql_ident(c) for c in ordered_columns])
+        sql = f"""
+        INSERT OR REPLACE INTO {self._sql_ident(table_name)} ({col_list})
+        SELECT
+          {", ".join(select_exprs)}
+        FROM {source_ref} s
+        INNER JOIN {temp_docids} t ON t.docID = s.docID
+        GROUP BY s.docID
+        """
+        conn.execute(sql)
+
+    def generate_financial_statements(
+        self,
+        source_database,
+        source_table,
+        target_database,
+        mappings_config,
+        company_table=None,
+        prices_table=None,
+        overwrite=False,
+        batch_size=2500,
+    ):
+        """Generate normalized financial-statement tables from standardized records.
+
+        Supports source and target DB separation by attaching the source
+        database when needed. Processing is resumable: only missing/partial
+        docIDs are selected, and each chunk is committed atomically.
+        """
+        cfg = getattr(self, "config", None)
+        source_db = source_database or self.DB_PATH
+        target_db = target_database or self.DB_PATH
+        source_tbl = source_table or (cfg.get("DB_STANDARDIZED_TABLE") if cfg else None) or "Standard_Data"
+        company_tbl = company_table or (cfg.get("DB_COMPANY_INFO_TABLE") if cfg else None) or "companyInfo"
+        prices_tbl = prices_table or (cfg.get("DB_STOCK_PRICES_TABLE") if cfg else None) or "stock_prices"
+        mappings_path = mappings_config
+        if not mappings_path:
+            raise ValueError("Mappings_Config is required for generate_financial_statements.")
+
+        batch_size = max(int(batch_size or 2500), 1)
+        mappings = self._load_financial_statement_mappings(mappings_path)
+
+        same_db = os.path.abspath(source_db) == os.path.abspath(target_db)
+        conn = sqlite3.connect(target_db)
+        try:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+
+            source_schema = "main"
+            if not same_db:
+                conn.execute("ATTACH DATABASE ? AS src", (source_db,))
+                source_schema = "src"
+
+            source_ref = f"{self._sql_ident(source_schema)}.{self._sql_ident(source_tbl)}"
+
+            if overwrite:
+                logger.info("Overwrite enabled - resetting financial statement tables.")
+                conn.executescript(
+                    """
+                    DROP TABLE IF EXISTS FinancialStatements;
+                    DROP TABLE IF EXISTS IncomeStatement;
+                    DROP TABLE IF EXISTS BalanceSheet;
+                    DROP TABLE IF EXISTS CashflowStatement;
+                    """
+                )
+
+            self._create_financial_statement_tables(conn)
+
+            # Resolve company/prices tables with fallback to source DB (if attached)
+            company_in_main = self._resolve_table_name_in_schema(conn, "main", company_tbl)
+            prices_in_main = self._resolve_table_name_in_schema(conn, "main", prices_tbl)
+
+            company_schema = "main"
+            prices_schema = "main"
+            company_actual = company_in_main
+            prices_actual = prices_in_main
+
+            if not company_actual and source_schema != "main":
+                company_actual = self._resolve_table_name_in_schema(conn, source_schema, company_tbl)
+                if company_actual:
+                    company_schema = source_schema
+
+            if not prices_actual and source_schema != "main":
+                prices_actual = self._resolve_table_name_in_schema(conn, source_schema, prices_tbl)
+                if prices_actual:
+                    prices_schema = source_schema
+
+            if not company_actual:
+                raise RuntimeError(
+                    f"Company table '{company_tbl}' not found in target or source database; "
+                    "required for SharePrice lookup."
+                )
+            if not prices_actual:
+                raise RuntimeError(
+                    f"Stock prices table '{prices_tbl}' not found in target or source database; "
+                    "required for SharePrice lookup."
+                )
+
+            company_ref = f"{self._sql_ident(company_schema)}.{self._sql_ident(company_actual)}"
+            prices_ref = f"{self._sql_ident(prices_schema)}.{self._sql_ident(prices_actual)}"
+
+            temp_docids = self._sql_ident("_tmp_fs_docids")
+            conn.execute(f"CREATE TEMP TABLE IF NOT EXISTS {temp_docids} (docID TEXT PRIMARY KEY)")
+
+            pending_sql = f"""
+            SELECT DISTINCT s.docID
+            FROM {source_ref} s
+            LEFT JOIN FinancialStatements fs ON fs.docID = s.docID
+            LEFT JOIN IncomeStatement is1 ON is1.docID = s.docID
+            LEFT JOIN BalanceSheet bs ON bs.docID = s.docID
+            LEFT JOIN CashflowStatement cs ON cs.docID = s.docID
+            WHERE s.docID IS NOT NULL
+              AND (fs.docID IS NULL OR is1.docID IS NULL OR bs.docID IS NULL OR cs.docID IS NULL)
+            ORDER BY s.docID
+            """
+
+            doc_cursor = conn.execute(pending_sql)
+            total_docs = 0
+            while True:
+                batch = [row[0] for row in doc_cursor.fetchmany(batch_size)]
+                if not batch:
+                    break
+
+                with conn:
+                    conn.execute(f"DELETE FROM {temp_docids}")
+                    conn.executemany(
+                        f"INSERT OR IGNORE INTO {temp_docids}(docID) VALUES (?)",
+                        [(d,) for d in batch],
+                    )
+
+                    self._insert_base_financial_statements(
+                        conn,
+                        source_ref,
+                        temp_docids,
+                        mappings,
+                        company_ref,
+                        prices_ref,
+                    )
+
+                    self._insert_statement_table_rows(
+                        conn,
+                        source_ref,
+                        temp_docids,
+                        "IncomeStatement",
+                        [
+                            "netSales", "costOfSales", "grossProfit", "operatingIncome",
+                            "incomeBeforeTaxes", "incomeTaxes", "netIncome",
+                        ],
+                        mappings,
+                    )
+                    self._insert_statement_table_rows(
+                        conn,
+                        source_ref,
+                        temp_docids,
+                        "BalanceSheet",
+                        [
+                            "cash", "inventories", "currentAssets", "ppe", "intangibleAssets",
+                            "totalAssets", "shareholdersEquity", "currentLiabilities",
+                            "NonCurrentLiabilities", "LongTermDebt", "TotalLiabilities",
+                        ],
+                        mappings,
+                    )
+                    self._insert_statement_table_rows(
+                        conn,
+                        source_ref,
+                        temp_docids,
+                        "CashflowStatement",
+                        [
+                            "operatingCashflow", "depreciation", "cashflowInventories",
+                            "investmentCashflow", "capex", "financingCashflow", "dividends", "buybacks",
+                        ],
+                        mappings,
+                    )
+
+                total_docs += len(batch)
+                if total_docs % (batch_size * 10) == 0:
+                    logger.info("Generate Financial Statements progress: %d docs processed", total_docs)
+
+            logger.info("Generate Financial Statements completed. Processed %d document(s).", total_docs)
+        finally:
+            conn.close()
 
 
     def Filter_for_Relevant(self, input_table, output_table, conn=None):
