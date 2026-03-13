@@ -26,8 +26,22 @@
     "csv_file": "config/reference/EdinetcodeDlInfo.csv",
     "Target_Database": ""
   },
+  "import_stock_prices_csv_config": {
+    "Target_Database": "",
+    "csv_file": "",
+    "default_ticker": "",
+    "default_currency": "JPY",
+    "date_column": "Date",
+    "price_column": "Close",
+    "ticker_column": "",
+    "currency_column": ""
+  },
+  "update_stock_prices_config": {
+    "Target_Database": ""
+  },
   "parse_taxonomy_config": {
-    "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd"
+    "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd",
+    "Target_Database": ""
   },
   "generate_financial_statements_config": {
     "Source_Database": "",

@@ -332,6 +332,13 @@ def open_import_csv_config(
         width=380,
         read_only=True,
     )
+    target_db_tf = ft.TextField(
+        label="Target_Database (blank = DB_PATH)",
+        value=current.get("Target_Database", ""),
+        dense=True,
+        width=380,
+        read_only=True,
+    )
 
     async def _pick_csv(_):
         files = await fp.pick_files(
@@ -350,24 +357,73 @@ def open_import_csv_config(
         on_click=_pick_csv,
     )
 
-    ticker_tf = ft.TextField(label="Ticker", value=current.get("ticker", ""), dense=True, width=200, hint_text="e.g. 7203")
-    currency_tf = ft.TextField(label="Currency", value=current.get("currency", "JPY"), dense=True, width=200, hint_text="e.g. JPY, USD")
+    async def _pick_target_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select target database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            target_db_tf.value = files[0].path
+            page.update()
+
+    db_browse_btn = ft.IconButton(
+        icon=ft.Icons.FOLDER_OPEN,
+        tooltip="Browse for target DB",
+        on_click=_pick_target_db,
+    )
+
+    default_ticker_tf = ft.TextField(
+        label="Default Ticker",
+        value=current.get("default_ticker", current.get("ticker", "")),
+        dense=True,
+        width=200,
+        hint_text="used when Ticker column is blank/missing",
+    )
+    default_currency_tf = ft.TextField(
+        label="Default Currency",
+        value=current.get("default_currency", current.get("currency", "JPY")),
+        dense=True,
+        width=200,
+        hint_text="used when Currency column is blank/missing",
+    )
     date_col_tf = ft.TextField(label="Date Column", value=current.get("date_column", "Date"), dense=True, width=200, hint_text="CSV column for date")
     price_col_tf = ft.TextField(label="Price Column", value=current.get("price_column", "Close"), dense=True, width=200, hint_text="CSV column for price")
+    ticker_col_tf = ft.TextField(
+        label="Ticker Column (optional)",
+        value=current.get("ticker_column", ""),
+        dense=True,
+        width=200,
+        hint_text="e.g. Ticker",
+    )
+    currency_col_tf = ft.TextField(
+        label="Currency Column (optional)",
+        value=current.get("currency_column", ""),
+        dense=True,
+        width=200,
+        hint_text="e.g. Currency",
+    )
 
     def save(_):
         if not csv_path_tf.value.strip():
             snack("Please select a CSV file")
             return
-        if not ticker_tf.value.strip():
-            snack("Please enter a ticker symbol")
+        if (not default_ticker_tf.value.strip()) and (not ticker_col_tf.value.strip()):
+            snack("Please set either Default Ticker or Ticker Column")
+            return
+        if (not default_currency_tf.value.strip()) and (not currency_col_tf.value.strip()):
+            snack("Please set either Default Currency or Currency Column")
             return
         step_configs["import_stock_prices_csv"] = {
+            "Target_Database": target_db_tf.value.strip(),
             "csv_file": csv_path_tf.value.strip(),
-            "ticker": ticker_tf.value.strip(),
-            "currency": currency_tf.value.strip() or "JPY",
+            "default_ticker": default_ticker_tf.value.strip(),
+            "default_currency": default_currency_tf.value.strip() or "JPY",
             "date_column": date_col_tf.value.strip() or "Date",
             "price_column": price_col_tf.value.strip() or "Close",
+            "ticker_column": ticker_col_tf.value.strip(),
+            "currency_column": currency_col_tf.value.strip(),
         }
         pop()
         snack("Import CSV config updated")
@@ -379,12 +435,14 @@ def open_import_csv_config(
             [
                 ft.Text("Select a CSV file and map its columns to the database fields.", size=12, color=ft.Colors.GREY_500),
                 ft.Row([csv_path_tf, browse_btn], spacing=4),
+                ft.Row([target_db_tf, db_browse_btn], spacing=4),
                 ft.Divider(height=1),
-                ft.Row([ticker_tf, currency_tf], spacing=16),
+                ft.Row([default_ticker_tf, default_currency_tf], spacing=16),
                 ft.Divider(height=1),
                 ft.Text("Column Mapping", weight=ft.FontWeight.BOLD, size=13),
-                ft.Text("Specify which columns in the CSV correspond to Date and Price.", size=11, color=ft.Colors.GREY_500),
+                ft.Text("Specify CSV columns for Date/Price and optionally Ticker/Currency.", size=11, color=ft.Colors.GREY_500),
                 ft.Row([date_col_tf, price_col_tf], spacing=16),
+                ft.Row([ticker_col_tf, currency_col_tf], spacing=16),
             ],
             scroll=ft.ScrollMode.AUTO,
             width=500,
@@ -392,6 +450,163 @@ def open_import_csv_config(
             spacing=8,
         ),
         actions=[ft.TextButton("Cancel", on_click=lambda _: pop()), ft.Button("Save", on_click=save)],
+    ))
+
+
+def open_parse_taxonomy_config(
+    page: ft.Page,
+    fp: ft.FilePicker,
+    step_configs: dict[str, dict],
+    snack: Callable[[str], None],
+    show: Callable[[ft.AlertDialog], None],
+    pop: Callable[[], None],
+):
+    """Dialog for configuring the 'parse_taxonomy' step."""
+    current = step_configs.get("parse_taxonomy", {})
+    if not current:
+        current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("parse_taxonomy", {}))
+
+    xsd_tf = ft.TextField(
+        label="XSD File",
+        value=current.get("xsd_file", "config/reference/jppfs_cor_2013-08-31.xsd"),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+    target_db_tf = ft.TextField(
+        label="Target_Database (blank = DB_PATH)",
+        value=current.get("Target_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+
+    async def _pick_xsd(_):
+        files = await fp.pick_files(
+            dialog_title="Select EDINET taxonomy XSD file",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["xsd"],
+            allow_multiple=False,
+        )
+        if files:
+            xsd_tf.value = files[0].path
+            page.update()
+
+    async def _pick_target_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select target database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            target_db_tf.value = files[0].path
+            page.update()
+
+    def save(_):
+        if not xsd_tf.value.strip():
+            snack("Please select an XSD file")
+            return
+        step_configs["parse_taxonomy"] = {
+            "xsd_file": xsd_tf.value.strip(),
+            "Target_Database": target_db_tf.value.strip(),
+        }
+        pop()
+        snack("Parse Taxonomy config updated")
+
+    show(ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configure: Parse Taxonomy"),
+        content=ft.Column(
+            [
+                ft.Text(
+                    "Select the EDINET taxonomy XSD file and destination database.",
+                    size=12,
+                    color=ft.Colors.GREY_500,
+                ),
+                ft.Row([
+                    xsd_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select XSD", on_click=_pick_xsd),
+                ], spacing=4),
+                ft.Row([
+                    target_db_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select target DB", on_click=_pick_target_db),
+                ], spacing=4),
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            width=560,
+            height=220,
+            spacing=8,
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: pop()),
+            ft.Button("Save", on_click=save),
+        ],
+    ))
+
+
+def open_update_stock_prices_config(
+    page: ft.Page,
+    fp: ft.FilePicker,
+    step_configs: dict[str, dict],
+    snack: Callable[[str], None],
+    show: Callable[[ft.AlertDialog], None],
+    pop: Callable[[], None],
+):
+    """Dialog for configuring the 'update_stock_prices' step."""
+    current = step_configs.get("update_stock_prices", {})
+    if not current:
+        current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("update_stock_prices", {}))
+
+    target_db_tf = ft.TextField(
+        label="Target_Database (blank = DB_PATH)",
+        value=current.get("Target_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+
+    async def _pick_target_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select target database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            target_db_tf.value = files[0].path
+            page.update()
+
+    def save(_):
+        step_configs["update_stock_prices"] = {
+            "Target_Database": target_db_tf.value.strip(),
+        }
+        pop()
+        snack("Update Stock Prices config updated")
+
+    show(ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configure: Update Stock Prices"),
+        content=ft.Column(
+            [
+                ft.Text(
+                    "Select destination database for stock price updates.",
+                    size=12,
+                    color=ft.Colors.GREY_500,
+                ),
+                ft.Row([
+                    target_db_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select target DB", on_click=_pick_target_db),
+                ], spacing=4),
+            ],
+            width=560,
+            height=170,
+            spacing=8,
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: pop()),
+            ft.Button("Save", on_click=save),
+        ],
     ))
 
 

@@ -40,12 +40,6 @@ class Config:
         except FileNotFoundError:
             print(f"Warning: {self.run_config_path} not found.")
 
-        regression_config = os.path.join(base, "config", "reference", "config_Regression.json")
-        try:
-            with open(regression_config, "r") as file:
-                self.settings.update(json.load(file))
-        except FileNotFoundError:
-            print("Warning: config/config_Regression.json not found.")
 
     def get(self, key, default=None):
         """Get a config value from settings or environment variables."""

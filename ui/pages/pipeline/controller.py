@@ -19,6 +19,8 @@ from ui.pages.pipeline.step_dialogs import (
     open_generate_financial_statements_config,
     open_generic_step_config,
     open_import_csv_config,
+    open_parse_taxonomy_config,
+    open_update_stock_prices_config,
 )
 
 
@@ -172,6 +174,12 @@ class AppController:
             return
         if step_name == "import_stock_prices_csv":
             open_import_csv_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)
+            return
+        if step_name == "parse_taxonomy":
+            open_parse_taxonomy_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)
+            return
+        if step_name == "update_stock_prices":
+            open_update_stock_prices_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)
             return
         if step_name == "generate_financial_statements":
             open_generate_financial_statements_config(

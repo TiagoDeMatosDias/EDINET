@@ -1,5 +1,6 @@
 import logging
 import json
+import sqlite3
 import src.edinet_api as edinet_api
 from config import Config
 import src.data_processing as d
@@ -96,25 +97,42 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
     elif step_name == "import_stock_prices_csv":
         logger.info("Importing stock prices from CSV...")
         csv_config = config.get("import_stock_prices_csv_config", {})
+        target_database = csv_config.get("Target_Database") or DB_PATH
         csv_path = csv_config.get("csv_file", "")
-        ticker = csv_config.get("ticker", "")
-        currency = csv_config.get("currency", "JPY")
+        default_ticker = csv_config.get("default_ticker", csv_config.get("ticker", ""))
+        default_currency = csv_config.get("default_currency", csv_config.get("currency", "JPY"))
         date_column = csv_config.get("date_column", "Date")
         price_column = csv_config.get("price_column", "Close")
+        ticker_column = csv_config.get("ticker_column", "")
+        currency_column = csv_config.get("currency_column", "")
         y.import_stock_prices_csv(
-            DB_PATH, DB_STOCK_PRICES_TABLE, csv_path,
-            ticker, currency, date_column, price_column,
+            target_database, DB_STOCK_PRICES_TABLE, csv_path,
+            default_ticker, default_currency, date_column, price_column,
+            ticker_column=ticker_column,
+            currency_column=currency_column,
         )
 
     elif step_name == "update_stock_prices":
         logger.info("Updating stock prices...")
-        y.update_all_stock_prices(DB_PATH, DB_COMPANY_INFO_TABLE, DB_STOCK_PRICES_TABLE, DB_STANDARDIZED_TABLE)
+        update_config = config.get("update_stock_prices_config", {})
+        target_database = update_config.get("Target_Database") or DB_PATH
+        y.update_all_stock_prices(
+            target_database,
+            DB_COMPANY_INFO_TABLE,
+            DB_STOCK_PRICES_TABLE,
+            DB_STANDARDIZED_TABLE,
+        )
 
     elif step_name == "parse_taxonomy":
         logger.info("Parsing EDINET taxonomy...")
         taxonomy_config = config.get("parse_taxonomy_config", {})
         xsd_file = taxonomy_config.get("xsd_file")
-        data.parse_edinet_taxonomy(xsd_file, DB_TAXONOMY_TABLE)
+        target_database = taxonomy_config.get("Target_Database") or DB_PATH
+        conn = sqlite3.connect(target_database)
+        try:
+            data.parse_edinet_taxonomy(xsd_file, DB_TAXONOMY_TABLE, connection=conn)
+        finally:
+            conn.close()
 
     elif step_name == "find_significant_predictors":
         logger.info("Finding significant predictors...")
@@ -199,8 +217,8 @@ def run(edinet=None, data=None):
         "standardize_data":           ["DB_FINANCIAL_DATA_TABLE", "DB_STANDARDIZED_TABLE"],
         "populate_company_info":      ["DB_COMPANY_INFO_TABLE"],
         "generate_financial_ratios":  ["DB_STANDARDIZED_TABLE", "DB_STANDARDIZED_RATIOS_TABLE"],
-        "import_stock_prices_csv":    ["DB_PATH", "DB_STOCK_PRICES_TABLE"],
-        "update_stock_prices":        ["DB_PATH", "DB_COMPANY_INFO_TABLE",
+        "import_stock_prices_csv":    ["DB_STOCK_PRICES_TABLE"],
+        "update_stock_prices":        ["DB_COMPANY_INFO_TABLE",
                                        "DB_STOCK_PRICES_TABLE", "DB_STANDARDIZED_TABLE"],
         "parse_taxonomy":             ["DB_TAXONOMY_TABLE"],
         "generate_financial_statements": [],

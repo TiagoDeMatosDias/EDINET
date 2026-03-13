@@ -5,7 +5,7 @@
       "overwrite": false
     },
     "populate_company_info": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": false
     },
     "standardize_data": {
@@ -25,7 +25,7 @@
       "overwrite": false
     },
     "import_stock_prices_csv": {
-      "enabled": false,
+      "enabled": true,
       "overwrite": false
     },
     "parse_taxonomy": {
@@ -68,14 +68,21 @@
     "Target_Database": ""
   },
   "import_stock_prices_csv_config": {
-    "csv_file": "C:\\Users\\PC\\Downloads\\^tpx_d.csv",
-    "ticker": "TPX",
-    "currency": "JPY",
+    "Target_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "csv_file": "C:\\programming\\Finance\\EDINET\\EDINET\\data\\stock data\\Stock_Prices.csv",
+    "default_ticker": "TPX",
+    "default_currency": "JPY",
     "date_column": "Date",
-    "price_column": "Close"
+    "price_column": "Price",
+    "ticker_column": "Ticker",
+    "currency_column": "Currency"
+  },
+  "update_stock_prices_config": {
+    "Target_Database": ""
   },
   "parse_taxonomy_config": {
-    "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd"
+    "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd",
+    "Target_Database": ""
   },
   "generate_financial_statements_config": {
     "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Base.db",

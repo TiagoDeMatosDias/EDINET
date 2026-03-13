@@ -147,8 +147,17 @@ def load_ticker_data(ticker, prices_table, conn) -> bool:
         return True
 
 
-def import_stock_prices_csv(db_name, prices_table, csv_path, ticker, currency,
-                            date_column, price_column):
+def import_stock_prices_csv(
+    db_name,
+    prices_table,
+    csv_path,
+    default_ticker,
+    default_currency,
+    date_column,
+    price_column,
+    ticker_column=None,
+    currency_column=None,
+):
     """Import stock prices from a user-supplied CSV file into the database.
 
     Reads the CSV at *csv_path*, extracts the columns specified by
@@ -161,16 +170,22 @@ def import_stock_prices_csv(db_name, prices_table, csv_path, ticker, currency,
         db_name (str): Path to the SQLite database file.
         prices_table (str): Name of the stock-prices table.
         csv_path (str): Absolute path to the CSV file to import.
-        ticker (str): Ticker symbol to assign to every imported row.
-        currency (str): Currency code (e.g. ``'JPY'``, ``'USD'``).
+        default_ticker (str): Fallback ticker when *ticker_column* is blank
+            or not supplied.
+        default_currency (str): Fallback currency when *currency_column* is
+            blank or not supplied.
         date_column (str): Name of the CSV column containing dates.
         price_column (str): Name of the CSV column containing prices.
+        ticker_column (str, optional): CSV column to read ticker values from.
+        currency_column (str, optional): CSV column to read currency values from.
 
     Returns:
         int: Number of rows inserted.
     """
-    logger.info("Importing stock prices from CSV: %s (ticker=%s, currency=%s)",
-                csv_path, ticker, currency)
+    logger.info(
+        "Importing stock prices from CSV: %s (default_ticker=%s, default_currency=%s)",
+        csv_path, default_ticker, default_currency,
+    )
 
     df = pd.read_csv(csv_path)
 
@@ -180,40 +195,67 @@ def import_stock_prices_csv(db_name, prices_table, csv_path, ticker, currency,
     if price_column not in df.columns:
         raise ValueError(f"Price column '{price_column}' not found in CSV. "
                          f"Available columns: {list(df.columns)}")
+    if ticker_column and ticker_column not in df.columns:
+        raise ValueError(f"Ticker column '{ticker_column}' not found in CSV. "
+                         f"Available columns: {list(df.columns)}")
+    if currency_column and currency_column not in df.columns:
+        raise ValueError(f"Currency column '{currency_column}' not found in CSV. "
+                         f"Available columns: {list(df.columns)}")
+
+    ticker_series = (
+        df[ticker_column].fillna("").astype(str).str.strip()
+        if ticker_column else pd.Series([default_ticker] * len(df), index=df.index)
+    )
+    currency_series = (
+        df[currency_column].fillna("").astype(str).str.strip()
+        if currency_column else pd.Series([default_currency] * len(df), index=df.index)
+    )
+
+    ticker_series = ticker_series.replace({"nan": "", "None": ""})
+    currency_series = currency_series.replace({"nan": "", "None": ""})
+
+    if default_ticker:
+        ticker_series = ticker_series.replace("", default_ticker)
+    if default_currency:
+        currency_series = currency_series.replace("", default_currency)
 
     out = pd.DataFrame({
         "Date": pd.to_datetime(df[date_column]).dt.strftime("%Y-%m-%d"),
-        "Ticker": ticker,
-        "Currency": currency,
+        "Ticker": ticker_series,
+        "Currency": currency_series,
         "Price": pd.to_numeric(df[price_column], errors="coerce"),
     })
 
-    out = out.dropna(subset=["Date", "Price"])
+    out = out.dropna(subset=["Date", "Price"]).copy()
+    out["Ticker"] = out["Ticker"].astype(str).str.strip()
+    out["Currency"] = out["Currency"].astype(str).str.strip()
+    out = out[(out["Ticker"] != "") & (out["Currency"] != "")]
 
     conn = sqlite3.connect(db_name)
     try:
         _create_prices_table(conn, prices_table)
 
-        # Remove rows that already exist for this ticker
-        existing = set()
+        # Remove rows that already exist (Date + Ticker)
+        existing_df = pd.DataFrame(columns=["Date", "Ticker"])
         try:
             existing_df = pd.read_sql_query(
-                f"SELECT DISTINCT Date FROM {prices_table} WHERE Ticker = ?",
-                conn, params=(ticker,),
+                f"SELECT DISTINCT Date, Ticker FROM {prices_table}",
+                conn,
             )
-            existing = set(existing_df["Date"].tolist())
         except Exception:
             pass
 
-        out = out[~out["Date"].isin(existing)]
+        if not existing_df.empty:
+            out = out.merge(existing_df, on=["Date", "Ticker"], how="left", indicator=True)
+            out = out[out["_merge"] == "left_only"].drop(columns=["_merge"])
 
         if out.empty:
-            logger.info("No new rows to insert — all dates already exist for ticker %s.", ticker)
+            logger.info("No new rows to insert — all Date+Ticker pairs already exist.")
             return 0
 
         out.to_sql(prices_table, conn, if_exists="append", index=False)
         conn.commit()
-        logger.info("Successfully imported %d price records for ticker %s.", len(out), ticker)
+        logger.info("Successfully imported %d price records.", len(out))
         return len(out)
     finally:
         conn.close()

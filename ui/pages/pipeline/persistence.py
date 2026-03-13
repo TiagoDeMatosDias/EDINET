@@ -28,6 +28,7 @@ STEP_CONFIG_KEY: dict[str, str] = {
     "download_documents": "download_documents_config",
     "populate_company_info": "populate_company_info_config",
     "import_stock_prices_csv": "import_stock_prices_csv_config",
+    "update_stock_prices": "update_stock_prices_config",
     "parse_taxonomy": "parse_taxonomy_config",
     "generate_financial_statements": "generate_financial_statements_config",
     "find_significant_predictors": "find_significant_predictors_config",
@@ -74,13 +75,22 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "Target_Database": "",
     },
     "import_stock_prices_csv": {
+        "Target_Database": "",
         "csv_file": "",
-        "ticker": "",
-        "currency": "JPY",
+        "default_ticker": "",
+        "default_currency": "JPY",
         "date_column": "Date",
         "price_column": "Close",
+        "ticker_column": "",
+        "currency_column": "",
     },
-    "parse_taxonomy": {"xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd"},
+    "update_stock_prices": {
+        "Target_Database": "",
+    },
+    "parse_taxonomy": {
+        "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd",
+        "Target_Database": "",
+    },
     "generate_financial_statements": {
         "Source_Database": "",
         "Source_Table": "Standard_Data",
