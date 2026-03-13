@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
@@ -96,6 +97,86 @@ def Run_Model(
         return empty_model
 
 
+def build_scoring_query(
+    results: sm.regression.linear_model.RegressionResultsWrapper,
+    query: str,
+    company_table: str = "companyInfo",
+) -> str:
+    """Build a scoring SQL query from fitted OLS results and the original query.
+
+    The original *query* is wrapped as a subquery so that any computed /
+    aliased columns (e.g. ``(expr) AS alias``) are available for the score
+    expression.  ``edinetCode`` and ``periodEnd`` are injected into the
+    inner SELECT when they are not already present, because the outer query
+    needs them for the company JOIN and year extraction.
+
+    Args:
+        results: Fitted OLS model whose ``params`` supply the coefficients.
+        query: The original SQL query used to generate the regression data.
+        company_table: Name of the company-info table joined to map
+            ``edinetCode`` → ``Company_Ticker``.
+
+    Returns:
+        A complete SQL string that scores every row, joined to company info,
+        ordered by year and descending score.
+    """
+    # Build scoring expression and collect independent variable names
+    terms: list[str] = []
+    ind_vars: list[str] = []
+    for var, coef in results.params.items():
+        c = round(coef, 4)
+        if var == "const":
+            terms.append(f"{c}")
+        else:
+            terms.append(f"r.{var} * {c}")
+            ind_vars.append(var)
+
+    score_expr = " + ".join(terms) if terms else "0"
+
+    # WHERE restrictions ensuring all independent variables are not empty
+    where_conditions = [f"r.{var} IS NOT NULL" for var in ind_vars]
+    where_clause = (
+        "\n      AND ".join(where_conditions)
+        if where_conditions
+        else "1=1"
+    )
+
+    # Augment the original query with edinetCode / periodEnd when missing,
+    # then use it as a subquery so computed aliases are accessible.
+    query_stripped = query.strip()
+    from_match = re.search(r'(?i)\bFROM\b', query_stripped)
+    if from_match:
+        select_part = query_stripped[:from_match.start()].lower()
+        additions: list[str] = []
+        if 'edinetcode' not in select_part:
+            additions.append('edinetCode')
+        if 'periodend' not in select_part:
+            additions.append('periodEnd')
+
+        if additions:
+            addition_str = ', ' + ', '.join(additions)
+            augmented_query = (
+                query_stripped[:from_match.start()]
+                + addition_str + '\n'
+                + query_stripped[from_match.start():]
+            )
+        else:
+            augmented_query = query_stripped
+    else:
+        augmented_query = query_stripped
+
+    return (
+        f"SELECT\n"
+        f"    c.Company_Ticker AS Tickers,\n"
+        f"    SUBSTR(r.periodEnd, 1, 4) AS Year,\n"
+        f"    ({score_expr}) AS Score\n"
+        f"FROM ({augmented_query}) r\n"
+        f"JOIN {company_table} c ON c.edinetCode = r.edinetCode\n"
+        f"WHERE {where_clause}\n"
+        f"ORDER BY Year, Score DESC"
+    )
+
+
 def write_results_to_file(
     results: sm.regression.linear_model.RegressionResultsWrapper,
     query: str,
@@ -149,37 +230,7 @@ def write_results_to_file(
         # --- Scoring Query ---
         f.write("---" + " Scoring Query ---" + "\n")
 
-        # Build scoring expression and collect independent variable names
-        terms = []
-        ind_vars = []
-        for var, coef in results.params.items():
-            c = round(coef, 4)
-            if var == "const":
-                terms.append(f"{c}")
-            else:
-                terms.append(f"r.{var} * {c}")
-                ind_vars.append(var)
-
-        score_expr = " + ".join(terms) if terms else "0"
-
-        # WHERE restrictions ensuring all independent variables are not empty
-        where_conditions = [f"r.{var} IS NOT NULL" for var in ind_vars]
-        where_clause = (
-            "\n      AND ".join(where_conditions)
-            if where_conditions
-            else "1=1"
-        )
-
-        scoring_sql = (
-            f"SELECT\n"
-            f"    c.Company_Ticker AS Tickers,\n"
-            f"    SUBSTR(r.periodEnd, 1, 4) AS Year,\n"
-            f"    ({score_expr}) AS Score\n"
-            f"FROM {ratios_table} r\n"
-            f"JOIN {company_table} c ON c.edinetCode = r.edinetCode\n"
-            f"WHERE {where_clause}\n"
-            f"ORDER BY Year, Score DESC"
-        )
+        scoring_sql = build_scoring_query(results, query, company_table)
 
         f.write(scoring_sql + "\n")
 

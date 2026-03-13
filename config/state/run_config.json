@@ -9,7 +9,7 @@
       "overwrite": false
     },
     "standardize_data": {
-      "enabled": false,
+      "enabled": true,
       "overwrite": true
     },
     "download_documents": {
@@ -29,15 +29,15 @@
       "overwrite": false
     },
     "generate_financial_ratios": {
-      "enabled": false,
-      "overwrite": false
+      "enabled": true,
+      "overwrite": true
     },
     "find_significant_predictors": {
       "enabled": false,
       "overwrite": false
     },
     "Multivariate_Regression": {
-      "enabled": false,
+      "enabled": true,
       "overwrite": false
     },
     "backtest": {
@@ -91,7 +91,7 @@
       "lower": 0.05,
       "upper": 0.95
     },
-    "SQL_Query": "Select \rPerShare_SharePrice_3Year_Growth\r,\r Ratio_PriceBook_ZScore,\rRatio_PriceSales_ZScore,\rRatio_ReturnOnEquity_ZScore,\rRatio_OperatingMargin_ZScore\r\r\r from Standard_Data_Ratios"
+    "SQL_Query": "Select \rPerShare_SharePrice_3Year_Growth\r,\r Ratio_OperatingMargin_5Year_Std,\r(incomeBeforeTaxes  /EnterpriseValue  ) as pretax_ev,\r(netIncome / (totalAssets - cash)) as ROIC\r\r\r from Standard_Data_Ratios"
   },
   "backtesting_config": {
     "start_date": "2020-01-01",
@@ -122,5 +122,5 @@
     "risk_free_rate": 0.02,
     "initial_capital": 0.0
   },
-  "financial_ratios_config_path": "config\\reference\\financial_ratios_config.json"
+  "financial_ratios_config_path": "C:\\programming\\Finance\\EDINET\\EDINET\\config\\reference\\financial_ratios_config.json"
 }

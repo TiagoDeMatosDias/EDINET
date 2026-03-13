@@ -23,21 +23,28 @@
     "jppfs_cor:NetCashProvidedByUsedInFinancingActivities",
     "jppfs_cor:CurrentAssets",
     "jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults",
+    "jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults",
+    "jppfs_cor:CashAndDeposits",
+    "jppfs_cor:CashAndCashEquivalents",
     "jppfs_cor:Inventories",
     "jppfs_cor:PropertyPlantAndEquipment",
     "jppfs_cor:IntangibleAssets",
     "jppfs_cor:CurrentLiabilities",
     "jppfs_cor:NoncurrentLiabilities",
     "jppfs_cor:TotalDebt",
-    "jppfs_cor:LongTermLoansPayable"
+    "jppfs_cor:LongTermLoansPayable",
+    "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
+    "jpcrp_cor:NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
+    "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults"
   ],
   "period_conditions": [
     "CurrentYearDuration",
     "CurrentYearDuration_NonConsolidatedMember",
     "CurrentYearInstant",
-    "CurrentYearInstant_NonConsolidatedMember"
+    "CurrentYearInstant_NonConsolidatedMember",
+    "FilingDateInstant"
   ],
-  "query_template": "CREATE TABLE IF NOT EXISTS {output_table} AS SELECT AccountingTerm, Period, Currency, Amount, docID, edinetCode, docTypeCode, submitDateTime, periodStart, periodEnd FROM {input_table} WHERE (({accounting_term_query}) AND ({period_query}) AND (AccountingTerm LIKE 'jppfs_cor:%')) OR (AccountingTerm = 'jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults' AND Period = 'CurrentYearInstant_NonConsolidatedMember') OR (AccountingTerm = 'jpcrp_cor:PriceEarningsRatioSummaryOfBusinessResults' AND Period = 'CurrentYearDuration')",
+  "query_template": "CREATE TABLE IF NOT EXISTS {output_table} AS SELECT AccountingTerm, Period, Currency, Amount, docID, edinetCode, docTypeCode, submitDateTime, periodStart, periodEnd FROM {input_table} WHERE (({accounting_term_query}) AND ({period_query}) AND (AccountingTerm LIKE 'jppfs_cor:%' OR AccountingTerm LIKE 'jpcrp_cor:%'))",
   "mappings": {
     "netSales": ["jppfs_cor:NetSales_CurrentYearDuration", "jppfs_cor:OperatingRevenue1_CurrentYearDuration","jppfs_cor:NetSales_CurrentYearDuration_NonConsolidatedMember" ],
     "costOfSales": ["jppfs_cor:CostOfSales_CurrentYearDuration"],
@@ -46,7 +53,7 @@
     "incomeBeforeTaxes": ["jppfs_cor:IncomeBeforeIncomeTaxes_CurrentYearDuration"],
     "incomeTaxes": ["jppfs_cor:IncomeTaxes_CurrentYearDuration"],
     "netIncome": ["jppfs_cor:NetIncome_CurrentYearDuration", "jppfs_cor:ProfitLoss_CurrentYearDuration"],
-    "cash": ["jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults_CurrentYearInstant"],
+    "cash": ["jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults_CurrentYearInstant", "jpcrp_cor:CashAndCashEquivalentsSummaryOfBusinessResults_CurrentYearInstant", "jppfs_cor:CashAndDeposits_CurrentYearInstant", "jppfs_cor:CashAndCashEquivalents_CurrentYearInstant"],
     "inventories": ["jppfs_cor:Inventories_CurrentYearInstant"],
     "currentAssets": ["jppfs_cor:CurrentAssets_CurrentYearInstant"],
     "ppe": ["jppfs_cor:PropertyPlantAndEquipment_CurrentYearInstant"],
@@ -64,7 +71,7 @@
     "depreciation": ["jppfs_cor:DepreciationAndAmortizationOpeCF_CurrentYearDuration"],
     "cashflowInventories": ["jppfs_cor:DecreaseIncreaseInInventoriesOpeCF_CurrentYearDuration"],
     "capex": ["jppfs_cor:PurchaseOfPropertyPlantAndEquipmentInvCF_CurrentYearDuration"],
-    "SharesOutstanding" : ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults_CurrentYearInstant_NonConsolidatedMember","jpcrp_cor:NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc"]
+    "SharesOutstanding" : ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults_CurrentYearInstant_NonConsolidatedMember","jpcrp_cor:NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc", "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc_FilingDateInstant"]
   },
   "ratios": [
     {"output": "Cashflow_free", "expression": {"operator": "+", "operands": [{"column": "operatingCashflow", "fillna": 0}, {"column": "investmentCashflow", "fillna": 0}]}},
