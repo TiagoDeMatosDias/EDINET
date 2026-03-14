@@ -171,7 +171,7 @@ class AppController:
 
     def open_step_config(self, step_name: str):
         if step_name == "backtest":
-            open_backtest_config(self.page, self.step_configs, self.snack, self.show, self.pop)
+            open_backtest_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)
             return
         if step_name == "backtest_set":
             open_backtest_set_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)

@@ -20,6 +20,37 @@ def open_backtest_set_config(
     if not current:
         current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("backtest_set", {}))
 
+    source_db_tf = ft.TextField(
+        label="Source_Database (blank = DB_PATH)",
+        value=current.get("Source_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+    per_share_table_tf = ft.TextField(
+        label="PerShare_Table",
+        value=current.get("PerShare_Table", "PerShare"),
+        dense=True,
+        width=220,
+    )
+    fs_table_tf = ft.TextField(
+        label="Financial_Statements_Table",
+        value=current.get("Financial_Statements_Table", "FinancialStatements"),
+        dense=True,
+        width=220,
+    )
+
+    async def _pick_source_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select backtest source database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            source_db_tf.value = files[0].path
+            page.update()
+
     csv_path_tf = ft.TextField(
         label="CSV File Path",
         value=current.get("csv_file", ""),
@@ -83,6 +114,9 @@ def open_backtest_set_config(
         except ValueError:
             cap = 0.0
         step_configs["backtest_set"] = {
+            "Source_Database": source_db_tf.value.strip(),
+            "PerShare_Table": per_share_table_tf.value.strip() or "PerShare",
+            "Financial_Statements_Table": fs_table_tf.value.strip() or "FinancialStatements",
             "csv_file": csv_path_tf.value.strip(),
             "benchmark_ticker": bench_tf.value.strip(),
             "output_dir": output_tf.value.strip() or "data/backtest_set_results",
@@ -102,6 +136,11 @@ def open_backtest_set_config(
                     "For each year, 1yr / 2yr / 3yr / 5yr / 10yr backtests will be run.",
                     size=12, color=ft.Colors.GREY_500,
                 ),
+                ft.Row([
+                    source_db_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select source DB", on_click=_pick_source_db),
+                ], spacing=4),
+                ft.Row([per_share_table_tf, fs_table_tf], spacing=16),
                 ft.Row([csv_path_tf, browse_btn], spacing=4),
                 ft.Divider(height=1),
                 ft.Row([bench_tf, risk_free_tf], spacing=16),
@@ -1108,6 +1147,7 @@ def open_update_stock_prices_config(
 
 def open_backtest_config(
     page: ft.Page,
+    fp: ft.FilePicker,
     step_configs: dict[str, dict],
     snack: Callable[[str], None],
     show: Callable[[ft.AlertDialog], None],
@@ -1135,6 +1175,36 @@ def open_backtest_config(
     output_tf = ft.TextField(label="Output File", value=current.get("output_file", "data/backtest_results/backtest_report.txt"), dense=True, width=460)
     risk_free_tf = ft.TextField(label="Risk-Free Rate (%)", value=str(current.get("risk_free_rate", 0.0) * 100), dense=True, width=220, hint_text="e.g. 2.5 for 2.5%")
     capital_tf = ft.TextField(label="Initial Capital (0 = omit)", value=str(int(current.get("initial_capital", 0))), dense=True, width=220, hint_text="e.g. 1000000")
+    source_db_tf = ft.TextField(
+        label="Source_Database (blank = DB_PATH)",
+        value=current.get("Source_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+    per_share_table_tf = ft.TextField(
+        label="PerShare_Table",
+        value=current.get("PerShare_Table", "PerShare"),
+        dense=True,
+        width=220,
+    )
+    fs_table_tf = ft.TextField(
+        label="Financial_Statements_Table",
+        value=current.get("Financial_Statements_Table", "FinancialStatements"),
+        dense=True,
+        width=220,
+    )
+
+    async def _pick_source_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select backtest source database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            source_db_tf.value = files[0].path
+            page.update()
 
     min_empty_rows = 3
     col_order = ["ticker", "type", "amount"]
@@ -1418,6 +1488,9 @@ def open_backtest_config(
             val = entry["value"]
             saved_portfolio[tk] = {"mode": "weight", "value": val / 100.0} if mode == "weight" else {"mode": mode, "value": val}
         step_configs["backtest"] = {
+            "Source_Database": source_db_tf.value.strip(),
+            "PerShare_Table": per_share_table_tf.value.strip() or "PerShare",
+            "Financial_Statements_Table": fs_table_tf.value.strip() or "FinancialStatements",
             "start_date": start_tf.value.strip(),
             "end_date": end_tf.value.strip(),
             "portfolio": saved_portfolio,
@@ -1438,6 +1511,11 @@ def open_backtest_config(
         modal=True,
         title=ft.Text("Configure: Backtest Portfolio"),
         content=ft.Column([
+            ft.Row([
+                source_db_tf,
+                ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select source DB", on_click=_pick_source_db),
+            ], spacing=4),
+            ft.Row([per_share_table_tf, fs_table_tf], spacing=16),
             ft.Row([start_tf, end_tf], spacing=16),
             ft.Row([bench_tf, risk_free_tf], spacing=16),
             capital_tf,

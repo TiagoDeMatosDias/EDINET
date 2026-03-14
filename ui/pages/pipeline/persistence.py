@@ -132,6 +132,9 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "SQL_Query": "",
     },
     "backtest": {
+        "Source_Database": "",
+        "PerShare_Table": "PerShare",
+        "Financial_Statements_Table": "FinancialStatements",
         "start_date": "2023-01-01",
         "end_date": "2025-12-31",
         "portfolio": {},
@@ -140,6 +143,9 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "risk_free_rate": 0.0,
     },
     "backtest_set": {
+        "Source_Database": "",
+        "PerShare_Table": "PerShare",
+        "Financial_Statements_Table": "FinancialStatements",
         "csv_file": "",
         "benchmark_ticker": "",
         "output_dir": "data/backtest_set_results",

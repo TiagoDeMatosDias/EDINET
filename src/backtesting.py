@@ -7,8 +7,9 @@ returns (price + dividends) over the period, and compares against a benchmark.
 Data sources
 ------------
 * ``stock_prices`` table  — daily prices (Date, Ticker, Currency, Price).
-* ``Standard_Data_Ratios`` table — per-share dividends (``PerShare_Dividends``)
-  linked to companies via ``edinetCode``.
+* ``PerShare`` table — per-share dividends (``Dividends`` or
+    ``PerShare_Dividends``), linked via ``docID`` to
+    ``FinancialStatements`` for ``periodEnd`` and ``edinetCode``.
 * ``companyInfo`` table — maps ``edinetCode`` ↔ ``Company_Ticker``.
 
 The entry point :func:`run_backtest` is called from the orchestrator as a
@@ -219,26 +220,36 @@ def get_portfolio_prices(
 
 def get_dividend_data(
     db_path: str,
-    ratios_table: str,
+    per_share_table: str,
     company_table: str,
     tickers: list[str],
     start_date: str,
     end_date: str,
     *,
+    financial_statements_table: str = "FinancialStatements",
+    dividend_column: str | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> pd.DataFrame:
     """Fetch per-share dividends mapped to tickers for the given period.
 
-    Joins the ratios table with the company-info table so that dividend
-    data (stored by ``edinetCode``) can be looked up by ``Ticker``.
+        Supports both modern and legacy schemas:
+
+        * **Modern**: ``PerShare`` table with ``docID`` and a dividend column
+            (typically ``Dividends``), joined to ``FinancialStatements`` for
+            ``periodEnd`` and ``edinetCode``.
+        * **Legacy**: ratios-like table with ``edinetCode`` and ``periodEnd``
+            plus ``PerShare_Dividends``.
 
     Args:
         db_path: Path to the SQLite database file.
-        ratios_table: Name of the standardised-ratios table.
+        per_share_table: Name of the dividends table (usually ``PerShare``).
         company_table: Name of the company-info table.
         tickers: List of ticker symbols.
         start_date: Start date (inclusive) ``YYYY-MM-DD``.
         end_date: End date (inclusive) ``YYYY-MM-DD``.
+        financial_statements_table: Table providing ``edinetCode`` and
+            ``periodEnd`` for the ``docID`` join path.
+        dividend_column: Optional explicit dividend column name.
         conn: Optional existing database connection.
 
     Returns:
@@ -248,16 +259,85 @@ def get_dividend_data(
     if own_conn:
         conn = sqlite3.connect(db_path)
     try:
+        if not tickers:
+            return pd.DataFrame(
+                columns=["Ticker", "periodEnd", "PerShare_Dividends"]
+            )
+
+        table_info = conn.execute(
+            f"PRAGMA table_info({per_share_table})"
+        ).fetchall()
+        col_names = {row[1] for row in table_info}
+
+        # Backward-compat: if the preferred PerShare table is missing,
+        # transparently fall back to the legacy Standard_Data_Ratios table.
+        if not col_names and per_share_table == "PerShare":
+            legacy_table = "Standard_Data_Ratios"
+            legacy_info = conn.execute(
+                f"PRAGMA table_info({legacy_table})"
+            ).fetchall()
+            legacy_cols = {row[1] for row in legacy_info}
+            if legacy_cols:
+                logger.info(
+                    "Table '%s' not found; falling back to legacy '%s' for dividends.",
+                    per_share_table,
+                    legacy_table,
+                )
+                per_share_table = legacy_table
+                col_names = legacy_cols
+
+        if dividend_column and dividend_column in col_names:
+            div_col = dividend_column
+        elif "Dividends" in col_names:
+            div_col = "Dividends"
+        elif "PerShare_Dividends" in col_names:
+            div_col = "PerShare_Dividends"
+        else:
+            logger.warning(
+                "No dividend column found in %s (expected one of: %s).",
+                per_share_table,
+                ["Dividends", "PerShare_Dividends"],
+            )
+            return pd.DataFrame(
+                columns=["Ticker", "periodEnd", "PerShare_Dividends"]
+            )
+
         placeholders = ",".join(["?"] * len(tickers))
-        query = (
-            f"SELECT c.Company_Ticker AS Ticker, r.periodEnd, "
-            f"r.PerShare_Dividends "
-            f"FROM {ratios_table} r "
-            f"JOIN {company_table} c ON c.edinetCode = r.edinetCode "
-            f"WHERE c.Company_Ticker IN ({placeholders}) "
-            f"AND r.periodEnd >= ? AND r.periodEnd <= ? "
-            f"ORDER BY r.periodEnd"
-        )
+
+        # Modern schema path: PerShare(docID, Dividends) →
+        # FinancialStatements(docID, edinetCode, periodEnd) → companyInfo.
+        if "docID" in col_names:
+            query = (
+                f"SELECT c.Company_Ticker AS Ticker, fs.periodEnd, "
+                f"p.{div_col} AS PerShare_Dividends "
+                f"FROM {per_share_table} p "
+                f"JOIN {financial_statements_table} fs ON fs.docID = p.docID "
+                f"JOIN {company_table} c ON c.edinetCode = fs.edinetCode "
+                f"WHERE c.Company_Ticker IN ({placeholders}) "
+                f"AND fs.periodEnd >= ? AND fs.periodEnd <= ? "
+                f"ORDER BY fs.periodEnd"
+            )
+        # Legacy schema path: table already has edinetCode and periodEnd.
+        elif {"edinetCode", "periodEnd"}.issubset(col_names):
+            query = (
+                f"SELECT c.Company_Ticker AS Ticker, p.periodEnd, "
+                f"p.{div_col} AS PerShare_Dividends "
+                f"FROM {per_share_table} p "
+                f"JOIN {company_table} c ON c.edinetCode = p.edinetCode "
+                f"WHERE c.Company_Ticker IN ({placeholders}) "
+                f"AND p.periodEnd >= ? AND p.periodEnd <= ? "
+                f"ORDER BY p.periodEnd"
+            )
+        else:
+            logger.warning(
+                "Table %s does not have supported join keys for dividends "
+                "(expected docID or edinetCode/periodEnd).",
+                per_share_table,
+            )
+            return pd.DataFrame(
+                columns=["Ticker", "periodEnd", "PerShare_Dividends"]
+            )
+
         params = [*tickers, start_date, end_date]
         df = pd.read_sql_query(query, conn, params=params)
         df["periodEnd"] = pd.to_datetime(df["periodEnd"])
@@ -1298,8 +1378,9 @@ def run_backtest(
     backtesting_config: dict,
     db_path: str,
     prices_table: str = "stock_prices",
-    ratios_table: str = "Standard_Data_Ratios",
+    ratios_table: str = "PerShare",
     company_table: str = "companyInfo",
+    financial_statements_table: str = "FinancialStatements",
 ) -> dict:
     """Run a full backtest from a config dictionary.
 
@@ -1311,8 +1392,10 @@ def run_backtest(
             (optional), ``output_file`` (optional).
         db_path: Path to the SQLite database.
         prices_table: Name of the stock-prices table.
-        ratios_table: Name of the standardised-ratios table.
+        ratios_table: Name of the dividends table (typically ``PerShare``).
         company_table: Name of the company-info table.
+        financial_statements_table: Name of the financial-statements table
+            used to map ``docID`` dividends to ``periodEnd``.
 
     Returns:
         Metrics dictionary produced by :func:`calculate_metrics`.
@@ -1420,6 +1503,7 @@ def run_backtest(
         # 2. Fetch dividends (for portfolio tickers)
         dividends_df = get_dividend_data(
             db_path, ratios_table, company_table, tickers, start_date, end_date,
+            financial_statements_table=financial_statements_table,
             conn=conn,
         )
 
@@ -1428,7 +1512,9 @@ def run_backtest(
         if benchmark_ticker:
             bench_divs = get_dividend_data(
                 db_path, ratios_table, company_table,
-                [benchmark_ticker], start_date, end_date, conn=conn,
+                [benchmark_ticker], start_date, end_date,
+                financial_statements_table=financial_statements_table,
+                conn=conn,
             )
             if not bench_divs.empty:
                 all_dividends_df = pd.concat(
@@ -1713,8 +1799,9 @@ def run_backtest_set(
     config: dict,
     db_path: str,
     prices_table: str = "stock_prices",
-    ratios_table: str = "Standard_Data_Ratios",
+    ratios_table: str = "PerShare",
     company_table: str = "companyInfo",
+    financial_statements_table: str = "FinancialStatements",
 ) -> list[dict]:
     """Run a batch of backtests from a CSV file of scored companies.
 
@@ -1739,8 +1826,10 @@ def run_backtest_set(
 
         db_path: Path to the SQLite database file.
         prices_table: Name of the stock-prices table.
-        ratios_table: Name of the standardised-ratios table.
+        ratios_table: Name of the dividends table (typically ``PerShare``).
         company_table: Name of the company-info table.
+        financial_statements_table: Name of the financial-statements table
+            used to map ``docID`` dividends to ``periodEnd``.
 
     Returns:
         List of result dicts, one per individual backtest.
@@ -1828,6 +1917,7 @@ def run_backtest_set(
                     prices_table=prices_table,
                     ratios_table=ratios_table,
                     company_table=company_table,
+                    financial_statements_table=financial_statements_table,
                 )
                 result_entry["metrics"] = metrics
                 logger.info(

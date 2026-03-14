@@ -93,6 +93,9 @@
     "SQL_Query": "Select PerShare_SharePrice, PerShare_BookValue * Ratio_PriceBook as Bv_Check , PerShare_Earnings / Ratio_EarningsYield as Earnings_Check, PerShare_Sales * Ratio_PriceSales as Sales_Check from Standard_Data_Ratios"
   },
   "backtesting_config": {
+    "Source_Database": "",
+    "PerShare_Table": "PerShare",
+    "Financial_Statements_Table": "FinancialStatements",
     "start_date": "2023-01-01",
     "end_date": "2025-12-31",
     "portfolio": {

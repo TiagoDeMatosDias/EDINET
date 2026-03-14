@@ -209,23 +209,37 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
     elif step_name == "backtest":
         logger.info("Running backtesting...")
         backtesting_config = config.get("backtesting_config", {})
+        source_database = backtesting_config.get("Source_Database") or DB_PATH
+        per_share_table = backtesting_config.get("PerShare_Table") or "PerShare"
+        fs_table = (
+            backtesting_config.get("Financial_Statements_Table")
+            or "FinancialStatements"
+        )
         bt.run_backtest(
             backtesting_config,
-            db_path=DB_PATH,
+            db_path=source_database,
             prices_table=DB_STOCK_PRICES_TABLE,
-            ratios_table=DB_STANDARDIZED_RATIOS_TABLE,
+            ratios_table=per_share_table,
             company_table=DB_COMPANY_INFO_TABLE,
+            financial_statements_table=fs_table,
         )
 
     elif step_name == "backtest_set":
         logger.info("Running backtest set...")
         bs_config = config.get("backtest_set_config", {})
+        source_database = bs_config.get("Source_Database") or DB_PATH
+        per_share_table = bs_config.get("PerShare_Table") or "PerShare"
+        fs_table = (
+            bs_config.get("Financial_Statements_Table")
+            or "FinancialStatements"
+        )
         bt.run_backtest_set(
             bs_config,
-            db_path=DB_PATH,
+            db_path=source_database,
             prices_table=DB_STOCK_PRICES_TABLE,
-            ratios_table=DB_STANDARDIZED_RATIOS_TABLE,
+            ratios_table=per_share_table,
             company_table=DB_COMPANY_INFO_TABLE,
+            financial_statements_table=fs_table,
         )
 
     else:
