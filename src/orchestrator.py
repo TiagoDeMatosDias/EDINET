@@ -94,6 +94,39 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
             batch_size=batch_size,
         )
 
+    elif step_name in ("generate_ratios", "Generate Ratios"):
+        logger.info("Generating ratios tables (PerShare / Valuation / Quality)...")
+        gr_config = config.get("generate_ratios_config", {})
+        source_database = gr_config.get("Source_Database") or DB_PATH
+        target_database = gr_config.get("Target_Database") or DB_PATH
+        formulas_config = gr_config.get(
+            "Formulas_Config",
+            "config/reference/generate_ratios_formulas_config.json",
+        )
+        batch_size = gr_config.get("batch_size", 5000)
+
+        data.generate_ratios(
+            source_database=source_database,
+            target_database=target_database,
+            formulas_config=formulas_config,
+            overwrite=overwrite,
+            batch_size=batch_size,
+        )
+
+    elif step_name in ("generate_historical_ratios", "Generate Historical Ratios"):
+        logger.info("Generating historical ratios tables (Pershare_Historical / Quality_Historical / Valuation_Historical)...")
+        ghr_config = config.get("generate_historical_ratios_config", {})
+        source_database = ghr_config.get("Source_Database") or DB_PATH
+        target_database = ghr_config.get("Target_Database") or DB_PATH
+        company_batch_size = ghr_config.get("company_batch_size", 200)
+
+        data.generate_historical_ratios(
+            source_database=source_database,
+            target_database=target_database,
+            overwrite=overwrite,
+            company_batch_size=company_batch_size,
+        )
+
     elif step_name == "import_stock_prices_csv":
         logger.info("Importing stock prices from CSV...")
         csv_config = config.get("import_stock_prices_csv_config", {})
@@ -222,6 +255,8 @@ def run(edinet=None, data=None):
                                        "DB_STOCK_PRICES_TABLE", "DB_STANDARDIZED_TABLE"],
         "parse_taxonomy":             ["DB_TAXONOMY_TABLE"],
         "generate_financial_statements": [],
+        "generate_ratios":            [],
+        "generate_historical_ratios": [],
         "find_significant_predictors": ["DB_PATH", "DB_STANDARDIZED_RATIOS_TABLE",
                                         "DB_SIGNIFICANT_PREDICTORS_TABLE"],
         "Multivariate_Regression":    ["DB_PATH"],

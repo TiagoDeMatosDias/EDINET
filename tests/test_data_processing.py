@@ -621,5 +621,252 @@ class TestGenerateFinancialStatements(unittest.TestCase):
             conn.close()
 
 
+class TestGenerateRatios(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.tmpdir.name, "ratios.db")
+        self.formulas_file = os.path.join(self.tmpdir.name, "ratios_formulas.json")
+
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript(
+            """
+            CREATE TABLE FinancialStatements (
+                docID TEXT PRIMARY KEY,
+                SharesOutstanding REAL,
+                SharePrice REAL
+            );
+            CREATE TABLE IncomeStatement (
+                docID TEXT PRIMARY KEY,
+                netIncome REAL,
+                netSales REAL
+            );
+            CREATE TABLE BalanceSheet (
+                docID TEXT PRIMARY KEY,
+                currentAssets REAL,
+                currentLiabilities REAL,
+                totalAssets REAL,
+                shareholdersEquity REAL
+            );
+            CREATE TABLE CashflowStatement (
+                docID TEXT PRIMARY KEY,
+                operatingCashflow REAL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO FinancialStatements (docID, SharesOutstanding, SharePrice) VALUES (?, ?, ?)",
+            ("DOC1", 500.0, 100.0),
+        )
+        conn.execute(
+            "INSERT INTO IncomeStatement (docID, netIncome, netSales) VALUES (?, ?, ?)",
+            ("DOC1", 50.0, 1000.0),
+        )
+        conn.execute(
+            "INSERT INTO BalanceSheet (docID, currentAssets, currentLiabilities, totalAssets, shareholdersEquity) VALUES (?, ?, ?, ?, ?)",
+            ("DOC1", 400.0, 200.0, 1200.0, 700.0),
+        )
+        conn.execute(
+            "INSERT INTO CashflowStatement (docID, operatingCashflow) VALUES (?, ?)",
+            ("DOC1", 10.0),
+        )
+        conn.commit()
+        conn.close()
+
+        self.d = _make_data_instance()
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_generate_ratios_creates_tables_and_computes_formulas(self):
+        formulas = {
+            "Quality": [
+                {"Column": "CurrentRatio", "Formula": "BalanceSheet.currentAssets / BalanceSheet.currentLiabilities"},
+                {"Column": "ReturnOnAssets", "Formula": "IncomeStatement.netIncome / BalanceSheet.totalAssets"},
+            ],
+            "PerShare": [
+                {"Column": "EPS", "Formula": "IncomeStatement.netIncome / FinancialStatements.SharesOutstanding"},
+            ],
+            "Valuation": [
+                {"Column": "PERatio", "Formula": "FinancialStatements.SharePrice / PerShare.EPS"},
+            ],
+        }
+        with open(self.formulas_file, "w", encoding="utf-8") as f:
+            json.dump(formulas, f)
+
+        self.d.generate_ratios(
+            source_database=self.db_path,
+            target_database=self.db_path,
+            formulas_config=self.formulas_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            per_share = conn.execute("SELECT docID, EPS FROM PerShare").fetchall()
+            valuation = conn.execute("SELECT docID, PERatio FROM Valuation").fetchall()
+            quality = conn.execute("SELECT docID, CurrentRatio, ReturnOnAssets FROM Quality").fetchall()
+
+            self.assertEqual(per_share, [("DOC1", 0.1)])
+            self.assertEqual(valuation, [("DOC1", 1000.0)])
+            self.assertEqual(quality, [("DOC1", 2.0, 50.0 / 1200.0)])
+        finally:
+            conn.close()
+
+    def test_generate_ratios_logs_cyclic_dependencies_and_executes_independent_formulas(self):
+        formulas = {
+            "Quality": [
+                {"Column": "CurrentRatio", "Formula": "BalanceSheet.currentAssets / BalanceSheet.currentLiabilities"},
+            ],
+            "PerShare": [
+                {"Column": "A", "Formula": "Valuation.B + 1"},
+            ],
+            "Valuation": [
+                {"Column": "B", "Formula": "PerShare.A + 1"},
+            ],
+        }
+        with open(self.formulas_file, "w", encoding="utf-8") as f:
+            json.dump(formulas, f)
+
+        with self.assertLogs("src.data_processing", level="WARNING") as logs:
+            self.d.generate_ratios(
+                source_database=self.db_path,
+                target_database=self.db_path,
+                formulas_config=self.formulas_file,
+                overwrite=False,
+                batch_size=10,
+            )
+
+        log_text = "\n".join(logs.output)
+        self.assertIn("cyclic/unresolved", log_text)
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            quality = conn.execute("SELECT docID, CurrentRatio FROM Quality").fetchall()
+            per_share = conn.execute("SELECT docID, A FROM PerShare").fetchall()
+            valuation = conn.execute("SELECT docID, B FROM Valuation").fetchall()
+
+            self.assertEqual(quality, [("DOC1", 2.0)])
+            self.assertEqual(per_share, [("DOC1", None)])
+            self.assertEqual(valuation, [("DOC1", None)])
+        finally:
+            conn.close()
+
+
+class TestGenerateHistoricalRatios(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.tmpdir.name, "historical.db")
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript(
+            """
+            CREATE TABLE FinancialStatements (
+                docID TEXT PRIMARY KEY,
+                edinetCode TEXT,
+                periodEnd TEXT
+            );
+            CREATE TABLE PerShare (
+                docID TEXT PRIMARY KEY,
+                EPS REAL
+            );
+            CREATE TABLE Quality (
+                docID TEXT PRIMARY KEY,
+                CurrentRatio REAL
+            );
+            CREATE TABLE Valuation (
+                docID TEXT PRIMARY KEY,
+                PERatio REAL
+            );
+            """
+        )
+
+        conn.executemany(
+            "INSERT INTO FinancialStatements (docID, edinetCode, periodEnd) VALUES (?, ?, ?)",
+            [
+                ("D1", "E1", "2022-12-31"),
+                ("D2", "E1", "2023-12-31"),
+                ("D3", "E2", "2023-12-31"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO PerShare (docID, EPS) VALUES (?, ?)",
+            [("D1", 1.0), ("D2", 3.0), ("D3", 2.0)],
+        )
+        conn.executemany(
+            "INSERT INTO Quality (docID, CurrentRatio) VALUES (?, ?)",
+            [("D1", 1.5), ("D2", 2.0), ("D3", 1.8)],
+        )
+        conn.executemany(
+            "INSERT INTO Valuation (docID, PERatio) VALUES (?, ?)",
+            [("D1", 10.0), ("D2", 12.0), ("D3", 11.0)],
+        )
+        conn.commit()
+        conn.close()
+
+        self.d = _make_data_instance()
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_generate_historical_ratios_creates_tables_and_metrics(self):
+        self.d.generate_historical_ratios(
+            source_database=self.db_path,
+            target_database=self.db_path,
+            overwrite=False,
+        )
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(Pershare_Historical)").fetchall()]
+            self.assertIn("docID", cols)
+            self.assertIn("EPS_1Year_Average", cols)
+            self.assertIn("EPS_2Year_Average", cols)
+            self.assertIn("EPS_StdDev", cols)
+            self.assertIn("EPS_ZScore_IntraCompany", cols)
+            self.assertIn("EPS_ZScore_AllCompanies", cols)
+
+            rows = conn.execute(
+                "SELECT docID, EPS_1Year_Average, EPS_2Year_Average FROM Pershare_Historical ORDER BY docID"
+            ).fetchall()
+            self.assertEqual(len(rows), 3)
+
+            # E1 chronology: D1=1.0, D2=3.0 => D2 2-year rolling avg = 2.0
+            d2 = [r for r in rows if r[0] == "D2"][0]
+            self.assertEqual(d2[1], 3.0)
+            self.assertEqual(d2[2], 2.0)
+
+            # Cross-sectional all-companies z-score at 2023-12-31:
+            # D2(E1)=3.0, D3(E2)=2.0 => mean=2.5, std(sample)=~0.7071
+            z_rows = conn.execute(
+                "SELECT docID, EPS_ZScore_AllCompanies FROM Pershare_Historical ORDER BY docID"
+            ).fetchall()
+            z_map = {doc: z for doc, z in z_rows}
+            self.assertAlmostEqual(z_map["D2"], 0.70710678, places=5)
+            self.assertAlmostEqual(z_map["D3"], -0.70710678, places=5)
+        finally:
+            conn.close()
+
+    def test_generate_historical_ratios_overwrite_rebuilds(self):
+        self.d.generate_historical_ratios(
+            source_database=self.db_path,
+            target_database=self.db_path,
+            overwrite=False,
+        )
+        self.d.generate_historical_ratios(
+            source_database=self.db_path,
+            target_database=self.db_path,
+            overwrite=True,
+        )
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM Quality_Historical").fetchone()[0]
+            self.assertEqual(count, 3)
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -153,6 +153,12 @@ def open_generate_financial_statements_config(
         width=420,
         read_only=True,
     )
+    company_batch_tf = ft.TextField(
+        label="Company Batch Size",
+        value=str(current.get("company_batch_size", 200)),
+        dense=True,
+        width=180,
+    )
     company_table_tf = ft.TextField(
         label="Company_Info_Table (blank = DB_COMPANY_INFO_TABLE)",
         value=current.get("Company_Info_Table", ""),
@@ -267,6 +273,242 @@ def open_generate_financial_statements_config(
             scroll=ft.ScrollMode.AUTO,
             width=560,
             height=350,
+            spacing=8,
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: pop()),
+            ft.Button("Save", on_click=save),
+        ],
+    ))
+
+
+def open_generate_ratios_config(
+    page: ft.Page,
+    fp: ft.FilePicker,
+    step_configs: dict[str, dict],
+    snack: Callable[[str], None],
+    show: Callable[[ft.AlertDialog], None],
+    pop: Callable[[], None],
+):
+    """Dialog for configuring the 'generate_ratios' step."""
+    current = step_configs.get("generate_ratios", {})
+    if not current:
+        current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("generate_ratios", {}))
+
+    source_db_tf = ft.TextField(
+        label="Source_Database (blank = DB_PATH)",
+        value=current.get("Source_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+    target_db_tf = ft.TextField(
+        label="Target_Database (blank = DB_PATH)",
+        value=current.get("Target_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+    formulas_tf = ft.TextField(
+        label="Formulas_Config",
+        value=current.get("Formulas_Config", "config/reference/generate_ratios_formulas_config.json"),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+    batch_size_tf = ft.TextField(
+        label="Batch Size",
+        value=str(current.get("batch_size", 5000)),
+        dense=True,
+        width=180,
+    )
+
+    async def _pick_source_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select source database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            source_db_tf.value = files[0].path
+            page.update()
+
+    async def _pick_target_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select target database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            target_db_tf.value = files[0].path
+            page.update()
+
+    async def _pick_formulas(_):
+        files = await fp.pick_files(
+            dialog_title="Select ratios formulas config JSON",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["json"],
+            allow_multiple=False,
+        )
+        if files:
+            formulas_tf.value = files[0].path
+            page.update()
+
+    def save(_):
+        try:
+            batch = int(float(batch_size_tf.value.strip() or "5000"))
+            batch = max(1, batch)
+        except ValueError:
+            batch = 5000
+
+        formulas_val = formulas_tf.value.strip()
+        if not formulas_val:
+            snack("Please select a formulas config JSON file")
+            return
+
+        step_configs["generate_ratios"] = {
+            "Source_Database": source_db_tf.value.strip(),
+            "Target_Database": target_db_tf.value.strip(),
+            "Formulas_Config": formulas_val,
+            "batch_size": batch,
+        }
+        pop()
+        snack("Generate Ratios config updated")
+
+    show(ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configure: Generate Ratios"),
+        content=ft.Column(
+            [
+                ft.Text(
+                    "Build PerShare / Valuation / Quality from FinancialStatements tables.\n"
+                    "Supports formula dependencies and best-effort execution for cyclic formulas.",
+                    size=12,
+                    color=ft.Colors.GREY_500,
+                ),
+                ft.Row([
+                    source_db_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select source DB", on_click=_pick_source_db),
+                ], spacing=4),
+                ft.Row([
+                    target_db_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select target DB", on_click=_pick_target_db),
+                ], spacing=4),
+                ft.Row([
+                    formulas_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select formulas JSON", on_click=_pick_formulas),
+                ], spacing=4),
+                batch_size_tf,
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            width=560,
+            height=300,
+            spacing=8,
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: pop()),
+            ft.Button("Save", on_click=save),
+        ],
+    ))
+
+
+def open_generate_historical_ratios_config(
+    page: ft.Page,
+    fp: ft.FilePicker,
+    step_configs: dict[str, dict],
+    snack: Callable[[str], None],
+    show: Callable[[ft.AlertDialog], None],
+    pop: Callable[[], None],
+):
+    """Dialog for configuring the 'generate_historical_ratios' step."""
+    current = step_configs.get("generate_historical_ratios", {})
+    if not current:
+        current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("generate_historical_ratios", {}))
+
+    source_db_tf = ft.TextField(
+        label="Source_Database (blank = DB_PATH)",
+        value=current.get("Source_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+    target_db_tf = ft.TextField(
+        label="Target_Database (blank = DB_PATH)",
+        value=current.get("Target_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+    company_batch_tf = ft.TextField(
+        label="Company Batch Size",
+        value=str(current.get("company_batch_size", 200)),
+        dense=True,
+        width=180,
+    )
+
+    async def _pick_source_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select source database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            source_db_tf.value = files[0].path
+            page.update()
+
+    async def _pick_target_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select target database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            target_db_tf.value = files[0].path
+            page.update()
+
+    def save(_):
+        try:
+            company_batch = int(float(company_batch_tf.value.strip() or "200"))
+            company_batch = max(1, company_batch)
+        except ValueError:
+            company_batch = 200
+
+        step_configs["generate_historical_ratios"] = {
+            "Source_Database": source_db_tf.value.strip(),
+            "Target_Database": target_db_tf.value.strip(),
+            "company_batch_size": company_batch,
+        }
+        pop()
+        snack("Generate Historical Ratios config updated")
+
+    show(ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configure: Generate Historical Ratios"),
+        content=ft.Column(
+            [
+                ft.Text(
+                    "Build Pershare_Historical / Quality_Historical / Valuation_Historical\n"
+                    "from PerShare / Quality / Valuation using FinancialStatements for company/time context.",
+                    size=12,
+                    color=ft.Colors.GREY_500,
+                ),
+                ft.Row([
+                    source_db_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select source DB", on_click=_pick_source_db),
+                ], spacing=4),
+                ft.Row([
+                    target_db_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select target DB", on_click=_pick_target_db),
+                ], spacing=4),
+                company_batch_tf,
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            width=560,
+            height=260,
             spacing=8,
         ),
         actions=[

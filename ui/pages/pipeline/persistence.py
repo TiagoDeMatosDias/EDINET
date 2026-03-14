@@ -31,6 +31,8 @@ STEP_CONFIG_KEY: dict[str, str] = {
     "update_stock_prices": "update_stock_prices_config",
     "parse_taxonomy": "parse_taxonomy_config",
     "generate_financial_statements": "generate_financial_statements_config",
+    "generate_ratios": "generate_ratios_config",
+    "generate_historical_ratios": "generate_historical_ratios_config",
     "find_significant_predictors": "find_significant_predictors_config",
     "Multivariate_Regression": "Multivariate_Regression_config",
     "backtest": "backtesting_config",
@@ -46,6 +48,8 @@ STEP_DISPLAY: dict[str, str] = {
     "update_stock_prices": "Update Stock Prices",
     "parse_taxonomy": "Parse Taxonomy",
     "generate_financial_statements": "Generate Financial Statements",
+    "generate_ratios": "Generate Ratios",
+    "generate_historical_ratios": "Generate Historical Ratios",
     "generate_financial_ratios": "Generate Financial Ratios",
     "find_significant_predictors": "Find Significant Predictors",
     "Multivariate_Regression": "Multivariate Regression",
@@ -58,6 +62,8 @@ DEFAULT_STEPS = list(STEP_DISPLAY.keys())
 STEPS_WITH_OVERWRITE: set[str] = {
     "standardize_data",
     "generate_financial_statements",
+    "generate_ratios",
+    "generate_historical_ratios",
     "generate_financial_ratios",
     "find_significant_predictors",
 }
@@ -99,6 +105,17 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "Stock_Prices_Table": "",
         "Mappings_Config": "config/reference/financial_statements_mappings_config.json",
         "batch_size": 2500,
+    },
+    "generate_ratios": {
+        "Source_Database": "",
+        "Target_Database": "",
+        "Formulas_Config": "config/reference/generate_ratios_formulas_config.json",
+        "batch_size": 5000,
+    },
+    "generate_historical_ratios": {
+        "Source_Database": "",
+        "Target_Database": "",
+        "company_batch_size": 200,
     },
     "find_significant_predictors": {
         "output_file": "data/ols_results/predictor_search_results.txt",
@@ -196,13 +213,23 @@ def load_named_setup(name: str) -> dict:
 
 def build_steps(run_cfg: dict) -> list[list]:
     steps: list[list] = []
-    for name, val in run_cfg.get("run_steps", {}).items():
+    run_steps = run_cfg.get("run_steps", {}) or {}
+
+    for name, val in run_steps.items():
         if isinstance(val, dict):
             steps.append([name, bool(val.get("enabled", False)), bool(val.get("overwrite", False))])
         else:
             steps.append([name, bool(val), False])
+
+    # Add any newly introduced default steps that may be missing from older saved configs.
+    existing = {s[0] for s in steps}
+    for s in DEFAULT_STEPS:
+        if s not in existing:
+            steps.append([s, False, False])
+
     if not steps:
         steps = [[s, False, False] for s in DEFAULT_STEPS]
+
     return steps
 
 

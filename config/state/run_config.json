@@ -13,7 +13,7 @@
       "overwrite": true
     },
     "generate_financial_statements": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": true
     },
     "download_documents": {
@@ -51,6 +51,14 @@
     "backtest_set": {
       "enabled": false,
       "overwrite": false
+    },
+    "generate_ratios": {
+      "enabled": false,
+      "overwrite": false
+    },
+    "generate_historical_ratios": {
+      "enabled": true,
+      "overwrite": true
     }
   },
   "get_documents_config": {
@@ -92,6 +100,17 @@
     "Stock_Prices_Table": "",
     "Mappings_Config": "C:\\programming\\Finance\\EDINET\\EDINET\\config\\reference\\financial_statements_mappings_config.json",
     "batch_size": 2500
+  },
+  "generate_ratios_config": {
+    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "Target_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "Formulas_Config": "config/reference/generate_ratios_formulas_config.json",
+    "batch_size": 5000
+  },
+  "generate_historical_ratios_config": {
+    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "Target_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "company_batch_size": 200
   },
   "find_significant_predictors_config": {
     "output_file": "data/ols_results/predictor_search_results.txt",

@@ -1,4 +1,5 @@
 import config as c
+import ast
 import logging
 import pandas as pd
 import sqlite3
@@ -7,6 +8,7 @@ import random
 import numpy as np
 import json
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,35 @@ class data:
     def _sql_literal(self, value):
         """Safely quote a SQL literal value."""
         return "'" + str(value).replace("'", "''") + "'"
+
+    def _create_index_if_not_exists(self, conn, schema_name, table_name, columns):
+        """Create an index on *table_name(columns)* when possible."""
+        if not columns:
+            return
+
+        safe_table = re.sub(r"\W+", "_", str(table_name))
+        safe_cols = "_".join(re.sub(r"\W+", "_", str(c)) for c in columns)
+        idx_name = f"ix_{safe_table}_{safe_cols}"
+
+        if schema_name == "main":
+            idx_ref = self._sql_ident(idx_name)
+        else:
+            idx_ref = f"{self._sql_ident(schema_name)}.{self._sql_ident(idx_name)}"
+
+        table_ref = f"{self._sql_ident(schema_name)}.{self._sql_ident(table_name)}"
+        cols_sql = ", ".join(self._sql_ident(c) for c in columns)
+
+        try:
+            conn.execute(
+                f"CREATE INDEX IF NOT EXISTS {idx_ref} ON {table_ref} ({cols_sql})"
+            )
+        except Exception as exc:
+            logger.debug(
+                "Skipping index creation for %s(%s): %s",
+                table_ref,
+                ", ".join(columns),
+                exc,
+            )
 
     def _load_financial_statement_mappings(self, mappings_config_path):
         """Load mappings config and normalize into {table: {column: mapping_dict}}."""
@@ -201,6 +232,645 @@ class data:
             f"MAX(CASE WHEN {condition_sql} "
             f"THEN CAST({source_alias}.{self._sql_ident(col_amount)} AS REAL) END)"
         )
+
+    def _is_safe_identifier(self, name):
+        """Return True when *name* is a simple SQL identifier-like token."""
+        return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(name or "")))
+
+    def _load_generate_ratios_definitions(self, formulas_config_path):
+        """Load and normalize Generate Ratios formulas config."""
+        with open(formulas_config_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+
+        normalized = {
+            "PerShare": [],
+            "Valuation": [],
+            "Quality": [],
+        }
+
+        if not isinstance(raw, dict):
+            return normalized
+
+        for table_name in normalized:
+            items = raw.get(table_name, [])
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                col = (item.get("Column") or "").strip()
+                formula = (item.get("Formula") or "").strip()
+                if not col or not formula:
+                    continue
+                if not self._is_safe_identifier(col):
+                    logger.warning("Generate Ratios: skipping invalid column name '%s' in table '%s'", col, table_name)
+                    continue
+                normalized[table_name].append({"Column": col, "Formula": formula})
+
+        return normalized
+
+    def _formula_to_sql_expr_and_refs(self, formula, alias_map):
+        """Compile a formula string to SQL and return (sql_expr, refs)."""
+        expr_ast = ast.parse(formula, mode="eval")
+        refs = set()
+
+        def _walk(node):
+            if isinstance(node, ast.Expression):
+                return _walk(node.body)
+
+            if isinstance(node, ast.BinOp):
+                op_map = {
+                    ast.Add: "+",
+                    ast.Sub: "-",
+                    ast.Mult: "*",
+                    ast.Div: "/",
+                }
+                op = op_map.get(type(node.op))
+                if not op:
+                    raise ValueError("Unsupported operator in formula")
+                return f"({_walk(node.left)} {op} {_walk(node.right)})"
+
+            if isinstance(node, ast.UnaryOp):
+                if isinstance(node.op, ast.USub):
+                    return f"(-{_walk(node.operand)})"
+                if isinstance(node.op, ast.UAdd):
+                    return f"(+{_walk(node.operand)})"
+                raise ValueError("Unsupported unary operator in formula")
+
+            if isinstance(node, ast.Constant):
+                if isinstance(node.value, (int, float)):
+                    return str(node.value)
+                raise ValueError("Only numeric constants are allowed in formulas")
+
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                table_name = node.value.id
+                column_name = node.attr
+                if table_name not in alias_map:
+                    raise ValueError(f"Unknown table reference '{table_name}'")
+                if not self._is_safe_identifier(column_name):
+                    raise ValueError(f"Invalid column reference '{column_name}'")
+                refs.add((table_name, column_name))
+                return f"{alias_map[table_name]}.{self._sql_ident(column_name)}"
+
+            raise ValueError("Unsupported expression in formula")
+
+        sql_expr = _walk(expr_ast)
+        return sql_expr, refs
+
+    def _build_generate_ratios_execution_plan(self, definitions):
+        """Build an execution order for formula columns with dependency resolution."""
+        alias_map = {
+            "FinancialStatements": "fs",
+            "IncomeStatement": "is1",
+            "BalanceSheet": "bs",
+            "CashflowStatement": "cs",
+            "PerShare": "ps",
+            "Valuation": "va",
+            "Quality": "qu",
+        }
+
+        formula_nodes = {}
+        refs_by_node = {}
+        unresolved_messages = []
+
+        for table_name in ("PerShare", "Valuation", "Quality"):
+            for item in definitions.get(table_name, []):
+                col = item["Column"]
+                formula = item["Formula"]
+                node = (table_name, col)
+                try:
+                    sql_expr, refs = self._formula_to_sql_expr_and_refs(formula, alias_map)
+                except Exception as exc:
+                    unresolved_messages.append(
+                        f"{table_name}.{col}: invalid formula '{formula}' ({exc})"
+                    )
+                    continue
+
+                formula_nodes[node] = {
+                    "table": table_name,
+                    "column": col,
+                    "formula": formula,
+                    "sql_expr": sql_expr,
+                }
+                refs_by_node[node] = refs
+
+        dependencies = {}
+        for node, refs in refs_by_node.items():
+            deps = set()
+            for ref in refs:
+                if ref in formula_nodes:
+                    deps.add(ref)
+            dependencies[node] = deps
+
+        remaining = set(formula_nodes.keys())
+        ready = sorted([n for n, deps in dependencies.items() if not deps])
+        execution_order = []
+
+        while ready:
+            current = ready.pop(0)
+            if current not in remaining:
+                continue
+            execution_order.append(formula_nodes[current])
+            remaining.remove(current)
+
+            newly_ready = []
+            for node in remaining:
+                if current in dependencies[node]:
+                    dependencies[node].remove(current)
+                    if not dependencies[node]:
+                        newly_ready.append(node)
+            ready.extend(sorted(newly_ready))
+
+        if remaining:
+            for node in sorted(remaining):
+                deps = ", ".join(f"{t}.{c}" for t, c in sorted(dependencies[node]))
+                unresolved_messages.append(
+                    f"{node[0]}.{node[1]}: cyclic/unresolved dependencies ({deps})"
+                )
+
+        return execution_order, unresolved_messages
+
+    def _ensure_generate_ratios_tables(self, conn):
+        """Create Generate Ratios output tables if they do not exist."""
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS PerShare (
+              docID TEXT PRIMARY KEY
+            );
+
+            CREATE TABLE IF NOT EXISTS Valuation (
+              docID TEXT PRIMARY KEY
+            );
+
+            CREATE TABLE IF NOT EXISTS Quality (
+              docID TEXT PRIMARY KEY
+            );
+            """
+        )
+
+    def _ensure_table_columns(self, conn, table_name, columns):
+        """Ensure all *columns* exist in *table_name* (REAL type for new columns)."""
+        info = conn.execute(f"PRAGMA table_info({self._sql_ident(table_name)})").fetchall()
+        existing_cols = {row[1] for row in info}
+        for col in columns:
+            if col not in existing_cols:
+                conn.execute(
+                    f"ALTER TABLE {self._sql_ident(table_name)} ADD COLUMN {self._sql_ident(col)} REAL"
+                )
+
+    def generate_ratios(
+        self,
+        source_database,
+        target_database,
+        formulas_config,
+        overwrite=False,
+        batch_size=5000,
+    ):
+        """Generate PerShare / Valuation / Quality tables from financial statements.
+
+        Notes:
+        - One row per docID in each generated table.
+        - Columns are driven by *formulas_config*.
+        - Formula dependencies are resolved dynamically (best effort).
+        - Unresolvable cyclic formulas are logged and skipped.
+        """
+        source_db = source_database or self.DB_PATH
+        target_db = target_database or self.DB_PATH
+        formulas_path = formulas_config
+        if not formulas_path:
+            raise ValueError("Formulas_Config is required for generate_ratios.")
+
+        definitions = self._load_generate_ratios_definitions(formulas_path)
+        execution_order, unresolved = self._build_generate_ratios_execution_plan(definitions)
+
+        same_db = os.path.abspath(source_db) == os.path.abspath(target_db)
+        batch_size = max(int(batch_size or 5000), 1)
+
+        conn = sqlite3.connect(target_db)
+        try:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+
+            source_schema = "main"
+            if not same_db:
+                conn.execute("ATTACH DATABASE ? AS src", (source_db,))
+                source_schema = "src"
+
+            base_required = ["FinancialStatements", "IncomeStatement", "BalanceSheet", "CashflowStatement"]
+            base_refs = {}
+            for table_name in base_required:
+                actual = self._resolve_table_name_in_schema(conn, source_schema, table_name)
+                if not actual:
+                    raise RuntimeError(
+                        f"Source table '{table_name}' not found in source database; required for Generate Ratios."
+                    )
+                base_refs[table_name] = f"{self._sql_ident(source_schema)}.{self._sql_ident(actual)}"
+
+            if overwrite:
+                logger.info("Overwrite enabled - resetting PerShare / Valuation / Quality tables.")
+                conn.executescript(
+                    """
+                    DROP TABLE IF EXISTS PerShare;
+                    DROP TABLE IF EXISTS Valuation;
+                    DROP TABLE IF EXISTS Quality;
+                    """
+                )
+
+            self._ensure_generate_ratios_tables(conn)
+
+            # Ensure all configured columns are present before execution
+            for table_name in ("PerShare", "Valuation", "Quality"):
+                cols = [item["Column"] for item in definitions.get(table_name, [])]
+                self._ensure_table_columns(conn, table_name, cols)
+
+            fs_ref = base_refs["FinancialStatements"]
+
+            # Add missing docIDs from FinancialStatements into all 3 output tables
+            for table_name in ("PerShare", "Valuation", "Quality"):
+                conn.execute(
+                    f"INSERT OR IGNORE INTO {self._sql_ident(table_name)}(docID) "
+                    f"SELECT DISTINCT docID FROM {fs_ref} WHERE docID IS NOT NULL"
+                )
+
+            tmp_docids = self._sql_ident("_tmp_ratio_docids")
+            conn.execute(f"CREATE TEMP TABLE IF NOT EXISTS {tmp_docids} (docID TEXT PRIMARY KEY)")
+
+            doc_cursor = conn.execute(f"SELECT docID FROM {fs_ref} WHERE docID IS NOT NULL ORDER BY docID")
+            total_docs = 0
+
+            join_sql = (
+                f"FROM {base_refs['FinancialStatements']} fs "
+                f"LEFT JOIN {base_refs['IncomeStatement']} is1 ON is1.docID = fs.docID "
+                f"LEFT JOIN {base_refs['BalanceSheet']} bs ON bs.docID = fs.docID "
+                f"LEFT JOIN {base_refs['CashflowStatement']} cs ON cs.docID = fs.docID "
+                f"LEFT JOIN {self._sql_ident('PerShare')} ps ON ps.docID = fs.docID "
+                f"LEFT JOIN {self._sql_ident('Valuation')} va ON va.docID = fs.docID "
+                f"LEFT JOIN {self._sql_ident('Quality')} qu ON qu.docID = fs.docID"
+            )
+
+            while True:
+                batch = [row[0] for row in doc_cursor.fetchmany(batch_size)]
+                if not batch:
+                    break
+
+                with conn:
+                    conn.execute(f"DELETE FROM {tmp_docids}")
+                    conn.executemany(
+                        f"INSERT OR IGNORE INTO {tmp_docids}(docID) VALUES (?)",
+                        [(d,) for d in batch],
+                    )
+
+                    for item in execution_order:
+                        table_name = item["table"]
+                        col_name = item["column"]
+                        expr_sql = item["sql_expr"]
+
+                        update_sql = f"""
+                        UPDATE {self._sql_ident(table_name)} AS tgt
+                        SET {self._sql_ident(col_name)} = (
+                            SELECT {expr_sql}
+                            {join_sql}
+                            WHERE fs.docID = tgt.docID
+                        )
+                        WHERE tgt.docID IN (SELECT docID FROM {tmp_docids})
+                        """
+                        conn.execute(update_sql)
+
+                total_docs += len(batch)
+                if total_docs % (batch_size * 10) == 0:
+                    logger.info("Generate Ratios progress: %d docs processed", total_docs)
+
+            for msg in unresolved:
+                logger.warning("Generate Ratios: %s", msg)
+
+            logger.info(
+                "Generate Ratios completed. Processed %d doc(s); executed %d formula(s); skipped %d unresolved.",
+                total_docs,
+                len(execution_order),
+                len(unresolved),
+            )
+        finally:
+            conn.close()
+
+    def _collect_historical_output_columns(self, metric_columns):
+        """Build ordered output-column list for historical-ratio tables."""
+        windows = [1, 2, 3, 5, 10]
+        output_cols = []
+        for col in metric_columns:
+            output_cols.append(col)
+            for w in windows:
+                output_cols.append(f"{col}_{w}Year_Average")
+            output_cols.append(f"{col}_StdDev")
+            output_cols.append(f"{col}_ZScore_IntraCompany")
+            output_cols.append(f"{col}_ZScore_AllCompanies")
+        return output_cols
+
+    def _compute_historical_metrics(self, df, metric_columns, all_companies_stats=None):
+        """Compute rolling averages, standard deviation, and z-scores for *metric_columns*.
+
+        Notes:
+        - Intra-company z-score is computed within each `edinetCode` time series.
+        - All-companies z-score is computed cross-sectionally per `periodEnd`
+          (i.e., compare companies in the same reporting period).
+        """
+        windows = [1, 2, 3, 5, 10]
+
+        if df.empty:
+            return df
+
+        df = df.copy()
+        df["periodEnd"] = pd.to_datetime(df["periodEnd"], errors="coerce")
+        df.sort_values(["edinetCode", "periodEnd", "docID"], inplace=True)
+
+        for col in metric_columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce", downcast="float")
+            grouped = df.groupby("edinetCode")[col]
+
+            for w in windows:
+                df[f"{col}_{w}Year_Average"] = grouped.transform(
+                    lambda s, window=w: s.rolling(window=window, min_periods=1).mean()
+                )
+
+            # Expanding (cumulative) stats up to the current row per company.
+            # This makes each docID's standard deviation/mean depend on prior rows
+            # plus the current row, consistent with rolling-average behavior.
+            std_series = grouped.transform(
+                lambda s: s.expanding(min_periods=1).std(ddof=0)
+            )
+            mean_series = grouped.transform(
+                lambda s: s.expanding(min_periods=1).mean()
+            )
+
+            z_intra = np.where(
+                std_series > 0,
+                (df[col] - mean_series) / std_series,
+                np.where(std_series == 0, 0, np.nan),
+            )
+            df[f"{col}_StdDev"] = std_series
+            df[f"{col}_ZScore_IntraCompany"] = pd.Series(z_intra, index=df.index)
+
+            # Cross-sectional z-score: compare each company against peers in same period.
+            if all_companies_stats and col in all_companies_stats:
+                stats = all_companies_stats[col]
+                period_mean = df["periodEnd"].map(stats["mean"])
+                period_std = df["periodEnd"].map(stats["std"])
+            else:
+                period_mean = df.groupby("periodEnd")[col].transform("mean")
+                period_std = df.groupby("periodEnd")[col].transform("std")
+            z_all = np.where(
+                period_std > 0,
+                (df[col] - period_mean) / period_std,
+                np.where(period_std == 0, 0, np.nan),
+            )
+            df[f"{col}_ZScore_AllCompanies"] = pd.Series(z_all, index=df.index)
+
+        return df
+
+    def _build_cross_sectional_stats(self, conn, source_ref, fs_ref, metric_cols, chunk_size=200000):
+        """Build period-level mean/std for each metric without loading full dataset into memory."""
+        stats_acc: dict[str, dict[pd.Timestamp, dict[str, float]]] = {
+            col: {} for col in metric_cols
+        }
+
+        metric_select = ", ".join(f"s.{self._sql_ident(col)} AS {self._sql_ident(col)}" for col in metric_cols)
+        sql = f"""
+        SELECT fs.periodEnd AS periodEnd, {metric_select}
+        FROM {source_ref} s
+        INNER JOIN {fs_ref} fs ON fs.docID = s.docID
+        WHERE s.docID IS NOT NULL
+          AND fs.periodEnd IS NOT NULL
+        """
+
+        for chunk in pd.read_sql_query(sql, conn, chunksize=chunk_size):
+            if chunk.empty:
+                continue
+            chunk["periodEnd"] = pd.to_datetime(chunk["periodEnd"], errors="coerce")
+            chunk = chunk[chunk["periodEnd"].notna()]
+            if chunk.empty:
+                continue
+
+            for col in metric_cols:
+                vals = pd.to_numeric(chunk[col], errors="coerce")
+                local = pd.DataFrame({"periodEnd": chunk["periodEnd"], "v": vals})
+                local = local[local["v"].notna()]
+                if local.empty:
+                    continue
+                agg = local.groupby("periodEnd")["v"].agg(["count", "sum"])
+                agg["sumsq"] = local.assign(v2=local["v"] * local["v"]).groupby("periodEnd")["v2"].sum()
+
+                acc = stats_acc[col]
+                for period, row in agg.iterrows():
+                    bucket = acc.setdefault(period, {"count": 0.0, "sum": 0.0, "sumsq": 0.0})
+                    bucket["count"] += float(row["count"])
+                    bucket["sum"] += float(row["sum"])
+                    bucket["sumsq"] += float(row["sumsq"])
+
+        result = {}
+        for col in metric_cols:
+            periods = []
+            means = []
+            stds = []
+            for period, row in stats_acc[col].items():
+                n = row["count"]
+                s = row["sum"]
+                ss = row["sumsq"]
+                mean = (s / n) if n > 0 else np.nan
+                if n > 1:
+                    var = (ss - (s * s) / n) / (n - 1)  # sample variance (ddof=1)
+                    var = max(var, 0.0)
+                    std = float(np.sqrt(var))
+                else:
+                    std = np.nan
+                periods.append(period)
+                means.append(mean)
+                stds.append(std)
+
+            if periods:
+                s_mean = pd.Series(means, index=pd.to_datetime(periods))
+                s_std = pd.Series(stds, index=pd.to_datetime(periods))
+            else:
+                s_mean = pd.Series(dtype=float)
+                s_std = pd.Series(dtype=float)
+            result[col] = {"mean": s_mean, "std": s_std}
+
+        return result
+
+    def _ensure_historical_table_schema(self, conn, table_name, output_columns):
+        """Create historical table and add any missing columns."""
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {self._sql_ident(table_name)} ("
+            f"{self._sql_ident('docID')} TEXT PRIMARY KEY"
+            f")"
+        )
+
+        info = conn.execute(f"PRAGMA table_info({self._sql_ident(table_name)})").fetchall()
+        existing_cols = {row[1] for row in info}
+
+        for col in output_columns:
+            if col in existing_cols:
+                continue
+            col_type = "TEXT" if col in ("edinetCode", "periodEnd") else "REAL"
+            conn.execute(
+                f"ALTER TABLE {self._sql_ident(table_name)} "
+                f"ADD COLUMN {self._sql_ident(col)} {col_type}"
+            )
+
+    def generate_historical_ratios(
+        self,
+        source_database,
+        target_database,
+        overwrite=False,
+        company_batch_size=200,
+    ):
+        """Generate historical-ratio tables from PerShare/Quality/Valuation.
+
+        Output tables:
+        - Pershare_Historical
+        - Quality_Historical
+        - Valuation_Historical
+        """
+        source_db = source_database or self.DB_PATH
+        target_db = target_database or self.DB_PATH
+        same_db = os.path.abspath(source_db) == os.path.abspath(target_db)
+
+        source_to_target = {
+            "PerShare": "Pershare_Historical",
+            "Quality": "Quality_Historical",
+            "Valuation": "Valuation_Historical",
+        }
+
+        conn = sqlite3.connect(target_db)
+        try:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+
+            source_schema = "main"
+            if not same_db:
+                conn.execute("ATTACH DATABASE ? AS src", (source_db,))
+                source_schema = "src"
+
+            fs_actual = self._resolve_table_name_in_schema(conn, source_schema, "FinancialStatements")
+            if not fs_actual:
+                raise RuntimeError("Source table 'FinancialStatements' not found; required for Generate Historical Ratios.")
+            fs_ref = f"{self._sql_ident(source_schema)}.{self._sql_ident(fs_actual)}"
+
+            # Indexes for heavy joins/grouping on very large datasets.
+            self._create_index_if_not_exists(conn, source_schema, fs_actual, ["docID"])
+            self._create_index_if_not_exists(conn, source_schema, fs_actual, ["edinetCode", "periodEnd"])
+
+            if overwrite:
+                conn.executescript(
+                    """
+                    DROP TABLE IF EXISTS Pershare_Historical;
+                    DROP TABLE IF EXISTS Quality_Historical;
+                    DROP TABLE IF EXISTS Valuation_Historical;
+                    """
+                )
+
+            for source_table, target_table in source_to_target.items():
+                source_actual = self._resolve_table_name_in_schema(conn, source_schema, source_table)
+                if not source_actual:
+                    logger.warning("Generate Historical Ratios: source table '%s' not found, skipping.", source_table)
+                    continue
+
+                source_ref = f"{self._sql_ident(source_schema)}.{self._sql_ident(source_actual)}"
+                self._create_index_if_not_exists(conn, source_schema, source_actual, ["docID"])
+                source_cols_info = conn.execute(
+                    f"PRAGMA {self._sql_ident(source_schema)}.table_info({self._sql_ident(source_actual)})"
+                ).fetchall()
+                source_cols = [row[1] for row in source_cols_info]
+                metric_cols = [c for c in source_cols if c != "docID"]
+
+                if not metric_cols:
+                    logger.info(
+                        "Generate Historical Ratios: source table '%s' has no metric columns, skipping.",
+                        source_table,
+                    )
+                    continue
+
+                # Cross-sectional (all-companies) period stats, computed once per table.
+                cross_stats = self._build_cross_sectional_stats(
+                    conn,
+                    source_ref,
+                    fs_ref,
+                    metric_cols,
+                )
+
+                company_sql = f"""
+                SELECT DISTINCT fs.edinetCode
+                FROM {source_ref} s
+                INNER JOIN {fs_ref} fs ON fs.docID = s.docID
+                WHERE fs.edinetCode IS NOT NULL
+                ORDER BY fs.edinetCode
+                """
+                companies = [r[0] for r in conn.execute(company_sql).fetchall()]
+                if not companies:
+                    logger.info("Generate Historical Ratios: no companies found for '%s'.", source_table)
+                    continue
+
+                output_cols = ["docID", "edinetCode", "periodEnd"] + self._collect_historical_output_columns(metric_cols)
+                self._ensure_historical_table_schema(conn, target_table, [c for c in output_cols if c != "docID"])
+                self._create_index_if_not_exists(conn, "main", target_table, ["edinetCode", "periodEnd"])
+
+                select_metric_cols = ", ".join(
+                    f"s.{self._sql_ident(col)} AS {self._sql_ident(col)}" for col in metric_cols
+                )
+                cols_sql = ", ".join(self._sql_ident(c) for c in output_cols)
+
+                pending_batches = []
+                for i in range(0, len(companies), max(int(company_batch_size or 200), 1)):
+                    company_batch = companies[i:i + max(int(company_batch_size or 200), 1)]
+                    if not company_batch:
+                        continue
+
+                    placeholders = ", ".join(["?"] * len(company_batch))
+                    sql = f"""
+                    SELECT
+                        s.docID AS docID,
+                        fs.edinetCode AS edinetCode,
+                        fs.periodEnd AS periodEnd,
+                        {select_metric_cols}
+                    FROM {source_ref} s
+                    INNER JOIN {fs_ref} fs ON fs.docID = s.docID
+                    WHERE s.docID IS NOT NULL
+                      AND fs.edinetCode IN ({placeholders})
+                    ORDER BY fs.edinetCode, fs.periodEnd, s.docID
+                    """
+                    df = pd.read_sql_query(sql, conn, params=company_batch)
+                    if df.empty:
+                        continue
+
+                    df = self._compute_historical_metrics(df, metric_cols, all_companies_stats=cross_stats)
+                    pending_batches.append(df[output_cols].copy())
+
+                    if len(pending_batches) >= 5:
+                        merged = pd.concat(pending_batches, ignore_index=True)
+                        temp_name = f"_tmp_{target_table}_{random.randint(1000, 9999)}"
+                        merged.to_sql(temp_name, conn, if_exists="replace", index=False)
+                        conn.execute(
+                            f"INSERT OR REPLACE INTO {self._sql_ident(target_table)} ({cols_sql}) "
+                            f"SELECT {cols_sql} FROM {self._sql_ident(temp_name)}"
+                        )
+                        conn.execute(f"DROP TABLE IF EXISTS {self._sql_ident(temp_name)}")
+                        conn.commit()
+                        pending_batches.clear()
+
+                if pending_batches:
+                    merged = pd.concat(pending_batches, ignore_index=True)
+                    temp_name = f"_tmp_{target_table}_{random.randint(1000, 9999)}"
+                    merged.to_sql(temp_name, conn, if_exists="replace", index=False)
+                    conn.execute(
+                        f"INSERT OR REPLACE INTO {self._sql_ident(target_table)} ({cols_sql}) "
+                        f"SELECT {cols_sql} FROM {self._sql_ident(temp_name)}"
+                    )
+                    conn.execute(f"DROP TABLE IF EXISTS {self._sql_ident(temp_name)}")
+                    conn.commit()
+
+            logger.info("Generate Historical Ratios completed.")
+        finally:
+            conn.close()
 
     def _create_financial_statement_tables(self, conn):
         """Create target financial statement tables and docID uniqueness indexes."""
