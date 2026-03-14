@@ -74,8 +74,113 @@ class data:
 
         return normalized
 
-    def _build_amount_case_expr(self, mapping, source_alias="s"):
-        """Build MAX(CASE WHEN ... THEN CAST(Amount AS REAL) END) SQL expression."""
+    def _collect_financial_statement_filters(self, mappings):
+        """Return the union of relevant terms/periods across statement mappings."""
+        relevant_terms = set()
+        relevant_periods = set()
+        has_unrestricted_periods = False
+
+        for table_mappings in mappings.values():
+            for mapping in table_mappings.values():
+                if not isinstance(mapping, dict):
+                    continue
+
+                relevant_terms.update(t for t in (mapping.get("Terms", []) or []) if t)
+
+                periods = [p for p in (mapping.get("periods", []) or []) if p]
+                if periods:
+                    relevant_periods.update(periods)
+                else:
+                    has_unrestricted_periods = True
+
+        return {
+            "terms": sorted(relevant_terms),
+            "periods": sorted(relevant_periods),
+            "has_unrestricted_periods": has_unrestricted_periods,
+        }
+
+    def _build_source_relevance_predicate(self, source_alias, filters, col_names=None):
+        """Build SQL predicate limiting rows to mapped accounting terms/periods."""
+        col_names = col_names or {}
+        col_at = col_names.get("AccountingTerm", "AccountingTerm")
+        col_period = col_names.get("Period", "Period")
+
+        terms = filters.get("terms", []) if filters else []
+        periods = filters.get("periods", []) if filters else []
+        has_unrestricted_periods = bool(filters.get("has_unrestricted_periods")) if filters else False
+
+        if not terms:
+            return "1=1"
+
+        term_list = ", ".join(self._sql_literal(term) for term in terms)
+        conditions = [f"{source_alias}.{self._sql_ident(col_at)} IN ({term_list})"]
+
+        if periods and not has_unrestricted_periods:
+            period_list = ", ".join(self._sql_literal(period) for period in periods)
+            conditions.append(f"{source_alias}.{self._sql_ident(col_period)} IN ({period_list})")
+
+        return " AND ".join(conditions)
+
+    def _resolve_source_col_names(self, conn, schema_name, table_name):
+        """Detect the actual column names for AccountingTerm, Period, Amount in the source table.
+
+        When the source table uses the raw EDINET column names (e.g. financialdata_full uses
+        Japanese names like '要素ID' instead of 'AccountingTerm'), this method returns the
+        actual names so SQL expressions can reference them correctly.
+
+        Returns a dict mapping standard names to the actual names used in the table.
+        Falls back to the standard names if the table cannot be introspected.
+        """
+        try:
+            if schema_name == "main":
+                rows = conn.execute(
+                    f"PRAGMA table_info({self._sql_ident(table_name)})"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"PRAGMA {self._sql_ident(schema_name)}.table_info({self._sql_ident(table_name)})"
+                ).fetchall()
+        except Exception:
+            rows = []
+
+        table_cols = {row[1] for row in rows}
+
+        # Fixed mapping: alternative (e.g. raw EDINET Japanese) name → standard name.
+        # Keys are the column names used in tables like financialdata_full;
+        # values are the project-standard names used everywhere else.
+        ALTERNATIVE_TO_STANDARD = {
+            "要素ID":      "AccountingTerm",
+            "コンテキストID": "Period",
+            "ユニットID":   "Currency",
+            "値":          "Amount",
+        }
+
+        # Build reverse: standard name → alternative name
+        reverse_map = {v: k for k, v in ALTERNATIVE_TO_STANDARD.items()}
+
+        result = {}
+        for standard_name in ("AccountingTerm", "Period", "Amount"):
+            if standard_name in table_cols:
+                result[standard_name] = standard_name
+            elif standard_name in reverse_map and reverse_map[standard_name] in table_cols:
+                result[standard_name] = reverse_map[standard_name]
+            else:
+                result[standard_name] = standard_name  # fallback to standard
+
+        return result
+
+    def _build_amount_case_expr(self, mapping, source_alias="s",
+                               col_accounting_term="AccountingTerm",
+                               col_period="Period", col_amount="Amount"):
+        """Build MAX(CASE WHEN ... THEN CAST(Amount AS REAL) END) SQL expression.
+
+        Args:
+            mapping: Mapping dict with 'Terms' and 'periods' keys.
+            source_alias: SQL alias for the source table.
+            col_accounting_term: Actual column name for AccountingTerm in the source table.
+            col_period: Actual column name for Period in the source table.
+            col_amount: Actual column name for Amount in the source table.
+        """
         if not mapping:
             return "NULL"
 
@@ -85,16 +190,16 @@ class data:
             return "NULL"
 
         term_list = ", ".join(self._sql_literal(t) for t in terms)
-        conditions = [f"{source_alias}.AccountingTerm IN ({term_list})"]
+        conditions = [f"{source_alias}.{self._sql_ident(col_accounting_term)} IN ({term_list})"]
 
         if periods:
             period_list = ", ".join(self._sql_literal(p) for p in periods)
-            conditions.append(f"{source_alias}.Period IN ({period_list})")
+            conditions.append(f"{source_alias}.{self._sql_ident(col_period)} IN ({period_list})")
 
         condition_sql = " AND ".join(conditions)
         return (
             f"MAX(CASE WHEN {condition_sql} "
-            f"THEN CAST({source_alias}.Amount AS REAL) END)"
+            f"THEN CAST({source_alias}.{self._sql_ident(col_amount)} AS REAL) END)"
         )
 
     def _create_financial_statement_tables(self, conn):
@@ -164,10 +269,21 @@ class data:
                 mappings,
             company_ref,
             prices_ref,
+            col_names=None,
+            relevance_predicate="1=1",
         ):
                 """Insert/update FinancialStatements base rows for the current docID batch."""
+                col_names = col_names or {}
+                col_at = col_names.get("AccountingTerm", "AccountingTerm")
+                col_period = col_names.get("Period", "Period")
+                col_amount = col_names.get("Amount", "Amount")
                 fs_map = mappings.get("FinancialStatements", {})
-                shares_expr = self._build_amount_case_expr(fs_map.get("SharesOutstanding"))
+                shares_expr = self._build_amount_case_expr(
+                    fs_map.get("SharesOutstanding"),
+                    col_accounting_term=col_at,
+                    col_period=col_period,
+                    col_amount=col_amount,
+                )
 
                 sql = f"""
                 WITH base AS (
@@ -180,6 +296,7 @@ class data:
                             {shares_expr} AS SharesOutstanding
                         FROM {source_ref} s
                         INNER JOIN {temp_docids} t ON t.docID = s.docID
+                        WHERE {relevance_predicate}
                         GROUP BY s.docID
                 )
                 INSERT OR REPLACE INTO FinancialStatements
@@ -204,13 +321,22 @@ class data:
                 """
                 conn.execute(sql)
 
-    def _insert_statement_table_rows(self, conn, source_ref, temp_docids, table_name, ordered_columns, mappings):
+    def _insert_statement_table_rows(self, conn, source_ref, temp_docids, table_name, ordered_columns, mappings, col_names=None, relevance_predicate="1=1"):
         """Insert/update one statement table from config mappings for current docID batch."""
+        col_names = col_names or {}
+        col_at = col_names.get("AccountingTerm", "AccountingTerm")
+        col_period = col_names.get("Period", "Period")
+        col_amount = col_names.get("Amount", "Amount")
         table_mappings = mappings.get(table_name, {})
 
         select_exprs = ["s.docID AS docID"]
         for col in ordered_columns:
-            expr = self._build_amount_case_expr(table_mappings.get(col))
+            expr = self._build_amount_case_expr(
+                table_mappings.get(col),
+                col_accounting_term=col_at,
+                col_period=col_period,
+                col_amount=col_amount,
+            )
             select_exprs.append(f"{expr} AS {self._sql_ident(col)}")
 
         col_list = ", ".join([self._sql_ident("docID")] + [self._sql_ident(c) for c in ordered_columns])
@@ -220,6 +346,7 @@ class data:
           {", ".join(select_exprs)}
         FROM {source_ref} s
         INNER JOIN {temp_docids} t ON t.docID = s.docID
+                WHERE {relevance_predicate}
         GROUP BY s.docID
         """
         conn.execute(sql)
@@ -253,6 +380,7 @@ class data:
 
         batch_size = max(int(batch_size or 2500), 1)
         mappings = self._load_financial_statement_mappings(mappings_path)
+        filter_config = self._collect_financial_statement_filters(mappings)
 
         same_db = os.path.abspath(source_db) == os.path.abspath(target_db)
         conn = sqlite3.connect(target_db)
@@ -267,6 +395,20 @@ class data:
                 source_schema = "src"
 
             source_ref = f"{self._sql_ident(source_schema)}.{self._sql_ident(source_tbl)}"
+
+            # Detect actual column names (handles financialdata_full Japanese names)
+            col_names = self._resolve_source_col_names(conn, source_schema, source_tbl)
+            if any(v != k for k, v in col_names.items()):
+                logger.info(
+                    "generate_financial_statements: source table uses non-standard column names %s",
+                    col_names,
+                )
+
+            relevance_predicate = self._build_source_relevance_predicate(
+                "s",
+                filter_config,
+                col_names=col_names,
+            )
 
             if overwrite:
                 logger.info("Overwrite enabled - resetting financial statement tables.")
@@ -325,6 +467,7 @@ class data:
             LEFT JOIN BalanceSheet bs ON bs.docID = s.docID
             LEFT JOIN CashflowStatement cs ON cs.docID = s.docID
             WHERE s.docID IS NOT NULL
+                            AND {relevance_predicate}
               AND (fs.docID IS NULL OR is1.docID IS NULL OR bs.docID IS NULL OR cs.docID IS NULL)
             ORDER BY s.docID
             """
@@ -350,6 +493,8 @@ class data:
                         mappings,
                         company_ref,
                         prices_ref,
+                        col_names=col_names,
+                        relevance_predicate=relevance_predicate,
                     )
 
                     self._insert_statement_table_rows(
@@ -362,6 +507,8 @@ class data:
                             "incomeBeforeTaxes", "incomeTaxes", "netIncome",
                         ],
                         mappings,
+                        col_names=col_names,
+                        relevance_predicate=relevance_predicate,
                     )
                     self._insert_statement_table_rows(
                         conn,
@@ -374,6 +521,8 @@ class data:
                             "NonCurrentLiabilities", "LongTermDebt", "TotalLiabilities",
                         ],
                         mappings,
+                        col_names=col_names,
+                        relevance_predicate=relevance_predicate,
                     )
                     self._insert_statement_table_rows(
                         conn,
@@ -385,6 +534,8 @@ class data:
                             "investmentCashflow", "capex", "financingCashflow", "dividends", "buybacks",
                         ],
                         mappings,
+                        col_names=col_names,
+                        relevance_predicate=relevance_predicate,
                     )
 
                 total_docs += len(batch)

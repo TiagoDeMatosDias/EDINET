@@ -13,7 +13,7 @@
       "overwrite": true
     },
     "generate_financial_statements": {
-      "enabled": false,
+      "enabled": true,
       "overwrite": true
     },
     "download_documents": {
@@ -25,7 +25,7 @@
       "overwrite": false
     },
     "import_stock_prices_csv": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": false
     },
     "parse_taxonomy": {
@@ -86,7 +86,7 @@
   },
   "generate_financial_statements_config": {
     "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Base.db",
-    "Source_Table": "Standard_Data",
+    "Source_Table": "financialData_full",
     "Target_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
     "Company_Info_Table": "",
     "Stock_Prices_Table": "",
