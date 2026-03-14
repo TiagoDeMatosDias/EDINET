@@ -765,7 +765,8 @@ class TestGenerateHistoricalRatios(unittest.TestCase):
             CREATE TABLE FinancialStatements (
                 docID TEXT PRIMARY KEY,
                 edinetCode TEXT,
-                periodEnd TEXT
+                periodEnd TEXT,
+                SharePrice REAL
             );
             CREATE TABLE PerShare (
                 docID TEXT PRIMARY KEY,
@@ -783,11 +784,11 @@ class TestGenerateHistoricalRatios(unittest.TestCase):
         )
 
         conn.executemany(
-            "INSERT INTO FinancialStatements (docID, edinetCode, periodEnd) VALUES (?, ?, ?)",
+            "INSERT INTO FinancialStatements (docID, edinetCode, periodEnd, SharePrice) VALUES (?, ?, ?, ?)",
             [
-                ("D1", "E1", "2022-12-31"),
-                ("D2", "E1", "2023-12-31"),
-                ("D3", "E2", "2023-12-31"),
+                ("D1", "E1", "2022-12-31", 10.0),
+                ("D2", "E1", "2023-12-31", 12.0),
+                ("D3", "E2", "2023-12-31", 11.0),
             ],
         )
         conn.executemany(
@@ -826,9 +827,14 @@ class TestGenerateHistoricalRatios(unittest.TestCase):
             self.assertIn("EPS_StdDev", cols)
             self.assertIn("EPS_ZScore_IntraCompany", cols)
             self.assertIn("EPS_ZScore_AllCompanies", cols)
+            self.assertIn("EPS_1Year_Growth", cols)
+            self.assertIn("EPS_2Year_Growth", cols)
+            self.assertIn("EPS_3Year_Growth", cols)
+            self.assertIn("SharePrice_1Year_Average", cols)
+            self.assertIn("SharePrice_1Year_Growth", cols)
 
             rows = conn.execute(
-                "SELECT docID, EPS_1Year_Average, EPS_2Year_Average FROM Pershare_Historical ORDER BY docID"
+                "SELECT docID, EPS_1Year_Average, EPS_2Year_Average, EPS_1Year_Growth, EPS_2Year_Growth FROM Pershare_Historical ORDER BY docID"
             ).fetchall()
             self.assertEqual(len(rows), 3)
 
@@ -836,6 +842,32 @@ class TestGenerateHistoricalRatios(unittest.TestCase):
             d2 = [r for r in rows if r[0] == "D2"][0]
             self.assertEqual(d2[1], 3.0)
             self.assertEqual(d2[2], 2.0)
+
+            # D2 (E1, 2023): 1-year CAGR = (3.0/1.0)^(1/1) - 1 = 2.0
+            self.assertAlmostEqual(d2[3], 2.0, places=6)
+            # D2 (E1, 2023): no 2-year prior for E1 => 2-year CAGR is NULL
+            self.assertIsNone(d2[4])
+
+            # D1 (E1, 2022): no prior year => 1-year growth is NULL
+            d1 = [r for r in rows if r[0] == "D1"][0]
+            self.assertIsNone(d1[3])
+
+            # D3 (E2, 2023): only one year for E2 => growth is NULL
+            d3 = [r for r in rows if r[0] == "D3"][0]
+            self.assertIsNone(d3[3])
+
+            price_rows = conn.execute(
+                "SELECT docID, SharePrice, SharePrice_1Year_Average, SharePrice_1Year_Growth "
+                "FROM Pershare_Historical ORDER BY docID"
+            ).fetchall()
+            p_map = {doc: (p, p_avg, p_g) for doc, p, p_avg, p_g in price_rows}
+            # D2 (E1, 2023): SharePrice 10 -> 12 => 1-year growth = 0.2
+            self.assertEqual(p_map["D2"][0], 12.0)
+            self.assertEqual(p_map["D2"][1], 12.0)
+            self.assertAlmostEqual(p_map["D2"][2], 0.2, places=6)
+            # First observation per company has no 1-year growth baseline
+            self.assertIsNone(p_map["D1"][2])
+            self.assertIsNone(p_map["D3"][2])
 
             # Cross-sectional all-companies z-score at 2023-12-31:
             # D2(E1)=3.0, D3(E2)=2.0 => mean=2.5, std(sample)=~0.7071

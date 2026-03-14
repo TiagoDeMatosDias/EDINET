@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.regression_analysis import (
     Run_Model,
     _rank_predictor_results,
+    build_scoring_query,
     _significance_stars,
     multivariate_regression,
     write_results_to_file,
@@ -202,6 +203,33 @@ class TestWriteResultsToFile(unittest.TestCase):
             self.assertTrue(os.path.exists(path))
         finally:
             os.remove(path)
+
+
+class TestBuildScoringQuery(unittest.TestCase):
+
+    def _fit_model(self):
+        df = pd.DataFrame({"y": [1, 2, 3, 4, 5], "x": [2, 3, 4, 5, 6]})
+        y = df["y"]
+        X = sm.add_constant(df["x"])
+        return sm.OLS(y, X).fit()
+
+    def test_qualifies_injected_identifiers_for_join_queries(self):
+        results = self._fit_model()
+        sql = build_scoring_query(
+            results,
+            "SELECT x FROM Quality_Historical qh LEFT JOIN Pershare_Historical ph ON qh.docID = ph.docID",
+        )
+        self.assertIn("qh.edinetCode AS edinetCode", sql)
+        self.assertIn("qh.periodEnd AS periodEnd", sql)
+
+    def test_does_not_reinject_identifiers_when_already_selected(self):
+        results = self._fit_model()
+        sql = build_scoring_query(
+            results,
+            "SELECT x, qh.edinetCode AS edinetCode, qh.periodEnd AS periodEnd FROM Quality_Historical qh",
+        )
+        self.assertEqual(sql.count("AS edinetCode"), 1)
+        self.assertEqual(sql.count("AS periodEnd"), 1)
 
     def test_file_contains_query(self):
         results = self._fit_model()

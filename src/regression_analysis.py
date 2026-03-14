@@ -12,6 +12,25 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def _infer_primary_source_ref(query: str) -> str | None:
+    """Infer the first table reference / alias used in the query's FROM clause.
+
+    This is used when `build_scoring_query()` needs to inject `edinetCode`
+    and `periodEnd` into a user-supplied SELECT. Injecting them as bare column
+    names can become ambiguous for multi-table JOIN queries, so when possible we
+    qualify them with the first FROM source (usually the primary fact table).
+    """
+    match = re.search(
+        r'(?is)\bfrom\s+([A-Za-z_][A-Za-z0-9_\."]*)(?:\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*))?',
+        query.strip(),
+    )
+    if not match:
+        return None
+    table_ref = match.group(1)
+    alias = match.group(2)
+    return alias or table_ref
+
+
 
 def Run_Model(
     Query: str,
@@ -143,15 +162,26 @@ def build_scoring_query(
 
     # Augment the original query with edinetCode / periodEnd when missing,
     # then use it as a subquery so computed aliases are accessible.
+    #
+    # Important: for multi-table JOIN queries these identifiers may exist in
+    # more than one joined table, so we qualify them with the first FROM source
+    # when possible instead of injecting bare `edinetCode` / `periodEnd`.
     query_stripped = query.strip()
     from_match = re.search(r'(?i)\bFROM\b', query_stripped)
     if from_match:
         select_part = query_stripped[:from_match.start()].lower()
+        primary_ref = _infer_primary_source_ref(query_stripped)
         additions: list[str] = []
         if 'edinetcode' not in select_part:
-            additions.append('edinetCode')
+            if primary_ref:
+                additions.append(f'{primary_ref}.edinetCode AS edinetCode')
+            else:
+                additions.append('edinetCode')
         if 'periodend' not in select_part:
-            additions.append('periodEnd')
+            if primary_ref:
+                additions.append(f'{primary_ref}.periodEnd AS periodEnd')
+            else:
+                additions.append('periodEnd')
 
         if additions:
             addition_str = ', ' + ', '.join(additions)
@@ -869,7 +899,11 @@ def multivariate_regression(
             * ``winsorize_thresholds`` (dict, *optional*) -
               ``{"lower": float, "upper": float}``.  Omit to skip winsorisation.
 
-        db_path: Path to the SQLite database file.
+        db_path: Fallback path to the SQLite database file.  If *config*
+            contains a non-empty ``Source_Database`` key that value is used
+            instead, making it possible to run regressions against any
+            database (e.g. a dedicated ratios or historical DB) without
+            modifying the environment or other pipeline steps.
     """
     sql = config.get("SQL_Query")
     output_file = config.get("Output")
@@ -885,7 +919,11 @@ def multivariate_regression(
         (thresholds["lower"], thresholds["upper"]) if thresholds else (0.0, 1.0)
     )
 
-    conn = sqlite3.connect(db_path)
+    # Allow the config to specify a different database (e.g. a separate
+    # ratios/historical DB).  Fall back to the caller-supplied db_path when
+    # the key is absent or blank so existing callers are unaffected.
+    source_db = config.get("Source_Database") or db_path
+    conn = sqlite3.connect(source_db)
     try:
         # Derive variable names without loading the full dataset.
         # Wrapping as a subquery handles any trailing ORDER BY / LIMIT in sql.

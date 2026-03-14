@@ -66,6 +66,8 @@
     "company_batch_size": 200
   },
   "find_significant_predictors_config": {
+    "Source_Database": "",
+    "table_name": "",
     "output_file": "data/ols_results/predictor_search_results.txt",
     "winsorize_thresholds": {
       "lower": 0.05,
@@ -82,6 +84,7 @@
     ]
   },
   "Multivariate_Regression_config": {
+    "Source_Database": "",
     "Output": "data/ols_results/ols_results_summary.txt",
     "winsorize_thresholds": {
       "lower": 0.05,

@@ -561,6 +561,7 @@ class data:
             output_cols.append(col)
             for w in windows:
                 output_cols.append(f"{col}_{w}Year_Average")
+                output_cols.append(f"{col}_{w}Year_Growth")
             output_cols.append(f"{col}_StdDev")
             output_cols.append(f"{col}_ZScore_IntraCompany")
             output_cols.append(f"{col}_ZScore_AllCompanies")
@@ -590,6 +591,12 @@ class data:
             for w in windows:
                 df[f"{col}_{w}Year_Average"] = grouped.transform(
                     lambda s, window=w: s.rolling(window=window, min_periods=1).mean()
+                )
+                prev = grouped.transform(lambda s, shift=w: s.shift(shift))
+                df[f"{col}_{w}Year_Growth"] = np.where(
+                    (prev > 0) & (df[col] >= 0),
+                    np.power(df[col] / prev, 1.0 / w) - 1.0,
+                    np.nan,
                 )
 
             # Expanding (cumulative) stats up to the current row per company.
@@ -627,13 +634,25 @@ class data:
 
         return df
 
-    def _build_cross_sectional_stats(self, conn, source_ref, fs_ref, metric_cols, chunk_size=200000):
+    def _build_cross_sectional_stats(
+        self,
+        conn,
+        source_ref,
+        fs_ref,
+        metric_cols,
+        chunk_size=200000,
+        metric_exprs=None,
+    ):
         """Build period-level mean/std for each metric without loading full dataset into memory."""
         stats_acc: dict[str, dict[pd.Timestamp, dict[str, float]]] = {
             col: {} for col in metric_cols
         }
 
-        metric_select = ", ".join(f"s.{self._sql_ident(col)} AS {self._sql_ident(col)}" for col in metric_cols)
+        metric_exprs = metric_exprs or {}
+        metric_select = ", ".join(
+            f"{metric_exprs.get(col, f's.{self._sql_ident(col)}')} AS {self._sql_ident(col)}"
+            for col in metric_cols
+        )
         sql = f"""
         SELECT fs.periodEnd AS periodEnd, {metric_select}
         FROM {source_ref} s
@@ -783,6 +802,19 @@ class data:
                 source_cols = [row[1] for row in source_cols_info]
                 metric_cols = [c for c in source_cols if c != "docID"]
 
+                # Ensure PerShare historical table also includes SharePrice-based
+                # historical metrics even when SharePrice is not persisted in
+                # the PerShare source table.
+                metric_exprs: dict[str, str] = {}
+                if source_table == "PerShare" and "SharePrice" not in metric_cols:
+                    fs_cols_info = conn.execute(
+                        f"PRAGMA {self._sql_ident(source_schema)}.table_info({self._sql_ident(fs_actual)})"
+                    ).fetchall()
+                    fs_cols = {row[1] for row in fs_cols_info}
+                    if "SharePrice" in fs_cols:
+                        metric_cols.append("SharePrice")
+                        metric_exprs["SharePrice"] = f"fs.{self._sql_ident('SharePrice')}"
+
                 if not metric_cols:
                     logger.info(
                         "Generate Historical Ratios: source table '%s' has no metric columns, skipping.",
@@ -796,6 +828,7 @@ class data:
                     source_ref,
                     fs_ref,
                     metric_cols,
+                    metric_exprs=metric_exprs,
                 )
 
                 company_sql = f"""
@@ -815,7 +848,8 @@ class data:
                 self._create_index_if_not_exists(conn, "main", target_table, ["edinetCode", "periodEnd"])
 
                 select_metric_cols = ", ".join(
-                    f"s.{self._sql_ident(col)} AS {self._sql_ident(col)}" for col in metric_cols
+                    f"{metric_exprs.get(col, f's.{self._sql_ident(col)}')} AS {self._sql_ident(col)}"
+                    for col in metric_cols
                 )
                 cols_sql = ", ".join(self._sql_ident(c) for c in output_cols)
 

@@ -118,12 +118,15 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "company_batch_size": 200,
     },
     "find_significant_predictors": {
+        "Source_Database": "",
+        "table_name": "",
         "output_file": "data/ols_results/predictor_search_results.txt",
         "winsorize_thresholds": {"lower": 0.05, "upper": 0.95},
         "alpha": 0.05,
         "dependent_variables": [],
     },
     "Multivariate_Regression": {
+        "Source_Database": "",
         "Output": "data/ols_results/ols_results_summary.txt",
         "winsorize_thresholds": {"lower": 0.05, "upper": 0.95},
         "SQL_Query": "",

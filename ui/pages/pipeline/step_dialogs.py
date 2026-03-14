@@ -518,6 +518,260 @@ def open_generate_historical_ratios_config(
     ))
 
 
+def open_multivariate_regression_config(
+    page: ft.Page,
+    fp: ft.FilePicker,
+    step_configs: dict[str, dict],
+    snack: Callable[[str], None],
+    show: Callable[[ft.AlertDialog], None],
+    pop: Callable[[], None],
+):
+    """Dialog for configuring the 'Multivariate_Regression' step.
+
+    The first column of the SQL query is the dependent variable; all remaining
+    columns are treated as independent variables.  The SQL may JOIN across any
+    number of tables that exist in the selected database.
+    """
+    current = step_configs.get("Multivariate_Regression", {})
+    if not current:
+        current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("Multivariate_Regression", {}))
+
+    source_db_tf = ft.TextField(
+        label="Source Database (blank = DB_PATH)",
+        value=current.get("Source_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+        hint_text="Leave blank to use the default DB_PATH",
+    )
+    sql_tf = ft.TextField(
+        label="SQL Query",
+        value=current.get("SQL_Query", ""),
+        dense=True,
+        width=520,
+        multiline=True,
+        min_lines=4,
+        max_lines=10,
+        hint_text="SELECT dep_var, ind_var1, ind_var2 FROM table ...",
+    )
+    output_tf = ft.TextField(
+        label="Output File",
+        value=current.get("Output", "data/ols_results/ols_results_summary.txt"),
+        dense=True,
+        width=520,
+    )
+    thresholds = current.get("winsorize_thresholds") or {"lower": 0.05, "upper": 0.95}
+    lower_tf = ft.TextField(
+        label="Winsorize Lower",
+        value=str(thresholds.get("lower", 0.05)),
+        dense=True,
+        width=180,
+        hint_text="e.g. 0.05",
+    )
+    upper_tf = ft.TextField(
+        label="Winsorize Upper",
+        value=str(thresholds.get("upper", 0.95)),
+        dense=True,
+        width=180,
+        hint_text="e.g. 0.95",
+    )
+
+    async def _pick_source_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select source database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            source_db_tf.value = files[0].path
+            page.update()
+
+    def save(_):
+        sql = sql_tf.value.strip()
+        if not sql:
+            snack("Please enter a SQL query")
+            return
+        output = output_tf.value.strip()
+        if not output:
+            snack("Please enter an output file path")
+            return
+        try:
+            lower = float(lower_tf.value.strip())
+            upper = float(upper_tf.value.strip())
+        except ValueError:
+            lower, upper = 0.05, 0.95
+        step_configs["Multivariate_Regression"] = {
+            "Source_Database": source_db_tf.value.strip(),
+            "Output": output,
+            "winsorize_thresholds": {"lower": lower, "upper": upper},
+            "SQL_Query": sql,
+        }
+        pop()
+        snack("Multivariate Regression config updated")
+
+    show(ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configure: Multivariate Regression"),
+        content=ft.Column(
+            [
+                ft.Text(
+                    "First column = dependent variable; remaining columns = independent variables.\n"
+                    "The SQL may JOIN across multiple tables in the selected database.",
+                    size=12,
+                    color=ft.Colors.GREY_500,
+                ),
+                ft.Row([
+                    source_db_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select database", on_click=_pick_source_db),
+                ], spacing=4),
+                sql_tf,
+                output_tf,
+                ft.Row([lower_tf, upper_tf], spacing=16),
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            width=560,
+            height=450,
+            spacing=8,
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: pop()),
+            ft.Button("Save", on_click=save),
+        ],
+    ))
+
+
+def open_find_significant_predictors_config(
+    page: ft.Page,
+    fp: ft.FilePicker,
+    step_configs: dict[str, dict],
+    snack: Callable[[str], None],
+    show: Callable[[ft.AlertDialog], None],
+    pop: Callable[[], None],
+):
+    """Dialog for configuring the 'find_significant_predictors' step."""
+    current = step_configs.get("find_significant_predictors", {})
+    if not current:
+        current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("find_significant_predictors", {}))
+
+    source_db_tf = ft.TextField(
+        label="Source Database (blank = DB_PATH)",
+        value=current.get("Source_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+        hint_text="Leave blank to use the default DB_PATH",
+    )
+    table_name_tf = ft.TextField(
+        label="Table Name (blank = DB_STANDARDIZED_RATIOS_TABLE)",
+        value=current.get("table_name", ""),
+        dense=True,
+        width=420,
+        hint_text="e.g. Quality, PerShare, Valuation (blank = Standard_Data_Ratios)",
+    )
+    output_tf = ft.TextField(
+        label="Output File",
+        value=current.get("output_file", "data/ols_results/predictor_search_results.txt"),
+        dense=True,
+        width=420,
+    )
+    thresholds = current.get("winsorize_thresholds") or {"lower": 0.05, "upper": 0.95}
+    lower_tf = ft.TextField(
+        label="Winsorize Lower",
+        value=str(thresholds.get("lower", 0.05)),
+        dense=True,
+        width=160,
+    )
+    upper_tf = ft.TextField(
+        label="Winsorize Upper",
+        value=str(thresholds.get("upper", 0.95)),
+        dense=True,
+        width=160,
+    )
+    alpha_tf = ft.TextField(
+        label="Alpha",
+        value=str(current.get("alpha", 0.05)),
+        dense=True,
+        width=160,
+        hint_text="e.g. 0.05",
+    )
+    dep_vars_tf = ft.TextField(
+        label="Dependent Variables (one per line, blank = all columns)",
+        value="\n".join(current.get("dependent_variables", [])),
+        dense=True,
+        width=420,
+        multiline=True,
+        min_lines=3,
+        max_lines=8,
+        hint_text="Leave blank to test every eligible column as a dependent variable",
+    )
+
+    async def _pick_source_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select source database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            source_db_tf.value = files[0].path
+            page.update()
+
+    def save(_):
+        try:
+            lower = float(lower_tf.value.strip())
+            upper = float(upper_tf.value.strip())
+        except ValueError:
+            lower, upper = 0.05, 0.95
+        try:
+            alpha = float(alpha_tf.value.strip())
+        except ValueError:
+            alpha = 0.05
+        dep_vars_raw = dep_vars_tf.value.strip()
+        dep_vars = [ln.strip() for ln in dep_vars_raw.splitlines() if ln.strip()] if dep_vars_raw else []
+        step_configs["find_significant_predictors"] = {
+            "Source_Database": source_db_tf.value.strip(),
+            "table_name": table_name_tf.value.strip(),
+            "output_file": output_tf.value.strip() or "data/ols_results/predictor_search_results.txt",
+            "winsorize_thresholds": {"lower": lower, "upper": upper},
+            "alpha": alpha,
+            "dependent_variables": dep_vars,
+        }
+        pop()
+        snack("Find Significant Predictors config updated")
+
+    show(ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configure: Find Significant Predictors"),
+        content=ft.Column(
+            [
+                ft.Text(
+                    "Tests every single-predictor OLS combination in the selected table\n"
+                    "to surface the strongest univariate predictors.",
+                    size=12,
+                    color=ft.Colors.GREY_500,
+                ),
+                ft.Row([
+                    source_db_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select database", on_click=_pick_source_db),
+                ], spacing=4),
+                table_name_tf,
+                output_tf,
+                ft.Row([lower_tf, upper_tf, alpha_tf], spacing=16),
+                dep_vars_tf,
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            width=560,
+            height=430,
+            spacing=8,
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: pop()),
+            ft.Button("Save", on_click=save),
+        ],
+    ))
+
+
 def open_generic_step_config(
     page: ft.Page,
     step_name: str,

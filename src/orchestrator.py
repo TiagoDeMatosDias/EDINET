@@ -183,10 +183,12 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
         )
         alpha = predictor_config.get("alpha", 0.05)
         dependent_variables = predictor_config.get("dependent_variables") or []
+        source_database = predictor_config.get("Source_Database") or DB_PATH
+        pred_table = predictor_config.get("table_name") or DB_STANDARDIZED_RATIOS_TABLE
 
         r.find_significant_predictors(
-            db_path=DB_PATH,
-            table_name=DB_STANDARDIZED_RATIOS_TABLE,
+            db_path=source_database,
+            table_name=pred_table,
             results_table_name=DB_SIGNIFICANT_PREDICTORS_TABLE,
             output_file=output_file,
             winsorize_limits=winsorize_limits,
