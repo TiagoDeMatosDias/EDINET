@@ -24,7 +24,7 @@
     "backtest_set": {"enabled": false, "overwrite": false}
   },
   "populate_company_info_config": {
-    "csv_file": "config/reference/EdinetcodeDlInfo.csv",
+    "csv_file": "config/reference/companyinfo.csv",
     "Target_Database": ""
   },
   "import_stock_prices_csv_config": {

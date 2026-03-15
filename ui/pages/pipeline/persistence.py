@@ -75,7 +75,7 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "Target_Database": "",
     },
     "populate_company_info": {
-        "csv_file": "config/reference/EdinetcodeDlInfo.csv",
+        "csv_file": "config/reference/companyinfo.csv",
         "Target_Database": "",
     },
     "import_stock_prices_csv": {

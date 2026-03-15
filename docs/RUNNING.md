@@ -7,6 +7,8 @@ The application supports two execution modes:
 - **GUI mode** (default): `python main.py` — launches the Flet desktop UI where you can configure steps, reorder them, and run the pipeline visually.
 - **CLI mode**: `python main.py --cli` — reads `config/state/run_config.json` and executes enabled steps headlessly.
 
+Most steps now require an explicit source or target database path in their step configuration. The GUI exposes those paths directly in each step's config dialog.
+
 ## Configuration Format
 
 All execution is controlled by `config/state/run_config.json`. Each step is an object with `enabled` and `overwrite` flags:
@@ -38,9 +40,12 @@ Fetches the list of available filings from the EDINET API and stores document me
 ```json
 "get_documents_config": {
   "startDate": "2026-02-15",
-  "endDate":   "2026-02-21"
+  "endDate":   "2026-02-21",
+  "Target_Database": "C:/path/to/base.db"
 }
 ```
+
+- `Target_Database` — database where the EDINET document list table will be written.
 
 ---
 
@@ -52,7 +57,8 @@ Downloads filings for documents already in the document list that match the filt
   "docTypeCode": "120",
   "csvFlag":     "1",
   "secCode":     "",
-  "Downloaded":  "False"
+  "Downloaded":  "False",
+  "Target_Database": "C:/path/to/base.db"
 }
 ```
 
@@ -60,6 +66,7 @@ Downloads filings for documents already in the document list that match the filt
 - `csvFlag` — `"1"` to download the XBRL-to-CSV version.
 - `secCode` — filter by security code; leave blank for all.
 - `Downloaded` — `"False"` to skip already-downloaded documents.
+- `Target_Database` — database containing the document list table and destination financial data table.
 
 ---
 
@@ -68,9 +75,12 @@ Loads the EDINET company code list from a CSV file into the database.
 
 ```json
 "populate_company_info_config": {
-  "csv_file": "config/reference/EdinetcodeDlInfo.csv"
+  "csv_file": "config/reference/companyinfo.csv",
+  "Target_Database": "C:/path/to/standardized.db"
 }
 ```
+
+- `Target_Database` — database where the company info table will be written.
 
 ---
 
@@ -79,19 +89,25 @@ Imports historical stock prices from a user-supplied CSV file into the `stock_pr
 
 ```json
 "import_stock_prices_csv_config": {
+  "Target_Database": "C:/path/to/standardized.db",
   "csv_file": "C:/path/to/prices.csv",
-  "ticker": "TPX",
-  "currency": "JPY",
+  "default_ticker": "TPX",
+  "default_currency": "JPY",
   "date_column": "Date",
-  "price_column": "Close"
+  "price_column": "Close",
+  "ticker_column": "Ticker",
+  "currency_column": "Currency"
 }
 ```
 
+- `Target_Database` — database where the stock prices table will be written.
 - `csv_file` — absolute path to the CSV file. In the GUI, use the file picker in the config dialog.
-- `ticker` — ticker symbol to assign to every imported row.
-- `currency` — currency code (e.g. `JPY`, `USD`).
+- `default_ticker` — fallback ticker assigned when the CSV has no ticker column or the row value is blank.
+- `default_currency` — fallback currency assigned when the CSV has no currency column or the row value is blank.
 - `date_column` — name of the CSV column that contains dates.
 - `price_column` — name of the CSV column that contains the price values (e.g. `Close`, `Open`, `High`).
+- `ticker_column` — optional ticker column in the CSV.
+- `currency_column` — optional currency column in the CSV.
 
 Example CSV format:
 ```
@@ -103,7 +119,30 @@ Date,Open,High,Low,Close,Volume
 ---
 
 ### `update_stock_prices`
-Fetches historical share prices from the Stooq API for all companies in the database that have financial data. No additional config required.
+Fetches historical share prices from the Stooq API for all companies in the selected database that have financial data.
+
+```json
+"update_stock_prices_config": {
+  "Target_Database": "C:/path/to/standardized.db"
+}
+```
+
+- `Target_Database` — database containing the company info and financial data tables, and where stock prices will be updated.
+
+---
+
+### `parse_taxonomy`
+Parses an EDINET XBRL taxonomy XSD file and stores element metadata (name, statement type, balance type) into the taxonomy table.
+
+```json
+"parse_taxonomy_config": {
+  "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd",
+  "Target_Database": "C:/path/to/standardized.db"
+}
+```
+
+- `xsd_file` — taxonomy XSD file to parse.
+- `Target_Database` — database where the taxonomy table will be written.
 
 ---
 
@@ -114,31 +153,44 @@ Supports `overwrite` — when enabled, the output tables are dropped and fully r
 
 ```json
 "generate_financial_statements_config": {
-  "Source_Table": "financialData_full"
+  "Source_Database": "C:/path/to/base.db",
+  "Source_Table": "financialData_full",
+  "Target_Database": "C:/path/to/standardized.db",
+  "Company_Info_Table": "",
+  "Stock_Prices_Table": "",
+  "Mappings_Config": "config/reference/financial_statements_mappings_config.json",
+  "batch_size": 2500
 }
 ```
 
+- `Source_Database` — database containing the raw EDINET financial data.
 - `Source_Table` — the raw financial data table to read from (default: `financialData_full`).
-
----
-
-### `parse_taxonomy`
-Parses an EDINET XBRL taxonomy XSD file and stores element metadata (name, statement type, balance type) into the table defined by `DB_TAXONOMY_TABLE` in `.env`.
-
-```json
-"parse_taxonomy_config": {
-  "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd"
-}
-```
+- `Target_Database` — database where `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, and `CashflowStatement` are written.
+- `Company_Info_Table` — optional override for the company info table name.
+- `Stock_Prices_Table` — optional override for the stock prices table name.
+- `Mappings_Config` — JSON mapping file used to translate taxonomy tags into statement fields.
+- `batch_size` — rows/documents processed per batch.
 
 ---
 
 ### `generate_ratios`
-Calculates per-share values and valuation ratios for every company. Ratio definitions are controlled by `config/reference/financial_ratios_config.json`.
+Calculates per-share values and valuation ratios for every company. Formula definitions are controlled by `config/reference/generate_ratios_formulas_config.json`.
 
 Supports `overwrite`. In incremental mode (the default), documents already processed are skipped.
 
-No additional run-config parameters required.
+```json
+"generate_ratios_config": {
+  "Source_Database": "C:/path/to/standardized.db",
+  "Target_Database": "C:/path/to/standardized.db",
+  "Formulas_Config": "config/reference/generate_ratios_formulas_config.json",
+  "batch_size": 5000
+}
+```
+
+- `Source_Database` — database containing the financial statement tables.
+- `Target_Database` — database where the `PerShare`, `Valuation`, and `Quality` tables are written.
+- `Formulas_Config` — JSON formula file used to derive ratio fields.
+- `batch_size` — rows/documents processed per batch.
 
 ---
 
@@ -147,7 +199,17 @@ Computes rolling averages, growth rates, and z-scores over the ratio tables prod
 
 Supports `overwrite`.
 
-No additional run-config parameters required.
+```json
+"generate_historical_ratios_config": {
+  "Source_Database": "C:/path/to/standardized.db",
+  "Target_Database": "C:/path/to/standardized.db",
+  "company_batch_size": 200
+}
+```
+
+- `Source_Database` — database containing the current ratio tables.
+- `Target_Database` — database where the historical ratio tables are written.
+- `company_batch_size` — number of companies processed per batch.
 
 ---
 
@@ -156,12 +218,14 @@ Runs a multivariate OLS regression defined entirely by a SQL query. The **first 
 
 ```json
 "Multivariate_Regression_config": {
+  "Source_Database": "C:/path/to/standardized.db",
   "Output": "data/ols_results/ols_results_summary.txt",
   "winsorize_thresholds": { "lower": 0.05, "upper": 0.95 },
   "SQL_Query": "SELECT dep_var, ind_var_1, ind_var_2 FROM Quality_Historical"
 }
 ```
 
+- `Source_Database` — database queried by the regression SQL.
 - `winsorize_thresholds` — optional; omit the key entirely to skip winsorisation.
 - `SQL_Query` — any valid SQLite `SELECT`. Change this to adjust the model without touching any code.
 
@@ -172,28 +236,31 @@ Runs a portfolio backtesting simulation over a date range. Calculates weighted d
 
 ```json
 "backtesting_config": {
+  "Source_Database": "C:/path/to/standardized.db",
+  "PerShare_Table": "PerShare",
+  "Financial_Statements_Table": "FinancialStatements",
   "start_date": "2020-01-01",
   "end_date": "2025-12-31",
   "portfolio": {
-    "47460": 0.1,
-    "53020": 0.1,
-    "71720": 0.1,
-    "83660": 0.1,
-    "94360": 0.1,
-    "19670": 0.1,
-    "61610": 0.1,
-    "85950": 0.1,
-    "83640": 0.1,
-    "80350": 0.1
+    "59110": { "mode": "shares", "value": 100.0 },
+    "59840": { "mode": "shares", "value": 300.0 },
+    "75750": { "mode": "weight", "value": 0.5 }
   },
   "benchmark_ticker": "TPX",
-  "output_file": "data/backtest_results/backtest_report.txt"
+  "output_file": "data/backtest_results/backtest_report.txt",
+  "risk_free_rate": 0.02,
+  "initial_capital": 0.0
 }
 ```
 
-- `portfolio` — mapping of ticker symbol → weight (values must sum to 1.0). In the GUI, a dedicated dialog lets you add/remove tickers and validates the total weight.
+- `Source_Database` — database used for prices, dividends, and financial statement lookups.
+- `PerShare_Table` — table containing per-share dividend data.
+- `Financial_Statements_Table` — table used when joining dividend information via `docID`.
+- `portfolio` — mapping of ticker symbol to allocation spec. Supports `weight`, `shares`, and `value` modes in the GUI and config file.
 - `benchmark_ticker` — optional ticker to compare portfolio performance against. Leave blank to skip benchmark comparison.
 - `output_file` — path for the text report.
+- `risk_free_rate` — optional risk-free rate used in metric calculations.
+- `initial_capital` — optional starting capital used for per-company cash metrics.
 
 The backtesting engine:
 - Retrieves daily prices from the `stock_prices` table.
@@ -201,3 +268,30 @@ The backtesting engine:
 - Computes daily weighted returns with dividend adjustments.
 - Calculates cumulative returns over the period.
 - If a benchmark ticker is given, computes the same metrics for the benchmark and reports relative performance.
+
+---
+
+### `backtest_set`
+Runs a batch of backtests from a CSV file containing yearly portfolio selections. For each year in the input CSV, the application runs 1-year, 2-year, 3-year, 5-year, and 10-year backtests where possible.
+
+```json
+"backtest_set_config": {
+  "Source_Database": "C:/path/to/standardized.db",
+  "PerShare_Table": "PerShare",
+  "Financial_Statements_Table": "FinancialStatements",
+  "csv_file": "C:/path/to/ols_results_summary_top10.csv",
+  "benchmark_ticker": "TPX",
+  "output_dir": "data/backtest_set_results",
+  "risk_free_rate": 0.02,
+  "initial_capital": 0.0
+}
+```
+
+- `Source_Database` — database used for prices, dividends, and financial statement lookups.
+- `PerShare_Table` — table containing per-share dividend data.
+- `Financial_Statements_Table` — table used when joining dividend information via `docID`.
+- `csv_file` — input CSV describing the yearly portfolios to test.
+- `benchmark_ticker` — optional benchmark ticker.
+- `output_dir` — directory where the batch reports and summaries are written.
+- `risk_free_rate` — optional risk-free rate used in metric calculations.
+- `initial_capital` — optional starting capital used for per-company cash metrics.

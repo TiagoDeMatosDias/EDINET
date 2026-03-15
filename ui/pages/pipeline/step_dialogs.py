@@ -203,7 +203,7 @@ def open_populate_company_info_config(
 
     csv_file_tf = ft.TextField(
         label="CSV File",
-        value=current.get("csv_file", "config/reference/EdinetcodeDlInfo.csv"),
+        value=current.get("csv_file", "config/reference/companyinfo.csv"),
         dense=True,
         width=420,
         read_only=True,

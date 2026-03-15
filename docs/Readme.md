@@ -2,6 +2,8 @@
 
 Downloads financial filings from the Japanese securities regulator (EDINET), processes them into a structured SQLite database, and runs statistical analysis to identify relationships between financial ratios and stock valuations.
 
+Each pipeline step is configured independently, including its source or target database path where applicable.
+
 ## Quick Start (Alpha Release)
 
 1. Download the latest release from [Releases](https://github.com/TiagoDeMatosDias/EDINET/releases)
@@ -23,6 +25,7 @@ Downloads financial filings from the Japanese securities regulator (EDINET), pro
 9. **Generate historical ratios** – computes rolling averages, growth rates, and z-scores over time.
 10. **Multivariate regression** – user-defined multivariate OLS regression specified as a SQL query.
 11. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
+12. **Backtest set** – batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
 
 ## Screenshot
 
@@ -32,7 +35,7 @@ Downloads financial filings from the Japanese securities regulator (EDINET), pro
 
 The application can run in two modes:
 
-- **GUI mode** (default) — Launch the Flet desktop application with `python main.py`. The GUI provides drag-and-drop step ordering, per-step configuration dialogs, light/dark theme switching, database selection, and a live log output panel.
+- **GUI mode** (default) — Launch the Flet desktop application with `python main.py`. The GUI provides drag-and-drop step ordering, per-step configuration dialogs, light/dark theme switching, and a live log output panel.
 - **CLI mode** — Run headless from the terminal with `python main.py --cli`. This reads `config/state/run_config.json` directly and executes the enabled steps in order.
 
 > **Note:** The GUI requires the `flet` package. If it is not installed, the application will print an error and suggest running with `--cli`.
@@ -121,7 +124,7 @@ EDINET.exe                                   <- built by PyInstaller (from dist/
 .env                                         <- your API keys and DB paths
 config/
     reference/
-        EdinetcodeDlInfo.csv
+        companyinfo.csv
         jppfs_cor_2013-08-31.xsd
     state/
         run_config.json
@@ -145,7 +148,9 @@ It will look for `config/` and `.env` in the same folder as the exe.
 | File | Purpose |
 |---|---|
 | `config/state/run_config.json` | Controls which steps run, their order, and step-specific parameters |
-| `config/reference/EdinetcodeDlInfo.csv` | EDINET company code list (used by populate_company_info) |
+| `config/reference/companyinfo.csv` | EDINET company code list (used by populate_company_info) |
+| `config/reference/financial_statements_mappings_config.json` | Mapping rules used by `generate_financial_statements` |
+| `config/reference/generate_ratios_formulas_config.json` | Formula definitions used by `generate_ratios` |
 | `config/reference/jppfs_cor_2013-08-31.xsd` | XBRL taxonomy file (used by parse_taxonomy) |
 | `config/examples/run_config.example.json` | Example run configuration for new users |
 | `config/state/saved_setups/` | Named setup files saved from the GUI |
@@ -155,11 +160,10 @@ It will look for `config/` and `.env` in the same folder as the exe.
 
 The Flet-based GUI provides:
 
-- **Database selector** – create or open SQLite databases from the top bar; recently used databases are remembered.
 - **API Key dialog** – securely set the EDINET API key without editing `.env` manually.
 - **Drag-and-drop step ordering** – reorder pipeline steps by dragging them.
 - **Per-step enable/disable** – check or uncheck each step.
-- **Per-step configuration dialogs** – click the ⚙ icon to configure a step's parameters. Steps like Backtest and Import CSV have dedicated custom dialogs.
+- **Per-step configuration dialogs** – click the ⚙ icon to configure each step, including selecting its source or target database where required. Steps like Backtest, Backtest Set, Import CSV, and the ratios/statements steps have dedicated custom dialogs.
 - **Overwrite toggle** – steps that support it (Generate Financial Statements, Generate Ratios, Generate Historical Ratios) show an "Overwrite" checkbox.
 - **Save / Load setups** – persist and recall named configurations from `config/state/saved_setups/`.
 - **Live log output** – see real-time log messages during execution in the output panel.
