@@ -14,11 +14,6 @@ The application should be a single page, with the following functionality:
 
 A top bar with:
 
-    - Database selection (Sets the path defined in the .ENV file DB_PATH)
-        - A dropdown with previously selected databases
-        - A + sign to create a new database -> This opens a dialog allowing the user to select where the DB will be placed in the filesystem
-        - A "load database" to load an existing database that has not yet been selected -> This opens a dialog allowing users to select an existing database in the filesystem
-
     - API key config (API_KEY in the .env file)
         - A button that opens a popup with a text box allowing users to paste the key to set it
 
@@ -31,8 +26,6 @@ A main panel with:
         - If a checkbox is selected that means that step will run
         - if a checkbox is selected, a button should appear that when clicked will show a pop up with the relevant config details to be filled for that specific run step (steps without configs should not have the button)
     
-    - A button that allows users to set a specific financial_ratios_config.json file (that is defined in the .ENV)
-
     - A button allowing The saving of the existing setup
 
     - A button allowing the loading of previously saved setups (with a dropdown for prior setups)

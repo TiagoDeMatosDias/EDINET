@@ -9,7 +9,6 @@ from ui.pages.pipeline.persistence import (
     build_steps,
     list_saved_setups,
     load_named_setup,
-    save_app_state,
     save_named_setup,
     write_env,
 )
@@ -25,18 +24,9 @@ from ui.pages.pipeline.step_dialogs import (
     open_import_csv_config,
     open_multivariate_regression_config,
     open_parse_taxonomy_config,
+    open_populate_company_info_config,
     open_update_stock_prices_config,
 )
-
-
-def seed_recent_database(env: dict[str, str], app_state: dict) -> str:
-    current_db = env.get("DB_PATH", "")
-    if current_db:
-        dbs = app_state.setdefault("recent_databases", [])
-        if current_db not in dbs:
-            dbs.insert(0, current_db)
-            save_app_state(app_state)
-    return current_db
 
 
 class AppController:
@@ -64,71 +54,14 @@ class AppController:
         self.show = show
         self.pop = pop
         self.current_config = current_config
-        self.db_dropdown: ft.Dropdown | None = None
         self.theme_btn: ft.IconButton | None = None
         self._rebuild_steps: Callable[[], None] = lambda: None
 
-    def bind_controls(self, db_dropdown: ft.Dropdown, theme_btn: ft.IconButton):
-        self.db_dropdown = db_dropdown
+    def bind_controls(self, theme_btn: ft.IconButton):
         self.theme_btn = theme_btn
 
     def set_rebuild_steps(self, rebuild_steps: Callable[[], None]):
         self._rebuild_steps = rebuild_steps
-
-    def _add_recent_db(self, path: str):
-        dbs = self.app_state.setdefault("recent_databases", [])
-        if path in dbs:
-            dbs.remove(path)
-        dbs.insert(0, path)
-        self.app_state["recent_databases"] = dbs[:20]
-        save_app_state(self.app_state)
-
-    def refresh_db_dropdown(self, *, update: bool = True):
-        if self.db_dropdown is None:
-            return
-        current = self.env.get("DB_PATH", "")
-        dbs = self.app_state.get("recent_databases", [])
-        self.db_dropdown.options = [ft.dropdown.Option(key=d, text=os.path.basename(d)) for d in dbs]
-        self.db_dropdown.value = current if current in dbs else None
-        if update:
-            self.page.update()
-
-    def on_db_change(self, _):
-        if self.db_dropdown is None:
-            return
-        path = self.db_dropdown.value
-        if path:
-            write_env("DB_PATH", path)
-            self.env["DB_PATH"] = path
-
-    async def on_add_db(self, _):
-        result = await self.fp.save_file(
-            dialog_title="Create new database",
-            file_name="edinet.db",
-            allowed_extensions=["db"],
-        )
-        if result:
-            db_path = result if result.endswith(".db") else result + ".db"
-            write_env("DB_PATH", db_path)
-            self.env["DB_PATH"] = db_path
-            self._add_recent_db(db_path)
-            self.refresh_db_dropdown()
-            self.snack(f"Database set to {os.path.basename(db_path)}")
-
-    async def on_open_db(self, _):
-        files = await self.fp.pick_files(
-            dialog_title="Select existing database",
-            file_type=ft.FilePickerFileType.CUSTOM,
-            allowed_extensions=["db"],
-            allow_multiple=False,
-        )
-        if files:
-            db_path = files[0].path
-            write_env("DB_PATH", db_path)
-            self.env["DB_PATH"] = db_path
-            self._add_recent_db(db_path)
-            self.refresh_db_dropdown()
-            self.snack(f"Database loaded: {os.path.basename(db_path)}")
 
     def on_api_key(self, _):
         tf = ft.TextField(
@@ -174,6 +107,9 @@ class AppController:
             return
         if step_name == "download_documents":
             open_download_documents_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)
+            return
+        if step_name == "populate_company_info":
+            open_populate_company_info_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)
             return
         if step_name == "backtest":
             open_backtest_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)

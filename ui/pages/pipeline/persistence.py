@@ -236,8 +236,9 @@ def build_step_configs(run_cfg: dict) -> dict[str, dict]:
     step_configs: dict[str, dict] = {}
     for sname in STEP_CONFIG_KEY:
         cfg_key = STEP_CONFIG_KEY[sname]
-        loaded = run_cfg.get(cfg_key, {})
-        step_configs[sname] = loaded if loaded else copy.deepcopy(DEFAULT_STEP_CONFIGS.get(sname, {}))
+        loaded = run_cfg.get(cfg_key, {}) or {}
+        defaults = copy.deepcopy(DEFAULT_STEP_CONFIGS.get(sname, {}))
+        step_configs[sname] = {**defaults, **loaded}
     return step_configs
 
 

@@ -26,7 +26,6 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
     DB_DOC_LIST_TABLE = config.get("DB_DOC_LIST_TABLE")
     DB_FINANCIAL_DATA_TABLE = config.get("DB_FINANCIAL_DATA_TABLE")
     DB_STANDARDIZED_TABLE = config.get("DB_STANDARDIZED_TABLE")
-    DB_PATH = config.get("DB_PATH")
     DB_COMPANY_INFO_TABLE = config.get("DB_COMPANY_INFO_TABLE")
     DB_STOCK_PRICES_TABLE = config.get("DB_STOCK_PRICES_TABLE")
     DB_TAXONOMY_TABLE = config.get("DB_TAXONOMY_TABLE")
@@ -36,7 +35,7 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
         get_documents_config = config.get("get_documents_config", {})
         startDate = get_documents_config.get("startDate")
         endDate = get_documents_config.get("endDate")
-        target_database = get_documents_config.get("Target_Database") or DB_PATH
+        target_database = get_documents_config.get("Target_Database")
         original_database = edinet.Database
         try:
             edinet.Database = target_database
@@ -51,7 +50,7 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
         csvFlag = download_documents_config.get("csvFlag")
         secCode = download_documents_config.get("secCode")
         downloaded_flag = download_documents_config.get("Downloaded")
-        target_database = download_documents_config.get("Target_Database") or DB_PATH
+        target_database = download_documents_config.get("Target_Database")
 
         filters = edinet.generate_filter("docTypeCode", "=", docTypeCode)
         filters = edinet.generate_filter("csvFlag", "=", csvFlag, filters)
@@ -68,15 +67,15 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
         logger.info("Populating company info table...")
         populate_config = config.get("populate_company_info_config", {})
         csv_file = populate_config.get("csv_file")
-        target_database = populate_config.get("Target_Database") or DB_PATH
+        target_database = populate_config.get("Target_Database")
         edinet.store_edinetCodes(csv_file, target_database=target_database)
 
     elif step_name in ("generate_financial_statements", "Generate Financial Statements"):
         logger.info("Generating financial statements...")
         fs_config = config.get("generate_financial_statements_config", {})
-        source_database = fs_config.get("Source_Database") or DB_PATH
+        source_database = fs_config.get("Source_Database")
         source_table = fs_config.get("Source_Table") or DB_FINANCIAL_DATA_TABLE
-        target_database = fs_config.get("Target_Database") or DB_PATH
+        target_database = fs_config.get("Target_Database")
         company_table = fs_config.get("Company_Info_Table") or DB_COMPANY_INFO_TABLE
         prices_table = fs_config.get("Stock_Prices_Table") or DB_STOCK_PRICES_TABLE
         mappings_config = fs_config.get(
@@ -99,8 +98,8 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
     elif step_name in ("generate_ratios", "Generate Ratios"):
         logger.info("Generating ratios tables (PerShare / Valuation / Quality)...")
         gr_config = config.get("generate_ratios_config", {})
-        source_database = gr_config.get("Source_Database") or DB_PATH
-        target_database = gr_config.get("Target_Database") or DB_PATH
+        source_database = gr_config.get("Source_Database")
+        target_database = gr_config.get("Target_Database")
         formulas_config = gr_config.get(
             "Formulas_Config",
             "config/reference/generate_ratios_formulas_config.json",
@@ -118,8 +117,8 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
     elif step_name in ("generate_historical_ratios", "Generate Historical Ratios"):
         logger.info("Generating historical ratios tables (Pershare_Historical / Quality_Historical / Valuation_Historical)...")
         ghr_config = config.get("generate_historical_ratios_config", {})
-        source_database = ghr_config.get("Source_Database") or DB_PATH
-        target_database = ghr_config.get("Target_Database") or DB_PATH
+        source_database = ghr_config.get("Source_Database")
+        target_database = ghr_config.get("Target_Database")
         company_batch_size = ghr_config.get("company_batch_size", 200)
 
         data.generate_historical_ratios(
@@ -132,7 +131,7 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
     elif step_name == "import_stock_prices_csv":
         logger.info("Importing stock prices from CSV...")
         csv_config = config.get("import_stock_prices_csv_config", {})
-        target_database = csv_config.get("Target_Database") or DB_PATH
+        target_database = csv_config.get("Target_Database")
         csv_path = csv_config.get("csv_file", "")
         default_ticker = csv_config.get("default_ticker", csv_config.get("ticker", ""))
         default_currency = csv_config.get("default_currency", csv_config.get("currency", "JPY"))
@@ -150,7 +149,7 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
     elif step_name == "update_stock_prices":
         logger.info("Updating stock prices...")
         update_config = config.get("update_stock_prices_config", {})
-        target_database = update_config.get("Target_Database") or DB_PATH
+        target_database = update_config.get("Target_Database")
         y.update_all_stock_prices(
             target_database,
             DB_COMPANY_INFO_TABLE,
@@ -162,7 +161,7 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
         logger.info("Parsing EDINET taxonomy...")
         taxonomy_config = config.get("parse_taxonomy_config", {})
         xsd_file = taxonomy_config.get("xsd_file")
-        target_database = taxonomy_config.get("Target_Database") or DB_PATH
+        target_database = taxonomy_config.get("Target_Database")
         conn = sqlite3.connect(target_database)
         try:
             data.parse_edinet_taxonomy(xsd_file, DB_TAXONOMY_TABLE, connection=conn)
@@ -172,12 +171,13 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
     elif step_name == "Multivariate_Regression":
         logger.info("Running multivariate regression...")
         mv_config = config.get("Multivariate_Regression_config", {})
-        r.multivariate_regression(mv_config, DB_PATH, company_table=DB_COMPANY_INFO_TABLE)
+        source_database = mv_config.get("Source_Database")
+        r.multivariate_regression(mv_config, source_database, company_table=DB_COMPANY_INFO_TABLE)
 
     elif step_name == "backtest":
         logger.info("Running backtesting...")
         backtesting_config = config.get("backtesting_config", {})
-        source_database = backtesting_config.get("Source_Database") or DB_PATH
+        source_database = backtesting_config.get("Source_Database")
         per_share_table = backtesting_config.get("PerShare_Table") or "PerShare"
         fs_table = (
             backtesting_config.get("Financial_Statements_Table")
@@ -195,7 +195,7 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
     elif step_name == "backtest_set":
         logger.info("Running backtest set...")
         bs_config = config.get("backtest_set_config", {})
-        source_database = bs_config.get("Source_Database") or DB_PATH
+        source_database = bs_config.get("Source_Database")
         per_share_table = bs_config.get("PerShare_Table") or "PerShare"
         fs_table = (
             bs_config.get("Financial_Statements_Table")
@@ -239,11 +239,34 @@ def run(edinet=None, data=None):
         "generate_financial_statements": [],
         "generate_ratios":            [],
         "generate_historical_ratios": [],
-        "Multivariate_Regression":    ["DB_PATH"],
-        "backtest":                   ["DB_PATH", "DB_STOCK_PRICES_TABLE",
+        "Multivariate_Regression":    [],
+        "backtest":                   ["DB_STOCK_PRICES_TABLE",
                                        "DB_COMPANY_INFO_TABLE"],
-        "backtest_set":               ["DB_PATH", "DB_STOCK_PRICES_TABLE",
+        "backtest_set":               ["DB_STOCK_PRICES_TABLE",
                                        "DB_COMPANY_INFO_TABLE"],
+    }
+    STEP_REQUIRED_CONFIG_FIELDS: dict[str, list[tuple[str, str]]] = {
+        "get_documents": [("get_documents_config", "Target_Database")],
+        "download_documents": [("download_documents_config", "Target_Database")],
+        "populate_company_info": [("populate_company_info_config", "Target_Database")],
+        "import_stock_prices_csv": [("import_stock_prices_csv_config", "Target_Database")],
+        "update_stock_prices": [("update_stock_prices_config", "Target_Database")],
+        "parse_taxonomy": [("parse_taxonomy_config", "Target_Database")],
+        "generate_financial_statements": [
+            ("generate_financial_statements_config", "Source_Database"),
+            ("generate_financial_statements_config", "Target_Database"),
+        ],
+        "generate_ratios": [
+            ("generate_ratios_config", "Source_Database"),
+            ("generate_ratios_config", "Target_Database"),
+        ],
+        "generate_historical_ratios": [
+            ("generate_historical_ratios_config", "Source_Database"),
+            ("generate_historical_ratios_config", "Target_Database"),
+        ],
+        "Multivariate_Regression": [("Multivariate_Regression_config", "Source_Database")],
+        "backtest": [("backtesting_config", "Source_Database")],
+        "backtest_set": [("backtest_set_config", "Source_Database")],
     }
 
     enabled_steps = []
@@ -262,14 +285,20 @@ def run(edinet=None, data=None):
             val = config.get(key)
             if not val:
                 missing_map.setdefault(key, []).append(step_name)
+        required_fields = STEP_REQUIRED_CONFIG_FIELDS.get(step_name, [])
+        for cfg_name, field_name in required_fields:
+            cfg = config.get(cfg_name, {}) or {}
+            val = cfg.get(field_name)
+            if not val:
+                missing_key = f"{cfg_name}.{field_name}"
+                missing_map.setdefault(missing_key, []).append(step_name)
 
     if missing_map:
         lines = ["The following required settings are missing from .env / config:"]
         for key, steps_needing in sorted(missing_map.items()):
             lines.append(f"  • {key}  (needed by: {', '.join(steps_needing)})")
         lines.append("")
-        lines.append("Set them in the UI (top-bar database selector / API Key) ")
-        lines.append("or add them to the .env file in the project root.")
+        lines.append("Set them in the step configuration dialogs or add them to the config / .env files.")
         msg = "\n".join(lines)
         logger.error(msg)
         raise RuntimeError(msg)

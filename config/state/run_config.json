@@ -25,15 +25,15 @@
       "overwrite": false
     },
     "generate_financial_statements": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": true
     },
     "generate_ratios": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": true
     },
     "generate_historical_ratios": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": true
     },
     "Multivariate_Regression": {
@@ -45,19 +45,21 @@
       "overwrite": false
     },
     "backtest_set": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": false
     }
   },
   "get_documents_config": {
     "startDate": "2026-02-15",
-    "endDate": "2026-02-27"
+    "endDate": "2026-02-27",
+    "Target_Database": ""
   },
   "download_documents_config": {
     "docTypeCode": "120",
     "csvFlag": "1",
     "secCode": "",
-    "Downloaded": "False"
+    "Downloaded": "False",
+    "Target_Database": ""
   },
   "populate_company_info_config": {
     "csv_file": "config/reference/EdinetcodeDlInfo.csv",
@@ -101,7 +103,7 @@
     "company_batch_size": 200
   },
   "Multivariate_Regression_config": {
-    "Source_Database": "",
+    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
     "Output": "data/ols_results/ols_results_summary.txt",
     "winsorize_thresholds": {
       "lower": 0.05,
@@ -135,6 +137,9 @@
     "initial_capital": 0.0
   },
   "backtest_set_config": {
+    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "PerShare_Table": "PerShare",
+    "Financial_Statements_Table": "FinancialStatements",
     "csv_file": "C:\\programming\\Finance\\EDINET\\EDINET\\data\\ols_results\\ols_results_summary_top10.csv",
     "benchmark_ticker": "TPX",
     "output_dir": "data/backtest_set_results",

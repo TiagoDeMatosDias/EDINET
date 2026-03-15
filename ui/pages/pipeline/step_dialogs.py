@@ -35,7 +35,7 @@ def open_get_documents_config(
         hint_text="YYYY-MM-DD",
     )
     target_db_tf = ft.TextField(
-        label="Target_Database (blank = DB_PATH)",
+        label="Target_Database",
         value=current.get("Target_Database", ""),
         dense=True,
         width=380,
@@ -54,6 +54,9 @@ def open_get_documents_config(
             page.update()
 
     def save(_):
+        if not target_db_tf.value.strip():
+            snack("Please select a target database")
+            return
         step_configs["get_documents"] = {
             "startDate": start_date_tf.value.strip(),
             "endDate": end_date_tf.value.strip(),
@@ -126,7 +129,7 @@ def open_download_documents_config(
         width=140,
     )
     target_db_tf = ft.TextField(
-        label="Target_Database (blank = DB_PATH)",
+        label="Target_Database",
         value=current.get("Target_Database", ""),
         dense=True,
         width=380,
@@ -145,6 +148,9 @@ def open_download_documents_config(
             page.update()
 
     def save(_):
+        if not target_db_tf.value.strip():
+            snack("Please select a target database")
+            return
         step_configs["download_documents"] = {
             "docTypeCode": doc_type_tf.value.strip() or "120",
             "csvFlag": csv_flag_tf.value.strip() or "1",
@@ -182,6 +188,95 @@ def open_download_documents_config(
     ))
 
 
+def open_populate_company_info_config(
+    page: ft.Page,
+    fp: ft.FilePicker,
+    step_configs: dict[str, dict],
+    snack: Callable[[str], None],
+    show: Callable[[ft.AlertDialog], None],
+    pop: Callable[[], None],
+):
+    """Dialog for configuring the 'populate_company_info' step."""
+    current = step_configs.get("populate_company_info", {})
+    if not current:
+        current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("populate_company_info", {}))
+
+    csv_file_tf = ft.TextField(
+        label="CSV File",
+        value=current.get("csv_file", "config/reference/EdinetcodeDlInfo.csv"),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+    target_db_tf = ft.TextField(
+        label="Target_Database",
+        value=current.get("Target_Database", ""),
+        dense=True,
+        width=420,
+        read_only=True,
+    )
+
+    async def _pick_csv(_):
+        files = await fp.pick_files(
+            dialog_title="Select EDINET company info CSV",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["csv"],
+            allow_multiple=False,
+        )
+        if files:
+            csv_file_tf.value = files[0].path
+            page.update()
+
+    async def _pick_target_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select target database",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            target_db_tf.value = files[0].path
+            page.update()
+
+    def save(_):
+        if not csv_file_tf.value.strip():
+            snack("Please select a CSV file")
+            return
+        if not target_db_tf.value.strip():
+            snack("Please select a target database")
+            return
+        step_configs["populate_company_info"] = {
+            "csv_file": csv_file_tf.value.strip(),
+            "Target_Database": target_db_tf.value.strip(),
+        }
+        pop()
+        snack("Populate Company Info config updated")
+
+    show(ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configure: Populate Company Info"),
+        content=ft.Column(
+            [
+                ft.Row([
+                    csv_file_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select CSV", on_click=_pick_csv),
+                ], spacing=4),
+                ft.Row([
+                    target_db_tf,
+                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select target DB", on_click=_pick_target_db),
+                ], spacing=4),
+            ],
+            width=560,
+            height=180,
+            spacing=8,
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: pop()),
+            ft.Button("Save", on_click=save),
+        ],
+    ))
+
+
 def open_backtest_set_config(
     page: ft.Page,
     fp: ft.FilePicker,
@@ -196,7 +291,7 @@ def open_backtest_set_config(
         current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("backtest_set", {}))
 
     source_db_tf = ft.TextField(
-        label="Source_Database (blank = DB_PATH)",
+        label="Source_Database",
         value=current.get("Source_Database", ""),
         dense=True,
         width=420,
@@ -280,6 +375,9 @@ def open_backtest_set_config(
         if not csv_path_tf.value.strip():
             snack("Please select a CSV file")
             return
+        if not source_db_tf.value.strip():
+            snack("Please select a source database")
+            return
         try:
             rf = float(risk_free_tf.value.strip()) / 100.0
         except ValueError:
@@ -348,7 +446,7 @@ def open_generate_financial_statements_config(
         current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("generate_financial_statements", {}))
 
     source_db_tf = ft.TextField(
-        label="Source_Database (blank = DB_PATH)",
+        label="Source_Database",
         value=current.get("Source_Database", ""),
         dense=True,
         width=420,
@@ -361,7 +459,7 @@ def open_generate_financial_statements_config(
         width=420,
     )
     target_db_tf = ft.TextField(
-        label="Target_Database (blank = DB_PATH)",
+        label="Target_Database",
         value=current.get("Target_Database", ""),
         dense=True,
         width=420,
@@ -433,6 +531,12 @@ def open_generate_financial_statements_config(
             page.update()
 
     def save(_):
+        if not source_db_tf.value.strip():
+            snack("Please select a source database")
+            return
+        if not target_db_tf.value.strip():
+            snack("Please select a target database")
+            return
         try:
             batch = int(float(batch_size_tf.value.strip() or "2500"))
             batch = max(1, batch)
@@ -463,7 +567,7 @@ def open_generate_financial_statements_config(
             [
                 ft.Text(
                     "Build FinancialStatements / IncomeStatement / BalanceSheet / CashflowStatement\n"
-                    "from the source table using the mappings config. Leave DB fields blank to use DB_PATH.",
+                    "from the source table using the mappings config.",
                     size=12,
                     color=ft.Colors.GREY_500,
                 ),
@@ -510,14 +614,14 @@ def open_generate_ratios_config(
         current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("generate_ratios", {}))
 
     source_db_tf = ft.TextField(
-        label="Source_Database (blank = DB_PATH)",
+        label="Source_Database",
         value=current.get("Source_Database", ""),
         dense=True,
         width=420,
         read_only=True,
     )
     target_db_tf = ft.TextField(
-        label="Target_Database (blank = DB_PATH)",
+        label="Target_Database",
         value=current.get("Target_Database", ""),
         dense=True,
         width=420,
@@ -571,6 +675,12 @@ def open_generate_ratios_config(
             page.update()
 
     def save(_):
+        if not source_db_tf.value.strip():
+            snack("Please select a source database")
+            return
+        if not target_db_tf.value.strip():
+            snack("Please select a target database")
+            return
         try:
             batch = int(float(batch_size_tf.value.strip() or "5000"))
             batch = max(1, batch)
@@ -642,14 +752,14 @@ def open_generate_historical_ratios_config(
         current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("generate_historical_ratios", {}))
 
     source_db_tf = ft.TextField(
-        label="Source_Database (blank = DB_PATH)",
+        label="Source_Database",
         value=current.get("Source_Database", ""),
         dense=True,
         width=420,
         read_only=True,
     )
     target_db_tf = ft.TextField(
-        label="Target_Database (blank = DB_PATH)",
+        label="Target_Database",
         value=current.get("Target_Database", ""),
         dense=True,
         width=420,
@@ -685,6 +795,12 @@ def open_generate_historical_ratios_config(
             page.update()
 
     def save(_):
+        if not source_db_tf.value.strip():
+            snack("Please select a source database")
+            return
+        if not target_db_tf.value.strip():
+            snack("Please select a target database")
+            return
         try:
             company_batch = int(float(company_batch_tf.value.strip() or "200"))
             company_batch = max(1, company_batch)
@@ -751,12 +867,12 @@ def open_multivariate_regression_config(
         current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("Multivariate_Regression", {}))
 
     source_db_tf = ft.TextField(
-        label="Source Database (blank = DB_PATH)",
+        label="Source_Database",
         value=current.get("Source_Database", ""),
         dense=True,
         width=420,
         read_only=True,
-        hint_text="Leave blank to use the default DB_PATH",
+        hint_text="Select the database to query",
     )
     sql_tf = ft.TextField(
         label="SQL Query",
@@ -805,6 +921,9 @@ def open_multivariate_regression_config(
         sql = sql_tf.value.strip()
         if not sql:
             snack("Please enter a SQL query")
+            return
+        if not source_db_tf.value.strip():
+            snack("Please select a source database")
             return
         output = output_tf.value.strip()
         if not output:
@@ -912,7 +1031,7 @@ def open_import_csv_config(
         read_only=True,
     )
     target_db_tf = ft.TextField(
-        label="Target_Database (blank = DB_PATH)",
+        label="Target_Database",
         value=current.get("Target_Database", ""),
         dense=True,
         width=380,
@@ -988,6 +1107,9 @@ def open_import_csv_config(
         if not csv_path_tf.value.strip():
             snack("Please select a CSV file")
             return
+        if not target_db_tf.value.strip():
+            snack("Please select a target database")
+            return
         if (not default_ticker_tf.value.strip()) and (not ticker_col_tf.value.strip()):
             snack("Please set either Default Ticker or Ticker Column")
             return
@@ -1053,7 +1175,7 @@ def open_parse_taxonomy_config(
         read_only=True,
     )
     target_db_tf = ft.TextField(
-        label="Target_Database (blank = DB_PATH)",
+        label="Target_Database",
         value=current.get("Target_Database", ""),
         dense=True,
         width=420,
@@ -1085,6 +1207,9 @@ def open_parse_taxonomy_config(
     def save(_):
         if not xsd_tf.value.strip():
             snack("Please select an XSD file")
+            return
+        if not target_db_tf.value.strip():
+            snack("Please select a target database")
             return
         step_configs["parse_taxonomy"] = {
             "xsd_file": xsd_tf.value.strip(),
@@ -1138,7 +1263,7 @@ def open_update_stock_prices_config(
         current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("update_stock_prices", {}))
 
     target_db_tf = ft.TextField(
-        label="Target_Database (blank = DB_PATH)",
+        label="Target_Database",
         value=current.get("Target_Database", ""),
         dense=True,
         width=420,
@@ -1157,6 +1282,9 @@ def open_update_stock_prices_config(
             page.update()
 
     def save(_):
+        if not target_db_tf.value.strip():
+            snack("Please select a target database")
+            return
         step_configs["update_stock_prices"] = {
             "Target_Database": target_db_tf.value.strip(),
         }
@@ -1220,7 +1348,7 @@ def open_backtest_config(
     risk_free_tf = ft.TextField(label="Risk-Free Rate (%)", value=str(current.get("risk_free_rate", 0.0) * 100), dense=True, width=220, hint_text="e.g. 2.5 for 2.5%")
     capital_tf = ft.TextField(label="Initial Capital (0 = omit)", value=str(int(current.get("initial_capital", 0))), dense=True, width=220, hint_text="e.g. 1000000")
     source_db_tf = ft.TextField(
-        label="Source_Database (blank = DB_PATH)",
+        label="Source_Database",
         value=current.get("Source_Database", ""),
         dense=True,
         width=420,
@@ -1491,6 +1619,9 @@ def open_backtest_config(
 
     def save(_):
         table_portfolio: dict[str, dict] = {}
+        if not source_db_tf.value.strip():
+            snack("Please select a source database")
+            return
         for r in grid_rows:
             tk = r["ticker"].strip().upper()
             if not tk:

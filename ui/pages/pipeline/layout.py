@@ -2,9 +2,6 @@ import flet as ft
 
 
 def build_app_bar(
-    db_dropdown: ft.Dropdown,
-    on_add_db,
-    on_open_db,
     on_api_key,
     theme_btn: ft.IconButton,
 ) -> ft.AppBar:
@@ -14,18 +11,6 @@ def build_app_bar(
         title=ft.Text("EDINET", weight=ft.FontWeight.BOLD),
         center_title=False,
         actions=[
-            db_dropdown,
-            ft.IconButton(
-                icon=ft.Icons.ADD,
-                tooltip="Create new database",
-                on_click=on_add_db,
-            ),
-            ft.IconButton(
-                icon=ft.Icons.FOLDER_OPEN,
-                tooltip="Load existing database",
-                on_click=on_open_db,
-            ),
-            ft.VerticalDivider(width=1),
             ft.Button(
                 "API Key",
                 icon=ft.Icons.KEY,

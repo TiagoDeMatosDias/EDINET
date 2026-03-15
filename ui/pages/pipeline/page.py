@@ -1,6 +1,6 @@
 import flet as ft
 
-from ui.pages.pipeline.controller import AppController, seed_recent_database
+from ui.pages.pipeline.controller import AppController
 from ui.pages.pipeline.layout import build_app_bar, build_bottom_panel, build_top_panel
 from ui.pages.pipeline.models import PipelinePageState
 from ui.pages.pipeline.persistence import (
@@ -42,7 +42,6 @@ def build_pipeline_page(page: ft.Page):
     steps = state.steps
     step_configs = state.step_configs
     is_running = state.is_running
-    seed_recent_database(env, app_state)
 
     fp = ft.FilePicker()
     page.services.append(fp)
@@ -75,26 +74,15 @@ def build_pipeline_page(page: ft.Page):
         save_run_config=save_run_config,
     )
 
-    db_dropdown = ft.Dropdown(
-        label="Database",
-        width=260,
-        dense=True,
-        text_size=13,
-        on_select=controller.on_db_change,
-    )
     theme_btn = ft.IconButton(
         icon=ft.Icons.DARK_MODE,
         tooltip="Switch to dark mode",
         on_click=controller.toggle_theme,
     )
 
-    controller.bind_controls(db_dropdown, theme_btn)
-    controller.refresh_db_dropdown(update=False)
+    controller.bind_controls(theme_btn)
 
     page.appbar = build_app_bar(
-        db_dropdown,
-        controller.on_add_db,
-        controller.on_open_db,
         controller.on_api_key,
         theme_btn,
     )
