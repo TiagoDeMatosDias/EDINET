@@ -26,11 +26,9 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
     DB_DOC_LIST_TABLE = config.get("DB_DOC_LIST_TABLE")
     DB_FINANCIAL_DATA_TABLE = config.get("DB_FINANCIAL_DATA_TABLE")
     DB_STANDARDIZED_TABLE = config.get("DB_STANDARDIZED_TABLE")
-    DB_STANDARDIZED_RATIOS_TABLE = config.get("DB_STANDARDIZED_RATIOS_TABLE")
     DB_PATH = config.get("DB_PATH")
     DB_COMPANY_INFO_TABLE = config.get("DB_COMPANY_INFO_TABLE")
     DB_STOCK_PRICES_TABLE = config.get("DB_STOCK_PRICES_TABLE")
-    DB_SIGNIFICANT_PREDICTORS_TABLE = config.get("DB_SIGNIFICANT_PREDICTORS_TABLE")
     DB_TAXONOMY_TABLE = config.get("DB_TAXONOMY_TABLE")
 
     if step_name == "get_documents":
@@ -38,7 +36,13 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
         get_documents_config = config.get("get_documents_config", {})
         startDate = get_documents_config.get("startDate")
         endDate = get_documents_config.get("endDate")
-        edinet.get_All_documents_withMetadata(startDate, endDate)
+        target_database = get_documents_config.get("Target_Database") or DB_PATH
+        original_database = edinet.Database
+        try:
+            edinet.Database = target_database
+            edinet.get_All_documents_withMetadata(startDate, endDate)
+        finally:
+            edinet.Database = original_database
 
     elif step_name == "download_documents":
         logger.info("Downloading documents...")
@@ -47,16 +51,18 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
         csvFlag = download_documents_config.get("csvFlag")
         secCode = download_documents_config.get("secCode")
         downloaded_flag = download_documents_config.get("Downloaded")
+        target_database = download_documents_config.get("Target_Database") or DB_PATH
 
         filters = edinet.generate_filter("docTypeCode", "=", docTypeCode)
         filters = edinet.generate_filter("csvFlag", "=", csvFlag, filters)
         filters = edinet.generate_filter("secCode", "!=", secCode, filters)
         filters = edinet.generate_filter("Downloaded", "=", downloaded_flag, filters)
-        edinet.downloadDocs(DB_DOC_LIST_TABLE, DB_FINANCIAL_DATA_TABLE, filters)
-
-    elif step_name == "standardize_data":
-        logger.info("Standardizing data...")
-        data.copy_table_to_Standard(DB_FINANCIAL_DATA_TABLE, DB_STANDARDIZED_TABLE, overwrite=overwrite)
+        original_database = edinet.Database
+        try:
+            edinet.Database = target_database
+            edinet.downloadDocs(DB_DOC_LIST_TABLE, DB_FINANCIAL_DATA_TABLE, filters)
+        finally:
+            edinet.Database = original_database
 
     elif step_name == "populate_company_info":
         logger.info("Populating company info table...")
@@ -65,15 +71,11 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
         target_database = populate_config.get("Target_Database") or DB_PATH
         edinet.store_edinetCodes(csv_file, target_database=target_database)
 
-    elif step_name == "generate_financial_ratios":
-        logger.info("Generating financial ratios...")
-        data.Generate_Financial_Ratios(DB_STANDARDIZED_TABLE, DB_STANDARDIZED_RATIOS_TABLE, overwrite=overwrite)
-
     elif step_name in ("generate_financial_statements", "Generate Financial Statements"):
         logger.info("Generating financial statements...")
         fs_config = config.get("generate_financial_statements_config", {})
         source_database = fs_config.get("Source_Database") or DB_PATH
-        source_table = fs_config.get("Source_Table") or DB_STANDARDIZED_TABLE
+        source_table = fs_config.get("Source_Table") or DB_FINANCIAL_DATA_TABLE
         target_database = fs_config.get("Target_Database") or DB_PATH
         company_table = fs_config.get("Company_Info_Table") or DB_COMPANY_INFO_TABLE
         prices_table = fs_config.get("Stock_Prices_Table") or DB_STOCK_PRICES_TABLE
@@ -153,7 +155,7 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
             target_database,
             DB_COMPANY_INFO_TABLE,
             DB_STOCK_PRICES_TABLE,
-            DB_STANDARDIZED_TABLE,
+            DB_FINANCIAL_DATA_TABLE,
         )
 
     elif step_name == "parse_taxonomy":
@@ -167,44 +169,10 @@ def _execute_step(step_name, config, edinet, data, overwrite=False):
         finally:
             conn.close()
 
-    elif step_name == "find_significant_predictors":
-        logger.info("Finding significant predictors...")
-        predictor_config = config.get("find_significant_predictors_config", {})
-        output_file = predictor_config.get(
-            "output_file",
-            "data/ols_results/predictor_search_results.txt",
-        )
-        winsorize_thresholds = predictor_config.get(
-            "winsorize_thresholds", {"lower": 0.05, "upper": 0.95}
-        )
-        winsorize_limits = (
-            winsorize_thresholds["lower"],
-            winsorize_thresholds["upper"],
-        )
-        alpha = predictor_config.get("alpha", 0.05)
-        dependent_variables = predictor_config.get("dependent_variables") or []
-        source_database = predictor_config.get("Source_Database") or DB_PATH
-        pred_table = predictor_config.get("table_name") or DB_STANDARDIZED_RATIOS_TABLE
-
-        r.find_significant_predictors(
-            db_path=source_database,
-            table_name=pred_table,
-            results_table_name=DB_SIGNIFICANT_PREDICTORS_TABLE,
-            output_file=output_file,
-            winsorize_limits=winsorize_limits,
-            alpha=alpha,
-            dependent_variables=dependent_variables,
-            overwrite=overwrite,
-        )
-
     elif step_name == "Multivariate_Regression":
         logger.info("Running multivariate regression...")
         mv_config = config.get("Multivariate_Regression_config", {})
-        r.multivariate_regression(
-            mv_config, DB_PATH,
-            ratios_table=DB_STANDARDIZED_RATIOS_TABLE,
-            company_table=DB_COMPANY_INFO_TABLE,
-        )
+        r.multivariate_regression(mv_config, DB_PATH, company_table=DB_COMPANY_INFO_TABLE)
 
     elif step_name == "backtest":
         logger.info("Running backtesting...")
@@ -263,24 +231,18 @@ def run(edinet=None, data=None):
         "get_documents":              ["baseURL", "API_KEY"],
         "download_documents":         ["DB_DOC_LIST_TABLE", "DB_FINANCIAL_DATA_TABLE",
                                        "RAW_DOCUMENTS_PATH", "baseURL", "API_KEY"],
-        "standardize_data":           ["DB_FINANCIAL_DATA_TABLE", "DB_STANDARDIZED_TABLE"],
         "populate_company_info":      ["DB_COMPANY_INFO_TABLE"],
-        "generate_financial_ratios":  ["DB_STANDARDIZED_TABLE", "DB_STANDARDIZED_RATIOS_TABLE"],
         "import_stock_prices_csv":    ["DB_STOCK_PRICES_TABLE"],
         "update_stock_prices":        ["DB_COMPANY_INFO_TABLE",
-                                       "DB_STOCK_PRICES_TABLE", "DB_STANDARDIZED_TABLE"],
+                                       "DB_STOCK_PRICES_TABLE", "DB_FINANCIAL_DATA_TABLE"],
         "parse_taxonomy":             ["DB_TAXONOMY_TABLE"],
         "generate_financial_statements": [],
         "generate_ratios":            [],
         "generate_historical_ratios": [],
-        "find_significant_predictors": ["DB_PATH", "DB_STANDARDIZED_RATIOS_TABLE",
-                                        "DB_SIGNIFICANT_PREDICTORS_TABLE"],
         "Multivariate_Regression":    ["DB_PATH"],
         "backtest":                   ["DB_PATH", "DB_STOCK_PRICES_TABLE",
-                                       "DB_STANDARDIZED_RATIOS_TABLE",
                                        "DB_COMPANY_INFO_TABLE"],
         "backtest_set":               ["DB_PATH", "DB_STOCK_PRICES_TABLE",
-                                       "DB_STANDARDIZED_RATIOS_TABLE",
                                        "DB_COMPANY_INFO_TABLE"],
     }
 

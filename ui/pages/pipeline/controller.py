@@ -16,8 +16,9 @@ from ui.pages.pipeline.persistence import (
 from ui.pages.pipeline.step_dialogs import (
     open_backtest_config,
     open_backtest_set_config,
-    open_find_significant_predictors_config,
+    open_download_documents_config,
     open_generate_financial_statements_config,
+    open_get_documents_config,
     open_generate_historical_ratios_config,
     open_generate_ratios_config,
     open_generic_step_config,
@@ -52,7 +53,6 @@ class AppController:
         show: Callable[[ft.AlertDialog], None],
         pop: Callable[[], None],
         current_config: Callable[[], dict],
-        ratios_path_text: ft.Text,
     ):
         self.page = page
         self.fp = fp
@@ -64,7 +64,6 @@ class AppController:
         self.show = show
         self.pop = pop
         self.current_config = current_config
-        self.ratios_path_text = ratios_path_text
         self.db_dropdown: ft.Dropdown | None = None
         self.theme_btn: ft.IconButton | None = None
         self._rebuild_steps: Callable[[], None] = lambda: None
@@ -170,6 +169,12 @@ class AppController:
         self.page.update()
 
     def open_step_config(self, step_name: str):
+        if step_name == "get_documents":
+            open_get_documents_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)
+            return
+        if step_name == "download_documents":
+            open_download_documents_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)
+            return
         if step_name == "backtest":
             open_backtest_config(self.page, self.fp, self.step_configs, self.snack, self.show, self.pop)
             return
@@ -205,26 +210,7 @@ class AppController:
                 self.page, self.fp, self.step_configs, self.snack, self.show, self.pop,
             )
             return
-        if step_name == "find_significant_predictors":
-            open_find_significant_predictors_config(
-                self.page, self.fp, self.step_configs, self.snack, self.show, self.pop,
-            )
-            return
         open_generic_step_config(self.page, step_name, self.step_configs, self.snack, self.show, self.pop)
-
-    async def on_ratios_btn(self, _):
-        files = await self.fp.pick_files(
-            dialog_title="Select financial_ratios_config.json",
-            file_type=ft.FilePickerFileType.CUSTOM,
-            allowed_extensions=["json"],
-            allow_multiple=False,
-        )
-        if files:
-            path = files[0].path
-            write_env("FINANCIAL_RATIOS_CONFIG_PATH", path)
-            self.env["FINANCIAL_RATIOS_CONFIG_PATH"] = path
-            self.ratios_path_text.value = f"Ratios config: {path}"
-            self.snack(f"Ratios config set to {os.path.basename(path)}")
 
     def on_save_setup(self, _):
         tf = ft.TextField(label="Setup name", autofocus=True, width=320)
@@ -280,12 +266,6 @@ class AppController:
             self.steps.extend(build_steps(loaded))
             self.step_configs.clear()
             self.step_configs.update(build_step_configs(loaded))
-
-            ratios = loaded.get("financial_ratios_config_path", "")
-            if ratios:
-                write_env("FINANCIAL_RATIOS_CONFIG_PATH", ratios)
-                self.env["FINANCIAL_RATIOS_CONFIG_PATH"] = ratios
-                self.ratios_path_text.value = f"Ratios config: {ratios}"
             self.pop()
             self._rebuild_steps()
             self.snack(f"Setup '{name}' loaded from {SAVED_SETUPS_DIR / (name + '.json')}")

@@ -83,7 +83,7 @@ def _seed_company_info(conn: sqlite3.Connection, table: str = "companyInfo") -> 
     df.to_sql(table, conn, if_exists="replace", index=False)
 
 
-def _seed_ratios(conn: sqlite3.Connection, table: str = "Standard_Data_Ratios") -> None:
+def _seed_ratios(conn: sqlite3.Connection, table: str = "PerShare") -> None:
     df = pd.DataFrame(
         {
             "edinetCode": ["E00001", "E00002"],
@@ -161,7 +161,7 @@ class TestGetDividendData(unittest.TestCase):
 
     def test_returns_dividends_for_tickers(self):
         df = get_dividend_data(
-            ":memory:", "Standard_Data_Ratios", "companyInfo",
+            ":memory:", "PerShare", "companyInfo",
             ["1001"], "2024-01-01", "2024-01-05", conn=self.conn,
         )
         self.assertEqual(len(df), 1)
@@ -169,14 +169,14 @@ class TestGetDividendData(unittest.TestCase):
 
     def test_returns_both_tickers(self):
         df = get_dividend_data(
-            ":memory:", "Standard_Data_Ratios", "companyInfo",
+            ":memory:", "PerShare", "companyInfo",
             ["1001", "2002"], "2024-01-01", "2024-01-05", conn=self.conn,
         )
         self.assertEqual(len(df), 2)
 
     def test_returns_empty_outside_date_range(self):
         df = get_dividend_data(
-            ":memory:", "Standard_Data_Ratios", "companyInfo",
+            ":memory:", "PerShare", "companyInfo",
             ["1001"], "2025-01-01", "2025-12-31", conn=self.conn,
         )
         self.assertTrue(df.empty)
@@ -912,7 +912,7 @@ class TestRunBacktest(unittest.TestCase):
         metrics = run_backtest(
             config, self.db_path,
             prices_table="stock_prices",
-            ratios_table="Standard_Data_Ratios",
+            ratios_table="PerShare",
             company_table="companyInfo",
         )
         self.assertIn("total_return", metrics)

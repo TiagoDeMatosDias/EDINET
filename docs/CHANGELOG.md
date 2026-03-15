@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Removed
+- **`standardize_data` step** — legacy data normalisation step removed; the pipeline now reads directly from the raw `financialData_full` table.
+- **`generate_financial_ratios` step** — replaced by the `generate_ratios` and `generate_historical_ratios` steps.
+- **`find_significant_predictors` step** — univariate OLS sweep removed; use `Multivariate_Regression` with a custom SQL query instead.
+- **`FINANCIAL_RATIOS_CONFIG_PATH` env key** — no longer required.
+- **`DB_STANDARDIZED_TABLE`, `DB_STANDARDIZED_RATIOS_TABLE`, `DB_SIGNIFICANT_PREDICTORS_TABLE` env keys** — no longer required.
+- **Financial Ratios Config selector** — GUI button removed along with the associated `.env` key.
+
+---
+
 ## [0.2.0] - 2026-03-07
 
 ### Added
@@ -9,11 +21,10 @@ All notable changes to this project will be documented in this file.
 - **CLI / GUI dual mode** — `python main.py` launches the GUI; `python main.py --cli` runs headless
 - **Backtest step** — portfolio backtesting with configurable tickers, weights, date range, dividend-adjusted returns, and optional benchmark comparison; dedicated GUI dialog with portfolio weight validation
 - **Import Stock Prices (CSV) step** — load historical prices from a user-supplied CSV with configurable column mapping (Date, Price), ticker, and currency; dedicated GUI dialog with file picker
-- **Per-step overwrite toggle** — `standardize_data`, `generate_financial_ratios`, and `find_significant_predictors` now support an `overwrite` flag to drop and rebuild their output table
+- **Per-step overwrite toggle** — `generate_financial_statements`, `generate_ratios`, and `generate_historical_ratios` support an `overwrite` flag to drop and rebuild their output table
 - **Saved setups** — save and load named pipeline configurations from `config/state/saved_setups/` via the GUI
 - **Pre-flight validation** — orchestrator checks that all required `.env` / config keys are present for every enabled step before execution begins
-- **Progress logging** — `Generate_Financial_Ratios` logs progress every 100 companies
-- **Financial Ratios Config selector** — GUI button and `.env` key (`FINANCIAL_RATIOS_CONFIG_PATH`) to choose the ratios JSON file
+- **Progress logging** — `generate_ratios` and `generate_historical_ratios` log progress during execution
 - **Database management** — GUI top-bar allows creating, opening, and switching between SQLite databases; recent databases are remembered across sessions
 - **API Key dialog** — set the EDINET API key from the GUI without manually editing `.env`
 
@@ -49,7 +60,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - Replaced print statements with proper logging throughout orchestrator and APIs
-- Stock price scraping now filters to only companies in standardized financial data table
+- Stock price scraping now filters to only companies in the financial data table
 - Improved log messages with more context and better formatting
 
 ### Known Issues

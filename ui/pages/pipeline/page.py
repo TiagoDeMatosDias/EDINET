@@ -51,13 +51,6 @@ def build_pipeline_page(page: ft.Page):
     def current_config() -> dict:
         return build_current_config(steps, step_configs, env)
 
-    ratios_path_text = ft.Text(
-        f"Ratios config: {env.get('FINANCIAL_RATIOS_CONFIG_PATH', 'Not set')}",
-        size=11,
-        color=ft.Colors.GREY_500,
-        italic=True,
-    )
-
     controller = AppController(
         page=page,
         fp=fp,
@@ -69,7 +62,6 @@ def build_pipeline_page(page: ft.Page):
         show=services.show,
         pop=services.pop,
         current_config=current_config,
-        ratios_path_text=ratios_path_text,
     )
 
     steps_column, rebuild_steps = create_steps_column(page, steps, controller.open_step_config)
@@ -109,7 +101,7 @@ def build_pipeline_page(page: ft.Page):
     page.add(
         ft.Column(
             [
-                build_top_panel(steps_column, ratios_path_text, controller.on_ratios_btn),
+                build_top_panel(steps_column),
                 build_bottom_panel(run_btn, progress, log_output, controller.on_save_setup, controller.on_load_setup),
             ],
             spacing=0,

@@ -14,13 +14,13 @@ Downloads financial filings from the Japanese securities regulator (EDINET), pro
 
 1. **Fetch document list** – queries the EDINET API for available filings in a given date range.
 2. **Download documents** – downloads the XBRL/CSV filings that match the filter criteria.
-3. **Standardise data** – normalises raw XBRL data into a clean, consistently named table.
-4. **Populate company info** – loads the EDINET company code list from CSV into the database.
-5. **Import stock prices (CSV)** – imports historical prices from a user-supplied CSV file with configurable column mapping.
-6. **Update stock prices** – fetches historical share prices via Stooq API (filtered to companies with financial data).
-7. **Parse taxonomy** – parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
-8. **Generate financial ratios** – calculates per-share values, valuation ratios, rolling averages, growth rates and z-scores for every company.
-9. **Find significant predictors** – univariate OLS sweep ranking which ratio columns best predict a given dependent variable.
+3. **Populate company info** – loads the EDINET company code list from CSV into the database.
+4. **Import stock prices (CSV)** – imports historical prices from a user-supplied CSV file with configurable column mapping.
+5. **Update stock prices** – fetches historical share prices via Stooq API (filtered to companies with financial data).
+6. **Parse taxonomy** – parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
+7. **Generate financial statements** – extracts tagged values from raw XBRL data into structured per-company financial tables.
+8. **Generate ratios** – calculates per-share values, valuation ratios, and derived metrics for every company.
+9. **Generate historical ratios** – computes rolling averages, growth rates, and z-scores over time.
 10. **Multivariate regression** – user-defined multivariate OLS regression specified as a SQL query.
 11. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
 
@@ -61,14 +61,9 @@ DB_PATH=<your_sqlite_db_path>
 
 DB_DOC_LIST_TABLE=DocumentList
 DB_FINANCIAL_DATA_TABLE=financialData_full
-DB_STANDARDIZED_TABLE=Standard_Data
-DB_STANDARDIZED_RATIOS_TABLE=Standard_Data_Ratios
 DB_COMPANY_INFO_TABLE=CompanyInfo
 DB_STOCK_PRICES_TABLE=Stock_Prices
 DB_TAXONOMY_TABLE=TAXONOMY_JPFS_COR
-DB_SIGNIFICANT_PREDICTORS_TABLE=Significant_Predictors
-
-FINANCIAL_RATIOS_CONFIG_PATH=config/reference/financial_ratios_config.json
 ```
 
 #### 3. Configure and run
@@ -126,7 +121,6 @@ EDINET.exe                                   <- built by PyInstaller (from dist/
 .env                                         <- your API keys and DB paths
 config/
     reference/
-        financial_ratios_config.json
         EdinetcodeDlInfo.csv
         jppfs_cor_2013-08-31.xsd
     state/
@@ -151,7 +145,6 @@ It will look for `config/` and `.env` in the same folder as the exe.
 | File | Purpose |
 |---|---|
 | `config/state/run_config.json` | Controls which steps run, their order, and step-specific parameters |
-| `config/reference/financial_ratios_config.json` | Ratio definitions and formulas |
 | `config/reference/EdinetcodeDlInfo.csv` | EDINET company code list (used by populate_company_info) |
 | `config/reference/jppfs_cor_2013-08-31.xsd` | XBRL taxonomy file (used by parse_taxonomy) |
 | `config/examples/run_config.example.json` | Example run configuration for new users |
@@ -167,9 +160,8 @@ The Flet-based GUI provides:
 - **Drag-and-drop step ordering** – reorder pipeline steps by dragging them.
 - **Per-step enable/disable** – check or uncheck each step.
 - **Per-step configuration dialogs** – click the ⚙ icon to configure a step's parameters. Steps like Backtest and Import CSV have dedicated custom dialogs.
-- **Overwrite toggle** – steps that support it (Standardize Data, Generate Financial Ratios, Find Significant Predictors) show an "Overwrite" checkbox.
+- **Overwrite toggle** – steps that support it (Generate Financial Statements, Generate Ratios, Generate Historical Ratios) show an "Overwrite" checkbox.
 - **Save / Load setups** – persist and recall named configurations from `config/state/saved_setups/`.
-- **Financial Ratios Config selector** – pick the JSON file that defines ratio formulas.
 - **Live log output** – see real-time log messages during execution in the output panel.
 - **Light / Dark theme** – toggle between light and dark mode.
 

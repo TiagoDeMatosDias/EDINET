@@ -269,23 +269,6 @@ def get_dividend_data(
         ).fetchall()
         col_names = {row[1] for row in table_info}
 
-        # Backward-compat: if the preferred PerShare table is missing,
-        # transparently fall back to the legacy Standard_Data_Ratios table.
-        if not col_names and per_share_table == "PerShare":
-            legacy_table = "Standard_Data_Ratios"
-            legacy_info = conn.execute(
-                f"PRAGMA table_info({legacy_table})"
-            ).fetchall()
-            legacy_cols = {row[1] for row in legacy_info}
-            if legacy_cols:
-                logger.info(
-                    "Table '%s' not found; falling back to legacy '%s' for dividends.",
-                    per_share_table,
-                    legacy_table,
-                )
-                per_share_table = legacy_table
-                col_names = legacy_cols
-
         if dividend_column and dividend_column in col_names:
             div_col = dividend_column
         elif "Dividends" in col_names:

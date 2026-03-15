@@ -33,7 +33,6 @@ STEP_CONFIG_KEY: dict[str, str] = {
     "generate_financial_statements": "generate_financial_statements_config",
     "generate_ratios": "generate_ratios_config",
     "generate_historical_ratios": "generate_historical_ratios_config",
-    "find_significant_predictors": "find_significant_predictors_config",
     "Multivariate_Regression": "Multivariate_Regression_config",
     "backtest": "backtesting_config",
     "backtest_set": "backtest_set_config",
@@ -42,7 +41,6 @@ STEP_CONFIG_KEY: dict[str, str] = {
 STEP_DISPLAY: dict[str, str] = {
     "get_documents": "Get Documents",
     "download_documents": "Download Documents",
-    "standardize_data": "Standardize Data",
     "populate_company_info": "Populate Company Info",
     "import_stock_prices_csv": "Import Stock Prices (CSV)",
     "update_stock_prices": "Update Stock Prices",
@@ -50,8 +48,6 @@ STEP_DISPLAY: dict[str, str] = {
     "generate_financial_statements": "Generate Financial Statements",
     "generate_ratios": "Generate Ratios",
     "generate_historical_ratios": "Generate Historical Ratios",
-    "generate_financial_ratios": "Generate Financial Ratios",
-    "find_significant_predictors": "Find Significant Predictors",
     "Multivariate_Regression": "Multivariate Regression",
     "backtest": "Backtest Portfolio",
     "backtest_set": "Backtest Set (CSV)",
@@ -60,21 +56,23 @@ STEP_DISPLAY: dict[str, str] = {
 DEFAULT_STEPS = list(STEP_DISPLAY.keys())
 
 STEPS_WITH_OVERWRITE: set[str] = {
-    "standardize_data",
     "generate_financial_statements",
     "generate_ratios",
     "generate_historical_ratios",
-    "generate_financial_ratios",
-    "find_significant_predictors",
 }
 
 DEFAULT_STEP_CONFIGS: dict[str, dict] = {
-    "get_documents": {"startDate": "", "endDate": ""},
+    "get_documents": {
+        "startDate": "",
+        "endDate": "",
+        "Target_Database": "",
+    },
     "download_documents": {
         "docTypeCode": "120",
         "csvFlag": "1",
         "secCode": "",
         "Downloaded": "False",
+        "Target_Database": "",
     },
     "populate_company_info": {
         "csv_file": "config/reference/EdinetcodeDlInfo.csv",
@@ -99,7 +97,7 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
     },
     "generate_financial_statements": {
         "Source_Database": "",
-        "Source_Table": "Standard_Data",
+        "Source_Table": "financialData_full",
         "Target_Database": "",
         "Company_Info_Table": "",
         "Stock_Prices_Table": "",
@@ -116,14 +114,6 @@ DEFAULT_STEP_CONFIGS: dict[str, dict] = {
         "Source_Database": "",
         "Target_Database": "",
         "company_batch_size": 200,
-    },
-    "find_significant_predictors": {
-        "Source_Database": "",
-        "table_name": "",
-        "output_file": "data/ols_results/predictor_search_results.txt",
-        "winsorize_thresholds": {"lower": 0.05, "upper": 0.95},
-        "alpha": 0.05,
-        "dependent_variables": [],
     },
     "Multivariate_Regression": {
         "Source_Database": "",
@@ -261,8 +251,4 @@ def build_current_config(steps: list[list], step_configs: dict[str, dict], env: 
         scfg = step_configs.get(sname)
         if scfg:
             cfg[cfg_key] = scfg
-
-    ratios = env.get("FINANCIAL_RATIOS_CONFIG_PATH", "")
-    if ratios:
-        cfg["financial_ratios_config_path"] = ratios
     return cfg

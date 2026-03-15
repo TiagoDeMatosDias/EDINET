@@ -37,20 +37,13 @@ def build_app_bar(
     )
 
 
-def build_top_panel(steps_column: ft.Column, ratios_path_text: ft.Text, on_ratios_btn) -> ft.Container:
+def build_top_panel(steps_column: ft.Column) -> ft.Container:
     return ft.Container(
         content=ft.Column(
             [
                 ft.Row(
                     [
                         ft.Text("Run Steps", size=16, weight=ft.FontWeight.W_600),
-                        ft.Container(expand=True),
-                        ft.OutlinedButton(
-                            "Financial Ratios Config",
-                            icon=ft.Icons.DESCRIPTION,
-                            on_click=on_ratios_btn,
-                            style=ft.ButtonStyle(padding=ft.Padding(8, 4, 8, 4)),
-                        ),
                     ],
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
@@ -59,7 +52,6 @@ def build_top_panel(steps_column: ft.Column, ratios_path_text: ft.Text, on_ratio
                     size=11,
                     color=ft.Colors.GREY_500,
                 ),
-                ratios_path_text,
                 ft.Divider(height=1),
                 steps_column,
             ],

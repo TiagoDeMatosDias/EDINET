@@ -4,19 +4,15 @@
       "enabled": false,
       "overwrite": false
     },
+    "download_documents": {
+      "enabled": false,
+      "overwrite": false
+    },
     "populate_company_info": {
       "enabled": false,
       "overwrite": false
     },
-    "standardize_data": {
-      "enabled": false,
-      "overwrite": true
-    },
-    "generate_financial_statements": {
-      "enabled": false,
-      "overwrite": true
-    },
-    "download_documents": {
+    "parse_taxonomy": {
       "enabled": false,
       "overwrite": false
     },
@@ -28,17 +24,17 @@
       "enabled": false,
       "overwrite": false
     },
-    "parse_taxonomy": {
-      "enabled": false,
-      "overwrite": false
-    },
-    "generate_financial_ratios": {
-      "enabled": false,
+    "generate_financial_statements": {
+      "enabled": true,
       "overwrite": true
     },
-    "find_significant_predictors": {
-      "enabled": false,
-      "overwrite": false
+    "generate_ratios": {
+      "enabled": true,
+      "overwrite": true
+    },
+    "generate_historical_ratios": {
+      "enabled": true,
+      "overwrite": true
     },
     "Multivariate_Regression": {
       "enabled": true,
@@ -51,14 +47,6 @@
     "backtest_set": {
       "enabled": true,
       "overwrite": false
-    },
-    "generate_ratios": {
-      "enabled": false,
-      "overwrite": true
-    },
-    "generate_historical_ratios": {
-      "enabled": false,
-      "overwrite": true
     }
   },
   "get_documents_config": {
@@ -112,19 +100,6 @@
     "Target_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
     "company_batch_size": 200
   },
-  "find_significant_predictors_config": {
-    "output_file": "data/ols_results/predictor_search_results.txt",
-    "winsorize_thresholds": {
-      "lower": 0.05,
-      "upper": 0.95
-    },
-    "alpha": 0.05,
-    "dependent_variables": [
-      "PerShare_SharePrice_1Year_Growth",
-      "PerShare_SharePrice_3Year_Growth",
-      "PerShare_SharePrice_5Year_Growth"
-    ]
-  },
   "Multivariate_Regression_config": {
     "Source_Database": "",
     "Output": "data/ols_results/ols_results_summary.txt",
@@ -132,9 +107,12 @@
       "lower": 0.05,
       "upper": 0.95
     },
-    "SQL_Query": "Select \r\nph.SharePrice_3Year_Growth\r\n,\r\nPriceToBook_ZScore_IntraCompany,\r\nPERatio_ZScore_IntraCompany,\r\nReturnOnAssets_3Year_Average\r\n\r\n from  Quality_Historical qh\r\n left join Pershare_Historical ph on qh.docID = ph.docID\r\n left join Valuation_Historical vh on qh.docID = vh.docID\r\n left join FinancialStatements fs  on qh.docID = fs.docID and qh.edinetCode = fs.edinetCode"
+    "SQL_Query": "SELECT ph.SharePrice_3Year_Growth, vh.PriceToBook_ZScore_IntraCompany, vh.PERatio_ZScore_IntraCompany, qh.ReturnOnAssets_3Year_Average FROM Quality_Historical qh LEFT JOIN Pershare_Historical ph ON qh.docID = ph.docID LEFT JOIN Valuation_Historical vh ON qh.docID = vh.docID LEFT JOIN FinancialStatements fs ON qh.docID = fs.docID AND qh.edinetCode = fs.edinetCode"
   },
   "backtesting_config": {
+    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "PerShare_Table": "PerShare",
+    "Financial_Statements_Table": "FinancialStatements",
     "start_date": "2020-01-01",
     "end_date": "2026-02-10",
     "portfolio": {
@@ -162,6 +140,5 @@
     "output_dir": "data/backtest_set_results",
     "risk_free_rate": 0.02,
     "initial_capital": 0.0
-  },
-  "financial_ratios_config_path": "C:\\programming\\Finance\\EDINET\\EDINET\\config\\reference\\financial_ratios_config.json"
+  }
 }

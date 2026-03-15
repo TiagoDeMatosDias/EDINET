@@ -7,6 +7,181 @@ from ui.pages.pipeline.persistence import DEFAULT_STEP_CONFIGS, STEP_DISPLAY
 from ui.shared.dialog_fields import build_fields, read_fields
 
 
+def open_get_documents_config(
+    page: ft.Page,
+    fp: ft.FilePicker,
+    step_configs: dict[str, dict],
+    snack: Callable[[str], None],
+    show: Callable[[ft.AlertDialog], None],
+    pop: Callable[[], None],
+):
+    """Dialog for configuring the 'get_documents' step."""
+    current = step_configs.get("get_documents", {})
+    if not current:
+        current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("get_documents", {}))
+
+    start_date_tf = ft.TextField(
+        label="Start Date",
+        value=current.get("startDate", ""),
+        dense=True,
+        width=220,
+        hint_text="YYYY-MM-DD",
+    )
+    end_date_tf = ft.TextField(
+        label="End Date",
+        value=current.get("endDate", ""),
+        dense=True,
+        width=220,
+        hint_text="YYYY-MM-DD",
+    )
+    target_db_tf = ft.TextField(
+        label="Target_Database (blank = DB_PATH)",
+        value=current.get("Target_Database", ""),
+        dense=True,
+        width=380,
+        read_only=True,
+    )
+
+    async def _pick_target_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select target database for Get Documents",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            target_db_tf.value = files[0].path
+            page.update()
+
+    def save(_):
+        step_configs["get_documents"] = {
+            "startDate": start_date_tf.value.strip(),
+            "endDate": end_date_tf.value.strip(),
+            "Target_Database": target_db_tf.value.strip(),
+        }
+        pop()
+        snack("Get Documents config updated")
+
+    show(ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configure: Get Documents"),
+        content=ft.Column(
+            [
+                ft.Row([start_date_tf, end_date_tf], spacing=16),
+                ft.Row([
+                    target_db_tf,
+                    ft.IconButton(
+                        icon=ft.Icons.FOLDER_OPEN,
+                        tooltip="Select target DB",
+                        on_click=_pick_target_db,
+                    ),
+                ], spacing=4),
+            ],
+            tight=True,
+            width=500,
+            height=120,
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: pop()),
+            ft.Button("Save", on_click=save),
+        ],
+    ))
+
+
+def open_download_documents_config(
+    page: ft.Page,
+    fp: ft.FilePicker,
+    step_configs: dict[str, dict],
+    snack: Callable[[str], None],
+    show: Callable[[ft.AlertDialog], None],
+    pop: Callable[[], None],
+):
+    """Dialog for configuring the 'download_documents' step."""
+    current = step_configs.get("download_documents", {})
+    if not current:
+        current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("download_documents", {}))
+
+    doc_type_tf = ft.TextField(
+        label="docTypeCode",
+        value=current.get("docTypeCode", "120"),
+        dense=True,
+        width=160,
+    )
+    csv_flag_tf = ft.TextField(
+        label="csvFlag",
+        value=current.get("csvFlag", "1"),
+        dense=True,
+        width=120,
+    )
+    sec_code_tf = ft.TextField(
+        label="secCode",
+        value=current.get("secCode", ""),
+        dense=True,
+        width=160,
+    )
+    downloaded_tf = ft.TextField(
+        label="Downloaded",
+        value=current.get("Downloaded", "False"),
+        dense=True,
+        width=140,
+    )
+    target_db_tf = ft.TextField(
+        label="Target_Database (blank = DB_PATH)",
+        value=current.get("Target_Database", ""),
+        dense=True,
+        width=380,
+        read_only=True,
+    )
+
+    async def _pick_target_db(_):
+        files = await fp.pick_files(
+            dialog_title="Select database for Download Documents",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["db"],
+            allow_multiple=False,
+        )
+        if files:
+            target_db_tf.value = files[0].path
+            page.update()
+
+    def save(_):
+        step_configs["download_documents"] = {
+            "docTypeCode": doc_type_tf.value.strip() or "120",
+            "csvFlag": csv_flag_tf.value.strip() or "1",
+            "secCode": sec_code_tf.value.strip(),
+            "Downloaded": downloaded_tf.value.strip() or "False",
+            "Target_Database": target_db_tf.value.strip(),
+        }
+        pop()
+        snack("Download Documents config updated")
+
+    show(ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configure: Download Documents"),
+        content=ft.Column(
+            [
+                ft.Row([doc_type_tf, csv_flag_tf, downloaded_tf], spacing=16),
+                sec_code_tf,
+                ft.Row([
+                    target_db_tf,
+                    ft.IconButton(
+                        icon=ft.Icons.FOLDER_OPEN,
+                        tooltip="Select target DB",
+                        on_click=_pick_target_db,
+                    ),
+                ], spacing=4),
+            ],
+            tight=True,
+            width=520,
+            height=150,
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: pop()),
+            ft.Button("Save", on_click=save),
+        ],
+    ))
+
+
 def open_backtest_set_config(
     page: ft.Page,
     fp: ft.FilePicker,
@@ -181,7 +356,7 @@ def open_generate_financial_statements_config(
     )
     source_table_tf = ft.TextField(
         label="Source_Table",
-        value=current.get("Source_Table", "Standard_Data"),
+        value=current.get("Source_Table", "financialData_full"),
         dense=True,
         width=420,
     )
@@ -271,7 +446,7 @@ def open_generate_financial_statements_config(
 
         step_configs["generate_financial_statements"] = {
             "Source_Database": source_db_tf.value.strip(),
-            "Source_Table": source_table_tf.value.strip() or "Standard_Data",
+            "Source_Table": source_table_tf.value.strip() or "financialData_full",
             "Target_Database": target_db_tf.value.strip(),
             "Company_Info_Table": company_table_tf.value.strip(),
             "Stock_Prices_Table": prices_table_tf.value.strip(),
@@ -671,137 +846,6 @@ def open_multivariate_regression_config(
             scroll=ft.ScrollMode.AUTO,
             width=560,
             height=450,
-            spacing=8,
-        ),
-        actions=[
-            ft.TextButton("Cancel", on_click=lambda _: pop()),
-            ft.Button("Save", on_click=save),
-        ],
-    ))
-
-
-def open_find_significant_predictors_config(
-    page: ft.Page,
-    fp: ft.FilePicker,
-    step_configs: dict[str, dict],
-    snack: Callable[[str], None],
-    show: Callable[[ft.AlertDialog], None],
-    pop: Callable[[], None],
-):
-    """Dialog for configuring the 'find_significant_predictors' step."""
-    current = step_configs.get("find_significant_predictors", {})
-    if not current:
-        current = copy.deepcopy(DEFAULT_STEP_CONFIGS.get("find_significant_predictors", {}))
-
-    source_db_tf = ft.TextField(
-        label="Source Database (blank = DB_PATH)",
-        value=current.get("Source_Database", ""),
-        dense=True,
-        width=420,
-        read_only=True,
-        hint_text="Leave blank to use the default DB_PATH",
-    )
-    table_name_tf = ft.TextField(
-        label="Table Name (blank = DB_STANDARDIZED_RATIOS_TABLE)",
-        value=current.get("table_name", ""),
-        dense=True,
-        width=420,
-        hint_text="e.g. Quality, PerShare, Valuation (blank = Standard_Data_Ratios)",
-    )
-    output_tf = ft.TextField(
-        label="Output File",
-        value=current.get("output_file", "data/ols_results/predictor_search_results.txt"),
-        dense=True,
-        width=420,
-    )
-    thresholds = current.get("winsorize_thresholds") or {"lower": 0.05, "upper": 0.95}
-    lower_tf = ft.TextField(
-        label="Winsorize Lower",
-        value=str(thresholds.get("lower", 0.05)),
-        dense=True,
-        width=160,
-    )
-    upper_tf = ft.TextField(
-        label="Winsorize Upper",
-        value=str(thresholds.get("upper", 0.95)),
-        dense=True,
-        width=160,
-    )
-    alpha_tf = ft.TextField(
-        label="Alpha",
-        value=str(current.get("alpha", 0.05)),
-        dense=True,
-        width=160,
-        hint_text="e.g. 0.05",
-    )
-    dep_vars_tf = ft.TextField(
-        label="Dependent Variables (one per line, blank = all columns)",
-        value="\n".join(current.get("dependent_variables", [])),
-        dense=True,
-        width=420,
-        multiline=True,
-        min_lines=3,
-        max_lines=8,
-        hint_text="Leave blank to test every eligible column as a dependent variable",
-    )
-
-    async def _pick_source_db(_):
-        files = await fp.pick_files(
-            dialog_title="Select source database",
-            file_type=ft.FilePickerFileType.CUSTOM,
-            allowed_extensions=["db"],
-            allow_multiple=False,
-        )
-        if files:
-            source_db_tf.value = files[0].path
-            page.update()
-
-    def save(_):
-        try:
-            lower = float(lower_tf.value.strip())
-            upper = float(upper_tf.value.strip())
-        except ValueError:
-            lower, upper = 0.05, 0.95
-        try:
-            alpha = float(alpha_tf.value.strip())
-        except ValueError:
-            alpha = 0.05
-        dep_vars_raw = dep_vars_tf.value.strip()
-        dep_vars = [ln.strip() for ln in dep_vars_raw.splitlines() if ln.strip()] if dep_vars_raw else []
-        step_configs["find_significant_predictors"] = {
-            "Source_Database": source_db_tf.value.strip(),
-            "table_name": table_name_tf.value.strip(),
-            "output_file": output_tf.value.strip() or "data/ols_results/predictor_search_results.txt",
-            "winsorize_thresholds": {"lower": lower, "upper": upper},
-            "alpha": alpha,
-            "dependent_variables": dep_vars,
-        }
-        pop()
-        snack("Find Significant Predictors config updated")
-
-    show(ft.AlertDialog(
-        modal=True,
-        title=ft.Text("Configure: Find Significant Predictors"),
-        content=ft.Column(
-            [
-                ft.Text(
-                    "Tests every single-predictor OLS combination in the selected table\n"
-                    "to surface the strongest univariate predictors.",
-                    size=12,
-                    color=ft.Colors.GREY_500,
-                ),
-                ft.Row([
-                    source_db_tf,
-                    ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="Select database", on_click=_pick_source_db),
-                ], spacing=4),
-                table_name_tf,
-                output_tf,
-                ft.Row([lower_tf, upper_tf, alpha_tf], spacing=16),
-                dep_vars_tf,
-            ],
-            scroll=ft.ScrollMode.AUTO,
-            width=560,
-            height=430,
             spacing=8,
         ),
         actions=[

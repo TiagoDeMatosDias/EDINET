@@ -14,13 +14,13 @@ All execution is controlled by `config/state/run_config.json`. Each step is an o
 ```json
 "run_steps": {
   "get_documents": { "enabled": true, "overwrite": false },
-  "standardize_data": { "enabled": true, "overwrite": true },
+  "generate_financial_statements": { "enabled": true, "overwrite": false },
   ...
 }
 ```
 
 - `enabled` — set to `true` to run the step, `false` to skip it.
-- `overwrite` — when `true`, the step drops and recreates its output table. Only supported by: `standardize_data`, `generate_financial_ratios`, `find_significant_predictors`.
+- `overwrite` — when `true`, the step drops and recreates its output table. Only supported by: `generate_financial_statements`, `generate_ratios`, `generate_historical_ratios`.
 
 Steps execute in the order they appear in the `run_steps` object. In the GUI, you can reorder steps by dragging them.
 
@@ -60,15 +60,6 @@ Downloads filings for documents already in the document list that match the filt
 - `csvFlag` — `"1"` to download the XBRL-to-CSV version.
 - `secCode` — filter by security code; leave blank for all.
 - `Downloaded` — `"False"` to skip already-downloaded documents.
-
----
-
-### `standardize_data`
-Normalises raw XBRL data into a clean, consistently named table.
-
-Supports `overwrite` — when enabled, the target table is dropped and fully rebuilt.
-
-No additional config required.
 
 ---
 
@@ -112,7 +103,22 @@ Date,Open,High,Low,Close,Volume
 ---
 
 ### `update_stock_prices`
-Fetches historical share prices from the Stooq API for all companies in the database that have standardised financial data. No additional config required.
+Fetches historical share prices from the Stooq API for all companies in the database that have financial data. No additional config required.
+
+---
+
+### `generate_financial_statements`
+Extracts tagged XBRL values from the raw financial data table into structured per-company financial tables.
+
+Supports `overwrite` — when enabled, the output tables are dropped and fully rebuilt.
+
+```json
+"generate_financial_statements_config": {
+  "Source_Table": "financialData_full"
+}
+```
+
+- `Source_Table` — the raw financial data table to read from (default: `financialData_full`).
 
 ---
 
@@ -127,36 +133,21 @@ Parses an EDINET XBRL taxonomy XSD file and stores element metadata (name, state
 
 ---
 
-### `generate_financial_ratios`
-Calculates per-share values, valuation ratios, rolling averages/std, growth rates and z-scores for every company. Ratio definitions live in `config/reference/financial_ratios_config.json` (or whatever path is set via `FINANCIAL_RATIOS_CONFIG_PATH` in `.env`).
+### `generate_ratios`
+Calculates per-share values and valuation ratios for every company. Ratio definitions are controlled by `config/reference/financial_ratios_config.json`.
 
 Supports `overwrite`. In incremental mode (the default), documents already processed are skipped.
-
-Progress is logged every 100 companies.
 
 No additional run-config parameters required.
 
 ---
 
-### `find_significant_predictors`
-Runs an automated univariate OLS sweep — every eligible ratio column against every specified dependent variable — and writes a summary to a text file and full results to the database.
+### `generate_historical_ratios`
+Computes rolling averages, growth rates, and z-scores over the ratio tables produced by `generate_ratios`.
 
 Supports `overwrite`.
 
-```json
-"find_significant_predictors_config": {
-  "output_file": "data/ols_results/predictor_search_results.txt",
-  "winsorize_thresholds": { "lower": 0.05, "upper": 0.95 },
-  "alpha": 0.05,
-  "dependent_variables": [
-    "Ratio_EarningsYield",
-    "Ratio_PriceSales"
-  ]
-}
-```
-
-- `winsorize_thresholds` — quantile bounds for outlier trimming. Omit the key entirely to skip winsorisation.
-- `dependent_variables` — columns to use as dependent variables. Leave empty to test all columns.
+No additional run-config parameters required.
 
 ---
 
@@ -167,7 +158,7 @@ Runs a multivariate OLS regression defined entirely by a SQL query. The **first 
 "Multivariate_Regression_config": {
   "Output": "data/ols_results/ols_results_summary.txt",
   "winsorize_thresholds": { "lower": 0.05, "upper": 0.95 },
-  "SQL_Query": "SELECT dep_var, ind_var_1, ind_var_2 FROM Standard_Data_Ratios"
+  "SQL_Query": "SELECT dep_var, ind_var_1, ind_var_2 FROM Quality_Historical"
 }
 ```
 

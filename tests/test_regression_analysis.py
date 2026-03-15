@@ -3,13 +3,11 @@ Tests for src/regression_analysis.py
 
 Strategy
 --------
-* Pure-logic functions (_significance_stars, _rank_predictor_results,
-  multivariate_regression config validation) are tested with no mocking.
+* Pure-logic functions (multivariate_regression config validation) are tested
+  with no mocking.
 * Functions that touch a database (Run_Model, write_results_to_file) use an
   in-memory SQLite connection so the real SQL + data-transformation paths are
   exercised without any file-system side-effects.
-* The orchestrator-level functions (find_significant_predictors) are NOT
-  tested here; they are end-to-end glue validated by running the application.
 """
 import os
 import sys
@@ -23,93 +21,10 @@ import statsmodels.api as sm
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.regression_analysis import (
     Run_Model,
-    _rank_predictor_results,
     build_scoring_query,
-    _significance_stars,
     multivariate_regression,
     write_results_to_file,
 )
-
-
-# ---------------------------------------------------------------------------
-# _significance_stars
-# ---------------------------------------------------------------------------
-
-class TestSignificanceStars(unittest.TestCase):
-
-    def test_none_returns_empty(self):
-        self.assertEqual(_significance_stars(None), "")
-
-    def test_above_threshold_returns_empty(self):
-        self.assertEqual(_significance_stars(0.05), "")
-        self.assertEqual(_significance_stars(0.99), "")
-
-    def test_single_star(self):
-        self.assertEqual(_significance_stars(0.04), "*")
-        self.assertEqual(_significance_stars(0.011), "*")
-
-    def test_double_star(self):
-        self.assertEqual(_significance_stars(0.009), "**")
-        self.assertEqual(_significance_stars(0.0011), "**")
-
-    def test_triple_star(self):
-        self.assertEqual(_significance_stars(0.0009), "***")
-        self.assertEqual(_significance_stars(0.0), "***")
-
-
-# ---------------------------------------------------------------------------
-# _rank_predictor_results
-# ---------------------------------------------------------------------------
-
-def _make_result(dep, ind, r2, p, status="success"):
-    """Helper to build a minimal result dict."""
-    return {
-        "dep_var": dep,
-        "ind_var": ind,
-        "r_squared": r2,
-        "p_value": p,
-        "is_significant": p < 0.05 if p is not None else False,
-        "status": status,
-    }
-
-
-class TestRankPredictorResults(unittest.TestCase):
-
-    def test_sorted_by_r_squared_descending(self):
-        results = [
-            _make_result("y", "x1", r2=0.1, p=0.01),
-            _make_result("y", "x2", r2=0.9, p=0.01),
-            _make_result("y", "x3", r2=0.5, p=0.01),
-        ]
-        ranked = _rank_predictor_results(results)
-        r2_values = [r["r_squared"] for r in ranked]
-        self.assertEqual(r2_values, [0.9, 0.5, 0.1])
-
-    def test_tiebreak_by_p_value_ascending(self):
-        results = [
-            _make_result("y", "x1", r2=0.5, p=0.04),
-            _make_result("y", "x2", r2=0.5, p=0.001),
-        ]
-        ranked = _rank_predictor_results(results)
-        self.assertEqual(ranked[0]["ind_var"], "x2")
-
-    def test_ranks_are_one_based(self):
-        results = [_make_result("y", f"x{i}", r2=float(i) / 10, p=0.01) for i in range(1, 4)]
-        ranked = _rank_predictor_results(results)
-        self.assertEqual([r["rank"] for r in ranked], [1, 2, 3])
-
-    def test_failed_models_moved_to_end_with_none_rank(self):
-        results = [
-            _make_result("y", "good", r2=0.5,  p=0.01),
-            _make_result("y", "bad",  r2=None,  p=None, status="failed"),
-        ]
-        ranked = _rank_predictor_results(results)
-        self.assertEqual(ranked[0]["ind_var"], "good")
-        self.assertEqual(ranked[0]["rank"], 1)
-        self.assertIsNone(ranked[1]["rank"])
-
-    def test_empty_list_returns_empty(self):
-        self.assertEqual(_rank_predictor_results([]), [])
 
 
 # ---------------------------------------------------------------------------
