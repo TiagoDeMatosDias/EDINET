@@ -17,16 +17,16 @@ def create_run_controls(
         value="",
         multiline=True,
         read_only=True,
-        min_lines=4,
-        max_lines=8,
+        min_lines=6,
+        max_lines=20,
         expand=True,
         text_size=11,
         dense=True,
         border_color=ft.Colors.TRANSPARENT,
-        filled=True,
+        filled=False,
     )
 
-    progress = ft.ProgressBar(visible=False, value=0)
+    progress = ft.ProgressBar(visible=False, value=0, expand=True)
 
     class _UILogHandler(logging.Handler):
         def emit(self, record):
@@ -97,8 +97,11 @@ def create_run_controls(
         "Run",
         icon=ft.Icons.PLAY_ARROW,
         color=ft.Colors.WHITE,
-        bgcolor=ft.Colors.GREEN_700,
-        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+        bgcolor=ft.Colors.RED_700,
+        style=ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=24),
+            padding=ft.Padding(left=28, right=28, top=10, bottom=10),
+        ),
         height=44,
         on_click=on_run,
     )

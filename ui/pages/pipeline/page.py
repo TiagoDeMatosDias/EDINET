@@ -1,7 +1,7 @@
 import flet as ft
 
 from ui.pages.pipeline.controller import AppController
-from ui.pages.pipeline.layout import build_app_bar, build_bottom_panel, build_top_panel
+from ui.pages.pipeline.layout import build_app_bar, build_main_content
 from ui.pages.pipeline.models import PipelinePageState
 from ui.pages.pipeline.persistence import (
     ASSETS_DIR,
@@ -20,7 +20,7 @@ from ui.shared.page_services import create_page_services
 
 
 def build_pipeline_page(page: ft.Page):
-    page.title = "EDINET - Financial Data Pipeline"
+    page.title = "SHADE Research – Orchestrator"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE)
@@ -76,7 +76,7 @@ def build_pipeline_page(page: ft.Page):
 
     theme_btn = ft.IconButton(
         icon=ft.Icons.DARK_MODE,
-        tooltip="Switch to dark mode",
+        tooltip="Toggle theme",
         on_click=controller.toggle_theme,
     )
 
@@ -86,14 +86,15 @@ def build_pipeline_page(page: ft.Page):
         controller.on_api_key,
         theme_btn,
     )
+
     page.add(
-        ft.Column(
-            [
-                build_top_panel(steps_column),
-                build_bottom_panel(run_btn, progress, log_output, controller.on_save_setup, controller.on_load_setup),
-            ],
-            spacing=0,
-            expand=True,
+        build_main_content(
+            steps_column,
+            log_output,
+            progress,
+            run_btn,
+            controller.on_save_setup,
+            controller.on_load_setup,
         )
     )
 

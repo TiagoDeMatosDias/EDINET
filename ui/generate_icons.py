@@ -1,11 +1,11 @@
-"""Generate .ico and .png from the SVG icon."""
+"""Generate .ico and .png from the hexagonal logo SVG (no text)."""
 import cairosvg
 from PIL import Image
 from io import BytesIO
 from pathlib import Path
 
 assets = Path(__file__).resolve().parent.parent / "assets"
-svg_path = assets / "icon.svg"
+svg_path = assets / "icon_hexagon.svg"
 svg_data = svg_path.read_bytes()
 
 # Multi-resolution ICO
@@ -17,8 +17,6 @@ for sz in sizes:
     images.append(img)
 
 ico_path = assets / "icon.ico"
-# Pillow ICO plugin: pass the largest image and request all sizes
-# The plugin will down-scale from the source for each requested size.
 biggest = max(images, key=lambda im: im.width)
 biggest.save(
     str(ico_path),
