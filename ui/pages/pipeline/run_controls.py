@@ -1,5 +1,6 @@
 import logging
 import sys
+import threading
 
 import flet as ft
 
@@ -29,13 +30,54 @@ def create_run_controls(
     progress = ft.ProgressBar(visible=False, value=0, expand=True)
 
     class _UILogHandler(logging.Handler):
+        """Buffers log records and flushes them to the UI periodically."""
+
+        FLUSH_INTERVAL = 0.15  # seconds between UI refreshes
+
+        def __init__(self):
+            super().__init__()
+            self._buffer: list[str] = []
+            self._lock = threading.Lock()
+            self._timer: threading.Timer | None = None
+            self._stopped = False
+
         def emit(self, record):
             try:
                 msg = self.format(record)
-                log_output.value = (log_output.value or "") + msg + "\n"
+                with self._lock:
+                    self._buffer.append(msg)
+                    # Schedule a flush if one isn't already pending
+                    if self._timer is None and not self._stopped:
+                        self._timer = threading.Timer(
+                            self.FLUSH_INTERVAL, self._flush
+                        )
+                        self._timer.daemon = True
+                        self._timer.start()
+            except Exception:
+                pass
+
+        def _flush(self):
+            """Move buffered lines into the TextField and refresh the page."""
+            with self._lock:
+                self._timer = None
+                if not self._buffer:
+                    return
+                chunk = "\n".join(self._buffer) + "\n"
+                self._buffer.clear()
+            try:
+                log_output.value = (log_output.value or "") + chunk
                 page.update()
             except Exception:
                 pass
+
+        def flush_final(self):
+            """Drain any remaining buffered messages (call before removing)."""
+            with self._lock:
+                if self._timer is not None:
+                    self._timer.cancel()
+                    self._timer = None
+                self._stopped = True
+            self._flush()
 
     def on_run(_):
         if is_running[0]:
@@ -82,6 +124,7 @@ def create_run_controls(
                 log_output.value = (log_output.value or "") + f"\n❌ Error: {ex}\n"
             finally:
                 try:
+                    handler.flush_final()
                     logging.getLogger().removeHandler(handler)
                 except Exception:
                     pass
