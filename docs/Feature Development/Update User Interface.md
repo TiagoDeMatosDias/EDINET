@@ -172,32 +172,32 @@ Orchestrator view (default) — step config panel closed:
 
 ```
  ___________________________________________________________________________
-| SHADE Research                 Home  |  Orchestrator  |  Data    [API Key] |
-| [hex logo]                                                    (theme) (⚙)  |
+| SHADE Research                Home  |  Orchestrator  |  Data    [API Key] |
+| [hex logo]                                                    (theme) (⚙) |
 |---------------------------------------------------------------------------|
 |  +--------------------------+  +---------------------------------------+  |
-|  | Pipeline Steps           |  |             Main Area (Orchestrator) |  |
+|  | Pipeline Steps           |  |             Main Area (Orchestrator)  |  |
 |  | ------------------------ |  |  - shows selected step details or     |  |
-|  | [≡] [■] Get Documents   (⚙) |  |    an overview of the pipeline        |  |
-|  | [≡] [■] Download Docs   (⚙) |  |  - drag to reorder, click to select   |  |
-|  | [≡] [■] Populate Company (⚙)|  |  - when not configuring a step,       |  |
-|  | [≡] [■] Parse Taxonomy  (⚙) |  |    the right config panel is hidden   |  |
-|  | [≡] [■] Update Prices   (⚙) |  |                                       |  |
-|  | [≡] [■] Import Prices   (⚙) |  |                                       |  |
-|  | [≡] [■] Generate FStmts (⚙) |  |                                       |  |
-|  | [≡] [■] Generate Ratios [ ] |  |                                       |  |
-|  | [≡] [✔] Multivar Regr  (⚙)  |  |                                       |  |
-|  | [≡] [■] Backtest Port   (⚙) |  |                                       |  |
+|  | [≡] [■] Get Documents    |  |    an overview of the pipeline        |  |
+|  | [≡] [■] Download Docs    |  |  - drag to reorder, click to select   |  |
+|  | [≡] [■] Populate Company |  |  - when not configuring a step,       |  |
+|  | [≡] [■] Parse Taxonomy   |  |    the right config panel is hidden   |  |
+|  | [≡] [■] Update Prices    |  |                                       |  |
+|  | [≡] [■] Import Prices    |  |                                       |  |
+|  | [≡] [■] Generate FStmts  |  |                                       |  |
+|  | [≡] [■] Generate Ratios  |  |                                       |  |
+|  | [≡] [✔] Multivar Regr   |  |                                       |  |
+|  | [≡] [■] Backtest Port    |  |                                       |  |
 |  |                          |  |                                       |  |
 |  | [ Save Setup ] [ Load ]  |  |                                       |  |
 |  +--------------------------+  +---------------------------------------+  |
 |                                                                           |
 |  -----------------------------------------------------------------------  |
-|  |                            Log Output (bottom)                       |  |
-|  |  [timestamp] Started step: Get Documents                              |  |
-|  |  [timestamp] Downloaded 123 files                                     |  |
-|  |  ...                                                                  |  |
-|  |                                                                       |  |
+|  |                            Log Output (bottom)                      |  |
+|  |  [timestamp] Started step: Get Documents                            |  |
+|  |  [timestamp] Downloaded 123 files                                   |  |
+|  |  ...                                                                |  |
+|  |                                                                     |  |
 |  -----------------------------------------------------------------------  |
 |                                  [ ◀ Stop ]         [ ▶ Run ]            |
 |___________________________________________________________________________|
@@ -206,49 +206,49 @@ Orchestrator view (default) — step config panel closed:
 Orchestrator view — step config panel open (select step -> Enter):
 
 ```
- ___________________________________________________________________________
-| SHADE Research                 Home  |  Orchestrator  |  Data    [API Key] |
-|---------------------------------------------------------------------------|
+ _____________________________________________________________________________
+| SHADE Research                 Home  |  Orchestrator  |  Data    [API Key]  |
+|---------------------------------------------------------------------------  |
 |  +--------------------------+  +---------------------------+ +-----------+  |
 |  | Pipeline Steps           |  |     Main Area (summary)   | | Config    |  |
 |  | ------------------------ |  |                           | | Panel     |  |
-|  | [≡] [■] Get Documents   (⚙)|  |  - selected: Get Documents| |  Title    |  |
-|  | [≡] [■] Download Docs   (⚙)|  |  - last run: 00:12       | |  Field A  |  |
-|  | [≡] [■] Populate Co.    (⚙)|  |  - status: idle          | |  Field B  |  |
+|  | [≡] [■] Get Documents    |  |  - selected: Get Documents| |  Title    |  |
+|  | [≡] [■] Download Docs    |  |  - last run: 00:12        | |  Field A  |  |
+|  | [≡] [■] Populate Co.     |  |  - status: idle           | |  Field B  |  |
 |  | ...                      |  |                           | |  Checkbox |  |
 |  |                          |  |                           | |  [Save]   |  |
 |  +--------------------------+  +---------------------------+ +-----------+  |
-|                                                                           |
-|  -----------------------------------------------------------------------  |
-|  |                            Log Output (bottom)                       |  |
+|                                                                             |
+|  -------------------------------------------------------------------------  |
+|  |                            Log Output (bottom)                        |  |
 |  |  [timestamp] User opened config for: Get Documents                    |  |
-|  |  [timestamp] Config saved                                              |  |
-|  -----------------------------------------------------------------------  |
-|                                  [ ◀ Stop ]         [ ▶ Run ]            |
-|___________________________________________________________________________|
+|  |  [timestamp] Config saved                                             |  |
+|  -------------------------------------------------------------------------  |
+|                                  [ ◀ Stop ]         [ ▶ Run ]              |
+|_____________________________________________________________________________|
 ```
 
 Home view — simple selector to pick a view:
 
 ```
  ___________________________________________________________________________
-| SHADE Research                 Home  |  Orchestrator  |  Data    [API Key] |
+| SHADE Research                Home  |  Orchestrator  |  Data    [API Key] |
 |---------------------------------------------------------------------------|
-|   Welcome — choose a view:                                                   |
+|   Welcome — choose a view:                                                |
 |                                                                           |
 |   [ Orchestrator ]   [ Data ]   [ Reports ]   [ Settings ]                |
 |                                                                           |
 |   Recent setups:                                                          |
-|   - My default pipeline                                                     |
-|   - Quick import + ratios                                                   |
+|   - My default pipeline                                                   |
+|   - Quick import + ratios                                                 |
 |                                                                           |
 |   [Open last setup]     [New setup]                                       |
 |---------------------------------------------------------------------------|
 |  -----------------------------------------------------------------------  |
-|  |                            Log Output (bottom)                       |  |
-|  |  (global application log / messages)                                 |  |
+|  |                            Log Output (bottom)                       | |
+|  |  (global application log / messages)                                 | |
 |  -----------------------------------------------------------------------  |
-|                                  [ Quit ]                                |
+|                                  [ Quit ]                                 |
 |___________________________________________________________________________|
 ```
 
