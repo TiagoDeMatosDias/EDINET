@@ -1,20 +1,528 @@
-# Application Details
 
-This document provides file level details about each function and class in the application. It is intended to be a reference for developers working on the application, and should be updated as the application evolves.
+# Python Source File Reference (Living Document)
 
-For each function and class, the following information is provided:
-- **File**: The file where the function or class is defined.
-- **Name**: The name of the function or class.
-- **Description**: A brief description of what the function or class does.
-- **Parameters**: A list of the parameters that the function or class takes, along with their types and descriptions.
-- **Returns**: A description of what the function or class returns, along with the return type.
-- **List of dependencies**: A list of other functions and classes that the function or class depends on, along with a brief description of each dependency.
-- **Example usage**: A code snippet demonstrating how to use the function or class.
+Last updated: 2026-03-31
 
-The information provided in this document is intended to be comprehensive and detailed, and should be updated as the application evolves. It is important to keep this document up-to-date in order to ensure that developers have access to accurate and useful information about the application.
+Purpose:
+- Central reference for runtime/test Python modules (`src/`) and top-level scripts.
+- For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
+- Designed to be updated continuously as functions are added/removed/changed.
 
-This file should be organized on a per file basis, with each file having its own section that lists the functions and classes defined in that file. Each function and class should have its own subsection that provides the information outlined above.
+---
 
-# Orchestrator.py
+## How to maintain this document
 
-<!-- This section will be filled in with details about the functions and classes defined in Orchestrator.py -->
+When updating code, update this file in the same PR/commit:
+
+1. Add/remove function entries for changed files.
+2. Update function signatures exactly (types/defaults).
+3. Update dependency lists when called functions/modules/signals change.
+4. Keep sections ordered by file path.
+5. Update the `Last updated` date.
+
+Suggested per-function format:
+- `def name(args) -> ReturnType`
+	- Purpose: ...
+	- Inputs: ...
+	- Output: ...
+	- Calls/Dependencies: ...
+
+---
+
+## Runtime modules (`src`)
+
+### [src/orchestrator.py](src/orchestrator.py)
+
+Responsibility: application orchestration and step dispatch.
+
+- `def _execute_step(step_name: str, config, edinet, data, overwrite: bool=False) -> None`
+	- Purpose: Execute a single named orchestration step (download, transform, regress, backtest).
+	- Inputs: `step_name`, `config`, `edinet`, `data`, `overwrite`
+	- Output: None
+	- Calls/Dependencies: `get_All_documents_withMetadata`, `generate_filter`, `downloadDocs`, `store_edinetCodes`, `generate_financial_statements`, `generate_ratios`, `generate_historical_ratios`, `import_stock_prices_csv`, `update_all_stock_prices`, `parse_edinet_taxonomy`, `multivariate_regression`, `run_backtest`, `run_backtest_set`
+
+- `def run(edinet=None, data=None) -> None`
+	- Purpose: Validate config and run the enabled `run_steps` in order.
+	- Inputs: optional `edinet` and `data` instances
+	- Output: None
+	- Calls/Dependencies: `Config`, `_execute_step`, `Edinet`, `data`
+
+---
+
+### [src/backtesting.py](src/backtesting.py)
+
+Responsibility: portfolio construction, price/dividend ingestion, return calculations, performance metrics, human-readable reports and charts. The orchestration entry point is `run_backtest()` which is invoked by `src.orchestrator`.
+
+- `def _normalise_portfolio_entry(spec) -> tuple[str, float]`
+	- Purpose: Parse a single portfolio entry (legacy float or dict) into a canonical `(mode, numeric_value)` tuple.
+	- Inputs: `spec` — an `int`/`float` (legacy weight) or `dict` with keys `mode` and `value`.
+	- Output: `(mode, value)` where `mode` is one of `"weight"|"shares"|"value"`.
+	- Calls/Dependencies: `logger.warning`.
+
+- `def resolve_portfolio_allocations(portfolio_config: dict, start_prices: dict[str, float], initial_capital: float = 0.0) -> tuple[dict[str, float], float, list[str]]`
+	- Purpose: Resolve mixed-mode allocation specs (weights, fixed shares, fixed value) into normalised portfolio weights and an effective capital amount.
+	- Inputs: `portfolio_config` (ticker → spec), `start_prices` (ticker → opening price), `initial_capital` (user-supplied or 0 to derive).
+	- Output: `(portfolio_weights, effective_capital, warnings)` where `portfolio_weights` sums to 1.0 (unless empty), `effective_capital` is the capital used for allocation, and `warnings` lists issues (missing start prices, inconsistent totals).
+	- Calls/Dependencies: `_normalise_portfolio_entry`, `logger.warning`.
+
+- `def get_portfolio_prices(db_path: str, prices_table: str, tickers: list[str], start_date: str, end_date: str, *, conn: sqlite3.Connection | None = None) -> pandas.DataFrame`
+	- Purpose: Query the `prices_table` for daily `Date, Ticker, Price` rows for the requested tickers and date range.
+	- Inputs: `db_path`, `prices_table`, `tickers`, `start_date` (YYYY-MM-DD), `end_date` (YYYY-MM-DD), optional `conn`.
+	- Output: `pd.DataFrame` (long form) with columns `Date` (datetime), `Ticker`, `Price` (numeric), ordered by `Date`.
+	- Calls/Dependencies: `read_sql_query`, `to_datetime`, `to_numeric`, `sqlite3.connect`, `conn.close`.
+
+- `def get_dividend_data(db_path: str, per_share_table: str, company_table: str, tickers: list[str], start_date: str, end_date: str, *, financial_statements_table: str = "FinancialStatements", dividend_column: str | None = None, conn: sqlite3.Connection | None = None) -> pandas.DataFrame`
+	- Purpose: Load per-share dividend records for tickers and map them to `periodEnd` dates. Supports both modern (`PerShare` with `docID`) and legacy schemas (`edinetCode` + `periodEnd`).
+	- Inputs: DB path, `per_share_table`, `company_table`, ticker list, date range, optional `financial_statements_table`, optional explicit `dividend_column`, optional `conn`.
+	- Output: `pd.DataFrame` with columns `Ticker`, `periodEnd` (datetime), `PerShare_Dividends` (numeric). Empty DataFrame when no supported dividend column or no tickers.
+	- Calls/Dependencies: `conn.execute`, `read_sql_query`, `to_datetime`, `to_numeric`, `logger.warning`, `conn.close`.
+
+- `def calculate_portfolio_returns(prices_df: pd.DataFrame, portfolio_weights: dict[str, float], dividends_df: pd.DataFrame | None = None) -> pd.DataFrame`
+	- Purpose: Compute weighted daily portfolio returns and cumulative returns. Prices are forward-filled; dividends are treated as cash (not reinvested) and added to portfolio value from their pay date onward.
+	- Inputs: `prices_df` (long form with `Date`,`Ticker`,`Price`), `portfolio_weights` (ticker → weight), optional `dividends_df` (with `Ticker`,`periodEnd`,`PerShare_Dividends`).
+	- Output: `pd.DataFrame` indexed by `Date` with columns `portfolio_return` (daily) and `cumulative_return` (level series).
+	- Calls/Dependencies: `pivot_table`, `ffill`, `pct_change`.
+
+- `def calculate_return_decomposition(prices_df: pd.DataFrame, portfolio_weights: dict[str, float], dividends_df: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]`
+	- Purpose: Produce three time series: `total` (price + dividends), `price_only`, and `dividend_only` (additive decomposition where `total = price_only + dividend_only`).
+	- Inputs: same as `calculate_portfolio_returns`.
+	- Output: `dict` with keys `total`, `price_only`, `dividend_only`; each value is a `DataFrame` indexed by `Date` containing daily and cumulative returns.
+	- Calls/Dependencies: `calculate_portfolio_returns`.
+
+- `def calculate_per_company_returns(prices_df: pd.DataFrame, portfolio_weights: dict[str, float], dividends_df: pd.DataFrame | None = None, initial_capital: float = 0.0) -> pd.DataFrame`
+	- Purpose: Produce a per-ticker breakdown (start/end price, price return, dividend return, total return, weight and weighted contributions). When `initial_capital` > 0 includes concrete `capital_invested`, `shares_purchased`, `dividends_received` and `market_value`.
+	- Inputs: `prices_df`, `portfolio_weights`, optional `dividends_df`, optional `initial_capital`.
+	- Output: `pd.DataFrame` with columns including `Ticker`, `start_price`, `end_price`, `price_return`, `dividend_return`, `total_return`, `weight`, `weighted_*` and optional `capital_invested`, `shares_purchased`, `dividends_received`, `market_value`.
+	- Calls/Dependencies: `groupby`, `iterrows`, `pd.DataFrame`.
+
+- `def calculate_yearly_returns(decomposition: dict[str, pd.DataFrame]) -> pd.DataFrame`
+	- Purpose: Aggregate cumulative-return series into calendar-year price/dividend/total returns.
+	- Inputs: `decomposition` (output of `calculate_return_decomposition`).
+	- Output: `pd.DataFrame` with `Year`, `Price Return`, `Dividend Return`, `Total Return`.
+
+- `def calculate_dividends_by_company_year(dividends_df: pd.DataFrame | None, shares_purchased: dict[str, float] | None = None) -> pd.DataFrame`
+	- Purpose: Pivot per-share dividends into a Year × Ticker table. If `shares_purchased` is provided, values become cash received (per-share × shares).
+	- Inputs: `dividends_df`, optional `shares_purchased` map.
+	- Output: `pd.DataFrame` indexed by `Year` with one column per ticker and a `Total` column.
+
+- `def calculate_benchmark_returns(prices_df: pd.DataFrame, benchmark_ticker: str, dividends_df: pd.DataFrame | None = None) -> pd.DataFrame`
+	- Purpose: Compute daily benchmark returns with price/dividend decomposition and cumulative series.
+	- Inputs: `prices_df` (long form), `benchmark_ticker`, optional `dividends_df` for the benchmark.
+	- Output: `pd.DataFrame` indexed by `Date` with columns `benchmark_return`, `cumulative_return`, `price_return`, `cum_price_return`, `dividend_return`, `cum_dividend_return`.
+
+- `def calculate_metrics(portfolio_df: pd.DataFrame, benchmark_df: pd.DataFrame | None, start_date: str, end_date: str, risk_free_rate: float = 0.0) -> dict`
+	- Purpose: Compute summary performance metrics: `total_return`, `annualized_return`, `volatility` (annualised), `sharpe_ratio`, `max_drawdown`, and benchmark equivalents when available.
+	- Inputs: `portfolio_df` (from `calculate_portfolio_returns`), optional `benchmark_df` (from `calculate_benchmark_returns`), `start_date`, `end_date`, `risk_free_rate`.
+	- Output: `dict` containing stated metrics plus `risk_free_rate`, and optional `benchmark_*` fields.
+	- Calls/Dependencies: `pd.to_datetime`, `np.sqrt`, `cummax`.
+
+- `def generate_report(metrics: dict, output_file: str, decomposition: dict | None = None, per_company: pd.DataFrame | None = None, benchmark_df: pd.DataFrame | None = None, yearly_returns: pd.DataFrame | None = None, dividends_by_year: pd.DataFrame | None = None) -> str`
+	- Purpose: Render a human-readable textual backtest report (tables and summaries) and write it to `output_file`.
+	- Inputs: `metrics` dict produced by `calculate_metrics`, optional decomposition/per-company/yearly/dividends tables.
+	- Output: The textual report string (also written to disk).
+	- Calls/Dependencies: `os.makedirs`, `open`, `logger.info`.
+
+- `def generate_backtest_charts(decomposition: dict[str, pd.DataFrame], benchmark_df: pd.DataFrame | None, per_company: pd.DataFrame | None, output_dir: str, start_date: str, end_date: str, dividends_by_year: pd.DataFrame | None = None) -> list[str]`
+	- Purpose: Create visualisations (PNG) for cumulative returns, drawdown, decomposition, per-company breakdown and dividends-by-year.
+	- Inputs: decomposition, optional `benchmark_df`, optional `per_company`, `output_dir`, `start_date`, `end_date`, optional `dividends_by_year`.
+	- Output: List of file paths created. If `matplotlib` is not installed returns an empty list.
+	- Calls/Dependencies: `matplotlib.pyplot.subplots`, `fig.savefig`, `np.arange`, `os.makedirs`, `logger.info`.
+
+- `def run_backtest(backtesting_config: dict, db_path: str, prices_table: str = "stock_prices", ratios_table: str = "PerShare", company_table: str = "companyInfo", financial_statements_table: str = "FinancialStatements") -> dict`
+	- Purpose: High-level runner used by the orchestrator. Orchestrates data retrieval, allocation resolution, return calculations, metric computation, report writing and chart generation.
+	- Inputs: `backtesting_config` (must include `start_date`, `end_date`, `portfolio`; may include `benchmark_ticker`, `output_file`, `risk_free_rate`, `initial_capital`), `db_path`, and optional table names.
+	- Output: `metrics` dict (same shape as produced by `calculate_metrics` with additional attachments such as `per_company` list and `chart_files`).
+	- Calls/Dependencies: `get_portfolio_prices`, `get_dividend_data`, `resolve_portfolio_allocations`, `calculate_portfolio_returns`, `calculate_return_decomposition`, `calculate_per_company_returns`, `calculate_yearly_returns`, `calculate_dividends_by_company_year`, `calculate_benchmark_returns`, `calculate_metrics`, `generate_report`, `generate_backtest_charts`.
+
+- `_BACKTEST_DURATIONS: dict[str, int]`
+	- Purpose: Predefined duration labels used by the backtest-set runner (e.g. `"1yr"`, `"2yr"`, ...).
+
+- `def _generate_set_summary(all_results: list[dict], output_file: str) -> None`
+	- Purpose: Produce an aggregate textual summary for a batch of backtests (mean/median stats, benchmark comparisons, per-backtest table) and write to `output_file`.
+	- Inputs: `all_results` (list of result entries produced by `run_backtest_set`), `output_file` path.
+	- Output: None (writes file).
+
+- `def run_backtest_set(config: dict, db_path: str, prices_table: str = "stock_prices", ratios_table: str = "PerShare", company_table: str = "companyInfo", financial_statements_table: str = "FinancialStatements") -> list[dict]`
+	- Purpose: Convenience runner that reads a CSV of yearly scored portfolios and executes a set of horizon backtests for each year (1,2,3,5,10 years by default), emitting per-run reports and an aggregate summary.
+	- Inputs: `config` (must include `csv_file`, may include `benchmark_ticker`, `output_dir`, `risk_free_rate`, `initial_capital`), `db_path`, optional table names.
+	- Output: List of result dicts (one per individual backtest), and writes an aggregate summary via `_generate_set_summary`.
+	- Calls/Dependencies: `pd.read_csv`, `run_backtest`, `_generate_set_summary`.
+
+---
+
+### [src/data_processing.py](src/data_processing.py)
+
+Responsibility: ETL and transformation of EDINET raw data into normalized financial tables and ratio series.
+
+`class data`
+	- Purpose: Encapsulate DB path and pipeline operations for generating `FinancialStatements`, `PerShare`, and historical aggregates.
+
+	- `def generate_financial_statements(self, source_database, source_table, target_database, mappings_config, company_table=None, prices_table=None, overwrite=False, batch_size=2500) -> None`
+		- Purpose: Generate normalized financial-statement tables from raw EDINET records; resumable chunked processing by `docID`.
+		- Inputs: `source_database`, `source_table`, `target_database`, `mappings_config` (path), optional `company_table`, `prices_table`, `overwrite`, `batch_size`.
+		- Output: None (writes/updates DB tables: `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, `CashflowStatement`).
+		- Calls/Dependencies: `_load_financial_statement_mappings`, `_collect_financial_statement_filters`, `_resolve_table_name_in_schema`, `_build_source_relevance_predicate`, `_create_financial_statement_tables`, `_insert_base_financial_statements`, `_insert_statement_table_rows`, `conn.execute`, `conn.executescript`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
+
+	- `def generate_ratios(self, source_database, target_database, formulas_config, overwrite=False, batch_size=5000) -> None`
+		- Purpose: Compile configured formulas into `PerShare`/`Valuation`/`Quality` tables, resolving formula dependencies and executing updates in batches.
+		- Inputs: `source_database`, `target_database`, `formulas_config` (path), optional `overwrite`, `batch_size`.
+		- Output: None (writes/updates `PerShare`, `Valuation`, `Quality` tables).
+		- Calls/Dependencies: `_load_generate_ratios_definitions`, `_build_generate_ratios_execution_plan`, `_ensure_generate_ratios_tables`, `_ensure_table_columns`, `conn.execute`, `conn.executescript`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
+
+	- `def generate_historical_ratios(self, source_database, target_database, overwrite=False, company_batch_size=200) -> None`
+		- Purpose: Produce per-company historical metric tables (e.g. `Pershare_Historical`) by computing rolling/aggregate statistics and inserting in batches.
+		- Inputs: `source_database`, `target_database`, optional `overwrite`, `company_batch_size`.
+		- Output: None (writes/updates historical tables).
+		- Calls/Dependencies: `_resolve_table_name_in_schema`, `_create_index_if_not_exists`, `_ensure_historical_table_schema`, `_build_cross_sectional_stats`, `_compute_historical_metrics`, `conn.execute`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
+
+	- `def parse_edinet_taxonomy(self, xsd_file, table_name, connection=None) -> None`
+		- Purpose: Parse an EDINET taxonomy XSD and persist relevant elements to `table_name`.
+		- Inputs: `xsd_file` (path to XSD), `table_name`, optional `connection`.
+		- Output: None (writes taxonomy rows to DB table).
+		- Calls/Dependencies: `ET.parse`, `_create_table`, `_insert_data`, `_adjust_string`, `conn.commit`, `conn.close`.
+
+---
+
+### [src/edinet_api.py](src/edinet_api.py)
+
+Responsibility: EDINET API wrapper, document listing, download/unzip, CSV ingestion to DB.
+
+- `class Edinet`
+`class Edinet`
+	- Purpose: EDINET HTTP wrapper and helpers to download, extract and ingest financial CSVs into the project DB.
+
+	- `def get_All_documents_withMetadata(self, start_date: str = '2015-01-01', end_date: str | None = None) -> list`
+		- Purpose: Iterate a date range, call the EDINET listing API and persist discovered document metadata into the configured DB table.
+		- Inputs: `start_date` (YYYY-MM-DD), optional `end_date` (YYYY-MM-DD).
+		- Output: List of document rows inserted/retrieved for the period.
+		- Calls/Dependencies: `requests.get`, `sqlite3.connect`, `self.create_table`, `cursor.execute`, `conn.commit`, `conn.close`.
+
+	- `def downloadDoc(self, docID: str, fileLocation: str | None = None, docTypeCode: str | None = None) -> None`
+		- Purpose: Download a single EDINET document ZIP to disk.
+		- Inputs: `docID`, optional `fileLocation`, optional `docTypeCode`.
+		- Output: None (writes ZIP file to `fileLocation`).
+		- Calls/Dependencies: `generateURL` (via `src.utils.generateURL`), `requests.get`, `open` (file write).
+
+	- `def downloadDocs(self, input_table: str, output_table: str | None = None, filter: dict | None = None) -> None`
+		- Purpose: Download and extract all not-yet-downloaded documents from the DB list, load CSVs into `output_table`, and mark as downloaded.
+		- Inputs: `input_table`, optional `output_table`, optional `filter`.
+		- Output: None (writes DB rows and files on disk).
+		- Calls/Dependencies: `generate_filter`, `query_database_select`, `sqlite3.connect`, `create_folder`, `downloadDoc`, `list_files_in_folder`, `unzip_files`, `load_financial_data`, `query_database_setColumn`, `delete_folder`.
+
+	- `def load_financial_data(self, financialFiles: list, table_name: str, doc: dict, connection: sqlite3.Connection | None = None) -> None`
+		- Purpose: Read extracted TSV/CSV financial files into a DataFrame, attach document metadata and persist to the DB table.
+		- Inputs: `financialFiles` (list of paths), `table_name`, `doc` (metadata), optional `connection`.
+		- Output: None (appends rows into `table_name`).
+		- Calls/Dependencies: `detect_file_encoding`, `pd.read_csv`, `self.create_table`, `df.to_sql`, `conn.commit`, `conn.close`.
+
+	- `def store_edinetCodes(self, csv_file: str, target_database: str | None = None, table_name: str | None = None) -> None`
+		- Purpose: Load EDINET company codes CSV and persist into the configured company-info table.
+		- Inputs: `csv_file`, optional `target_database`, optional `table_name`.
+		- Output: None (writes to DB).
+		- Calls/Dependencies: `pd.read_csv`, `sqlite3.connect`, `df.to_sql`, `conn.commit`, `conn.close`.
+
+---
+
+### [src/stockprice_api.py](src/stockprice_api.py)
+
+Responsibility: Importing and updating historical stock prices and persisting them to the prices table.
+
+- `def update_all_stock_prices(db_name, Company_Table, prices_table, standardized_table=None) -> None`
+	- Purpose: Iterate tickers and ensure price coverage.
+	- Calls/Dependencies: `_create_prices_table`, `cursor.execute`, `load_ticker_data`, `conn.close`.
+
+- `def load_ticker_data(ticker: str, prices_table: str, conn) -> bool`
+	- Purpose: Fetch price CSV for `ticker`, append new rows, return False on provider rate-limit.
+	- Calls/Dependencies: `pd.read_sql_query`, `pd.read_csv`, `to_sql`, `logger`.
+
+- `def import_stock_prices_csv(db_name, prices_table, csv_path, ...) -> None`
+	- Purpose: Import user-supplied price CSV, normalize columns and append.
+	- Calls/Dependencies: `pd.read_csv`, `pd.to_datetime`, `pd.to_numeric`, `pd.read_sql_query`, `to_sql`, `conn.commit`.
+
+---
+
+### [src/regression_analysis.py](src/regression_analysis.py)
+
+Responsibility: OLS regression tooling, model fitting, scoring query generation and result persistence.
+
+- `def Run_Model(query, conn, dependent_variable_df_name, independent_variables_df_names, winsorize_limits=(0.01,0.99)) -> RegressionResultsWrapper`
+	- Purpose: Run SQL query, prepare data, fit OLS via `statsmodels`, return fitted results.
+	- Calls/Dependencies: `pd.read_sql_query`, `pd.to_numeric`, `sm.add_constant`, `sm.OLS`, `fit`.
+
+- `def build_scoring_query(results, query, company_table='companyInfo') -> str`
+	- Purpose: Convert coefficients into a SQL scoring expression.
+	- Calls/Dependencies: `_infer_primary_source_ref`.
+
+- `def multivariate_regression(config, db_path, company_table='companyInfo') -> None`
+	- Purpose: High-level runner used by orchestration to execute regression and write results.
+	- Calls/Dependencies: `pd.read_sql_query`, `Run_Model`, `write_results_to_file`.
+
+---
+
+### [src/utils.py](src/utils.py)
+
+Responsibility: Small helpers used across modules (URL building, CSV helpers, simple CSV queries).
+
+- `def generateURL(docID, config, doctype=None) -> str`
+	- Purpose: Construct EDINET download URL.
+
+- `def json_list_to_csv(json_list, csv_filename) -> None`
+	- Purpose: Write list-of-dicts to CSV.
+
+- `def get_latest_submit_datetime(csv_filename) -> Optional[str]`
+	- Purpose: Parse CSV and return latest `submitDateTime` as string.
+
+---
+
+### [src/logger.py](src/logger.py)
+
+Responsibility: Centralized logging setup.
+
+- `class LogSetup` / `def setup_logging(...)` — configure console/file handlers and rotate/archival behavior.
+`class LogSetup`
+	- Purpose: Configure application logging with file and console handlers, archive old logs.
+
+	- `def __init__(self, log_dir: str = "logs", archive_dir: str = "logs/archive") -> None`
+		- Purpose: Ensure log and archive directories exist and record paths.
+		- Inputs: `log_dir`, `archive_dir`.
+		- Output: None (initializes instance fields).
+		- Calls/Dependencies: `Path.mkdir`.
+
+	- `def setup_logging(self) -> tuple[logging.Logger, str]`
+		- Purpose: Configure root logger, add file and console handlers, and return `(logger, log_filepath)`.
+		- Inputs: none (uses instance `log_dir`/`archive_dir`).
+		- Output: `(logger, log_filepath)` tuple.
+		- Calls/Dependencies: `_archive_existing_logs`, `logging.getLogger`, `logging.FileHandler`, `logging.StreamHandler`, `logger.addHandler`, `logger.removeHandler`.
+
+	- `def _archive_existing_logs(self) -> None`
+		- Purpose: Move existing `run_*.log` files into the archive directory.
+		- Inputs: none
+		- Output: None (moves files on disk).
+		- Calls/Dependencies: `self.log_dir.glob`, `shutil.move`.
+
+`def setup_logging(log_dir: str = "logs", archive_dir: str = "logs/archive") -> tuple[logging.Logger, str]`
+	- Purpose: Convenience wrapper that instantiates `LogSetup` and returns `LogSetup.setup_logging()` results.
+	- Inputs: `log_dir`, `archive_dir`.
+	- Output: `(logger, log_filepath)`
+	- Calls/Dependencies: `LogSetup.setup_logging`.
+
+---
+
+## Other entry points
+
+### [main.py](../main.py)
+
+Responsibility: CLI / top-level script entry. If present it wires config and kicks off `src.orchestrator.run()`.
+
+---
+
+## How you can help expand this document
+
+- Add exact function signatures (including types/defaults) when you change a function.
+- Fill `Inputs`/`Output` sections with precise types and examples for frequently-changed helpers.
+- Add `Calls/Dependencies` entries when introducing new inter-module calls.
+
+If you'd like, I can now:
+- populate exact function signatures for each module by scanning the `src/` and `ui/` files and inserting them here, or
+- convert private helpers into abbreviated summaries and keep public API entries fully expanded.
+
+---
+
+## UI modules (`ui`)
+
+### [ui/app.py](ui/app.py)
+
+Responsibility: Flet GUI bootstrap and page registry.
+
+- `def open_page(page: ft.Page, page_key: str = DEFAULT_PAGE_KEY) -> None`
+	- Purpose: Clear page state and build the selected page from `PAGE_REGISTRY`.
+	- Inputs: `page`, `page_key`
+	- Output: none
+	- Calls/Dependencies: `build_pipeline_page`.
+
+- `def main(page: ft.Page) -> None`
+	- Purpose: Flet entry point that opens the default page.
+	- Inputs: `page`
+	- Output: none
+	- Calls/Dependencies: `open_page()`
+
+- `def launch() -> None`
+	- Purpose: Start the Flet application (`ft.run`) using `ASSETS_DIR` for assets.
+	- Inputs: none
+	- Output: none
+	- Calls/Dependencies: `ft.run`.
+
+### [ui/generate_icons.py](ui/generate_icons.py)
+
+Responsibility: Generate application icon assets from SVG.
+
+- Script steps: read `assets/icon_hexagon.svg`, render PNG sizes via `cairosvg`, create a multi-resolution `.ico` with `PIL.Image`, and write `icon.png` and `icon.ico`.
+- Calls/Dependencies: `cairosvg`, `PIL` (Pillow), `io`, `pathlib`.
+
+### [ui/shared/page_services.py](ui/shared/page_services.py)
+
+Responsibility: Small page-scoped service wrappers (snack, show, pop).
+
+- `PageServices` dataclass: holds `snack`, `show`, `pop` callables.
+- `def create_page_services(page: ft.Page) -> PageServices`
+	- Purpose: Attach a `SnackBar` and dialog helpers to `page` and return a lightweight API for pages.
+	- Inputs: `page`
+	- Output: `PageServices`
+	- Calls/Dependencies: `ft.SnackBar`, `page.overlay.append`, `page.update`, `page.show_dialog`, `page.pop_dialog`.
+
+### [ui/shared/dialog_fields.py](ui/shared/dialog_fields.py)
+
+Responsibility: Helpers to build form fields from nested config dicts and to read edited values back into typed config.
+
+- `def build_fields(cfg: dict, prefix: str = "") -> list[tuple]`
+	- Purpose: Produce `(dotted_key | None, Control)` pairs for rendering config dialogs.
+	- Inputs: `cfg`, optional `prefix`
+	- Output: list of `(key, control)` tuples
+	- Calls/Dependencies: `flet` form controls.
+
+- `def read_fields(fields: list[tuple], original: dict) -> dict`
+	- Purpose: Convert edited `TextField` values back into typed values and merge them into the original config.
+	- Inputs: `fields`, `original` config dict
+	- Output: updated config dict
+
+## UI Pages (`ui/pages/pipeline`)
+
+These modules implement the Flet-based pipeline page: layout, dialogs, controllers, and persistence helpers used by the GUI.
+
+### [ui/pages/pipeline/page.py](ui/pages/pipeline/page.py)
+
+Responsibility: Compose the pipeline page, initialize `PipelinePageState`, and wire controllers and UI builders.
+
+- `def build_pipeline_page(page: ft.Page) -> None`
+	- Purpose: Assemble page UI, register file picker and services, instantiate `AppController`, and call `rebuild_steps()`.
+	- Inputs: `page`
+	- Output: none
+	- Calls/Dependencies: `AppController`, `build_app_bar`, `build_main_content`, `create_page_services`, `create_steps_column`, `create_run_controls`.
+
+### [ui/pages/pipeline/controller.py](ui/pages/pipeline/controller.py)
+
+Responsibility: Page controller; handles events, opens dialogs, toggles theme, and saves/loads named setups.
+
+- `class AppController`
+`class AppController`
+	- Purpose: Page controller for the pipeline UI; wires page-level callbacks, dialogs and named-setup persistence.
+
+	- `def bind_controls(self, theme_btn: ft.IconButton) -> None`
+		- Purpose: Retain reference to the theme toggle control for later updates.
+		- Inputs: `theme_btn`.
+		- Output: None
+		- Calls/Dependencies: none
+
+	- `def set_rebuild_steps(self, rebuild_steps: Callable[[], None]) -> None`
+		- Purpose: Store a callback used to rebuild the steps column after state changes.
+		- Inputs: `rebuild_steps` callback.
+		- Output: None
+		- Calls/Dependencies: none
+
+	- `def on_api_key(self, _) -> None`
+		- Purpose: Prompt the user for the EDINET API key and persist it to the environment.
+		- Inputs: event arg (ignored)
+		- Output: None
+		- Calls/Dependencies: `write_env`, `show` (dialog), `pop`, `snack`.
+
+	- `def toggle_theme(self, _) -> None`
+		- Purpose: Toggle between light/dark themes and update the page.
+		- Inputs: event arg (ignored)
+		- Output: None
+		- Calls/Dependencies: `page.update`.
+
+	- `def open_step_config(self, step_name: str) -> None`
+		- Purpose: Dispatch to the appropriate step-specific `open_*_config` dialog builder.
+		- Inputs: `step_name`
+		- Output: None
+		- Calls/Dependencies: `open_get_documents_config`, `open_download_documents_config`, `open_populate_company_info_config`, `open_backtest_config`, `open_backtest_set_config`, `open_import_csv_config`, `open_parse_taxonomy_config`, `open_update_stock_prices_config`, `open_generate_financial_statements_config`, `open_generate_ratios_config`, `open_generate_historical_ratios_config`, `open_multivariate_regression_config`, `open_generic_step_config`.
+
+	- `def on_save_setup(self, _) -> None`
+		- Purpose: Prompt for a setup name and persist the current run configuration as a named setup.
+		- Inputs: event arg (ignored)
+		- Output: None
+		- Calls/Dependencies: `save_named_setup`, `current_config`, `pop`, `snack`.
+
+	- `def on_load_setup(self, _) -> None`
+		- Purpose: Show saved setups, load the selected setup, and rebuild the UI state.
+		- Inputs: event arg (ignored)
+		- Output: None
+		- Calls/Dependencies: `list_saved_setups`, `load_named_setup`, `build_steps`, `build_step_configs`, `pop`, `_rebuild_steps`, `snack`.
+
+### [ui/pages/pipeline/layout.py](ui/pages/pipeline/layout.py)
+
+Responsibility: Reusable UI builders for app bar and main content.
+
+- `def build_app_bar(on_api_key, theme_btn, on_tab_change=None, active_tab: int = 0) -> ft.AppBar`
+	- Purpose: Construct the top AppBar (logo, tabs, API key button, theme toggle).
+	- Calls/Dependencies: `flet` controls.
+
+- `def build_main_content(steps_column, log_output, progress, run_btn, on_save_setup, on_load_setup) -> ft.Container`
+	- Purpose: Build the two-column layout card (left: steps, right: log) and bottom action row.
+
+### [ui/pages/pipeline/persistence.py](ui/pages/pipeline/persistence.py)
+
+Responsibility: Configuration, defaults, and small persistence helpers used by the UI.
+
+- Constants: `BASE_DIR`, `ENV_PATH`, `CONFIG_DIR`, `STATE_DIR`, `RUN_CONFIG_PATH`, `ASSETS_DIR`, `STEP_CONFIG_KEY`, `STEP_DISPLAY`, `DEFAULT_STEP_CONFIGS`, etc.
+- `def read_env() -> dict[str, str]` — read `.env` into a dict.
+- `def load_app_state()` / `def save_app_state(state)` — read/write `app_state.json`.
+- `def load_run_config()` / `def save_run_config(cfg)` — read/write run configuration JSON.
+- `def build_steps(run_cfg) -> list[list]` — translate run_cfg into UI `steps` list.
+- `def build_step_configs(run_cfg) -> dict` — produce per-step configs with defaults merged in.
+- `def build_current_config(steps, step_configs, env) -> dict` — serialize UI state into full run config for execution.
+- Named-setup helpers: `list_saved_setups()`, `save_named_setup(name, cfg)`, `load_named_setup(name)`.
+
+### [ui/pages/pipeline/step_list.py](ui/pages/pipeline/step_list.py)
+
+Responsibility: Render a draggable list of pipeline steps and provide reorder/overwrite UI.
+
+- `def create_steps_column(page, steps, open_step_config) -> (ft.Column, callable)`
+	- Purpose: Build a scrollable `Column` containing drag/drop step rows and return a `rebuild_steps()` function.
+	- Calls/Dependencies: `flet.Draggable`, `ft.DragTarget`, `STEP_DISPLAY`, `STEPS_WITH_OVERWRITE`.
+
+### [ui/pages/pipeline/step_dialogs.py](ui/pages/pipeline/step_dialogs.py)
+
+Responsibility: Dialog builders for configuring individual pipeline steps.
+
+- Multiple `open_*_config` functions with signature `(page, fp, step_configs, snack, show, pop)` including:
+	- `open_get_documents_config`, `open_download_documents_config`, `open_populate_company_info_config`,
+		`open_import_csv_config`, `open_generate_financial_statements_config`, `open_generate_ratios_config`,
+		`open_generate_historical_ratios_config`, `open_multivariate_regression_config`, `open_backtest_config`,
+		`open_backtest_set_config`, `open_parse_taxonomy_config`, `open_update_stock_prices_config`, and `open_generic_step_config`.
+	- Purpose: Build step-specific forms, validate user input, and persist values into `step_configs`.
+	- Calls/Dependencies: `flet` form controls, `persistence.DEFAULT_STEP_CONFIGS`, file picker APIs.
+
+### [ui/pages/pipeline/run_controls.py](ui/pages/pipeline/run_controls.py)
+
+Responsibility: Provide the Run button, log output textbox, progress indicator, and background-run wiring.
+
+- `def create_run_controls(page, *, is_running: list[bool], base_dir, current_config, save_run_config)` -> `(log_output, progress, run_btn)`
+	- Purpose: Wire background run thread, capture logs into the UI via `_UILogHandler`, and provide Run/stop UI.
+	- Nested class `_UILogHandler(logging.Handler)` — buffers log lines and flushes them into the UI at intervals.
+	- Calls/Dependencies: `save_run_config`, `current_config`, `setup_logging`, `orchestrator.run`, `page.run_thread`, `page.update`.
+
+### [ui/pages/pipeline/models.py](ui/pages/pipeline/models.py)
+
+Responsibility: Lightweight dataclasses for page state.
+
+- `PipelinePageState` dataclass — fields: `env`, `app_state`, `run_cfg`, `steps`, `step_configs`, `is_running`.
+
+## Tests (`tests/`)
+
+Responsibility: Unit tests covering core logic and UI helpers. Each test file targets the corresponding module:
+
+- `[tests/test_backtesting.py](tests/test_backtesting.py)` — tests backtest data retrieval, calculations, report and chart generation, and end-to-end `run_backtest` flows.
+- `[tests/test_data_processing.py](tests/test_data_processing.py)` — tests `data` ETL methods, formula compilation, historical ratio generation, and XSD parsing helpers.
+- `[tests/test_edinet_api.py](tests/test_edinet_api.py)` — tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
+- `[tests/test_regression_analysis.py](tests/test_regression_analysis.py)` — tests OLS runner, scoring query builder, and results writer.
+- `[tests/test_stockprice_api.py](tests/test_stockprice_api.py)` — tests CSV import and stock price ingestion logic.
+- `[tests/test_ui.py](tests/test_ui.py)` — UI unit tests for layout, step list, run controls and persistence helpers.
+- `[tests/test_utils.py](tests/test_utils.py)` — small helper tests for URL generation and CSV export.
+
+---
+
+Last updated: 2026-03-31
+
+If you want, I can now auto-populate parameter types and short example inputs/outputs for every function (more verbose), or keep the current concise API listings. Which do you prefer?
+
