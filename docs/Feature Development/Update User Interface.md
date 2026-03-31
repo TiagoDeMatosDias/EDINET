@@ -2,14 +2,14 @@
 
 Purpose
 -------
-Make the existing UI implementation-ready for an incremental migration from the current Flet-based `ui/` to a new, maintainable Tkinter-based `ui_tk/` package. This document is prescriptive: it converts the high-level decision into a prioritized, testable, code-level checklist so the team can start implementation immediately.
+Replace the existing Flet-based `ui/` with a new, maintainable Tkinter-based `ui_tk/` package. This document is prescriptive: it converts the high-level decision into a prioritized, testable, code-level checklist so the team can start implementation immediately.
 
 Scope & Goal
 ------------
-- Create a parallel `ui_tk/` package (Tkinter + `ttk` + `matplotlib`) and keep `ui/` operational until parity.
+- Replace the current Flet-based `ui/` with a new `ui_tk/` package (Tkinter + `ttk` + `matplotlib`), deprecating and removing `ui/` once migration and verification are complete.
 - Decouple UI from business logic via thin controllers that call existing backend modules (`orchestrator.py`, `backtesting.py`, `edinet_api.py`).
 - Provide a background-worker pattern that keeps the Tk mainloop responsive and safe.
-- Deliver per-page, testable feature parity starting with the Pipeline page.
+- Deliver per-page, testable feature parity starting with the Pipeline page and retire `ui/` after QA and verification.
 
 Immediate deliverables
 ----------------------
@@ -18,6 +18,7 @@ Immediate deliverables
 3. Pipeline page prototype (UI + background runner + chart placeholder).
 4. Controller adapters for the pipeline page and unit tests for controllers.
 5. Packaging updates and a QA checklist to verify builds.
+6. Deprecation and removal plan for the existing `ui/` package, including timeline and rollback criteria.
 
 Actionable implementation steps (developer checklist)
 --------------------------------------------------
@@ -26,21 +27,16 @@ Actionable implementation steps (developer checklist)
    - Deliverable: inventory file + a short list of must-have vs nice-to-have features.
 
 2) Architecture & CLI integration (owner: lead)
-   - Add `--ui` CLI flag to `main.py`. Example:
+    - Update `main.py` to invoke the Tk application directly via `ui_tk.run_tk_app`. Example:
 
 ```python
-import argparse
-from ui import run as run_flet
 from ui_tk import run_tk_app
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--ui', choices=('flet','tk'), default='flet')
-args = parser.parse_args()
-if args.ui == 'tk':
-    run_tk_app(config)
-else:
-    run_flet(config)
+# load config...
+run_tk_app(config)
 ```
+
+    - If a temporary `--ui` flag is required for short-term testing, it may be added to choose between `flet` and `tk`, but the plan is to default to `tk` and remove the flag as part of the `ui/` deprecation and removal.
 
 3) Scaffolding (owner: developer)
    - Create `ui_tk/` with files:
@@ -130,7 +126,7 @@ datas = [('ui_tk/icons', 'ui_tk/icons'), ('config/examples', 'config/examples')]
 Acceptance criteria (ready-for-implementation)
 -------------------------------------------
 - The document `docs/ui-component-inventory.md` exists and lists all UI pages and long-running operations.
-- `ui_tk/` scaffold is created and `python main.py --ui tk` starts the Tk app (bootstrap) without raising import errors.
+- `ui_tk/` scaffold is created and `python main.py` starts the Tk app (bootstrap) without raising import errors.
 - Pipeline prototype can start a short background job, update progress in UI and render a simple chart.
 - Controllers have unit tests that mock backend calls and verify behavior.
 - PyInstaller build includes `ui_tk` and produces a runnable EXE on a developer workstation.
@@ -143,7 +139,7 @@ Dependencies (suggested minimal versions)
 
 QA checklist (manual)
 --------------------
-1. Launch: `python main.py --ui tk` (optionally add `-c config/run_config.json`).
+1. Launch: `python main.py` (optionally add `-c config/run_config.json`) and confirm the Tk UI starts.
 2. Open Pipeline page; enter parameters; click `Start`.
 3. Confirm UI remains responsive and status/progress updates appear.
 4. Confirm chart area updates with mock or real data.
@@ -153,11 +149,11 @@ Open decisions (record here and resolve before wide rollout)
 -----------------------------------------------------------
 - Theme: standard `ttk` vs `ttkbootstrap` (trade-off: extra dependency vs modern look).
 - Charts: keep `matplotlib` or adopt interactive `plotly` (packaging trade-offs).
-- Scope: full feature parity before removing `ui/` or keep both long-term with one canonical UI.
+- Scope: this is a full replacement; confirm the retirement timeline for `ui/`, any temporary fallbacks, and which features may be reworked instead of directly ported.
 
 Next immediate steps (this sprint)
 ---------------------------------
-1. Produce `docs/ui-component-inventory.md` (run a quick audit of `ui/`).
+1. Audit `ui/` to catalogue features and produce `docs/ui-component-inventory.md`, including items to port, rework, or drop and a proposed deprecation timeline.
 2. Scaffold `ui_tk/` package with the file list above and a minimal `run_tk_app()` that creates a root and shows an empty frame.
 3. Implement Pipeline prototype and unit tests for its controller.
 
@@ -278,10 +274,7 @@ Provide clear implementation guidance, rationale, and concrete patterns so futur
 
 Key decisions (summary)
 -----------------------
-- Keep `ui_tk/` parallel to the existing `ui/` until feature parity is reached.
-- Use a persistent right-side slide-over for step configuration (keyboard-openable with `Enter`).
-- Use a bottom, global log area visible across all views (collapsible, filterable).
-- Views (`Home` / `Orchestrator` / `Data`) are top-level selectors that change the main workspace.
+- Implement `ui_tk/` as the full replacement for `ui/`; plan deprecation, retirement and rollback criteria.
 
 Visual & style guidelines
 -------------------------
