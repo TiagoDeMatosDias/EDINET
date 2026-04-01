@@ -1,6 +1,6 @@
 {
   "run_steps": {
-    "Multivariate_Regression": {
+    "get_documents": {
       "enabled": true,
       "overwrite": false
     }
@@ -8,7 +8,14 @@
   "get_documents_config": {
     "startDate": "2026-02-15",
     "endDate": "2026-02-27",
-    "Target_Database": ""
+    "Target_Database": "",
+    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "Output": "data/ols_results/ols_results_summary.txt",
+    "winsorize_thresholds": {
+      "lower": 0.05,
+      "upper": 0.95
+    },
+    "SQL_Query": "SELECT ph.SharePrice_3Year_Growth, vh.PriceToBook_ZScore_IntraCompany, vh.PERatio_ZScore_IntraCompany, qh.ReturnOnAssets_3Year_Average FROM Quality_Historical qh LEFT JOIN Pershare_Historical ph ON qh.docID = ph.docID LEFT JOIN Valuation_Historical vh ON qh.docID = vh.docID LEFT JOIN FinancialStatements fs ON qh.docID = fs.docID AND qh.edinetCode = fs.edinetCode"
   },
   "download_documents_config": {
     "docTypeCode": "120",

@@ -2,11 +2,12 @@
 
 import logging
 import os
+from datetime import datetime
 import tkinter as tk
 from tkinter import ttk
 
 from ui_tk import controllers as ctrl
-from ui_tk.style import COLORS, FONT_UI, FONT_UI_BOLD, FONT_HEADING, PAD
+from ui_tk.style import COLORS, FONT_UI, FONT_UI_BOLD, FONT_HEADING, FONT_SUBHEAD, PAD
 
 logger = logging.getLogger(__name__)
 
@@ -15,80 +16,94 @@ class HomePage(ttk.Frame):
     def __init__(self, parent, app, **kw):
         super().__init__(parent, **kw)
         self.app = app
+        self._setups: list[str] = []
 
-        # ── title ───────────────────────────────────────────────────────
-        ttk.Label(self, text="EDINET Pipeline Manager",
-                  style="Heading.TLabel").pack(pady=(PAD * 3, PAD * 2))
+        # ── outer padding container ─────────────────────────────────────
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=PAD * 5, pady=PAD * 3)
 
-        # ── setups list ─────────────────────────────────────────────────
-        ttk.Label(self, text="Saved Setups:",
-                  style="Accent.TLabel").pack(anchor="w", padx=PAD * 4)
+        # ── page header ─────────────────────────────────────────────────
+        header = ttk.Frame(body)
+        header.pack(fill="x", pady=(0, PAD * 2))
+        ttk.Label(header, text="EDINET Pipeline Manager",
+                  style="Heading.TLabel").pack(anchor="w")
+        ttk.Label(header, text="Select a saved setup to load it, or create a new one.",
+                  style="Subhead.TLabel").pack(anchor="w", pady=(4, 0))
 
-        list_frame = ttk.Frame(self, style="Surface.TFrame")
-        list_frame.pack(fill="both", expand=True,
-                        padx=PAD * 4, pady=(PAD // 2, PAD))
+        # ── section label ────────────────────────────────────────────────
+        ttk.Label(body, text="SAVED SETUPS",
+                  style="SectionHead.TLabel").pack(anchor="w", pady=(0, 4))
 
-        self.setup_list = tk.Listbox(
-            list_frame, bg=COLORS["surface"], fg=COLORS["text"],
-            font=FONT_UI, selectbackground=COLORS["highlight"],
-            selectforeground="#ffffff", relief="flat", borderwidth=0,
-            highlightthickness=1, highlightbackground=COLORS["border"],
-            highlightcolor=COLORS["accent"],
-            activestyle="none",
+        # ── treeview card ────────────────────────────────────────────────
+        card = ttk.Frame(body, style="Surface.TFrame")
+        card.pack(fill="both", expand=True)
+
+        self._tree = ttk.Treeview(
+            card,
+            columns=("name", "modified"),
+            show="headings",
+            selectmode="browse",
         )
-        self.setup_list.pack(fill="both", expand=True, padx=2, pady=2)
-        self.setup_list.bind("<Double-1>", lambda _: self._open_selected())
-        self.setup_list.bind("<Return>", lambda _: self._open_selected())
+        self._tree.heading("name",     text="Setup Name",     anchor="w")
+        self._tree.heading("modified", text="Last Modified",  anchor="w")
+        self._tree.column("name",     stretch=True,  minwidth=200, anchor="w")
+        self._tree.column("modified", stretch=False, width=120,    anchor="w")
 
-        # ── buttons ─────────────────────────────────────────────────────
-        btn_row = ttk.Frame(self)
-        btn_row.pack(pady=PAD * 2)
-        self._new_btn = ttk.Button(btn_row, text="New Setup",
-                                   command=self._new_setup)
-        self._new_btn.pack(side="left", padx=PAD)
+        _scroll = ttk.Scrollbar(card, orient="vertical",
+                                command=self._tree.yview)
+        self._tree.configure(yscrollcommand=_scroll.set)
+        _scroll.pack(side="right", fill="y")
+        self._tree.pack(fill="both", expand=True)
+
+        self._tree.bind("<Double-1>",    lambda _: self._open_selected())
+        self._tree.bind("<Return>",      lambda _: self._open_selected())
+
+        # ── action row ───────────────────────────────────────────────────
+        btn_row = ttk.Frame(body)
+        btn_row.pack(fill="x", pady=(PAD * 2, 0))
         self._open_btn = ttk.Button(btn_row, text="Open Selected",
                                     command=self._open_selected,
                                     style="Accent.TButton")
-        self._open_btn.pack(side="left", padx=PAD)
+        self._open_btn.pack(side="right")
+        ttk.Button(btn_row, text="New Setup",
+                   command=self._new_setup).pack(side="right", padx=(0, PAD))
 
-        # keyboard: Ctrl+N for new
         self.bind_all("<Control-n>", lambda _: self._new_setup(), add="+")
 
         self._refresh_list()
 
+    # ── list management ─────────────────────────────────────────────────
+
     def _refresh_list(self):
-        self.setup_list.delete(0, "end")
-        setups = ctrl.list_setups()
-        for name in setups:
-            # try to get file modification date
+        self._tree.delete(*self._tree.get_children())
+        self._setups = ctrl.list_setups()
+        for name in self._setups:
             path = ctrl.SAVED_SETUPS_DIR / f"{name}.json"
             try:
                 mtime = os.path.getmtime(path)
-                from datetime import datetime
                 date_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
             except OSError:
                 date_str = ""
-            display = f"  {name} {'·' * max(1, 40 - len(name))} {date_str}"
-            self.setup_list.insert("end", display)
-        if setups:
-            self.setup_list.selection_set(0)
-        logger.info(f"Loaded {len(setups)} saved setups")
+            self._tree.insert("", "end", values=(name, date_str))
+        if self._setups:
+            first = self._tree.get_children()[0]
+            self._tree.selection_set(first)
+            self._tree.focus(first)
+        logger.info(f"Loaded {len(self._setups)} saved setups")
 
     def _get_selected_name(self) -> str | None:
-        sel = self.setup_list.curselection()
+        sel = self._tree.selection()
         if not sel:
             return None
-        setups = ctrl.list_setups()
-        idx = sel[0]
-        if idx < len(setups):
-            return setups[idx]
-        return None
+        vals = self._tree.item(sel[0], "values")
+        return vals[0] if vals else None
+
+    # ── actions ──────────────────────────────────────────────────────────
 
     def _open_selected(self):
         name = self._get_selected_name()
         if not name:
             return
-        # load setup and switch to orchestrator
         cfg = ctrl.load_setup(name)
         self.app.switch_view("Orchestrator")
         orch = self.app._views.get("Orchestrator")
@@ -98,7 +113,7 @@ class HomePage(ttk.Frame):
     def _new_setup(self):
         win = tk.Toplevel(self.winfo_toplevel())
         win.title("New Setup")
-        win.geometry("350x120")
+        win.geometry("360x130")
         win.configure(bg=COLORS["surface"])
         win.transient(self.winfo_toplevel())
         win.grab_set()
@@ -106,7 +121,7 @@ class HomePage(ttk.Frame):
         ttk.Label(win, text="Setup name:", style="Surface.TLabel"
                   ).pack(anchor="w", padx=PAD * 2, pady=(PAD * 2, 0))
         var = tk.StringVar()
-        ent = ttk.Entry(win, textvariable=var, width=40)
+        ent = ttk.Entry(win, textvariable=var, width=42)
         ent.pack(padx=PAD * 2, pady=PAD, fill="x")
         ent.focus_set()
 
@@ -122,15 +137,13 @@ class HomePage(ttk.Frame):
 
         ent.bind("<Return>", _create)
         win.bind("<Escape>", lambda _: win.destroy())
-        ttk.Button(win, text="Create", command=_create,
-                   style="Accent.TButton").pack(pady=(0, PAD))
+        btn_row = ttk.Frame(win, style="Surface.TFrame")
+        btn_row.pack(fill="x", padx=PAD * 2, pady=(0, PAD))
+        ttk.Button(btn_row, text="Create", command=_create,
+                   style="Accent.TButton").pack(side="right")
+        ttk.Button(btn_row, text="Cancel",
+                   command=win.destroy).pack(side="right", padx=(0, PAD))
 
     def reapply_colors(self):
-        """Re-apply theme colours to raw tk widgets."""
-        t = COLORS
-        self.setup_list.configure(
-            bg=t["surface"], fg=t["text"],
-            selectbackground=t["highlight"],
-            highlightbackground=t["border"],
-            highlightcolor=t["accent"],
-        )
+        """Treeview is ttk — theme is applied globally via apply_theme."""
+        pass

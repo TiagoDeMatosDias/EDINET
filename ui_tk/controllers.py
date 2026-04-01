@@ -296,13 +296,20 @@ def build_steps_from_config(run_cfg: dict) -> list:
 
 
 def build_step_configs_from_config(run_cfg: dict) -> dict:
-    """Build per-step config dicts with defaults filled in."""
+    """Build per-step config dicts with defaults filled in.
+
+    Only keys that appear in the step's default config are kept from the
+    loaded data, so stale or mis-assigned keys in saved JSON are silently
+    discarded rather than shown to the user.
+    """
     step_configs: dict[str, dict] = {}
     for sname in STEP_CONFIG_KEY:
         cfg_key = STEP_CONFIG_KEY[sname]
         loaded = run_cfg.get(cfg_key, {}) or {}
         defaults = copy.deepcopy(DEFAULT_STEP_CONFIGS.get(sname, {}))
-        step_configs[sname] = {**defaults, **loaded}
+        # Whitelist: only keep loaded values whose keys exist in defaults
+        filtered = {k: v for k, v in loaded.items() if k in defaults}
+        step_configs[sname] = {**defaults, **filtered}
     return step_configs
 
 

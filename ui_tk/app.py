@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from ui_tk.style import (
-    COLORS, FONT_UI, FONT_UI_BOLD, FONT_HEADING, FONT_MONO, PAD,
+    COLORS, FONT_UI, FONT_UI_BOLD, FONT_HEADING, FONT_MONO, FONT_SUBHEAD, PAD,
     apply_theme, toggle_theme, is_dark,
 )
 from ui_tk.utils import QueueLogHandler, poll_events
@@ -83,14 +83,15 @@ class App:
 
         # branding
         brand = ttk.Label(self._top_bar, text="SHADE Research",
-                          style="TopBar.TLabel")
-        brand.pack(side="left", padx=(PAD * 2, PAD * 3), pady=PAD)
+                          style="TopBar.TLabel",
+                          font=FONT_SUBHEAD)
+        brand.pack(side="left", padx=(PAD * 2, PAD * 3), pady=(PAD + 2, PAD))
 
         # navigation tabs
         nav = ttk.Frame(self._top_bar, style="TopBar.TFrame")
         nav.pack(side="left", padx=PAD)
 
-        for i, name in enumerate(VIEW_NAMES):
+        for name in VIEW_NAMES:
             tab_frame = ttk.Frame(nav, style="TopBar.TFrame")
             tab_frame.pack(side="left", padx=2)
 
@@ -100,10 +101,10 @@ class App:
             )
             btn.pack(side="top")
 
-            # underline indicator
+            # 2-pixel underline indicator
             indicator = ttk.Frame(tab_frame, height=2,
                                   style="TopBar.TFrame")
-            indicator.pack(side="top", fill="x", padx=4)
+            indicator.pack(side="top", fill="x", padx=6)
 
             self._tab_buttons[name] = btn
             self._tab_indicators[name] = indicator
@@ -112,21 +113,19 @@ class App:
         right = ttk.Frame(self._top_bar, style="TopBar.TFrame")
         right.pack(side="right", padx=PAD)
 
-        # theme toggle
         self._theme_btn = ttk.Button(
             right, text="◑ Dark" if is_dark() else "◑ Light",
             style="Icon.TButton", command=self._toggle_theme,
         )
         self._theme_btn.pack(side="right", padx=4, pady=4)
 
-        # API Key button
         ttk.Button(right, text="⚿ API Key", style="Icon.TButton",
                    command=self._open_api_key).pack(side="right", padx=4,
                                                     pady=4)
 
-        # bottom border
-        ttk.Separator(self.root, orient="horizontal",
-                      style="TopBar.TSeparator").pack(side="top", fill="x")
+        # 1-pixel bottom border
+        tk.Frame(self.root, bg=COLORS["border"], height=1).pack(
+            side="top", fill="x")
 
     def _update_tab_visuals(self):
         """Update tab button styles and underline indicators."""

@@ -82,8 +82,7 @@ class OrchestratorPage(ttk.Frame):
             self._left, bg=COLORS["surface"], fg=COLORS["text"],
             font=FONT_UI, selectbackground=COLORS["highlight"],
             selectforeground="#ffffff", relief="flat", borderwidth=0,
-            highlightthickness=1, highlightbackground=COLORS["border"],
-            highlightcolor=COLORS["accent"],
+            highlightthickness=0,
             activestyle="none",
         )
         self._step_listbox.pack(fill="both", expand=True, padx=PAD, pady=2)
@@ -261,13 +260,16 @@ class OrchestratorPage(ttk.Frame):
             if idx is not None:
                 ow_var = tk.BooleanVar(value=self._steps[idx][1])
                 ow_cb = ttk.Checkbutton(scroll_frame, text="Overwrite",
-                                        variable=ow_var)
+                                        variable=ow_var,
+                                        style="Surface.TCheckbutton")
                 ow_cb.pack(anchor="w", pady=(0, PAD))
                 self._config_widgets["__overwrite__"] = ow_var
 
         # Build fields based on step type
         if step_name == "backtest":
             self._build_backtest_config(scroll_frame, cfg)
+        elif step_name == "backtest_set":
+            self._build_backtest_set_config(scroll_frame, cfg)
         elif step_name == "Multivariate_Regression":
             self._build_regression_config(scroll_frame, cfg)
         else:
@@ -315,11 +317,10 @@ class OrchestratorPage(ttk.Frame):
 
     def _build_backtest_config(self, parent, cfg: dict):
         """Build backtest-specific config with portfolio grid."""
-        for key in ("Source_Database",):
-            w = DatabasePickerEntry(parent, label=key,
-                                    value=str(cfg.get(key, "")))
-            w.pack(fill="x", pady=(0, PAD))
-            self._config_widgets[key] = ("str", w)
+        w = DatabasePickerEntry(parent, label="Source_Database",
+                                value=str(cfg.get("Source_Database", "")))
+        w.pack(fill="x", pady=(0, PAD))
+        self._config_widgets["Source_Database"] = ("str", w)
 
         for key in ("PerShare_Table", "Financial_Statements_Table",
                      "start_date", "end_date", "benchmark_ticker",
@@ -328,11 +329,10 @@ class OrchestratorPage(ttk.Frame):
             w.pack(fill="x", pady=(0, PAD))
             self._config_widgets[key] = ("str", w)
 
-        for key in ("risk_free_rate", "initial_capital"):
-            val = cfg.get(key, 0.0)
-            w = LabeledEntry(parent, label=key, value=str(val))
-            w.pack(fill="x", pady=(0, PAD))
-            self._config_widgets[key] = ("num", w)
+        w = LabeledEntry(parent, label="risk_free_rate",
+                         value=str(cfg.get("risk_free_rate", 0.0)))
+        w.pack(fill="x", pady=(0, PAD))
+        self._config_widgets["risk_free_rate"] = ("num", w)
 
         # portfolio grid
         ttk.Label(parent, text="Portfolio:", style="Surface.TLabel",
@@ -341,6 +341,32 @@ class OrchestratorPage(ttk.Frame):
         self._portfolio_grid = PortfolioGrid(parent, portfolio=portfolio)
         self._portfolio_grid.pack(fill="x", pady=(0, PAD))
         self._config_widgets["portfolio"] = ("portfolio", self._portfolio_grid)
+
+    def _build_backtest_set_config(self, parent, cfg: dict):
+        """Build backtest-set config (CSV-driven, no portfolio)."""
+        w = DatabasePickerEntry(parent, label="Source_Database",
+                                value=str(cfg.get("Source_Database", "")))
+        w.pack(fill="x", pady=(0, PAD))
+        self._config_widgets["Source_Database"] = ("str", w)
+
+        for key in ("PerShare_Table", "Financial_Statements_Table",
+                     "benchmark_ticker", "output_dir"):
+            w = LabeledEntry(parent, label=key, value=str(cfg.get(key, "")))
+            w.pack(fill="x", pady=(0, PAD))
+            self._config_widgets[key] = ("str", w)
+
+        w = FilePickerEntry(parent, label="csv_file",
+                            value=str(cfg.get("csv_file", "")),
+                            filetypes=[("CSV files", "*.csv"),
+                                       ("All files", "*.*")])
+        w.pack(fill="x", pady=(0, PAD))
+        self._config_widgets["csv_file"] = ("str", w)
+
+        for key in ("risk_free_rate", "initial_capital"):
+            val = cfg.get(key, 0.0)
+            w = LabeledEntry(parent, label=key, value=str(val))
+            w.pack(fill="x", pady=(0, PAD))
+            self._config_widgets[key] = ("num", w)
 
     def _build_regression_config(self, parent, cfg: dict):
         """Build regression-specific config with SQL text area."""
@@ -631,8 +657,6 @@ class OrchestratorPage(ttk.Frame):
         self._step_listbox.configure(
             bg=t["surface"], fg=t["text"],
             selectbackground=t["highlight"],
-            highlightbackground=t["border"],
-            highlightcolor=t["accent"],
         )
         self._step_menu.configure(
             bg=t["surface"], fg=t["text"],
