@@ -44,3 +44,20 @@ class Config:
     def get(self, key, default=None):
         """Get a config value from settings or environment variables."""
         return self.settings.get(key, os.getenv(key, default))
+
+    @classmethod
+    def from_dict(cls, settings: dict) -> "Config":
+        """Create a Config instance from a dict without touching disk.
+
+        This bypasses the singleton pattern and does not write or read any file.
+        Useful for UI-driven runs where the config lives in memory.
+        """
+        instance = object.__new__(cls)
+        instance.settings = dict(settings)
+        instance.run_config_path = None
+        return instance
+
+    @classmethod
+    def reset(cls):
+        """Clear the singleton so the next ``Config()`` call reloads from disk."""
+        cls._instance = None

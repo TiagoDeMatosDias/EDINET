@@ -1,6 +1,9 @@
 import logging
 import json
 import sqlite3
+import threading
+from typing import Callable
+
 import src.edinet_api as edinet_api
 from config import Config
 import src.data_processing as d
@@ -11,17 +14,21 @@ import src.backtesting as bt
 logger = logging.getLogger(__name__)
 
 
-def _execute_step(step_name, config, edinet, data, overwrite=False):
+def execute_step(step_name, config, edinet=None, data=None, overwrite=False):
     """
     Execute a single orchestration step.
     
     Args:
         step_name: Name of the step to execute
         config: Configuration object
-        edinet: Edinet API instance
-        data: Data processing instance
+        edinet: Edinet API instance (created if None)
+        data: Data processing instance (created if None)
         overwrite: Whether to overwrite existing data for this step
     """
+    if edinet is None:
+        edinet = edinet_api.Edinet()
+    if data is None:
+        data = d.data()
     # Database table names
     DB_DOC_LIST_TABLE = config.get("DB_DOC_LIST_TABLE")
     DB_FINANCIAL_DATA_TABLE = config.get("DB_FINANCIAL_DATA_TABLE")
@@ -319,10 +326,50 @@ def run(edinet=None, data=None):
             overwrite = False
         if is_enabled:
             try:
-                _execute_step(step_name, config, edinet, data, overwrite=overwrite)
+                execute_step(step_name, config, edinet, data, overwrite=overwrite)
             except Exception as e:
                 logger.error(f"Error executing step '{step_name}': {e}", exc_info=True)
         else:
             logger.debug(f"Step '{step_name}' is disabled, skipping.")
 
     logger.info('Program Ended')
+
+
+def run_pipeline(
+    steps: list[dict],
+    config: Config,
+    on_step_start: Callable[[str], None] | None = None,
+    on_step_done: Callable[[str], None] | None = None,
+    on_step_error: Callable[[str, Exception], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    """Execute a list of steps in order with per-step callbacks and cancellation.
+
+    Args:
+        steps: List of dicts with keys ``name`` and optionally ``overwrite``.
+        config: Configuration object.
+        on_step_start: Called with the step name before execution begins.
+        on_step_done: Called with the step name after successful execution.
+        on_step_error: Called with the step name and exception on failure.
+        cancel_event: If set, the pipeline stops before the next step.
+    """
+    edinet = edinet_api.Edinet()
+    data = d.data()
+
+    for step in steps:
+        if cancel_event and cancel_event.is_set():
+            logger.info("Pipeline cancelled by user.")
+            return
+        name = step["name"]
+        overwrite = step.get("overwrite", False)
+        if on_step_start:
+            on_step_start(name)
+        try:
+            execute_step(name, config, edinet, data, overwrite=overwrite)
+            if on_step_done:
+                on_step_done(name)
+        except Exception as e:
+            logger.error(f"Error executing step '{name}': {e}", exc_info=True)
+            if on_step_error:
+                on_step_error(name, e)
+            raise

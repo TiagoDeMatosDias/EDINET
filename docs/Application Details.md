@@ -1,7 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-03-31
+Last updated: 2026-04-01
 
 Purpose:
 - Central reference for runtime/test Python modules (`src/`) and top-level scripts.
@@ -35,9 +35,9 @@ Suggested per-function format:
 
 Responsibility: application orchestration and step dispatch.
 
-- `def _execute_step(step_name: str, config, edinet, data, overwrite: bool=False) -> None`
-	- Purpose: Execute a single named orchestration step (download, transform, regress, backtest).
-	- Inputs: `step_name`, `config`, `edinet`, `data`, `overwrite`
+- `def execute_step(step_name, config, edinet=None, data=None, overwrite=False) -> None`
+	- Purpose: Execute a single named orchestration step (download, transform, regress, backtest). Creates `edinet` / `data` instances on demand when not supplied.
+	- Inputs: `step_name`, `config`, optional `edinet`, optional `data`, `overwrite`
 	- Output: None
 	- Calls/Dependencies: `get_All_documents_withMetadata`, `generate_filter`, `downloadDocs`, `store_edinetCodes`, `generate_financial_statements`, `generate_ratios`, `generate_historical_ratios`, `import_stock_prices_csv`, `update_all_stock_prices`, `parse_edinet_taxonomy`, `multivariate_regression`, `run_backtest`, `run_backtest_set`
 
@@ -45,7 +45,13 @@ Responsibility: application orchestration and step dispatch.
 	- Purpose: Validate config and run the enabled `run_steps` in order.
 	- Inputs: optional `edinet` and `data` instances
 	- Output: None
-	- Calls/Dependencies: `Config`, `_execute_step`, `Edinet`, `data`
+	- Calls/Dependencies: `Config`, `execute_step`, `Edinet`, `data`
+
+- `def run_pipeline(steps: list[dict], config: Config, on_step_start: Callable[[str], None] | None = None, on_step_done: Callable[[str], None] | None = None, on_step_error: Callable[[str, Exception], None] | None = None, cancel_event: threading.Event | None = None) -> None`
+	- Purpose: Execute a list of steps in order with per-step callbacks and cancellation support. Used by the Tk UI for background pipeline execution.
+	- Inputs: `steps` (list of dicts with `name` and optional `overwrite`), `config`, optional callbacks `on_step_start`/`on_step_done`/`on_step_error`, optional `cancel_event`.
+	- Output: None
+	- Calls/Dependencies: `execute_step`, `Edinet`, `data`, `threading.Event`
 
 ---
 
@@ -308,11 +314,50 @@ Responsibility: Centralized logging setup.
 
 ---
 
+## Configuration
+
+### [config.py](../config.py)
+
+Responsibility: Singleton configuration loader. Reads `.env` and `run_config.json` on first access.
+
+`class Config`
+	- Purpose: Singleton that loads settings from `.env` and `run_config.json`.
+
+	- `def __new__(cls, run_config_path=None) -> Config`
+		- Purpose: Standard singleton constructor; loads config from disk on first creation.
+
+	- `def get(self, key, default=None)`
+		- Purpose: Get a config value from settings dict or environment variables.
+
+	- `@classmethod def from_dict(cls, settings: dict) -> Config`
+		- Purpose: Create a Config instance from a dict **without touching disk**. Bypasses the singleton pattern. Used by the Tk UI for in-memory configuration.
+		- Inputs: `settings` dict.
+		- Output: New `Config` instance (not the singleton).
+
+	- `@classmethod def reset(cls) -> None`
+		- Purpose: Clear the singleton so the next `Config()` call reloads from disk.
+
+---
+
 ## Other entry points
 
 ### [main.py](../main.py)
 
-Responsibility: CLI / top-level script entry. If present it wires config and kicks off `src.orchestrator.run()`.
+Responsibility: CLI / GUI entry point dispatcher.
+
+- `def _run_cli() -> None`
+	- Purpose: Headless CLI execution path — sets up logging and calls `orchestrator.run()`.
+	- Calls/Dependencies: `setup_logging`, `orchestrator.run`.
+
+- `def _run_gui() -> None`
+	- Purpose: Launch the **default** Tkinter terminal-style GUI.
+	- Calls/Dependencies: `ui_tk.run_tk_app`.
+
+- `def _run_flet() -> None`
+	- Purpose: Launch the **legacy** Flet GUI (deprecated).
+	- Calls/Dependencies: `ui.app.launch`.
+
+- Dispatch: `--cli` → `_run_cli()`, `--flet` → `_run_flet()`, default → `_run_gui()`.
 
 ---
 
@@ -328,7 +373,130 @@ If you'd like, I can now:
 
 ---
 
-## UI modules (`ui`)
+## Tk UI modules (`ui_tk`) — default GUI
+
+### [ui_tk/app.py](../ui_tk/app.py)
+
+Responsibility: Tk root bootstrap, view switching, event loop, and log handler wiring.
+
+`class App`
+	- Purpose: Top-level application controller; owns the Tk root, tab bar, log panel, and view switching.
+
+	- `def __init__(self, root: tk.Tk) -> None`
+		- Purpose: Initialise root window, apply theme, build layout (tab bar, views, log panel), wire log handler.
+
+	- `def switch_view(self, name: str) -> None`
+		- Purpose: Switch between Home / Orchestrator / Data views. Views are lazily created on first access.
+
+- `def run_tk_app() -> None`
+	- Purpose: Public entry point — creates `Tk` root, instantiates `App`, and starts `root.mainloop()`.
+	- Calls/Dependencies: `apply_theme`, `poll_events`, `QueueLogHandler`, `HomePage`, `OrchestratorPage`, `DataPage`.
+
+---
+
+### [ui_tk/style.py](../ui_tk/style.py)
+
+Responsibility: Terminal-style dark theme tokens and ttk.Style configuration.
+
+- Constants: `COLORS` (dict — bg, surface, border, text, text_dim, accent, success, warning, error, highlight, input_bg), `MONO_FAMILY`, `FONT_MONO`, `FONT_MONO_BOLD`, `FONT_HEADING`, `FONT_SMALL`, `PAD`.
+
+- `def apply_theme(root: tk.Tk) -> ttk.Style`
+	- Purpose: Apply the terminal dark theme to the root window and all ttk widget styles (using "clam" base).
+	- Inputs: `root`
+	- Output: Configured `ttk.Style`.
+
+---
+
+### [ui_tk/utils.py](../ui_tk/utils.py)
+
+Responsibility: Background worker utilities — thread pool, event queue, log handler.
+
+- `executor: ThreadPoolExecutor` — shared pool (2 workers).
+- `event_q: queue.Queue` — thread-safe callback queue drained by `poll_events`.
+
+- `def run_in_background(fn, args=(), on_done=None, on_error=None)`
+	- Purpose: Submit `fn` to the thread pool. Callbacks are posted to `event_q` for safe dispatch on the Tk main thread.
+
+- `def poll_events(root) -> None`
+	- Purpose: Drain `event_q` and invoke callbacks; reschedules itself every 100 ms via `root.after`.
+
+- `class QueueLogHandler(logging.Handler)`
+	- Purpose: Logging handler that posts `("log", level_name, formatted_message)` tuples onto a `queue.Queue`.
+
+---
+
+### [ui_tk/controllers.py](../ui_tk/controllers.py)
+
+Responsibility: Thin adapter layer between the Tk UI and backend modules. Provides pipeline execution, setup persistence, and step configuration helpers.
+
+- Constants: `STEP_CONFIG_KEY`, `STEP_DISPLAY`, `ALL_STEP_NAMES`, `STEPS_WITH_OVERWRITE`, `DEFAULT_STEP_CONFIGS`, path constants (`BASE_DIR`, `ENV_PATH`, `STATE_DIR`, `RUN_CONFIG_PATH`, `SAVED_SETUPS_DIR`, `APP_STATE_PATH`).
+
+- `def run_pipeline(steps, config_dict, on_step_start=None, on_step_done=None, on_step_error=None, cancel_event=None) -> None`
+	- Purpose: Build `Config.from_dict` and delegate to `orchestrator.run_pipeline`.
+	- Calls/Dependencies: `Config.from_dict`, `orchestrator.run_pipeline`.
+
+- `def list_setups() -> list[str]` — Return sorted list of saved setup names.
+- `def load_setup(name: str) -> dict` — Load named setup JSON from `saved_setups/`.
+- `def save_setup(name: str, setup_data: dict) -> Path` — Save named setup JSON.
+- `def save_run_config(cfg: dict)` / `def load_run_config() -> dict` — Read/write `run_config.json`.
+- `def get_api_key() -> str` / `def save_api_key(key: str)` — Read/write API key in `.env`.
+- `def load_app_state() -> dict` / `def save_app_state(state: dict)` — Persist UI state.
+- `def build_config_dict(steps, step_configs) -> dict` — Serialize UI state into a run-config dict.
+- `def build_steps_from_config(run_cfg) -> list` — Convert `run_steps` into `[[name, enabled, overwrite], ...]`.
+- `def build_step_configs_from_config(run_cfg) -> dict` — Build per-step configs with defaults filled in.
+- `def get_default_config_for_step(step_name) -> dict` — Return a deep copy of the default config for a step.
+
+---
+
+### [ui_tk/shared/widgets.py](../ui_tk/shared/widgets.py)
+
+Responsibility: Reusable terminal-styled composite widgets.
+
+- `class LogPanel(ttk.Frame)` — Color-coded log output with auto-scroll, level filter, clear, and export.
+	- `def append(self, level: str, text: str)` — Append a log line (thread-safe).
+	- `def clear(self)` — Clear all log records and display.
+
+- `class TabBar(ttk.Frame)` — Horizontal bracket-style text tab bar.
+	- `def select(self, index: int)` — Programmatic tab selection.
+
+- `class LabeledEntry(ttk.Frame)` — Label + `ttk.Entry` with `get()` / `set()` helpers.
+- `class LabeledText(ttk.Frame)` — Label + multi-line `tk.Text` with `get()` / `set()`.
+- `class FilePickerEntry(ttk.Frame)` — Entry with Browse button for file selection.
+- `class DatabasePickerEntry(FilePickerEntry)` — Pre-configured for `.db` files.
+- `class PortfolioGrid(ttk.Frame)` — Editable Treeview table for portfolio allocations with inline editing, add/delete rows.
+	- `def get_portfolio(self) -> dict` — Return portfolio dict in `run_config.json` format.
+	- `def set_portfolio(self, portfolio: dict)` — Load and display portfolio dict.
+
+---
+
+### [ui_tk/pages/home.py](../ui_tk/pages/home.py)
+
+Responsibility: Landing page — lists saved setups with modification dates, New/Open actions.
+
+- `class HomePage(ttk.Frame)` — Listbox of saved setups; double-click or [Open Selected] loads a setup and switches to Orchestrator view.
+
+---
+
+### [ui_tk/pages/orchestrator.py](../ui_tk/pages/orchestrator.py)
+
+Responsibility: Main pipeline builder — step list, per-step config panel, run/stop controls.
+
+- `class OrchestratorPage(ttk.Frame)`
+	- `def load_config(self, cfg: dict, name: str = "")` — Load a config dict into UI state (steps, configs, labels).
+	- `def new_setup(self, name: str)` — Initialise a new empty setup.
+	- Keyboard shortcuts: `Alt+Up/Down` (reorder), `Delete` (remove), `Enter` (open config). Context menu for remove/disable.
+
+---
+
+### [ui_tk/pages/data.py](../ui_tk/pages/data.py)
+
+Responsibility: Data exploration page — placeholder ("coming soon").
+
+- `class DataPage(ttk.Frame)` — Stub frame.
+
+---
+
+## Flet UI modules (`ui`) — legacy / deprecated
 
 ### [ui/app.py](ui/app.py)
 
@@ -517,12 +685,14 @@ Responsibility: Unit tests covering core logic and UI helpers. Each test file ta
 - `[tests/test_edinet_api.py](tests/test_edinet_api.py)` — tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
 - `[tests/test_regression_analysis.py](tests/test_regression_analysis.py)` — tests OLS runner, scoring query builder, and results writer.
 - `[tests/test_stockprice_api.py](tests/test_stockprice_api.py)` — tests CSV import and stock price ingestion logic.
-- `[tests/test_ui.py](tests/test_ui.py)` — UI unit tests for layout, step list, run controls and persistence helpers.
+- `[tests/test_ui.py](tests/test_ui.py)` — Flet UI unit tests for layout, step list, run controls and persistence helpers.
+- `[tests/test_ui_tk_smoke.py](tests/test_ui_tk_smoke.py)` — Tk UI smoke tests: imports, theme application, widget instantiation, controller functions, QueueLogHandler.
+- `[tests/test_orchestrator.py](tests/test_orchestrator.py)` — Orchestrator tests: `run_pipeline` basic flow, cancellation, error handling, `Config.from_dict` independence and singleton behaviour.
 - `[tests/test_utils.py](tests/test_utils.py)` — small helper tests for URL generation and CSV export.
 
 ---
 
-Last updated: 2026-03-31
+Last updated: 2026-04-01
 
 If you want, I can now auto-populate parameter types and short example inputs/outputs for every function (more verbose), or keep the current concise API listings. Which do you prefer?
 
