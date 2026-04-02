@@ -65,7 +65,7 @@ class HomePage(ttk.Frame):
                                     command=self._open_selected,
                                     style="Accent.TButton")
         self._open_btn.pack(side="right")
-        ttk.Button(btn_row, text="New Setup",
+        ttk.Button(btn_row, text="New Setup", style="Ghost.TButton",
                    command=self._new_setup).pack(side="right", padx=(0, PAD))
 
         self.bind_all("<Control-n>", lambda _: self._new_setup(), add="+")
@@ -141,7 +141,7 @@ class HomePage(ttk.Frame):
         btn_row.pack(fill="x", padx=PAD * 2, pady=(0, PAD))
         ttk.Button(btn_row, text="Create", command=_create,
                    style="Accent.TButton").pack(side="right")
-        ttk.Button(btn_row, text="Cancel",
+        ttk.Button(btn_row, text="Cancel", style="Ghost.TButton",
                    command=win.destroy).pack(side="right", padx=(0, PAD))
 
     def reapply_colors(self):

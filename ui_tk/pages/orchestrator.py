@@ -113,7 +113,7 @@ class OrchestratorPage(ttk.Frame):
         add_frame = ttk.Frame(self._left)
         add_frame.pack(fill="x", padx=PAD, pady=(2, 0))
         ttk.Button(add_frame, text="+ Add Step",
-                   command=self._add_step).pack(fill="x")
+                   command=self._add_step, style="Small.TButton").pack(fill="x")
 
         ttk.Separator(self._left, orient="horizontal").pack(fill="x",
                                                             padx=PAD, pady=4)
@@ -121,13 +121,13 @@ class OrchestratorPage(ttk.Frame):
         # setup buttons
         btn_frame = ttk.Frame(self._left)
         btn_frame.pack(fill="x", padx=PAD, pady=(0, PAD))
-        ttk.Button(btn_frame, text="Save",
+        ttk.Button(btn_frame, text="Save", style="Ghost.TButton",
                    command=self._save_setup).pack(side="left", expand=True,
                                                   fill="x", padx=(0, 2))
-        ttk.Button(btn_frame, text="Load",
+        ttk.Button(btn_frame, text="Load", style="Ghost.TButton",
                    command=self._load_setup).pack(side="left", expand=True,
                                                   fill="x", padx=2)
-        ttk.Button(btn_frame, text="New",
+        ttk.Button(btn_frame, text="New", style="Ghost.TButton",
                    command=self._new_setup).pack(side="left", expand=True,
                                                  fill="x", padx=(2, 0))
 
@@ -277,6 +277,7 @@ class OrchestratorPage(ttk.Frame):
 
         # save button
         ttk.Button(frame, text="Save Config",
+                   style="Accent.TButton",
                    command=self._save_current_config_fields
                    ).pack(padx=PAD, pady=(0, PAD))
 

@@ -223,7 +223,7 @@ class App:
         btn_row.pack(fill="x", padx=PAD * 2, pady=PAD)
         ttk.Button(btn_row, text="Save", command=_save,
                    style="Accent.TButton").pack(side="right")
-        ttk.Button(btn_row, text="Cancel",
+        ttk.Button(btn_row, text="Cancel", style="Ghost.TButton",
                    command=win.destroy).pack(side="right", padx=(0, PAD))
 
         win.bind("<Return>", lambda _: _save())

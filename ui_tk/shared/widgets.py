@@ -116,10 +116,10 @@ class LogPanel(ttk.Frame):
 
     def _apply_text_tags(self):
         t = COLORS
-        self.text.tag_configure("info", foreground=t["success"])
-        self.text.tag_configure("debug", foreground=t["text_dim"])
+        self.text.tag_configure("info",    foreground=t["log_info"])
+        self.text.tag_configure("debug",   foreground=t["text_dim"])
         self.text.tag_configure("warning", foreground=t["warning"])
-        self.text.tag_configure("error", foreground=t["error"])
+        self.text.tag_configure("error",   foreground=t["error"])
         self.text.tag_configure("link", foreground=t["accent"],
                                 underline=True)
         self.text.tag_bind("link", "<Enter>",

@@ -11,23 +11,24 @@ from tkinter import ttk
 # ── Palettes ────────────────────────────────────────────────────────────
 
 _DARK = {
-    "bg":          "#111118",
-    "surface":     "#1a1a28",
-    "surface_alt": "#222234",
-    "border":      "#2c2c44",
-    "text":        "#dde1f5",
-    "text_dim":    "#7878a0",
-    "accent":      "#7c9df5",
-    "accent_hover":"#5b7de0",
-    "success":     "#78dba9",
-    "warning":     "#f5c862",
-    "error":       "#f56c6c",
-    "highlight":   "#3d5afe",
-    "input_bg":    "#16161f",
-    "log_bg":      "#0c0c14",
-    "tab_active":  "#7c9df5",
-    "tab_inactive":"#7878a0",
-    "card":        "#1a1a28",
+    "bg":          "#1E1E2E",   # Deep Navy/Slate
+    "surface":     "#313244",   # Surface / card background
+    "surface_alt": "#45475A",   # Slightly raised surface
+    "border":      "#585B70",   # Subtle border
+    "text":        "#CDD6F4",   # Off-white body text
+    "text_dim":    "#A6ADC8",   # Dimmer / secondary text
+    "accent":      "#5865F2",   # Muted Electric Blue (primary action)
+    "accent_hover":"#4752C4",   # Darker accent on hover
+    "success":     "#A6E3A1",   # Soft green
+    "warning":     "#F9E2AF",   # Soft amber
+    "error":       "#F38BA8",   # Soft red
+    "highlight":   "#5865F2",   # Selection highlight
+    "input_bg":    "#181825",   # Dark input / log background
+    "log_bg":      "#181825",   # Log terminal background
+    "tab_active":  "#5865F2",
+    "tab_inactive":"#A6ADC8",
+    "card":        "#313244",
+    "log_info":    "#89B4FA",   # Soft blue for INFO log lines
 }
 
 _LIGHT = {
@@ -37,17 +38,18 @@ _LIGHT = {
     "border":      "#cdd0da",
     "text":        "#111118",
     "text_dim":    "#606880",
-    "accent":      "#3d5afe",
-    "accent_hover":"#2e46d1",
+    "accent":      "#5865F2",
+    "accent_hover":"#4752C4",
     "success":     "#16a34a",
     "warning":     "#ca8a04",
     "error":       "#dc2626",
-    "highlight":   "#3d5afe",
+    "highlight":   "#5865F2",
     "input_bg":    "#ffffff",
     "log_bg":      "#f7f8fc",
-    "tab_active":  "#3d5afe",
+    "tab_active":  "#5865F2",
     "tab_inactive":"#606880",
     "card":        "#ffffff",
+    "log_info":    "#3451D1",   # Medium blue for INFO in light mode
 }
 
 # The live palette — start with dark.  ``toggle_theme()`` swaps it.
@@ -68,7 +70,7 @@ FONT_MONO      = (_MONO[0], 10)
 FONT_MONO_BOLD = (_MONO[0], 10, "bold")
 
 # ── Spacing ─────────────────────────────────────────────────────────────
-PAD = 8
+PAD = 12
 
 # ── Legacy aliases (kept for callers that import COLORS) ────────────────
 COLORS = theme            # same dict object — always in sync
@@ -175,6 +177,17 @@ def apply_theme(root: tk.Tk):
                 font=FONT_UI_BOLD, borderwidth=0, padding=(16, 8),
                 relief="flat", focuscolor="")
 
+    # ghost buttons — border only, no fill (secondary actions)
+    s.configure("Ghost.TButton",
+                background=t["bg"], foreground=t["text_dim"],
+                font=FONT_UI, borderwidth=1, bordercolor=t["border"],
+                relief="solid", padding=_btn_pad, focuscolor="")
+    s.map("Ghost.TButton",
+          background=[("active",   t["surface_alt"]),
+                      ("disabled", t["bg"])],
+          foreground=[("active",   t["text"]),
+                      ("disabled", t["text_dim"])])
+
     # icon buttons (theme toggle, close)
     s.configure("Icon.TButton",
                 background=t["surface"], foreground=t["text_dim"],
@@ -247,7 +260,7 @@ def apply_theme(root: tk.Tk):
     s.configure("Treeview",
                 background=t["surface"], foreground=t["text"],
                 fieldbackground=t["surface"], font=FONT_UI,
-                rowheight=30, borderwidth=0)
+                rowheight=36, borderwidth=0)
     s.configure("Treeview.Heading",
                 background=t["surface_alt"], foreground=t["text_dim"],
                 font=FONT_LABEL, relief="flat", padding=(PAD, 6))

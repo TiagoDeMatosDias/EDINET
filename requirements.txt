@@ -39,3 +39,4 @@ pyinstaller
 matplotlib
 flet
 pillow
+customtkinter
