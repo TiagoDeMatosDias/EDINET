@@ -17,5 +17,11 @@
     "python.testing.unittestEnabled": false,
     "python.testing.pytestArgs": [
         "tests"
-    ]
+    ],
+    "chat.tools.terminal.autoApprove": {
+        "/^cd c:\\\\programming\\\\Finance\\\\EDINET\\\\EDINET; c:/programming/Finance/EDINET/EDINET/\\.venv/Scripts/python\\.exe -c \"\nimport tkinter as tk\nimport sys\nsys\\.path\\.insert\\(0, '\\.'\\)\nfrom ui_tk\\.app import App\n\nroot = tk\\.Tk\\(\\)\napp = App\\(root\\)\n\ndef snap\\(\\):\n    app\\.switch_view\\('Orchestrator'\\)\n    root\\.lift\\(\\)\n    root\\.focus_force\\(\\)\n    root\\.attributes\\('-topmost', True\\)\n    root\\.update_idletasks\\(\\)\n    root\\.update\\(\\)\n    import time; time\\.sleep\\(0\\.5\\)\n    root\\.update\\(\\)\n    x = root\\.winfo_rootx\\(\\)\n    y = root\\.winfo_rooty\\(\\)\n    w = root\\.winfo_width\\(\\)\n    h = root\\.winfo_height\\(\\)\n    from PIL import ImageGrab\n    img = ImageGrab\\.grab\\(bbox=\\(x, y, x\\+w, y\\+h\\)\\)\n    img\\.save\\('data/mockups/orchestrator_screenshot2\\.png'\\)\n    print\\('Orchestrator screenshot 2 saved'\\)\n    root\\.destroy\\(\\)\n\nroot\\.after\\(2000, snap\\)\nroot\\.mainloop\\(\\)\n\"\n$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
 }

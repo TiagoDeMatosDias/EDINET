@@ -105,6 +105,64 @@ _NON_PREDICTOR_COLUMNS: frozenset[str] = frozenset({
 })
 ```
 
+### UI Development — Screenshot Review Loop
+
+The project includes a screenshot capture test suite (`tests/test_ui_screenshots.py`) that enables a visual review development workflow.  This is especially useful when working with an AI coding assistant:
+
+1. **Capture** — run the screenshot tests to save PNGs of every view.
+2. **Review** — inspect the screenshots (or have an AI agent review them) for visual issues.
+3. **Fix** — implement corrections based on what you see.
+4. **Repeat** — re-run the capture and compare.
+
+#### Running the screenshot tests
+
+```powershell
+# Capture all views in both themes (saves to data/mockups/screenshots/)
+python -m pytest tests/test_ui_screenshots.py -v
+```
+
+Screenshots are saved to `data/mockups/screenshots/` with filenames like `home_dark.png`, `orchestrator_light.png`, etc.
+
+#### Using the reusable API in scripts or notebooks
+
+The module exposes a `capture_all_views()` helper that can be called outside of pytest:
+
+```python
+from tests.test_ui_screenshots import capture_all_views
+
+# Capture a "before" snapshot with a filename prefix
+capture_all_views(themes=["dark"], prefix="before_")
+
+# ... make UI changes ...
+
+# Capture an "after" snapshot
+capture_all_views(themes=["dark"], prefix="after_")
+```
+
+Parameters:
+
+| Parameter   | Default              | Description                                                    |
+|-------------|----------------------|----------------------------------------------------------------|
+| `views`     | All (`Home`, `Orchestrator`, `Data`) | List of view names to capture.                   |
+| `themes`    | Current theme only   | `["dark"]`, `["light"]`, or `["dark", "light"]`.               |
+| `geometry`  | `"1100x750"`         | Window size for the capture.                                   |
+| `settle_ms` | `800`                | Milliseconds to wait for rendering before capture.             |
+| `prefix`    | `""`                 | Filename prefix (e.g. `"pre_refactor_"`) for before/after comparisons. |
+
+#### Requirements
+
+- A real display (the tests auto-skip in headless environments).
+- `Pillow` (already in `requirements.txt`) for `ImageGrab`.
+- `customtkinter` (already in `requirements.txt`) for rounded button rendering.
+
+#### Tips
+
+- Use the `prefix` parameter to create timestamped or labelled snapshots for side-by-side comparison.
+- When working with an AI assistant, ask it to `view_image` the captured screenshots to identify visual regressions, alignment issues, or colour problems.
+- The tests create a fresh `App` instance for each capture, so they always reflect the latest code.
+
+---
+
 ### Pull Requests
 
 - Create a separate branch for each feature or bug fix.

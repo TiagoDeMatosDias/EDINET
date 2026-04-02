@@ -53,6 +53,15 @@ Also check:
 ```powershell
 python -m pytest -q
 ```
+- Capture UI screenshots (all views × both themes → `data/mockups/screenshots/`):
+```powershell
+python -m pytest tests/test_ui_screenshots.py -v
+```
+- Capture with a prefix for before/after comparison:
+```python
+from tests.test_ui_screenshots import capture_all_views
+capture_all_views(themes=["dark"], prefix="before_")
+```
 - Quick AST-based scan (example) to list functions and called names:
 ```powershell
 python - <<'PY'

@@ -1,4 +1,4 @@
-"""Modern dual-theme style system for the EDINET UI.
+﻿"""Modern dual-theme style system for the EDINET UI.
 
 Provides a dark and light palette with clean financial-app aesthetics.
 The module exposes a mutable ``theme`` dict that all widgets should read
@@ -16,7 +16,7 @@ _DARK = {
     "surface_alt": "#45475A",   # Slightly raised surface
     "border":      "#585B70",   # Subtle border
     "text":        "#CDD6F4",   # Off-white body text
-    "text_dim":    "#A6ADC8",   # Dimmer / secondary text
+      "text_dim":    "#C0C7E6",   # Dimmer / secondary text (higher contrast)
     "accent":      "#5865F2",   # Muted Electric Blue (primary action)
     "accent_hover":"#4752C4",   # Darker accent on hover
     "success":     "#A6E3A1",   # Soft green
@@ -60,17 +60,22 @@ _current_mode: str = "dark"
 _SANS = ("Segoe UI", "Helvetica Neue", "Arial")
 _MONO = ("Cascadia Mono", "Consolas", "Courier New")
 
-FONT_UI        = (_SANS[0], 10)
-FONT_UI_BOLD   = (_SANS[0], 10, "bold")
+FONT_UI        = (_SANS[0], 11)
+FONT_UI_BOLD   = (_SANS[0], 11, "bold")
 FONT_HEADING   = (_SANS[0], 16, "bold")
-FONT_SUBHEAD   = (_SANS[0], 11)
-FONT_LABEL     = (_SANS[0],  9, "bold")   # uppercase section labels
-FONT_SMALL     = (_SANS[0],  9)
+FONT_SUBHEAD   = (_SANS[0], 13, "bold")
+FONT_TOPBAR_BRAND  = (_SANS[0], 16, "bold")
+FONT_TOPBAR_NAV    = (_SANS[0], 13, "bold")
+FONT_TOPBAR_ACTION = (_SANS[0], 12, "bold")
+FONT_LABEL     = (_SANS[0], 10, "bold")   # uppercase section labels
+FONT_SMALL     = (_SANS[0], 10)
 FONT_MONO      = (_MONO[0], 10)
 FONT_MONO_BOLD = (_MONO[0], 10, "bold")
 
 # ── Spacing ─────────────────────────────────────────────────────────────
 PAD = 12
+BUTTON_RADIUS = 16
+BUTTON_RADIUS_SMALL = 14
 
 # ── Legacy aliases (kept for callers that import COLORS) ────────────────
 COLORS = theme            # same dict object — always in sync
@@ -127,6 +132,8 @@ def apply_theme(root: tk.Tk):
     s.configure("Surface.TLabel",  background=t["surface"], foreground=t["text"])
     s.configure("TopBar.TLabel",   background=t["surface"], foreground=t["text"],
                 font=FONT_UI_BOLD)
+    s.configure("TopBar.Brand.TLabel", background=t["surface"],
+                foreground=t["text"], font=FONT_TOPBAR_BRAND)
 
     # tab labels
     s.configure("Tab.TLabel", background=t["surface"],
@@ -158,7 +165,7 @@ def apply_theme(root: tk.Tk):
                 font=FONT_UI_BOLD, borderwidth=0, relief="flat",
                 padding=_btn_pad, focuscolor="")
     s.map("Danger.TButton",
-          background=[("active", "#b91c1c"), ("disabled", t["border"])])
+          background=[("active", "#E06480"), ("disabled", t["border"])])
 
     s.configure("Small.TButton",
                 font=FONT_SMALL, padding=(PAD, 4),
@@ -177,9 +184,23 @@ def apply_theme(root: tk.Tk):
                 font=FONT_UI_BOLD, borderwidth=0, padding=(16, 8),
                 relief="flat", focuscolor="")
 
+    # top bar tabs — separate, larger style for readability
+    s.configure("TopBar.Tab.TButton",
+                background=t["surface"], foreground=t["text"],
+                font=FONT_TOPBAR_NAV, borderwidth=0, padding=(22, 10),
+                relief="flat", focuscolor="")
+    s.map("TopBar.Tab.TButton",
+          background=[("active", t["surface_alt"])],
+          foreground=[("active", t["text"])])
+
+    s.configure("TopBar.TabActive.TButton",
+                background=t["surface"], foreground=t["tab_active"],
+                font=FONT_TOPBAR_NAV, borderwidth=0, padding=(22, 10),
+                relief="flat", focuscolor="")
+
     # ghost buttons — border only, no fill (secondary actions)
     s.configure("Ghost.TButton",
-                background=t["bg"], foreground=t["text_dim"],
+                background=t["bg"], foreground=t["text"],
                 font=FONT_UI, borderwidth=1, bordercolor=t["border"],
                 relief="solid", padding=_btn_pad, focuscolor="")
     s.map("Ghost.TButton",
@@ -190,10 +211,19 @@ def apply_theme(root: tk.Tk):
 
     # icon buttons (theme toggle, close)
     s.configure("Icon.TButton",
-                background=t["surface"], foreground=t["text_dim"],
+                background=t["surface"], foreground=t["text"],
                 font=FONT_UI, borderwidth=0, padding=(8, 5),
                 relief="flat", focuscolor="")
     s.map("Icon.TButton",
+          background=[("active", t["surface_alt"])],
+          foreground=[("active", t["text"])])
+
+    # top bar action buttons — separate, larger style for readability
+    s.configure("TopBar.Icon.TButton",
+                background=t["surface"], foreground=t["text"],
+                font=FONT_TOPBAR_ACTION, borderwidth=0, padding=(12, 7),
+                relief="flat", focuscolor="")
+    s.map("TopBar.Icon.TButton",
           background=[("active", t["surface_alt"])],
           foreground=[("active", t["text"])])
 
@@ -284,3 +314,4 @@ def apply_theme(root: tk.Tk):
                 borderwidth=0, thickness=3)
 
     return s
+

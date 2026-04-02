@@ -7,11 +7,11 @@ import tkinter as tk
 from tkinter import ttk
 
 from ui_tk.style import (
-    COLORS, FONT_UI, FONT_UI_BOLD, FONT_HEADING, FONT_MONO, FONT_SUBHEAD, PAD,
+    COLORS, FONT_UI, FONT_UI_BOLD, FONT_HEADING, FONT_MONO, PAD,
     apply_theme, toggle_theme, is_dark,
 )
 from ui_tk.utils import QueueLogHandler, poll_events
-from ui_tk.shared.widgets import LogPanel
+from ui_tk.shared.widgets import LogPanel, RoundedButton, reapply_widget_tree
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class App:
         # ── state (must be set before any widget that triggers callbacks) ─
         self._views: dict[str, ttk.Frame] = {}
         self._active_view: str | None = None
-        self._tab_buttons: dict[str, ttk.Button] = {}
+        self._tab_buttons: dict[str, RoundedButton] = {}
         self._tab_indicators: dict[str, ttk.Frame] = {}
 
         # ── log queue (fed by QueueLogHandler) ──────────────────────────
@@ -83,8 +83,7 @@ class App:
 
         # branding
         brand = ttk.Label(self._top_bar, text="SHADE Research",
-                          style="TopBar.TLabel",
-                          font=FONT_SUBHEAD)
+                          style="TopBar.Brand.TLabel")
         brand.pack(side="left", padx=(PAD * 2, PAD * 3), pady=(PAD + 2, PAD))
 
         # navigation tabs
@@ -95,8 +94,8 @@ class App:
             tab_frame = ttk.Frame(nav, style="TopBar.TFrame")
             tab_frame.pack(side="left", padx=2)
 
-            btn = ttk.Button(
-                tab_frame, text=name, style="Tab.TButton",
+            btn = RoundedButton(
+                tab_frame, text=name, style="TopBar.Tab.TButton",
                 command=lambda n=name: self.switch_view(n),
             )
             btn.pack(side="top")
@@ -113,15 +112,16 @@ class App:
         right = ttk.Frame(self._top_bar, style="TopBar.TFrame")
         right.pack(side="right", padx=PAD)
 
-        self._theme_btn = ttk.Button(
+        self._theme_btn = RoundedButton(
             right, text="◑ Dark" if is_dark() else "◑ Light",
-            style="Icon.TButton", command=self._toggle_theme,
+            style="TopBar.Icon.TButton", command=self._toggle_theme,
         )
         self._theme_btn.pack(side="right", padx=4, pady=4)
 
-        ttk.Button(right, text="⚿ API Key", style="Icon.TButton",
-                   command=self._open_api_key).pack(side="right", padx=4,
-                                                    pady=4)
+        self._api_btn = RoundedButton(right, text="⚿ API Key",
+                                      style="TopBar.Icon.TButton",
+                                      command=self._open_api_key)
+        self._api_btn.pack(side="right", padx=4, pady=4)
 
         # 1-pixel bottom border
         tk.Frame(self.root, bg=COLORS["border"], height=1).pack(
@@ -134,13 +134,13 @@ class App:
             btn = self._tab_buttons[name]
             ind = self._tab_indicators[name]
             if name == self._active_view:
-                btn.configure(style="TabActive.TButton")
+                btn.configure(style="TopBar.TabActive.TButton")
                 ind.configure(style="Accent.TFrame")
                 # Ensure accent frame style exists
                 ttk.Style(self.root).configure(
                     "Accent.TFrame", background=t["accent"])
             else:
-                btn.configure(style="Tab.TButton")
+                btn.configure(style="TopBar.Tab.TButton")
                 ind.configure(style="TopBar.TFrame")
 
     # ── view switching ──────────────────────────────────────────────────
@@ -188,12 +188,17 @@ class App:
         # log panel text area
         if hasattr(self, 'log_panel'):
             self.log_panel.reapply_colors()
+        self._theme_btn.reapply_colors()
+        self._api_btn.reapply_colors()
+        for button in self._tab_buttons.values():
+            button.reapply_colors()
         # update tab visuals
         self._update_tab_visuals()
         # propagate to views
         for view in self._views.values():
             if hasattr(view, 'reapply_colors'):
                 view.reapply_colors()
+            reapply_widget_tree(view)
 
     # ── API Key dialog ──────────────────────────────────────────────────
 
@@ -221,10 +226,10 @@ class App:
 
         btn_row = ttk.Frame(win, style="Surface.TFrame")
         btn_row.pack(fill="x", padx=PAD * 2, pady=PAD)
-        ttk.Button(btn_row, text="Save", command=_save,
-                   style="Accent.TButton").pack(side="right")
-        ttk.Button(btn_row, text="Cancel", style="Ghost.TButton",
-                   command=win.destroy).pack(side="right", padx=(0, PAD))
+        RoundedButton(btn_row, text="Save", command=_save,
+                  style="Accent.TButton").pack(side="right")
+        RoundedButton(btn_row, text="Cancel", style="Ghost.TButton",
+                  command=win.destroy).pack(side="right", padx=(0, PAD))
 
         win.bind("<Return>", lambda _: _save())
         win.bind("<Escape>", lambda _: win.destroy())

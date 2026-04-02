@@ -6,7 +6,23 @@ import subprocess
 import tkinter as tk
 from tkinter import ttk
 
-from ui_tk.style import COLORS, FONT_UI, FONT_UI_BOLD, FONT_MONO, FONT_SMALL, PAD
+try:
+    import customtkinter as ctk
+except ImportError:
+    ctk = None
+
+from ui_tk.style import (
+    BUTTON_RADIUS,
+    BUTTON_RADIUS_SMALL,
+    COLORS,
+    FONT_UI,
+    FONT_UI_BOLD,
+    FONT_TOPBAR_ACTION,
+    FONT_TOPBAR_NAV,
+    FONT_MONO,
+    FONT_SMALL,
+    PAD,
+)
 
 # Matches file/folder paths such as:
 #   data/results\summary.txt   C:\foo\bar.csv   ./output/file.log
@@ -17,6 +33,274 @@ _PATH_RE = re.compile(
     r'[A-Za-z0-9_.\\-]+'                      # first directory component (no spaces)
     r'(?:[\\\/][A-Za-z0-9_.\\-]+)+'           # one or more / or \ separated components
 )
+
+
+def _button_tokens(style_name: str) -> dict[str, object]:
+    t = COLORS
+    tokens = {
+        "fg_color": t["surface_alt"],
+        "hover_color": t["border"],
+        "text_color": t["text"],
+        "border_color": t["surface_alt"],
+        "border_width": 0,
+        "corner_radius": BUTTON_RADIUS,
+        "height": 36,
+        "font": FONT_UI,
+    }
+    if style_name == "Accent.TButton":
+        tokens.update({
+            "fg_color": t["accent"],
+            "hover_color": t["accent_hover"],
+            "text_color": "#ffffff",
+            "border_color": t["accent"],
+            "font": FONT_UI_BOLD,
+        })
+    elif style_name == "Danger.TButton":
+        tokens.update({
+            "fg_color": t["error"],
+            "hover_color": "#E06480",
+            "text_color": "#ffffff",
+            "border_color": t["error"],
+            "font": FONT_UI_BOLD,
+        })
+    elif style_name == "Ghost.TButton":
+        tokens.update({
+            "fg_color": "transparent",
+            "hover_color": t["surface_alt"],
+            "text_color": t["text"],
+            "border_color": t["border"],
+            "border_width": 1,
+        })
+    elif style_name == "Icon.TButton":
+        tokens.update({
+            "fg_color": "transparent",
+            "hover_color": t["surface_alt"],
+            "text_color": t["text"],
+            "border_color": t["surface"],
+            "border_width": 0,
+            "corner_radius": BUTTON_RADIUS_SMALL,
+            "height": 34,
+            "font": FONT_UI,
+        })
+    elif style_name == "TopBar.Icon.TButton":
+        tokens.update({
+            "fg_color": "transparent",
+            "hover_color": t["surface_alt"],
+            "text_color": t["text"],
+            "border_color": t["surface"],
+            "border_width": 0,
+            "corner_radius": BUTTON_RADIUS_SMALL,
+            "height": 38,
+            "font": FONT_TOPBAR_ACTION,
+        })
+    elif style_name == "Small.TButton":
+        tokens.update({
+            "fg_color": t["surface_alt"],
+            "hover_color": t["border"],
+            "text_color": t["text"],
+            "border_color": t["surface_alt"],
+            "corner_radius": BUTTON_RADIUS_SMALL,
+            "height": 30,
+            "font": FONT_SMALL,
+        })
+    elif style_name == "Tab.TButton":
+        tokens.update({
+            "fg_color": "transparent",
+            "hover_color": t["surface_alt"],
+            "text_color": t["tab_inactive"],
+            "border_color": t["surface"],
+            "border_width": 0,
+            "corner_radius": BUTTON_RADIUS_SMALL,
+            "height": 34,
+            "font": FONT_UI,
+        })
+    elif style_name == "TabActive.TButton":
+        tokens.update({
+            "fg_color": t["surface_alt"],
+            "hover_color": t["surface_alt"],
+            "text_color": t["tab_active"],
+            "border_color": t["surface_alt"],
+            "corner_radius": BUTTON_RADIUS_SMALL,
+            "height": 34,
+            "font": FONT_UI_BOLD,
+        })
+    elif style_name == "TopBar.Tab.TButton":
+        tokens.update({
+            "fg_color": "transparent",
+            "hover_color": t["surface_alt"],
+            "text_color": t["text"],
+            "border_color": t["surface"],
+            "border_width": 0,
+            "corner_radius": BUTTON_RADIUS_SMALL,
+            "height": 40,
+            "font": FONT_TOPBAR_NAV,
+        })
+    elif style_name == "TopBar.TabActive.TButton":
+        tokens.update({
+            "fg_color": t["surface_alt"],
+            "hover_color": t["surface_alt"],
+            "text_color": t["tab_active"],
+            "border_color": t["surface_alt"],
+            "corner_radius": BUTTON_RADIUS_SMALL,
+            "height": 40,
+            "font": FONT_TOPBAR_NAV,
+        })
+    return tokens
+
+
+def _coerce_button_width(width: object) -> object:
+    if isinstance(width, int) and width <= 10:
+        return max(36, width * 12)
+    return width
+
+
+def _detect_bg(widget) -> str:
+    """Walk up the widget tree to find the actual background color.
+
+    Handles both tk and ttk widgets.  Falls back to COLORS["bg"].
+    """
+    w = widget
+    while w is not None:
+        # tk widgets expose bg directly
+        try:
+            bg = w.cget("bg")
+            if bg and bg != "SystemButtonFace":
+                return str(bg)
+        except (tk.TclError, AttributeError):
+            pass
+        # ttk widgets need style lookup
+        try:
+            style_name = str(w.cget("style") or "")
+            if not style_name:
+                style_name = w.winfo_class()
+            s = ttk.Style()
+            bg = s.lookup(style_name, "background")
+            if bg:
+                return str(bg)
+        except (tk.TclError, AttributeError):
+            pass
+        w = w.master
+    return COLORS["bg"]
+
+
+class RoundedButton(tk.Frame):
+    """Rounded button using CTkButton when available, ttk fallback otherwise.
+
+    Uses a plain tk.Frame (not ttk.Frame) so that CTkButton's
+    ``bg_color="transparent"`` background detection works correctly.
+    """
+
+    def __init__(self, parent, text="", command=None, style="TButton", **kw):
+        parent_bg = _detect_bg(parent)
+        super().__init__(parent, bg=parent_bg, highlightthickness=0, bd=0)
+        self._style_name = style
+        self._is_disabled = False
+        self._parent_bg = parent_bg
+        width = kw.pop("width", None)
+        self._inner = None
+
+        if ctk is None:
+            self._inner = ttk.Button(self, text=text, command=command,
+                                     style=style, width=width, **kw)
+            self._inner.pack(fill="both", expand=True)
+            return
+
+        tokens = _button_tokens(style)
+        ctk_width = _coerce_button_width(width)
+        self._inner = ctk.CTkButton(
+            self,
+            text=text,
+            command=command,
+            width=ctk_width or 0,
+            height=tokens["height"],
+            corner_radius=tokens["corner_radius"],
+            fg_color=tokens["fg_color"],
+            hover_color=tokens["hover_color"],
+            text_color=tokens["text_color"],
+            border_color=tokens["border_color"],
+            border_width=tokens["border_width"],
+            bg_color=parent_bg,
+            font=tokens["font"],
+            textvariable=kw.pop("textvariable", None),
+            anchor=kw.pop("anchor", "center"),
+        )
+        self._inner.pack(fill="both", expand=True)
+
+    def configure(self, cnf=None, **kw):
+        if cnf:
+            kw.update(cnf)
+        style = kw.pop("style", None)
+        if style is not None:
+            self._style_name = style
+        if ctk is None:
+            if style is not None:
+                kw["style"] = style
+            self._inner.configure(**kw)
+            return
+
+        if "width" in kw:
+            kw["width"] = _coerce_button_width(kw["width"])
+
+        if style is not None:
+            self.reapply_colors()
+
+        if "state" in kw:
+            self._is_disabled = kw["state"] == "disabled"
+        self._inner.configure(**kw)
+
+    config = configure
+
+    def state(self, statespec=None):
+        if statespec is None:
+            return ("disabled",) if self._is_disabled else ("!disabled",)
+        disabled = any(state == "disabled" for state in statespec)
+        enabled = any(state == "!disabled" for state in statespec)
+        if disabled:
+            self._is_disabled = True
+        elif enabled:
+            self._is_disabled = False
+
+        if ctk is None:
+            self._inner.state(statespec)
+            return self._inner.state()
+
+        self._inner.configure(state="disabled" if self._is_disabled else "normal")
+        return self.state()
+
+    def reapply_colors(self):
+        parent_bg = _detect_bg(self.master)
+        self._parent_bg = parent_bg
+        self.configure_frame(bg=parent_bg)
+        if ctk is None:
+            self._inner.configure(style=self._style_name)
+            return
+        tokens = _button_tokens(self._style_name)
+        self._inner.configure(
+            height=tokens["height"],
+            corner_radius=tokens["corner_radius"],
+            fg_color=tokens["fg_color"],
+            hover_color=tokens["hover_color"],
+            text_color=tokens["text_color"],
+            border_color=tokens["border_color"],
+            border_width=tokens["border_width"],
+            bg_color=parent_bg,
+            font=tokens["font"],
+        )
+        self._inner.configure(state="disabled" if self._is_disabled else "normal")
+
+    def configure_frame(self, **kw):
+        """Configure the underlying tk.Frame itself (not the inner button)."""
+        super().configure(**kw)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def reapply_widget_tree(widget):
+    for child in widget.winfo_children():
+        if hasattr(child, "reapply_colors"):
+            child.reapply_colors()
+        reapply_widget_tree(child)
 
 
 class LogPanel(ttk.Frame):
@@ -62,10 +346,14 @@ class LogPanel(ttk.Frame):
                              command=self._on_autoscroll_toggle)
         cb.pack(side="right", padx=PAD)
 
-        ttk.Button(toolbar, text="Export", style="Small.TButton",
-                   command=self._on_export).pack(side="right", padx=2)
-        ttk.Button(toolbar, text="Clear", style="Small.TButton",
-                   command=self.clear).pack(side="right", padx=2)
+        self._export_btn = RoundedButton(toolbar, text="Export",
+                         style="Small.TButton",
+                         command=self._on_export)
+        self._export_btn.pack(side="right", padx=2)
+        self._clear_btn = RoundedButton(toolbar, text="Clear",
+                        style="Small.TButton",
+                        command=self.clear)
+        self._clear_btn.pack(side="right", padx=2)
 
         # ── text area ──────────────────────────────────────────────────
         text_frame = ttk.Frame(self)
@@ -110,6 +398,8 @@ class LogPanel(ttk.Frame):
         self.text.configure(bg=t["log_bg"], fg=t["text"],
                             insertbackground=t["text"],
                             selectbackground=t["highlight"])
+        self._export_btn.reapply_colors()
+        self._clear_btn.reapply_colors()
         self._apply_text_tags()
 
     # ── internals ───────────────────────────────────────────────────────
@@ -233,7 +523,7 @@ class TabBar(ttk.Frame):
         super().__init__(parent, **kw)
         self._tabs = tabs
         self._on_changed = on_tab_changed
-        self._buttons: list[ttk.Button] = []
+        self._buttons: list[RoundedButton] = []
         self._indicators: list[ttk.Frame] = []
         self._active = 0
 
@@ -241,8 +531,8 @@ class TabBar(ttk.Frame):
             frame = ttk.Frame(self)
             frame.pack(side="left", padx=2)
 
-            btn = ttk.Button(frame, text=name, style="Tab.TButton",
-                             command=lambda idx=i: self.select(idx))
+            btn = RoundedButton(frame, text=name, style="Tab.TButton",
+                                command=lambda idx=i: self.select(idx))
             btn.pack(side="top")
 
             indicator = ttk.Frame(frame, height=2)
@@ -332,8 +622,10 @@ class FilePickerEntry(ttk.Frame):
         self._var = tk.StringVar(value=value)
         self._entry = ttk.Entry(row, textvariable=self._var)
         self._entry.pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="Browse...",
-                   command=self._browse).pack(side="right", padx=(4, 0))
+        self._browse_btn = RoundedButton(row, text="Browse...",
+                         style="Ghost.TButton",
+                         command=self._browse)
+        self._browse_btn.pack(side="right", padx=(4, 0))
 
     def _browse(self):
         from tkinter import filedialog
@@ -347,6 +639,9 @@ class FilePickerEntry(ttk.Frame):
 
     def set(self, value: str):
         self._var.set(value)
+
+    def reapply_colors(self):
+        self._browse_btn.reapply_colors()
 
 
 class DatabasePickerEntry(FilePickerEntry):
@@ -382,10 +677,14 @@ class PortfolioGrid(ttk.Frame):
 
         btn_row = ttk.Frame(self)
         btn_row.pack(fill="x", pady=(4, 0))
-        ttk.Button(btn_row, text="+ Add Row",
-                   command=self._add_row).pack(side="left", padx=2)
-        ttk.Button(btn_row, text="- Delete Row",
-                   command=self._del_row).pack(side="left", padx=2)
+        self._add_btn = RoundedButton(btn_row, text="+ Add Row",
+                          style="Small.TButton",
+                          command=self._add_row)
+        self._add_btn.pack(side="left", padx=2)
+        self._del_btn = RoundedButton(btn_row, text="- Delete Row",
+                          style="Ghost.TButton",
+                          command=self._del_row)
+        self._del_btn.pack(side="left", padx=2)
 
         # double-click to edit
         self.tree.bind("<Double-1>", self._on_double_click)
@@ -439,6 +738,10 @@ class PortfolioGrid(ttk.Frame):
         entry.bind("<Return>", _commit)
         entry.bind("<FocusOut>", _commit)
         entry.bind("<Escape>", lambda _: entry.destroy())
+
+    def reapply_colors(self):
+        self._add_btn.reapply_colors()
+        self._del_btn.reapply_colors()
 
     def get_portfolio(self) -> dict:
         """Return portfolio dict in the same format as run_config.json."""

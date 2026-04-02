@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from ui_tk import controllers as ctrl
+from ui_tk.shared.widgets import RoundedButton
 from ui_tk.style import COLORS, FONT_UI, FONT_UI_BOLD, FONT_HEADING, FONT_SUBHEAD, PAD
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,18 @@ class HomePage(ttk.Frame):
         ttk.Label(body, text="SAVED SETUPS",
                   style="SectionHead.TLabel").pack(anchor="w", pady=(0, 4))
 
+        # ── action row (pack before card so it claims space first) ───
+        btn_row = ttk.Frame(body)
+        btn_row.pack(side="bottom", fill="x", pady=(PAD * 2, 0))
+        self._open_btn = RoundedButton(btn_row, text="Open Selected",
+                           command=self._open_selected,
+                           style="Accent.TButton")
+        self._open_btn.pack(side="right")
+        self._new_btn = RoundedButton(btn_row, text="New Setup",
+                          style="Ghost.TButton",
+                          command=self._new_setup)
+        self._new_btn.pack(side="right", padx=(0, PAD))
+
         # ── treeview card ────────────────────────────────────────────────
         card = ttk.Frame(body, style="Surface.TFrame")
         card.pack(fill="both", expand=True)
@@ -57,16 +70,6 @@ class HomePage(ttk.Frame):
 
         self._tree.bind("<Double-1>",    lambda _: self._open_selected())
         self._tree.bind("<Return>",      lambda _: self._open_selected())
-
-        # ── action row ───────────────────────────────────────────────────
-        btn_row = ttk.Frame(body)
-        btn_row.pack(fill="x", pady=(PAD * 2, 0))
-        self._open_btn = ttk.Button(btn_row, text="Open Selected",
-                                    command=self._open_selected,
-                                    style="Accent.TButton")
-        self._open_btn.pack(side="right")
-        ttk.Button(btn_row, text="New Setup", style="Ghost.TButton",
-                   command=self._new_setup).pack(side="right", padx=(0, PAD))
 
         self.bind_all("<Control-n>", lambda _: self._new_setup(), add="+")
 
@@ -139,11 +142,12 @@ class HomePage(ttk.Frame):
         win.bind("<Escape>", lambda _: win.destroy())
         btn_row = ttk.Frame(win, style="Surface.TFrame")
         btn_row.pack(fill="x", padx=PAD * 2, pady=(0, PAD))
-        ttk.Button(btn_row, text="Create", command=_create,
-                   style="Accent.TButton").pack(side="right")
-        ttk.Button(btn_row, text="Cancel", style="Ghost.TButton",
-                   command=win.destroy).pack(side="right", padx=(0, PAD))
+        RoundedButton(btn_row, text="Create", command=_create,
+                      style="Accent.TButton").pack(side="right")
+        RoundedButton(btn_row, text="Cancel", style="Ghost.TButton",
+                      command=win.destroy).pack(side="right", padx=(0, PAD))
 
     def reapply_colors(self):
         """Treeview is ttk — theme is applied globally via apply_theme."""
-        pass
+        self._open_btn.reapply_colors()
+        self._new_btn.reapply_colors()

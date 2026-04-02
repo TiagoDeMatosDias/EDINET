@@ -10,12 +10,17 @@ import tkinter as tk
 from tkinter import ttk, filedialog, simpledialog
 
 from ui_tk import controllers as ctrl
+from ui_tk.shared.widgets import (
+    DatabasePickerEntry,
+    FilePickerEntry,
+    LabeledEntry,
+    LabeledText,
+    PortfolioGrid,
+    RoundedButton,
+    reapply_widget_tree,
+)
 from ui_tk.style import COLORS, FONT_UI, FONT_UI_BOLD, FONT_MONO, PAD
 from ui_tk.utils import run_in_background
-from ui_tk.shared.widgets import (
-    LabeledEntry, LabeledText, FilePickerEntry, DatabasePickerEntry,
-    PortfolioGrid,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +44,8 @@ class OrchestratorPage(ttk.Frame):
         self._body.pack(fill="both", expand=True)
 
         # left panel: step list
-        self._left = ttk.Frame(self._body, width=240)
+        self._left = ttk.Frame(self._body, width=240,
+                               style="Surface.TFrame")
         self._body.add(self._left, weight=0)
 
         # right area: main + optional config
@@ -69,10 +75,11 @@ class OrchestratorPage(ttk.Frame):
     # ── step list (left panel) ──────────────────────────────────────────
 
     def _build_step_list(self):
-        header = ttk.Frame(self._left)
+        header = ttk.Frame(self._left, style="Surface.TFrame")
         header.pack(fill="x", padx=PAD, pady=(PAD, 0))
         self._setup_label = ttk.Label(header, text="Pipeline:",
-                                      style="Accent.TLabel")
+                                      style="Surface.TLabel",
+                                      foreground=COLORS["accent"])
         self._setup_label.pack(anchor="w")
         ttk.Separator(self._left, orient="horizontal").pack(fill="x",
                                                             padx=PAD, pady=2)
@@ -110,26 +117,31 @@ class OrchestratorPage(ttk.Frame):
         self._step_listbox.bind("<Button-3>", self._show_step_menu)
 
         # add step button
-        add_frame = ttk.Frame(self._left)
+        add_frame = ttk.Frame(self._left, style="Surface.TFrame")
         add_frame.pack(fill="x", padx=PAD, pady=(2, 0))
-        ttk.Button(add_frame, text="+ Add Step",
-                   command=self._add_step, style="Small.TButton").pack(fill="x")
+        self._add_step_btn = RoundedButton(add_frame, text="+ Add Step",
+                           command=self._add_step,
+                           style="Small.TButton")
+        self._add_step_btn.pack(fill="x")
 
         ttk.Separator(self._left, orient="horizontal").pack(fill="x",
                                                             padx=PAD, pady=4)
 
         # setup buttons
-        btn_frame = ttk.Frame(self._left)
+        btn_frame = ttk.Frame(self._left, style="Surface.TFrame")
         btn_frame.pack(fill="x", padx=PAD, pady=(0, PAD))
-        ttk.Button(btn_frame, text="Save", style="Ghost.TButton",
-                   command=self._save_setup).pack(side="left", expand=True,
-                                                  fill="x", padx=(0, 2))
-        ttk.Button(btn_frame, text="Load", style="Ghost.TButton",
-                   command=self._load_setup).pack(side="left", expand=True,
-                                                  fill="x", padx=2)
-        ttk.Button(btn_frame, text="New", style="Ghost.TButton",
-                   command=self._new_setup).pack(side="left", expand=True,
-                                                 fill="x", padx=(2, 0))
+        self._save_btn = RoundedButton(btn_frame, text="Save",
+                           style="Ghost.TButton",
+                           command=self._save_setup)
+        self._save_btn.pack(side="left", expand=True, fill="x", padx=(0, 2))
+        self._load_btn = RoundedButton(btn_frame, text="Load",
+                           style="Ghost.TButton",
+                           command=self._load_setup)
+        self._load_btn.pack(side="left", expand=True, fill="x", padx=2)
+        self._new_btn = RoundedButton(btn_frame, text="New",
+                          style="Ghost.TButton",
+                          command=self._new_setup)
+        self._new_btn.pack(side="left", expand=True, fill="x", padx=(2, 0))
 
     def _refresh_step_listbox(self):
         sel = self._step_listbox.curselection()
@@ -169,14 +181,14 @@ class OrchestratorPage(ttk.Frame):
         bar = ttk.Frame(self)
         bar.pack(fill="x", padx=PAD, pady=(0, PAD))
 
-        self._run_btn = ttk.Button(bar, text="▶ Run",
-                                   command=self._on_run,
-                                   style="Accent.TButton")
+        self._run_btn = RoundedButton(bar, text="▶ Run",
+                          command=self._on_run,
+                          style="Accent.TButton")
         self._run_btn.pack(side="right", padx=PAD)
 
-        self._stop_btn = ttk.Button(bar, text="◀ Stop",
-                                    command=self._on_stop,
-                                    style="Danger.TButton")
+        self._stop_btn = RoundedButton(bar, text="◀ Stop",
+                           command=self._on_stop,
+                           style="Danger.TButton")
         self._stop_btn.pack(side="right")
         self._stop_btn.state(["disabled"])
 
@@ -216,8 +228,9 @@ class OrchestratorPage(ttk.Frame):
         header.pack(fill="x", padx=PAD, pady=(PAD, 0))
         ttk.Label(header, text="CONFIG", style="Surface.TLabel",
                   font=FONT_UI_BOLD).pack(side="left")
-        close_btn = ttk.Button(header, text="✕", width=3,
-                               command=self._close_config_panel)
+        close_btn = RoundedButton(header, text="✕", width=3,
+                      style="Icon.TButton",
+                      command=self._close_config_panel)
         close_btn.pack(side="right")
 
         ttk.Separator(frame, orient="horizontal").pack(fill="x", padx=PAD,
@@ -276,10 +289,10 @@ class OrchestratorPage(ttk.Frame):
             self._build_generic_config(scroll_frame, cfg)
 
         # save button
-        ttk.Button(frame, text="Save Config",
-                   style="Accent.TButton",
-                   command=self._save_current_config_fields
-                   ).pack(padx=PAD, pady=(0, PAD))
+        RoundedButton(frame, text="Save Config",
+                  style="Accent.TButton",
+                  command=self._save_current_config_fields
+                  ).pack(padx=PAD, pady=(0, PAD))
 
         # bind Esc to close
         frame.bind_all("<Escape>", self._close_config_panel)
@@ -572,8 +585,8 @@ class OrchestratorPage(ttk.Frame):
             logger.info(f"Loaded setup: {name}")
 
         lb.bind("<Double-1>", lambda _: _load())
-        ttk.Button(win, text="Open", command=_load,
-                   style="Accent.TButton").pack(pady=(0, PAD))
+        RoundedButton(win, text="Open", command=_load,
+                  style="Accent.TButton").pack(pady=(0, PAD))
 
     def _new_setup(self):
         name = simpledialog.askstring("New Setup", "Setup name:", parent=self)
@@ -663,3 +676,10 @@ class OrchestratorPage(ttk.Frame):
             bg=t["surface"], fg=t["text"],
             activebackground=t["highlight"],
         )
+        self._add_step_btn.reapply_colors()
+        self._save_btn.reapply_colors()
+        self._load_btn.reapply_colors()
+        self._new_btn.reapply_colors()
+        self._run_btn.reapply_colors()
+        self._stop_btn.reapply_colors()
+        reapply_widget_tree(self._config_frame)
