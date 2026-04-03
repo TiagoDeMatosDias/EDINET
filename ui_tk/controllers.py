@@ -1,6 +1,6 @@
 """Thin controller adapters between the UI and backend modules.
 
-All persistence paths mirror the existing Flet UI so saved setups are
+Persistence paths are kept stable so existing saved setups remain
 backward-compatible.
 """
 
@@ -15,7 +15,7 @@ from typing import Callable
 from dotenv import dotenv_values, set_key
 
 
-# ── Path helpers (same logic as ui/pages/pipeline/persistence.py) ───────
+# ── Path helpers (kept stable for saved setup compatibility) ────────────
 
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):

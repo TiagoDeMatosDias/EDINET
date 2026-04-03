@@ -35,10 +35,8 @@ Each pipeline step is configured independently, including its source or target d
 
 The application can run in two modes:
 
-- **GUI mode** (default) — Launch the Flet desktop application with `python main.py`. The GUI provides drag-and-drop step ordering, per-step configuration dialogs, light/dark theme switching, and a live log output panel.
+- **GUI mode** (default) — Launch the Tk desktop application with `python main.py`. The GUI provides keyboard-friendly step ordering, per-step configuration panels, setup save/load, and a live log output panel.
 - **CLI mode** — Run headless from the terminal with `python main.py --cli`. This reads `config/state/run_config.json` directly and executes the enabled steps in order.
-
-> **Note:** The GUI requires the `flet` package. If it is not installed, the application will print an error and suggest running with `--cli`.
 
 ## Setup
 
@@ -140,7 +138,7 @@ data/
 Double-click `EDINET.exe` or launch it from a terminal.
 It will look for `config/` and `.env` in the same folder as the exe.
 
-> **Note:** Large dependencies (pandas, statsmodels, scipy, flet) make the final exe around 200-300 MB.
+> **Note:** Large dependencies (pandas, statsmodels, scipy) make the final exe around 200-300 MB.
 > Build time is a few minutes on the first run.
 
 ## Configuration files
@@ -158,16 +156,15 @@ It will look for `config/` and `.env` in the same folder as the exe.
 
 ## GUI Features
 
-The Flet-based GUI provides:
+The Tk-based GUI provides:
 
 - **API Key dialog** – securely set the EDINET API key without editing `.env` manually.
-- **Drag-and-drop step ordering** – reorder pipeline steps by dragging them.
+- **Step ordering controls** – reorder pipeline steps with keyboard shortcuts (`Alt+Up` / `Alt+Down`) and contextual actions.
 - **Per-step enable/disable** – check or uncheck each step.
-- **Per-step configuration dialogs** – click the ⚙ icon to configure each step, including selecting its source or target database where required. Steps like Backtest, Backtest Set, Import CSV, and the ratios/statements steps have dedicated custom dialogs.
+- **Per-step configuration panel** – configure each step (including database paths and advanced options) in the side panel.
 - **Overwrite toggle** – steps that support it (Generate Financial Statements, Generate Ratios, Generate Historical Ratios) show an "Overwrite" checkbox.
 - **Save / Load setups** – persist and recall named configurations from `config/state/saved_setups/`.
 - **Live log output** – see real-time log messages during execution in the output panel.
-- **Light / Dark theme** – toggle between light and dark mode.
 
 ## Key EDINET document type codes
 

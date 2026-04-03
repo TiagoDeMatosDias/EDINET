@@ -4,7 +4,7 @@
 
 The application supports two execution modes:
 
-- **GUI mode** (default): `python main.py` — launches the Flet desktop UI where you can configure steps, reorder them, and run the pipeline visually.
+- **GUI mode** (default): `python main.py` — launches the Tk desktop UI where you can configure steps and run the pipeline visually.
 - **CLI mode**: `python main.py --cli` — reads `config/state/run_config.json` and executes enabled steps headlessly.
 
 Most steps now require an explicit source or target database path in their step configuration. The GUI exposes those paths directly in each step's config dialog.

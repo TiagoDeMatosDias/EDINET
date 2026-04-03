@@ -8,6 +8,10 @@ All notable changes to this project will be documented in this file.
 - **`standardize_data` step** — legacy data normalisation step removed; the pipeline now reads directly from the raw `financialData_full` table.
 - **`generate_financial_ratios` step** — replaced by the `generate_ratios` and `generate_historical_ratios` steps.
 - **`find_significant_predictors` step** — univariate OLS sweep removed; use `Multivariate_Regression` with a custom SQL query instead.
+- **Legacy Flet UI (`ui/`)** — retired in favor of the Tk desktop UI (`ui_tk/`).
+- **`--flet` startup flag** — removed from `main.py`; GUI mode now always starts Tk.
+- **`tests/test_ui.py`** — removed with the legacy Flet UI modules.
+- **`flet` runtime dependency** — removed from `requirements.txt`.
 - **`FINANCIAL_RATIOS_CONFIG_PATH` env key** — no longer required.
 - **`DB_STANDARDIZED_TABLE`, `DB_STANDARDIZED_RATIOS_TABLE`, `DB_SIGNIFICANT_PREDICTORS_TABLE` env keys** — no longer required.
 - **Financial Ratios Config selector** — GUI button removed along with the associated `.env` key.

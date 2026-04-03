@@ -1,5 +1,9 @@
 ## Update User Interface — Implementation-ready Plan
 
+Status
+------
+Completed and retained as historical implementation notes. The legacy `ui/` package and `--flet` entry path have been removed.
+
 Purpose
 -------
 Replace the existing Flet-based `ui/` with a new Tkinter-based `ui_tk/` package styled to look like a modern terminal application. This document is prescriptive: it defines everything needed for implementation.

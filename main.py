@@ -30,22 +30,8 @@ def _run_gui():
     run_tk_app()
 
 
-def _run_flet():
-    """Launch the legacy Flet GUI (deprecated)."""
-    try:
-        from ui.app import launch
-        launch()
-    except ImportError as exc:
-        print(f"Could not start Flet GUI: {exc}")
-        print("Install the dependency with:  pip install flet")
-        print("Or run the default Tk UI:     python main.py")
-        sys.exit(1)
-
-
 if __name__ == '__main__':
     if '--cli' in sys.argv:
         _run_cli()
-    elif '--flet' in sys.argv:
-        _run_flet()
     else:
         _run_gui()
