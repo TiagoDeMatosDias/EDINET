@@ -13,11 +13,8 @@
   "download_documents_config": {
     "docTypeCode": "120",
     "csvFlag": "1",
-    "secCode": "",
     "Downloaded": "False",
-    "Target_Database": "",
-    "startDate": "2026-02-15",
-    "endDate": "2026-04-03"
+    "Target_Database": "C:/programming/Finance/EDINET/Databases/Base.db"
   },
   "populate_company_info_config": {
     "csv_file": "config/reference/companyinfo.csv",
@@ -75,10 +72,10 @@
     "Financial_Statements_Table": "FinancialStatements",
     "start_date": "2023-01-01",
     "end_date": "2025-12-31",
-    "portfolio": {},
     "benchmark_ticker": "",
     "output_file": "data/backtest_results/backtest_report.txt",
-    "risk_free_rate": 0.0
+    "risk_free_rate": 0.0,
+    "portfolio": {}
   },
   "backtest_set_config": {
     "Source_Database": "",

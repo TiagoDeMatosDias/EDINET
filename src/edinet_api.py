@@ -1,6 +1,6 @@
-import config as c
 import requests
 from datetime import datetime, timedelta
+import logging
 import src.utils as h
 import sqlite3
 import os
@@ -10,16 +10,19 @@ import csv
 import shutil
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
 class Edinet:
-    def __init__(self):
-        self.config = c.Config()
-        self.baseURL = self.config.get("baseURL")
-        self.key = self.config.get("API_KEY")
-        self.defaultLocation = self.config.get("RAW_DOCUMENTS_PATH")
-        self.Database = self.config.get("DB_PATH")
-        self.DB_COMPANY_INFO_TABLE = self.config.get("DB_COMPANY_INFO_TABLE")
-        self.DB_TAXONOMY_TABLE = self.config.get("DB_TAXONOMY_TABLE")
-        self.DB_DOC_LIST_TABLE = self.config.get("DB_DOC_LIST_TABLE")
+    def __init__(self, base_url, api_key, db_path, raw_docs_path=None,
+                 doc_list_table=None, company_info_table=None,
+                 taxonomy_table=None):
+        self.baseURL = base_url
+        self.key = api_key
+        self.defaultLocation = raw_docs_path
+        self.Database = db_path
+        self.DB_COMPANY_INFO_TABLE = company_info_table
+        self.DB_TAXONOMY_TABLE = taxonomy_table
+        self.DB_DOC_LIST_TABLE = doc_list_table
 
     def get_All_documents_withMetadata(self, start_date="2015-01-01", end_date=None):
         """
@@ -100,7 +103,8 @@ class Edinet:
         if fileLocation is None:
             fileLocation = self.defaultLocation
         
-        fullURL = h.generateURL(docID, self.config ,docTypeCode)
+        fullURL = h.generateURL(docID, self.baseURL, self.key, docTypeCode)
+        logger.info(f"Downloading document {docID} from {fullURL}...")
         # Send a GET request to download the file
         response = requests.get(fullURL)
 
@@ -110,10 +114,10 @@ class Edinet:
             filename = fileLocation + "\\" + docID +'.zip'
             with open(filename, 'wb') as f:
                 f.write(response.content)
-            print("File downloaded and saved as " + filename + ".")
+            logger.info(f"File downloaded and saved as {filename}.")
         else:
-            print(f"Failed to download file. Status code: {response.status_code}")
-            return null
+            logger.error(f"Failed to download file. Status code: {response.status_code}")
+            return None
 
     def downloadDocs(self, input_table, output_table=None, filter=None):
         """Download all documents listed in the database that have not yet been downloaded.
@@ -143,7 +147,7 @@ class Edinet:
             print("No documents to download: query returned no results.")
             return
 
-        print(f"Number of documents to download: {len(docList)}")
+        logger.info(f"Number of documents to download: {len(docList)}")
         
         for doc in docList:
             try:
@@ -159,11 +163,15 @@ class Edinet:
 
                 #Unzip files
                 zipped_files = self.list_files_in_folder(folder)
-                self.unzip_files(zipped_files, folder + "\\unzipped")
-                financialFiles = self.list_files_in_folder(folder + "\\unzipped", True)
+                zipped_files = [f for f in zipped_files if zipfile.is_zipfile(f)]
+                if not zipped_files:
+                    print(f"Skipping document {doc_id}: downloaded file is not a valid ZIP.")
+                else:
+                    self.unzip_files(zipped_files, folder + "\\unzipped")
+                    financialFiles = self.list_files_in_folder(folder + "\\unzipped", True)
 
-                #Load files to DB
-                self.load_financial_data(financialFiles, output_table, doc, connection)
+                    #Load files to DB
+                    self.load_financial_data(financialFiles, output_table, doc, connection)
 
                 #Update downloaded status and clean the environment
                 self.query_database_setColumn(input_table,doc_filter, "Downloaded", "True", connection)

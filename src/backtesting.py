@@ -199,6 +199,8 @@ def get_portfolio_prices(
     """
     own_conn = conn is None
     if own_conn:
+        if not db_path:
+            raise ValueError("db_path is required when no active connection is provided.")
         conn = sqlite3.connect(db_path)
     try:
         placeholders = ",".join(["?"] * len(tickers))
@@ -257,6 +259,8 @@ def get_dividend_data(
     """
     own_conn = conn is None
     if own_conn:
+        if not db_path:
+            raise ValueError("db_path is required when no active connection is provided.")
         conn = sqlite3.connect(db_path)
     try:
         if not tickers:
@@ -1392,6 +1396,12 @@ def run_backtest(
     )
     risk_free_rate = backtesting_config.get("risk_free_rate", 0.0)
     initial_capital = backtesting_config.get("initial_capital", 0.0)
+
+    if not db_path:
+        raise ValueError(
+            "Backtesting requires a Source_Database path. "
+            "Set backtesting_config.Source_Database in the UI."
+        )
 
     # ── Validate configuration ────────────────────────────────────────────
     if not start_date or not end_date:

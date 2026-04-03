@@ -1,4 +1,3 @@
-import config as c
 import ast
 import logging
 import pandas as pd
@@ -14,8 +13,7 @@ logger = logging.getLogger(__name__)
 
 class data:
     def __init__(self):
-        self.config = c.Config()
-        self.DB_PATH = self.config.get("DB_PATH")
+        pass
 
     def _table_exists(self, conn, table_name):
         """Return True if *table_name* exists in the SQLite database."""
@@ -433,8 +431,12 @@ class data:
         - Formula dependencies are resolved dynamically (best effort).
         - Unresolvable cyclic formulas are logged and skipped.
         """
-        source_db = source_database or self.DB_PATH
-        target_db = target_database or self.DB_PATH
+        source_db = source_database
+        target_db = target_database
+        if not source_db:
+            raise ValueError("source_database is required for generate_ratios.")
+        if not target_db:
+            raise ValueError("target_database is required for generate_ratios.")
         formulas_path = formulas_config
         if not formulas_path:
             raise ValueError("Formulas_Config is required for generate_ratios.")
@@ -748,8 +750,12 @@ class data:
         - Quality_Historical
         - Valuation_Historical
         """
-        source_db = source_database or self.DB_PATH
-        target_db = target_database or self.DB_PATH
+        source_db = source_database
+        target_db = target_database
+        if not source_db:
+            raise ValueError("source_database is required for generate_historical_ratios.")
+        if not target_db:
+            raise ValueError("target_database is required for generate_historical_ratios.")
         same_db = os.path.abspath(source_db) == os.path.abspath(target_db)
 
         source_to_target = {
@@ -1071,12 +1077,15 @@ class data:
         database when needed. Processing is resumable: only missing/partial
         docIDs are selected, and each chunk is committed atomically.
         """
-        cfg = getattr(self, "config", None)
-        source_db = source_database or self.DB_PATH
-        target_db = target_database or self.DB_PATH
-        source_tbl = source_table or (cfg.get("DB_FINANCIAL_DATA_TABLE") if cfg else None) or "financialData_full"
-        company_tbl = company_table or (cfg.get("DB_COMPANY_INFO_TABLE") if cfg else None) or "companyInfo"
-        prices_tbl = prices_table or (cfg.get("DB_STOCK_PRICES_TABLE") if cfg else None) or "stock_prices"
+        source_db = source_database
+        target_db = target_database
+        if not source_db:
+            raise ValueError("source_database is required for generate_financial_statements.")
+        if not target_db:
+            raise ValueError("target_database is required for generate_financial_statements.")
+        source_tbl = source_table or "financialData_full"
+        company_tbl = company_table or "companyInfo"
+        prices_tbl = prices_table or "stock_prices"
         mappings_path = mappings_config
         if not mappings_path:
             raise ValueError("Mappings_Config is required for generate_financial_statements.")
@@ -1319,7 +1328,7 @@ class data:
         
         conn.commit()
 
-    def parse_edinet_taxonomy(self, xsd_file, table_name, connection=None):
+    def parse_edinet_taxonomy(self, xsd_file, table_name, connection=None, db_path=None):
         """
         Parses an EDINET Taxonomy XSD file and stores relevant elements in an SQLite database.
 
@@ -1328,6 +1337,8 @@ class data:
             table_name: Name of the SQLite table to write elements into.
             connection: Optional existing SQLite connection.  A new one is
                 opened (and closed) automatically when omitted.
+            db_path: Path to the SQLite database file. Required when
+                *connection* is not provided.
         """
         tree = ET.parse(xsd_file)
         root = tree.getroot()
@@ -1367,7 +1378,9 @@ class data:
                 elements.append((elem_id_adjusted, name, statement, elem_type))
 
         if connection is None:
-            conn = sqlite3.connect(self.DB_PATH)
+            if not db_path:
+                raise ValueError("Either connection or db_path is required for parse_edinet_taxonomy.")
+            conn = sqlite3.connect(db_path)
         else:
             conn = connection
 

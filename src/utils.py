@@ -4,25 +4,23 @@ import csv
 from datetime import datetime
 
 
-def generateURL(docID, config, doctype=None):
+def generateURL(docID, base_url, api_key, doctype=None):
     """Build and return the full EDINET API URL for a given document.
 
     Args:
         docID (str): The EDINET document identifier.
-        config (Config): The application config object used to retrieve base
-            URL, document type, and API key.
-        doctype (str, optional): Override for the document type. When omitted,
-            the value from config is used.
+        base_url (str): The EDINET API base URL.
+        api_key (str): The EDINET API subscription key.
+        doctype (str, optional): Document type code for the request.
+            Defaults to ``"5"``.
 
     Returns:
         str: The fully constructed API URL including query parameters.
     """
-    baseURL = config.get("baseURL")
     if doctype is None:
-        doctype = config.get("doctype")
-    apikey = config.get("API_KEY")
+        doctype = "5"
 
-    url = baseURL + "/" + docID + "?type=" + doctype + "&Subscription-Key=" + apikey
+    url = base_url + "/" + docID + "?type=" + doctype + "&Subscription-Key=" + api_key
     return url
 
 

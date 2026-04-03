@@ -1,7 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-04-01
+Last updated: 2026-04-03
 
 Purpose:
 - Central reference for runtime/test Python modules (`src/`) and top-level scripts.
@@ -33,25 +33,36 @@ Suggested per-function format:
 
 ### [src/orchestrator.py](src/orchestrator.py)
 
-Responsibility: application orchestration and step dispatch.
+Responsibility: application orchestration and step dispatch. The orchestrator is a thin dispatcher with **no business logic**. Each step is handled by a dedicated handler function that extracts configuration and calls the appropriate module with explicit parameters. No shared mutable state is carried between steps.
 
-- `def execute_step(step_name, config, edinet=None, data=None, overwrite=False) -> None`
-	- Purpose: Execute a single named orchestration step (download, transform, regress, backtest). Creates `edinet` / `data` instances on demand when not supplied.
-	- Inputs: `step_name`, `config`, optional `edinet`, optional `data`, `overwrite`
-	- Output: None
-	- Calls/Dependencies: `get_All_documents_withMetadata`, `generate_filter`, `downloadDocs`, `store_edinetCodes`, `generate_financial_statements`, `generate_ratios`, `generate_historical_ratios`, `import_stock_prices_csv`, `update_all_stock_prices`, `parse_edinet_taxonomy`, `multivariate_regression`, `run_backtest`, `run_backtest_set`
+Architecture:
+- **Step handlers** (`_step_get_documents`, `_step_download_documents`, etc.): one function per step. Each creates its own module instances with explicit params from config.
+- **`STEP_HANDLERS`**: dict mapping step names to handler functions.
+- **`validate_config()`**: pre-flight validation extracted into its own function.
+- **No class instantiation** of `Edinet` or `data` in `run()` / `run_pipeline()` — each handler creates what it needs.
 
-- `def run(edinet=None, data=None) -> None`
-	- Purpose: Validate config and run the enabled `run_steps` in order.
-	- Inputs: optional `edinet` and `data` instances
-	- Output: None
-	- Calls/Dependencies: `Config`, `execute_step`, `Edinet`, `data`
+- `def execute_step(step_name: str, config, overwrite: bool = False) -> None`
+	- Purpose: Dispatch to the registered handler for `step_name` via `STEP_HANDLERS`.
+	- Inputs: `step_name`, `config`, `overwrite`.
+	- Output: None.
+	- Calls/Dependencies: `STEP_HANDLERS[step_name]`.
 
-- `def run_pipeline(steps: list[dict], config: Config, on_step_start: Callable[[str], None] | None = None, on_step_done: Callable[[str], None] | None = None, on_step_error: Callable[[str, Exception], None] | None = None, cancel_event: threading.Event | None = None) -> None`
+- `def validate_config(config, enabled_steps: list[str]) -> None`
+	- Purpose: Validate required top-level keys and step-config fields for enabled steps. Raises `RuntimeError` with details on missing settings.
+	- Inputs: `config`, `enabled_steps`.
+	- Output: None (raises on failure).
+
+- `def run() -> None`
+	- Purpose: Load Config, determine enabled steps, validate, then execute in order.
+	- Inputs: none.
+	- Output: None.
+	- Calls/Dependencies: `Config`, `validate_config`, `execute_step`.
+
+- `def run_pipeline(steps: list[dict], config: Config, on_step_start=None, on_step_done=None, on_step_error=None, cancel_event=None) -> None`
 	- Purpose: Execute a list of steps in order with per-step callbacks and cancellation support. Used by the Tk UI for background pipeline execution.
-	- Inputs: `steps` (list of dicts with `name` and optional `overwrite`), `config`, optional callbacks `on_step_start`/`on_step_done`/`on_step_error`, optional `cancel_event`.
-	- Output: None
-	- Calls/Dependencies: `execute_step`, `Edinet`, `data`, `threading.Event`
+	- Inputs: `steps` (list of dicts with `name` and optional `overwrite`), `config`, optional callbacks, optional `cancel_event`.
+	- Output: None.
+	- Calls/Dependencies: `execute_step`, `threading.Event`.
 
 ---
 
@@ -161,7 +172,7 @@ Responsibility: portfolio construction, price/dividend ingestion, return calcula
 Responsibility: ETL and transformation of EDINET raw data into normalized financial tables and ratio series.
 
 `class data`
-	- Purpose: Encapsulate DB path and pipeline operations for generating `FinancialStatements`, `PerShare`, and historical aggregates.
+	- Purpose: Stateless namespace for data-processing operations. No Config dependency; all parameters are passed explicitly by the caller (orchestrator).
 
 	- `def generate_financial_statements(self, source_database, source_table, target_database, mappings_config, company_table=None, prices_table=None, overwrite=False, batch_size=2500) -> None`
 		- Purpose: Generate normalized financial-statement tables from raw EDINET records; resumable chunked processing by `docID`.
@@ -181,9 +192,9 @@ Responsibility: ETL and transformation of EDINET raw data into normalized financ
 		- Output: None (writes/updates historical tables).
 		- Calls/Dependencies: `_resolve_table_name_in_schema`, `_create_index_if_not_exists`, `_ensure_historical_table_schema`, `_build_cross_sectional_stats`, `_compute_historical_metrics`, `conn.execute`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
 
-	- `def parse_edinet_taxonomy(self, xsd_file, table_name, connection=None) -> None`
+	- `def parse_edinet_taxonomy(self, xsd_file, table_name, connection=None, db_path=None) -> None`
 		- Purpose: Parse an EDINET taxonomy XSD and persist relevant elements to `table_name`.
-		- Inputs: `xsd_file` (path to XSD), `table_name`, optional `connection`.
+		- Inputs: `xsd_file` (path to XSD), `table_name`, optional `connection`, optional `db_path` (required when `connection` is not provided).
 		- Output: None (writes taxonomy rows to DB table).
 		- Calls/Dependencies: `ET.parse`, `_create_table`, `_insert_data`, `_adjust_string`, `conn.commit`, `conn.close`.
 
@@ -193,9 +204,9 @@ Responsibility: ETL and transformation of EDINET raw data into normalized financ
 
 Responsibility: EDINET API wrapper, document listing, download/unzip, CSV ingestion to DB.
 
-- `class Edinet`
 `class Edinet`
-	- Purpose: EDINET HTTP wrapper and helpers to download, extract and ingest financial CSVs into the project DB.
+	- Purpose: EDINET HTTP wrapper and helpers to download, extract and ingest financial CSVs into the project DB. No Config dependency; all parameters are passed explicitly via the constructor.
+	- Constructor: `Edinet(base_url, api_key, db_path, raw_docs_path=None, doc_list_table=None, company_info_table=None, taxonomy_table=None)`
 
 	- `def get_All_documents_withMetadata(self, start_date: str = '2015-01-01', end_date: str | None = None) -> list`
 		- Purpose: Iterate a date range, call the EDINET listing API and persist discovered document metadata into the configured DB table.
@@ -269,8 +280,8 @@ Responsibility: OLS regression tooling, model fitting, scoring query generation 
 
 Responsibility: Small helpers used across modules (URL building, CSV helpers, simple CSV queries).
 
-- `def generateURL(docID, config, doctype=None) -> str`
-	- Purpose: Construct EDINET download URL.
+- `def generateURL(docID, base_url, api_key, doctype=None) -> str`
+	- Purpose: Construct EDINET download URL from explicit parameters.
 
 - `def json_list_to_csv(json_list, csv_filename) -> None`
 	- Purpose: Write list-of-dicts to CSV.
@@ -425,7 +436,25 @@ Responsibility: Background worker utilities — thread pool, event queue, log ha
 
 Responsibility: Thin adapter layer between the Tk UI and backend modules. Provides pipeline execution, setup persistence, and step configuration helpers.
 
-- Constants: `STEP_CONFIG_KEY`, `STEP_DISPLAY`, `ALL_STEP_NAMES`, `STEPS_WITH_OVERWRITE`, `DEFAULT_STEP_CONFIGS`, path constants (`BASE_DIR`, `ENV_PATH`, `STATE_DIR`, `RUN_CONFIG_PATH`, `SAVED_SETUPS_DIR`, `APP_STATE_PATH`).
+- Constants: `STEP_CONFIG_KEY`, `STEP_DISPLAY`, `ALL_STEP_NAMES`, `STEPS_WITH_OVERWRITE`, path constants (`BASE_DIR`, `ENV_PATH`, `STATE_DIR`, `RUN_CONFIG_PATH`, `SAVED_SETUPS_DIR`, `APP_STATE_PATH`).
+
+#### Step Field Registry
+
+The step field registry (`STEP_FIELD_DEFINITIONS`) is the single source of truth for which configuration fields each pipeline step requires. Both the UI config panel and `DEFAULT_STEP_CONFIGS` are derived from it.
+
+- `@dataclass StepField` — Metadata for a single step-config field.
+	- `key: str` — config dict key (e.g. `"Source_Database"`).
+	- `field_type: str` — widget type. One of: `"str"`, `"num"`, `"text"`, `"json"`, `"database"`, `"file"`, `"portfolio"`.
+	- `default: object` — default value (empty string if omitted).
+	- `label: str | None` — display label; defaults to `key` when `None`.
+	- `filetypes: list[tuple[str, str]] | None` — file-dialog filters (for `"file"` type).
+	- `height: int` — text-area rows (for `"text"` / `"json"` types, default 3).
+
+- `STEP_FIELD_DEFINITIONS: dict[str, list[StepField]]` — Maps each step name to an ordered list of `StepField` entries. The UI reads this to render only the relevant inputs per step.
+
+- `DEFAULT_STEP_CONFIGS: dict[str, dict]` — Derived automatically from `STEP_FIELD_DEFINITIONS` via `_build_defaults_from_fields()`. Do **not** edit this dict directly — add/change fields in `STEP_FIELD_DEFINITIONS` instead.
+
+#### Functions
 
 - `def run_pipeline(steps, config_dict, on_step_start=None, on_step_done=None, on_step_error=None, cancel_event=None) -> None`
 	- Purpose: Build `Config.from_dict` and delegate to `orchestrator.run_pipeline`.
@@ -480,6 +509,7 @@ Responsibility: Main pipeline builder — step list, per-step config panel, run/
 - `class OrchestratorPage(ttk.Frame)`
 	- `def load_config(self, cfg: dict, name: str = "")` — Load a config dict into UI state (steps, configs, labels).
 	- `def new_setup(self, name: str)` — Initialise a new empty setup.
+	- `def _build_step_fields(self, parent, step_name, cfg)` — Data-driven config panel builder. Reads `ctrl.STEP_FIELD_DEFINITIONS[step_name]` and creates the appropriate widget for each declared field. No step-specific branching — all steps use this single method.
 	- Keyboard shortcuts: `Alt+Up/Down` (reorder), `Delete` (remove), `Enter` (open config). Context menu for remove/disable.
 
 ---
@@ -502,12 +532,12 @@ Responsibility: Unit tests covering core logic and UI helpers. Each test file ta
 - `[tests/test_regression_analysis.py](tests/test_regression_analysis.py)` — tests OLS runner, scoring query builder, and results writer.
 - `[tests/test_stockprice_api.py](tests/test_stockprice_api.py)` — tests CSV import and stock price ingestion logic.
 - `[tests/test_ui_tk_smoke.py](tests/test_ui_tk_smoke.py)` — Tk UI smoke tests: imports, theme application, widget instantiation, controller functions, QueueLogHandler.
-- `[tests/test_orchestrator.py](tests/test_orchestrator.py)` — Orchestrator tests: `run_pipeline` basic flow, cancellation, error handling, `Config.from_dict` independence and singleton behaviour.
+- `[tests/test_orchestrator.py](tests/test_orchestrator.py)` — Orchestrator tests: `run_pipeline` basic flow, cancellation, error handling, `execute_step` dispatch, `validate_config`, `Config.from_dict` independence and singleton behaviour.
 - `[tests/test_utils.py](tests/test_utils.py)` — small helper tests for URL generation and CSV export.
 
 ---
 
-Last updated: 2026-04-01
+Last updated: 2026-04-03
 
 If you want, I can now auto-populate parameter types and short example inputs/outputs for every function (more verbose), or keep the current concise API listings. Which do you prefer?
 

@@ -205,6 +205,82 @@ Parameters:
 
 ---
 
+### Adding a New Pipeline Step
+
+The pipeline is designed so that adding a new step requires changes in exactly three places, with no UI-specific branching needed:
+
+#### 1. Orchestrator handler (`src/orchestrator.py`)
+
+Create a handler function and register it in `STEP_HANDLERS`:
+
+```python
+def _step_my_new_step(config, overwrite=False):
+    step_cfg = config.get("my_new_step_config", {})
+    # ... call the relevant module with explicit params ...
+
+STEP_HANDLERS["my_new_step"] = _step_my_new_step
+```
+
+Add validation entries to `STEP_REQUIRED_KEYS` and `STEP_REQUIRED_CONFIG_FIELDS` if the step requires top-level config keys or step-config fields.
+
+#### 2. Step catalogue & field registry (`ui_tk/controllers.py`)
+
+Register the step in the catalogue constants and declare its config fields:
+
+```python
+# Add to STEP_CONFIG_KEY
+STEP_CONFIG_KEY["my_new_step"] = "my_new_step_config"
+
+# Add to STEP_DISPLAY
+STEP_DISPLAY["my_new_step"] = "My New Step"
+
+# Declare fields in STEP_FIELD_DEFINITIONS
+STEP_FIELD_DEFINITIONS["my_new_step"] = [
+    StepField("Source_Database", "database"),
+    StepField("output_file", "file", default="data/output.txt"),
+    StepField("batch_size", "num", default=1000),
+]
+```
+
+The `DEFAULT_STEP_CONFIGS` dict is derived automatically from the field definitions — there is nothing else to update.
+
+If the step supports overwrite, add it to `STEPS_WITH_OVERWRITE`.
+
+#### 3. Verify
+
+Run the test suite to ensure nothing is broken:
+
+```powershell
+python -m pytest tests/ -v
+```
+
+The UI config panel will automatically render the correct inputs for the new step based on the field definitions. No changes to the UI page code are needed.
+
+#### Available field types
+
+| `field_type` | Widget | Use for |
+|---|---|---|
+| `"str"` | `LabeledEntry` | Single-line text (table names, tickers, dates) |
+| `"num"` | `LabeledEntry` (stored as int/float) | Numeric values (batch sizes, rates) |
+| `"text"` | `LabeledText` (multi-line) | Large text inputs (SQL queries) |
+| `"json"` | `LabeledText` (multi-line, JSON-serialised) | Structured data (thresholds, filter dicts) |
+| `"database"` | `DatabasePickerEntry` | SQLite `.db` file paths |
+| `"file"` | `FilePickerEntry` | Any file path (CSV, XSD, config JSON) |
+| `"portfolio"` | `PortfolioGrid` | Interactive portfolio allocation table |
+
+All `StepField` options:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `key` | (required) | Config dict key |
+| `field_type` | (required) | Widget type (see table above) |
+| `default` | `""` | Default value for new steps |
+| `label` | `None` (uses `key`) | Custom display label |
+| `filetypes` | `None` | File-dialog filters for `"file"` type |
+| `height` | `3` | Row count for `"text"` / `"json"` areas |
+
+---
+
 ### Pull Requests
 
 - Create a separate branch for each feature or bug fix.

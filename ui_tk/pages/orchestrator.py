@@ -278,15 +278,8 @@ class OrchestratorPage(ttk.Frame):
                 ow_cb.pack(anchor="w", pady=(0, PAD))
                 self._config_widgets["__overwrite__"] = ow_var
 
-        # Build fields based on step type
-        if step_name == "backtest":
-            self._build_backtest_config(scroll_frame, cfg)
-        elif step_name == "backtest_set":
-            self._build_backtest_set_config(scroll_frame, cfg)
-        elif step_name == "Multivariate_Regression":
-            self._build_regression_config(scroll_frame, cfg)
-        else:
-            self._build_generic_config(scroll_frame, cfg)
+        # Build fields from the step-field registry (data-driven).
+        self._build_step_fields(scroll_frame, step_name, cfg)
 
         # save button
         RoundedButton(frame, text="Save Config",
@@ -297,115 +290,65 @@ class OrchestratorPage(ttk.Frame):
         # bind Esc to close
         frame.bind_all("<Escape>", self._close_config_panel)
 
-    def _build_generic_config(self, parent, cfg: dict):
-        """Build entry fields for a flat config dict."""
-        for key, value in cfg.items():
-            if isinstance(value, dict):
-                # nested dict — show as JSON text
-                w = LabeledText(parent, label=key,
-                                value=json.dumps(value, indent=2), height=3)
+    def _build_step_fields(self, parent, step_name: str, cfg: dict):
+        """Build config widgets from the step-field registry.
+
+        Reads ``ctrl.STEP_FIELD_DEFINITIONS[step_name]`` and creates the
+        appropriate widget for each declared field.  Only fields listed in
+        the registry are rendered, keeping the panel relevant to the step.
+        """
+        field_defs = ctrl.STEP_FIELD_DEFINITIONS.get(step_name, [])
+        for f in field_defs:
+            value = cfg.get(f.key, f.default)
+            label = f.display_label
+
+            if f.field_type == "database":
+                w = DatabasePickerEntry(parent, label=label,
+                                        value=str(value))
                 w.pack(fill="x", pady=(0, PAD))
-                self._config_widgets[key] = ("json", w)
-            elif key.endswith("Database") or key == "Target_Database":
-                w = DatabasePickerEntry(parent, label=key, value=str(value))
+                self._config_widgets[f.key] = ("str", w)
+
+            elif f.field_type == "file":
+                kw = {}
+                if f.filetypes:
+                    kw["filetypes"] = f.filetypes
+                w = FilePickerEntry(parent, label=label,
+                                    value=str(value), **kw)
                 w.pack(fill="x", pady=(0, PAD))
-                self._config_widgets[key] = ("str", w)
-            elif key.endswith("_file") or key.endswith("_Config") or key == "csv_file":
-                w = FilePickerEntry(parent, label=key, value=str(value))
+                self._config_widgets[f.key] = ("str", w)
+
+            elif f.field_type == "json":
+                txt = (json.dumps(value, indent=2)
+                       if isinstance(value, (dict, list)) else str(value))
+                w = LabeledText(parent, label=label, value=txt,
+                                height=f.height)
                 w.pack(fill="x", pady=(0, PAD))
-                self._config_widgets[key] = ("str", w)
-            elif key == "xsd_file":
-                w = FilePickerEntry(parent, label=key, value=str(value),
-                                    filetypes=[("XSD files", "*.xsd"),
-                                               ("All files", "*.*")])
+                self._config_widgets[f.key] = ("json", w)
+
+            elif f.field_type == "text":
+                w = LabeledText(parent, label=label,
+                                value=str(value), height=f.height)
                 w.pack(fill="x", pady=(0, PAD))
-                self._config_widgets[key] = ("str", w)
-            else:
-                w = LabeledEntry(parent, label=key, value=str(value))
+                self._config_widgets[f.key] = ("text", w)
+
+            elif f.field_type == "num":
+                w = LabeledEntry(parent, label=label, value=str(value))
                 w.pack(fill="x", pady=(0, PAD))
-                # detect numeric
-                if isinstance(value, (int, float)):
-                    self._config_widgets[key] = ("num", w)
-                else:
-                    self._config_widgets[key] = ("str", w)
+                self._config_widgets[f.key] = ("num", w)
 
-    def _build_backtest_config(self, parent, cfg: dict):
-        """Build backtest-specific config with portfolio grid."""
-        w = DatabasePickerEntry(parent, label="Source_Database",
-                                value=str(cfg.get("Source_Database", "")))
-        w.pack(fill="x", pady=(0, PAD))
-        self._config_widgets["Source_Database"] = ("str", w)
+            elif f.field_type == "portfolio":
+                ttk.Label(parent, text=label, style="Surface.TLabel",
+                          font=FONT_UI_BOLD).pack(anchor="w",
+                                                   pady=(PAD, 2))
+                portfolio = value if isinstance(value, dict) else {}
+                w = PortfolioGrid(parent, portfolio=portfolio)
+                w.pack(fill="x", pady=(0, PAD))
+                self._config_widgets[f.key] = ("portfolio", w)
 
-        for key in ("PerShare_Table", "Financial_Statements_Table",
-                     "start_date", "end_date", "benchmark_ticker",
-                     "output_file"):
-            w = LabeledEntry(parent, label=key, value=str(cfg.get(key, "")))
-            w.pack(fill="x", pady=(0, PAD))
-            self._config_widgets[key] = ("str", w)
-
-        w = LabeledEntry(parent, label="risk_free_rate",
-                         value=str(cfg.get("risk_free_rate", 0.0)))
-        w.pack(fill="x", pady=(0, PAD))
-        self._config_widgets["risk_free_rate"] = ("num", w)
-
-        # portfolio grid
-        ttk.Label(parent, text="Portfolio:", style="Surface.TLabel",
-                  font=FONT_UI_BOLD).pack(anchor="w", pady=(PAD, 2))
-        portfolio = cfg.get("portfolio", {})
-        self._portfolio_grid = PortfolioGrid(parent, portfolio=portfolio)
-        self._portfolio_grid.pack(fill="x", pady=(0, PAD))
-        self._config_widgets["portfolio"] = ("portfolio", self._portfolio_grid)
-
-    def _build_backtest_set_config(self, parent, cfg: dict):
-        """Build backtest-set config (CSV-driven, no portfolio)."""
-        w = DatabasePickerEntry(parent, label="Source_Database",
-                                value=str(cfg.get("Source_Database", "")))
-        w.pack(fill="x", pady=(0, PAD))
-        self._config_widgets["Source_Database"] = ("str", w)
-
-        for key in ("PerShare_Table", "Financial_Statements_Table",
-                     "benchmark_ticker", "output_dir"):
-            w = LabeledEntry(parent, label=key, value=str(cfg.get(key, "")))
-            w.pack(fill="x", pady=(0, PAD))
-            self._config_widgets[key] = ("str", w)
-
-        w = FilePickerEntry(parent, label="csv_file",
-                            value=str(cfg.get("csv_file", "")),
-                            filetypes=[("CSV files", "*.csv"),
-                                       ("All files", "*.*")])
-        w.pack(fill="x", pady=(0, PAD))
-        self._config_widgets["csv_file"] = ("str", w)
-
-        for key in ("risk_free_rate", "initial_capital"):
-            val = cfg.get(key, 0.0)
-            w = LabeledEntry(parent, label=key, value=str(val))
-            w.pack(fill="x", pady=(0, PAD))
-            self._config_widgets[key] = ("num", w)
-
-    def _build_regression_config(self, parent, cfg: dict):
-        """Build regression-specific config with SQL text area."""
-        w = DatabasePickerEntry(parent, label="Source_Database",
-                                value=str(cfg.get("Source_Database", "")))
-        w.pack(fill="x", pady=(0, PAD))
-        self._config_widgets["Source_Database"] = ("str", w)
-
-        w = FilePickerEntry(parent, label="Output",
-                            value=str(cfg.get("Output", "")))
-        w.pack(fill="x", pady=(0, PAD))
-        self._config_widgets["Output"] = ("str", w)
-
-        # winsorize thresholds
-        wt = cfg.get("winsorize_thresholds", {"lower": 0.05, "upper": 0.95})
-        w = LabeledText(parent, label="winsorize_thresholds (JSON)",
-                        value=json.dumps(wt, indent=2), height=3)
-        w.pack(fill="x", pady=(0, PAD))
-        self._config_widgets["winsorize_thresholds"] = ("json", w)
-
-        # SQL query
-        w = LabeledText(parent, label="SQL_Query",
-                        value=str(cfg.get("SQL_Query", "")), height=6)
-        w.pack(fill="x", pady=(0, PAD))
-        self._config_widgets["SQL_Query"] = ("text", w)
+            else:  # "str" (default)
+                w = LabeledEntry(parent, label=label, value=str(value))
+                w.pack(fill="x", pady=(0, PAD))
+                self._config_widgets[f.key] = ("str", w)
 
     def _save_current_config_fields(self):
         """Read widget values back into ``_step_configs``."""
@@ -536,6 +479,8 @@ class OrchestratorPage(ttk.Frame):
         logger.info(f"New setup: {name}")
 
     def _save_setup(self):
+        # Persist any in-panel edits before serializing setup data.
+        self._save_current_config_fields()
         name = self._setup_name or "(active)"
         if name == "(active)":
             name = simpledialog.askstring("Save Setup", "Setup name:",
@@ -604,6 +549,9 @@ class OrchestratorPage(ttk.Frame):
         if not enabled:
             logger.warning("No steps enabled — nothing to run")
             return
+
+        # Ensure values currently visible in the config panel are captured.
+        self._save_current_config_fields()
 
         # save config before running (so CLI stays compatible)
         cfg_dict = ctrl.build_config_dict(self._steps, self._step_configs)

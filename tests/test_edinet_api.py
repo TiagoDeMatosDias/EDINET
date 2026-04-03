@@ -7,25 +7,31 @@ import pandas as pd
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.edinet_api import Edinet
 
+
+def _make_edinet(**overrides):
+    """Create an Edinet with test defaults; override any kwarg."""
+    defaults = {
+        "base_url": "http://test.com",
+        "api_key": "test_key",
+        "db_path": "dummy.db",
+        "raw_docs_path": "test_location",
+        "doc_list_table": "DocumentList",
+        "company_info_table": "companyInfo",
+        "taxonomy_table": "taxonomy",
+    }
+    defaults.update(overrides)
+    return Edinet(**defaults)
+
+
 class TestEdinet(unittest.TestCase):
 
     def setUp(self):
         pass
 
-    @patch('src.edinet_api.c.Config')
     @patch('src.edinet_api.requests.get')
     @patch('src.edinet_api.sqlite3.connect')
-    def test_get_All_documents_withMetadata(self, mock_sqlite_connect, mock_requests_get, mock_config):
-        # Mock the config
-        mock_config_instance = mock_config.return_value
-        mock_config_instance.get.side_effect = lambda key, default=None: {
-            "baseURL": "http://test.com",
-            "API_KEY": "test_key",
-            "DB_PATH": "dummy.db",
-            "DB_DOC_LIST_TABLE": "DocumentList"
-        }.get(key, default)
-
-        self.edinet = Edinet()
+    def test_get_All_documents_withMetadata(self, mock_sqlite_connect, mock_requests_get):
+        self.edinet = _make_edinet()
 
         # Mock the requests response
         mock_response = MagicMock()
@@ -62,20 +68,10 @@ class TestEdinet(unittest.TestCase):
         self.assertEqual(mock_conn.commit.call_count, 1)
         mock_conn.close.assert_called_once()
 
-    @patch('src.edinet_api.c.Config')
     @patch('src.edinet_api.requests.get')
     @patch('builtins.open', new_callable=mock_open)
-    def test_downloadDoc(self, mock_open_file, mock_requests_get, mock_config):
-        # Mock the config
-        mock_config_instance = mock_config.return_value
-        mock_config_instance.get.side_effect = lambda key, default=None: {
-            "RAW_DOCUMENTS_PATH": "test_location",
-            "baseURL": "http://test.com",
-            "API_KEY": "test_key",
-            "doctype": "5"
-        }.get(key, default)
-
-        self.edinet = Edinet()
+    def test_downloadDoc(self, mock_open_file, mock_requests_get):
+        self.edinet = _make_edinet()
 
         # Mock the requests response
         mock_response = MagicMock()
@@ -92,7 +88,6 @@ class TestEdinet(unittest.TestCase):
         mock_open_file.assert_called_with(expected_path, 'wb')
         mock_open_file().write.assert_called_with(b'zip_content')
 
-    @patch('src.edinet_api.c.Config')
     @patch('src.edinet_api.Edinet.query_database_select')
     @patch('src.edinet_api.Edinet.create_folder')
     @patch('src.edinet_api.Edinet.downloadDoc')
@@ -102,15 +97,9 @@ class TestEdinet(unittest.TestCase):
     @patch('src.edinet_api.Edinet.query_database_setColumn')
     @patch('src.edinet_api.Edinet.delete_folder')
     @patch('src.edinet_api.sqlite3.connect')
-    def test_downloadDocs(self, mock_sqlite_connect, mock_delete_folder, mock_query_database_setColumn, mock_load_financial_data, mock_unzip_files, mock_list_files_in_folder, mock_downloadDoc, mock_create_folder, mock_query_database_select, mock_config):
-        # Mock the config
-        mock_config_instance = mock_config.return_value
-        mock_config_instance.get.side_effect = lambda key, default=None: {
-            "RAW_DOCUMENTS_PATH": "test_location",
-            "DB_PATH": "dummy.db"
-        }.get(key, default)
-
-        self.edinet = Edinet()
+    @patch('src.edinet_api.zipfile.is_zipfile', return_value=True)
+    def test_downloadDocs(self, mock_is_zipfile, mock_sqlite_connect, mock_delete_folder, mock_query_database_setColumn, mock_load_financial_data, mock_unzip_files, mock_list_files_in_folder, mock_downloadDoc, mock_create_folder, mock_query_database_select):
+        self.edinet = _make_edinet()
 
         # Mock the database connection
         mock_conn = MagicMock()
@@ -118,6 +107,12 @@ class TestEdinet(unittest.TestCase):
 
         # Mock the query_database_select to return a single document
         mock_query_database_select.return_value = [{"docID": "doc1"}]
+
+        # list_files_in_folder is called twice: once for the zip files, once for unzipped
+        mock_list_files_in_folder.side_effect = [
+            ["fake/doc1.zip"],       # zipped files
+            ["fake/unzipped/f.csv"], # financial files
+        ]
 
         # Call the method
         self.edinet.downloadDocs("input_table")
@@ -132,20 +127,12 @@ class TestEdinet(unittest.TestCase):
         mock_query_database_setColumn.assert_called_once()
         mock_delete_folder.assert_called()
 
-    @patch('src.edinet_api.c.Config')
     @patch('src.edinet_api.Edinet.query_database_select')
     @patch('src.edinet_api.Edinet.create_folder')
     @patch('src.edinet_api.Edinet.downloadDoc')
     @patch('src.edinet_api.Edinet.delete_folder')
-    def test_downloadDocs_handles_none_result(self, mock_delete_folder, mock_downloadDoc, mock_create_folder, mock_query_database_select, mock_config):
-        # Mock the config
-        mock_config_instance = mock_config.return_value
-        mock_config_instance.get.side_effect = lambda key, default=None: {
-            "RAW_DOCUMENTS_PATH": "test_location",
-            "DB_PATH": "dummy.db"
-        }.get(key, default)
-
-        self.edinet = Edinet()
+    def test_downloadDocs_handles_none_result(self, mock_delete_folder, mock_downloadDoc, mock_create_folder, mock_query_database_select):
+        self.edinet = _make_edinet()
 
         # Simulate query failure path where select returns None
         mock_query_database_select.return_value = None
@@ -158,19 +145,12 @@ class TestEdinet(unittest.TestCase):
         mock_downloadDoc.assert_not_called()
         mock_delete_folder.assert_not_called()
 
-    @patch('src.edinet_api.c.Config')
     @patch('src.edinet_api.pd.read_csv')
     @patch('src.edinet_api.Edinet.detect_file_encoding')
     @patch('src.edinet_api.sqlite3.connect')
     @patch('pandas.DataFrame.to_sql')
-    def test_load_financial_data(self, mock_to_sql, mock_sqlite_connect, mock_detect_encoding, mock_read_csv, mock_config):
-        # Mock the config
-        mock_config_instance = mock_config.return_value
-        mock_config_instance.get.side_effect = lambda key, default=None: {
-            "DB_PATH": "dummy.db"
-        }.get(key, default)
-
-        self.edinet = Edinet()
+    def test_load_financial_data(self, mock_to_sql, mock_sqlite_connect, mock_detect_encoding, mock_read_csv):
+        self.edinet = _make_edinet()
 
         # Mock the database connection
         mock_conn = MagicMock()
@@ -190,19 +170,12 @@ class TestEdinet(unittest.TestCase):
         # Assert that the to_sql method was called on the dataframe
         mock_to_sql.assert_called()
 
-    @patch('src.edinet_api.c.Config')
     @patch('src.edinet_api.pd.read_csv')
     @patch('src.edinet_api.Edinet.detect_file_encoding')
     @patch('src.edinet_api.sqlite3.connect')
     @patch('pandas.DataFrame.to_sql')
-    def test_store_edinetCodes_uses_target_database(self, mock_to_sql, mock_sqlite_connect, mock_detect_encoding, mock_read_csv, mock_config):
-        mock_config_instance = mock_config.return_value
-        mock_config_instance.get.side_effect = lambda key, default=None: {
-            "DB_PATH": "default.db",
-            "DB_COMPANY_INFO_TABLE": "companyInfo",
-        }.get(key, default)
-
-        self.edinet = Edinet()
+    def test_store_edinetCodes_uses_target_database(self, mock_to_sql, mock_sqlite_connect, mock_detect_encoding, mock_read_csv):
+        self.edinet = _make_edinet(company_info_table="companyInfo")
         mock_detect_encoding.return_value = "utf-8"
         mock_read_csv.return_value = pd.DataFrame({"A": [1]})
         mock_conn = MagicMock()

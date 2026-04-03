@@ -4,7 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **Orchestration layer rework** — complete rewrite of `src/orchestrator.py`:
+  - **Step handler pattern**: each orchestration step is handled by a dedicated function (`_step_get_documents`, `_step_download_documents`, etc.) registered in a `STEP_HANDLERS` dict, replacing the monolithic `if/elif` chain.
+  - **No shared state**: `run()` and `run_pipeline()` no longer pre-create shared `Edinet` or `data` instances. Each step handler creates its own module instances with explicit parameters.
+  - **`execute_step` simplified**: signature changed from `(step_name, config, edinet=None, data=None, overwrite=False)` to `(step_name, config, overwrite=False)`.
+  - **`run()` simplified**: signature changed from `run(edinet=None, data=None)` to `run()`.
+  - **`validate_config()` extracted**: pre-flight validation is now a standalone public function.
+- **`Edinet` class decoupled from Config** — constructor now takes explicit parameters `(base_url, api_key, db_path, raw_docs_path, doc_list_table, company_info_table, taxonomy_table)` instead of reading the Config singleton.
+- **`data` class decoupled from Config** — `__init__` no longer reads Config; all parameters are passed explicitly to each method by the caller.
+- **`generateURL()` decoupled from Config** — signature changed from `(docID, config, doctype)` to `(docID, base_url, api_key, doctype)`.
+
 ### Removed
+- **Config singleton dependency** removed from `src/edinet_api.py` and `src/data_processing.py`. Only the orchestrator reads Config.
 - **`standardize_data` step** — legacy data normalisation step removed; the pipeline now reads directly from the raw `financialData_full` table.
 - **`generate_financial_ratios` step** — replaced by the `generate_ratios` and `generate_historical_ratios` steps.
 - **`find_significant_predictors` step** — univariate OLS sweep removed; use `Multivariate_Regression` with a custom SQL query instead.

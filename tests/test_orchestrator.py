@@ -1,4 +1,4 @@
-"""Tests for the orchestrator.run_pipeline function."""
+"""Tests for the orchestrator module."""
 
 import threading
 import pytest
@@ -16,16 +16,20 @@ class TestRunPipeline:
     def teardown_method(self):
         Config.reset()
 
+    @staticmethod
+    def _make_pipeline_config() -> Config:
+        return Config.from_dict({
+            "baseURL": "http://example.com",
+            "API_KEY": "key123",
+            "get_documents_config": {"Target_Database": "test.db"},
+            "download_documents_config": {"Target_Database": "test.db"},
+        })
+
     @patch("src.orchestrator.execute_step")
-    @patch("src.orchestrator.d")
-    @patch("src.orchestrator.edinet_api")
-    def test_basic_run(self, mock_edinet_api, mock_d, mock_execute):
+    def test_basic_run(self, mock_execute):
         from src.orchestrator import run_pipeline
 
-        mock_edinet_api.Edinet.return_value = MagicMock()
-        mock_d.data.return_value = MagicMock()
-
-        config = Config.from_dict({"run_steps": {}})
+        config = self._make_pipeline_config()
         steps = [
             {"name": "get_documents", "overwrite": False},
             {"name": "download_documents", "overwrite": False},
@@ -46,15 +50,10 @@ class TestRunPipeline:
         assert done == ["get_documents", "download_documents"]
 
     @patch("src.orchestrator.execute_step")
-    @patch("src.orchestrator.d")
-    @patch("src.orchestrator.edinet_api")
-    def test_cancellation(self, mock_edinet_api, mock_d, mock_execute):
+    def test_cancellation(self, mock_execute):
         from src.orchestrator import run_pipeline
 
-        mock_edinet_api.Edinet.return_value = MagicMock()
-        mock_d.data.return_value = MagicMock()
-
-        config = Config.from_dict({"run_steps": {}})
+        config = self._make_pipeline_config()
         cancel = threading.Event()
         cancel.set()  # pre-cancel
 
@@ -72,15 +71,10 @@ class TestRunPipeline:
         assert started == []
 
     @patch("src.orchestrator.execute_step", side_effect=RuntimeError("fail"))
-    @patch("src.orchestrator.d")
-    @patch("src.orchestrator.edinet_api")
-    def test_error_callback(self, mock_edinet_api, mock_d, mock_execute):
+    def test_error_callback(self, mock_execute):
         from src.orchestrator import run_pipeline
 
-        mock_edinet_api.Edinet.return_value = MagicMock()
-        mock_d.data.return_value = MagicMock()
-
-        config = Config.from_dict({"run_steps": {}})
+        config = self._make_pipeline_config()
         steps = [{"name": "get_documents"}]
 
         errors = []
@@ -94,6 +88,59 @@ class TestRunPipeline:
 
         assert len(errors) == 1
         assert errors[0][0] == "get_documents"
+
+
+class TestExecuteStep:
+    """Test that execute_step dispatches to the correct handler."""
+
+    def setup_method(self):
+        Config.reset()
+
+    def teardown_method(self):
+        Config.reset()
+
+    def test_dispatches_known_step(self):
+        from src.orchestrator import execute_step
+
+        mock_handler = MagicMock()
+        config = Config.from_dict({})
+        with patch.dict("src.orchestrator.STEP_HANDLERS", {"get_documents": mock_handler}):
+            execute_step("get_documents", config, overwrite=True)
+
+        mock_handler.assert_called_once_with(config, overwrite=True)
+
+    def test_unknown_step_does_not_raise(self):
+        from src.orchestrator import execute_step
+
+        config = Config.from_dict({})
+        execute_step("nonexistent_step", config)  # should not raise
+
+
+class TestValidateConfig:
+    """Test pre-flight config validation."""
+
+    def setup_method(self):
+        Config.reset()
+
+    def teardown_method(self):
+        Config.reset()
+
+    def test_missing_keys_raises(self):
+        from src.orchestrator import validate_config
+
+        config = Config.from_dict({})
+        with pytest.raises(RuntimeError, match="missing"):
+            validate_config(config, ["get_documents"])
+
+    def test_all_keys_present_passes(self):
+        from src.orchestrator import validate_config
+
+        config = Config.from_dict({
+            "baseURL": "http://example.com",
+            "API_KEY": "key123",
+            "get_documents_config": {"Target_Database": "test.db"},
+        })
+        validate_config(config, ["get_documents"])  # should not raise
 
 
 class TestConfigFromDict:

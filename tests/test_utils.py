@@ -5,26 +5,24 @@ import sys
 import csv
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src import utils
-from config import Config
 
 class TestHelper(unittest.TestCase):
 
-    @patch('config.Config')
-    def test_generateURL(self, mock_config):
-        # Mock the config
-        mock_config_instance = mock_config()
-        def get_side_effect(key, default=None):
-            if key == "API_KEY":
-                return "test_key"
-            return {
-                "baseURL": "http://test.com",
-                "doctype": "5"
-            }.get(key, default)
-        mock_config_instance.get.side_effect = get_side_effect
-        
+    def test_generateURL(self):
         docID = "test_doc_id"
         expected_url = f"http://test.com/{docID}?type=5&Subscription-Key=test_key"
-        self.assertEqual(utils.generateURL(docID, mock_config_instance), expected_url)
+        self.assertEqual(
+            utils.generateURL(docID, "http://test.com", "test_key", "5"),
+            expected_url,
+        )
+
+    def test_generateURL_default_doctype(self):
+        docID = "test_doc_id"
+        expected_url = f"http://test.com/{docID}?type=5&Subscription-Key=test_key"
+        self.assertEqual(
+            utils.generateURL(docID, "http://test.com", "test_key"),
+            expected_url,
+        )
 
     def test_json_list_to_csv(self):
         json_list = [
