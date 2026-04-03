@@ -133,6 +133,32 @@ class TestEdinet(unittest.TestCase):
         mock_delete_folder.assert_called()
 
     @patch('src.edinet_api.c.Config')
+    @patch('src.edinet_api.Edinet.query_database_select')
+    @patch('src.edinet_api.Edinet.create_folder')
+    @patch('src.edinet_api.Edinet.downloadDoc')
+    @patch('src.edinet_api.Edinet.delete_folder')
+    def test_downloadDocs_handles_none_result(self, mock_delete_folder, mock_downloadDoc, mock_create_folder, mock_query_database_select, mock_config):
+        # Mock the config
+        mock_config_instance = mock_config.return_value
+        mock_config_instance.get.side_effect = lambda key, default=None: {
+            "RAW_DOCUMENTS_PATH": "test_location",
+            "DB_PATH": "dummy.db"
+        }.get(key, default)
+
+        self.edinet = Edinet()
+
+        # Simulate query failure path where select returns None
+        mock_query_database_select.return_value = None
+
+        # Should not raise TypeError on len(None)
+        self.edinet.downloadDocs("input_table")
+
+        # No download work should start
+        mock_create_folder.assert_not_called()
+        mock_downloadDoc.assert_not_called()
+        mock_delete_folder.assert_not_called()
+
+    @patch('src.edinet_api.c.Config')
     @patch('src.edinet_api.pd.read_csv')
     @patch('src.edinet_api.Edinet.detect_file_encoding')
     @patch('src.edinet_api.sqlite3.connect')

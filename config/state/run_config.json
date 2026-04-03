@@ -1,42 +1,37 @@
 {
   "run_steps": {
-    "get_documents": {
+    "download_documents": {
       "enabled": true,
       "overwrite": false
     }
   },
   "get_documents_config": {
     "startDate": "2026-02-15",
-    "endDate": "2026-02-27",
-    "Target_Database": "",
-    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
-    "Output": "data/ols_results/ols_results_summary.txt",
-    "winsorize_thresholds": {
-      "lower": 0.05,
-      "upper": 0.95
-    },
-    "SQL_Query": "SELECT ph.SharePrice_3Year_Growth, vh.PriceToBook_ZScore_IntraCompany, vh.PERatio_ZScore_IntraCompany, qh.ReturnOnAssets_3Year_Average FROM Quality_Historical qh LEFT JOIN Pershare_Historical ph ON qh.docID = ph.docID LEFT JOIN Valuation_Historical vh ON qh.docID = vh.docID LEFT JOIN FinancialStatements fs ON qh.docID = fs.docID AND qh.edinetCode = fs.edinetCode"
+    "endDate": "2026-04-03",
+    "Target_Database": ""
   },
   "download_documents_config": {
     "docTypeCode": "120",
     "csvFlag": "1",
     "secCode": "",
     "Downloaded": "False",
-    "Target_Database": ""
+    "Target_Database": "",
+    "startDate": "2026-02-15",
+    "endDate": "2026-04-03"
   },
   "populate_company_info_config": {
     "csv_file": "config/reference/companyinfo.csv",
     "Target_Database": ""
   },
   "import_stock_prices_csv_config": {
-    "Target_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
-    "csv_file": "C:\\programming\\Finance\\EDINET\\EDINET\\data\\stock data\\Stock_Prices.csv",
-    "default_ticker": "TPX",
+    "Target_Database": "",
+    "csv_file": "",
+    "default_ticker": "",
     "default_currency": "JPY",
     "date_column": "Date",
-    "price_column": "Price",
-    "ticker_column": "Ticker",
-    "currency_column": "Currency"
+    "price_column": "Close",
+    "ticker_column": "",
+    "currency_column": ""
   },
   "update_stock_prices_config": {
     "Target_Database": ""
@@ -46,67 +41,53 @@
     "Target_Database": ""
   },
   "generate_financial_statements_config": {
-    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Base.db",
+    "Source_Database": "",
     "Source_Table": "financialData_full",
-    "Target_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "Target_Database": "",
     "Company_Info_Table": "",
     "Stock_Prices_Table": "",
-    "Mappings_Config": "C:\\programming\\Finance\\EDINET\\EDINET\\config\\reference\\financial_statements_mappings_config.json",
+    "Mappings_Config": "config/reference/financial_statements_mappings_config.json",
     "batch_size": 2500
   },
   "generate_ratios_config": {
-    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
-    "Target_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "Source_Database": "",
+    "Target_Database": "",
     "Formulas_Config": "config/reference/generate_ratios_formulas_config.json",
     "batch_size": 5000
   },
   "generate_historical_ratios_config": {
-    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
-    "Target_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "Source_Database": "",
+    "Target_Database": "",
     "company_batch_size": 200
   },
   "Multivariate_Regression_config": {
-    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "Source_Database": "",
     "Output": "data/ols_results/ols_results_summary.txt",
     "winsorize_thresholds": {
       "lower": 0.05,
       "upper": 0.95
     },
-    "SQL_Query": "SELECT ph.SharePrice_3Year_Growth, vh.PriceToBook_ZScore_IntraCompany, vh.PERatio_ZScore_IntraCompany, qh.ReturnOnAssets_3Year_Average FROM Quality_Historical qh LEFT JOIN Pershare_Historical ph ON qh.docID = ph.docID LEFT JOIN Valuation_Historical vh ON qh.docID = vh.docID LEFT JOIN FinancialStatements fs ON qh.docID = fs.docID AND qh.edinetCode = fs.edinetCode"
+    "SQL_Query": "Select PerShare_SharePrice, PerShare_BookValue * Ratio_PriceBook as Bv_Check , PerShare_Earnings / Ratio_EarningsYield as Earnings_Check, PerShare_Sales * Ratio_PriceSales as Sales_Check from Standard_Data_Ratios"
   },
   "backtesting_config": {
-    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "Source_Database": "",
     "PerShare_Table": "PerShare",
     "Financial_Statements_Table": "FinancialStatements",
-    "start_date": "2020-01-01",
-    "end_date": "2026-02-10",
-    "portfolio": {
-      "59110": {
-        "mode": "shares",
-        "value": 100.0
-      },
-      "59840": {
-        "mode": "shares",
-        "value": 300.0
-      },
-      "75750": {
-        "mode": "weight",
-        "value": 0.5
-      }
-    },
-    "benchmark_ticker": "TPX",
+    "start_date": "2023-01-01",
+    "end_date": "2025-12-31",
+    "portfolio": {},
+    "benchmark_ticker": "",
     "output_file": "data/backtest_results/backtest_report.txt",
-    "risk_free_rate": 0.02,
-    "initial_capital": 0.0
+    "risk_free_rate": 0.0
   },
   "backtest_set_config": {
-    "Source_Database": "C:\\programming\\Finance\\EDINET\\Databases\\Standardized.db",
+    "Source_Database": "",
     "PerShare_Table": "PerShare",
     "Financial_Statements_Table": "FinancialStatements",
-    "csv_file": "C:\\programming\\Finance\\EDINET\\EDINET\\data\\ols_results\\ols_results_summary_top10.csv",
-    "benchmark_ticker": "TPX",
+    "csv_file": "",
+    "benchmark_ticker": "",
     "output_dir": "data/backtest_set_results",
-    "risk_free_rate": 0.02,
+    "risk_free_rate": 0.0,
     "initial_capital": 0.0
   }
 }

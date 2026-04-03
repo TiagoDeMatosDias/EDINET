@@ -139,6 +139,10 @@ class Edinet:
 
         docList = self.query_database_select(input_table,filter)
 
+        if docList is None:
+            print("No documents to download: query returned no results.")
+            return
+
         print(f"Number of documents to download: {len(docList)}")
         
         for doc in docList:
@@ -146,7 +150,7 @@ class Edinet:
                 #get defaults
                 doc_id = doc.get("docID")
                 folder = self.defaultLocation + "\\downloadeddocs\\" + doc_id
-                filter = self.generate_filter("docID", "=", doc_id)
+                doc_filter = self.generate_filter("docID", "=", doc_id)
                 connection = sqlite3.connect(self.Database)
 
                 #create folders and download  files
@@ -162,7 +166,7 @@ class Edinet:
                 self.load_financial_data(financialFiles, output_table, doc, connection)
 
                 #Update downloaded status and clean the environment
-                self.query_database_setColumn(input_table,filter, "Downloaded", "True", connection)
+                self.query_database_setColumn(input_table,doc_filter, "Downloaded", "True", connection)
                 self.delete_folder(folder)
                 connection.close()
             except Exception as e:
