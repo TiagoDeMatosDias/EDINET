@@ -4,6 +4,18 @@ First off, thank you for considering contributing to EDINET! It's people like yo
 
 Following these guidelines helps to communicate that you respect the time of the developers managing and developing this open source project. In return, they should reciprocate that respect in addressing your issue or assessing patches and features.
 
+## Quick Checklist: Documentation Updates
+
+Use this checklist when your change affects behavior, UI, workflows, or architecture:
+
+- Update user-facing docs impacted by the change (for example `docs/Readme.md` and `docs/RUNNING.md`)
+- Update technical docs when implementation details changed (especially `docs/Application Details.md`)
+- Update contributing guidance if contributor workflows changed (for example screenshot/dev loops in `docs/Contributing.md`)
+- If UI changed, refresh screenshots (`python -m pytest tests/test_ui_screenshots.py -v`) and update assets in `docs/images/`
+- Remove obsolete documentation references, commands, flags, screenshots, and files
+- Verify markdown links/images render correctly in preview
+- Include documentation updates in the same PR as the code change
+
 ## Ground Rules
 
 - Ensure that the project remains standardized and modular. New sections should be able to be added or removed without significant refactoring.
@@ -14,7 +26,7 @@ Following these guidelines helps to communicate that you respect the time of the
     - Configuration state (runtime config, saved setups) in `config/state/`
     - Configuration examples in `config/examples/`
     - Source code in `src/`
-    - UI code in `ui/`
+    - UI code in `ui_tk/`
     - Data files in `data/`
 
 ## Your First Contribution
@@ -122,6 +134,36 @@ python -m pytest tests/test_ui_screenshots.py -v
 ```
 
 Screenshots are saved to `data/mockups/screenshots/` with filenames like `home_dark.png`, `orchestrator_light.png`, etc.
+
+#### Updating screenshots used in documentation
+
+When UI changes are substantial, update documentation screenshots in the same pull request.
+
+1. Capture fresh screenshots:
+
+```powershell
+python -m pytest tests/test_ui_screenshots.py -v
+```
+
+2. Copy selected images from `data/mockups/screenshots/` to `docs/images/` using clear, stable names.
+
+```powershell
+Copy-Item data/mockups/screenshots/home_dark.png docs/images/ui-home-dark.png -Force
+Copy-Item data/mockups/screenshots/orchestrator_dark.png docs/images/ui-orchestrator-dark.png -Force
+Copy-Item data/mockups/screenshots/data_dark.png docs/images/ui-data-dark.png -Force
+```
+
+3. Update markdown links in docs (for example, in `docs/Readme.md`) to point to the new files.
+
+4. Remove obsolete images that are no longer referenced to keep `docs/images/` clean.
+
+5. Verify all image links resolve correctly in markdown preview before opening the PR.
+
+Notes:
+
+- Prefer PNG files for UI screenshots.
+- Keep image dimensions consistent across related screenshots when possible.
+- Include both dark/light captures when the change affects theme-specific visuals.
 
 #### Using the reusable API in scripts or notebooks
 

@@ -27,9 +27,23 @@ Each pipeline step is configured independently, including its source or target d
 11. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
 12. **Backtest set** – batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
 
-## Screenshot
+## Screenshots
 
-![EDINET Application](images/image.png)
+### Home (Dark)
+
+![EDINET Home Dark](images/ui-home-dark.png)
+
+### Orchestrator (Dark)
+
+![EDINET Orchestrator Dark](images/ui-orchestrator-dark.png)
+
+### Data (Dark)
+
+![EDINET Data Dark](images/ui-data-dark.png)
+
+### Orchestrator (Light)
+
+![EDINET Orchestrator Light](images/ui-orchestrator-light.png)
 
 ## GUI & CLI Modes
 
