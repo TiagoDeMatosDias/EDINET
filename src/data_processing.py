@@ -1298,7 +1298,12 @@ class data:
         """
         try:
             if connection is None:
-                conn = sqlite3.connect(self.DB_PATH)
+                db_path = getattr(self, "DB_PATH", None)
+                if not db_path:
+                    raise ValueError(
+                        "delete_table requires a connection or self.DB_PATH to be set."
+                    )
+                conn = sqlite3.connect(db_path)
             else:
                 conn = connection
             cursor = conn.cursor()
