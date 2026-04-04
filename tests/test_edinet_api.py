@@ -60,11 +60,14 @@ class TestEdinet(unittest.TestCase):
         self.edinet.get_All_documents_withMetadata(start_date="2025-01-01", end_date="2025-01-01")
 
         # Assert that the requests.get was called with the correct URL
-        mock_requests_get.assert_called_with(f"{self.edinet.baseURL}.json?date=2025-01-01&type=2&Subscription-Key={self.edinet.key}")
+        mock_requests_get.assert_called_with(
+            f"{self.edinet.baseURL}.json?date=2025-01-01&type=2&Subscription-Key={self.edinet.key}",
+            timeout=self.edinet.REQUEST_TIMEOUT_SECONDS,
+        )
 
         # Assert that the database was called correctly
         mock_sqlite_connect.assert_called_with(self.edinet.Database)
-        mock_cursor.execute.assert_any_call(f"SELECT COUNT(*) FROM {self.edinet.DB_DOC_LIST_TABLE} WHERE docID = ?", ('doc1',))
+        mock_cursor.execute.assert_any_call(f"SELECT COUNT(*) FROM \"{self.edinet.DB_DOC_LIST_TABLE}\" WHERE docID = ?", ('doc1',))
         self.assertEqual(mock_conn.commit.call_count, 1)
         mock_conn.close.assert_called_once()
 
@@ -81,12 +84,13 @@ class TestEdinet(unittest.TestCase):
 
         # Call the method
         docID = "test_doc_id"
-        self.edinet.downloadDoc(docID)
+        was_downloaded = self.edinet.downloadDoc(docID)
 
         # Assert that the file was opened and written to correctly
         expected_path = os.path.join(self.edinet.defaultLocation, docID + '.zip')
         mock_open_file.assert_called_with(expected_path, 'wb')
         mock_open_file().write.assert_called_with(b'zip_content')
+        self.assertTrue(was_downloaded)
 
     @patch('src.edinet_api.Edinet.query_database_select')
     @patch('src.edinet_api.Edinet.create_folder')
@@ -124,8 +128,44 @@ class TestEdinet(unittest.TestCase):
         mock_list_files_in_folder.assert_called()
         mock_unzip_files.assert_called_once()
         mock_load_financial_data.assert_called_once()
-        mock_query_database_setColumn.assert_called_once()
+        self.assertEqual(mock_query_database_setColumn.call_args[0][3], self.edinet.STATUS_DOWNLOADED)
         mock_delete_folder.assert_called()
+
+    @patch('src.edinet_api.Edinet.query_database_select')
+    @patch('src.edinet_api.Edinet.create_folder')
+    @patch('src.edinet_api.Edinet.downloadDoc', return_value=False)
+    @patch('src.edinet_api.Edinet.list_files_in_folder')
+    @patch('src.edinet_api.Edinet.query_database_setColumn')
+    @patch('src.edinet_api.Edinet.delete_folder')
+    @patch('src.edinet_api.sqlite3.connect')
+    def test_downloadDocs_sets_checked_unavailable_when_download_fails(self, mock_sqlite_connect, mock_delete_folder, mock_query_database_setColumn, mock_list_files_in_folder, mock_downloadDoc, mock_create_folder, mock_query_database_select):
+        self.edinet = _make_edinet()
+
+        mock_conn = MagicMock()
+        mock_sqlite_connect.return_value = mock_conn
+        mock_query_database_select.return_value = [{"docID": "doc1"}]
+
+        self.edinet.downloadDocs("input_table")
+
+        self.assertEqual(mock_query_database_setColumn.call_args[0][3], self.edinet.STATUS_CHECKED_UNAVAILABLE)
+        mock_list_files_in_folder.assert_not_called()
+
+    @patch('src.edinet_api.Edinet.query_database_select')
+    @patch('src.edinet_api.Edinet.create_folder', side_effect=Exception("boom"))
+    @patch('src.edinet_api.Edinet.query_database_setColumn')
+    @patch('src.edinet_api.Edinet.delete_folder')
+    @patch('src.edinet_api.sqlite3.connect')
+    def test_downloadDocs_sets_checked_error_on_exception(self, mock_sqlite_connect, mock_delete_folder, mock_query_database_setColumn, mock_create_folder, mock_query_database_select):
+        self.edinet = _make_edinet()
+
+        mock_conn = MagicMock()
+        mock_sqlite_connect.return_value = mock_conn
+        mock_query_database_select.return_value = [{"docID": "doc1"}]
+
+        self.edinet.downloadDocs("input_table")
+
+        self.assertEqual(mock_query_database_setColumn.call_args[0][3], self.edinet.STATUS_CHECKED_ERROR)
+        mock_conn.close.assert_called()
 
     @patch('src.edinet_api.Edinet.query_database_select')
     @patch('src.edinet_api.Edinet.create_folder')

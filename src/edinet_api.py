@@ -13,6 +13,13 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 class Edinet:
+    REQUEST_TIMEOUT_SECONDS = 30
+    STATUS_PENDING = "False"
+    STATUS_DOWNLOADED = "True"
+    STATUS_CHECKED_UNAVAILABLE = "Checked_Unavailable"
+    STATUS_CHECKED_ERROR = "Checked_Error"
+    ALLOWED_FILTER_OPERATORS = {"=", "<", ">", "<=", ">=", "!=", "<>", "LIKE"}
+
     def __init__(self, base_url, api_key, db_path, raw_docs_path=None,
                  doc_list_table=None, company_info_table=None,
                  taxonomy_table=None):
@@ -53,31 +60,38 @@ class Edinet:
             url = f"{self.baseURL}.json?date={date_str}&type=2&Subscription-Key={self.key}"
             print("URL: " + url)
             try:
-                response = requests.get(url)
+                response = requests.get(url, timeout=self.REQUEST_TIMEOUT_SECONDS)
                 if response.status_code == 200:
                     data = response.json()
-                    
-                    if data.get("results") == []:
+
+                    results = data.get("results") or []
+                    if not isinstance(results, list):
+                        print(f"Skipping date {date_str}: unexpected API payload for results.")
+                        current_date += timedelta(days=1)
+                        continue
+
+                    if not results:
                         print(f"No documents found for date {date_str}.")
                         current_date += timedelta(days=1)
                         continue
                     else:
-                        print(f"Found {len(data.get('results'))} documents for date {date_str}.")
+                        print(f"Found {len(results)} documents for date {date_str}.")
 
                         # Create the DB table if it doesn't exist
-                        columns = list(data.get("results")[0].keys())
+                        columns = list(results[0].keys())
                         columns.append("Downloaded")
                         
                         self.create_table(self.DB_DOC_LIST_TABLE, columns, conn)
 
                         # Insert documents into the database
-                        for entry in data.get("results", []):
+                        for entry in results:
                             # Check if the document already exists in the table
-                            cursor.execute(f"SELECT COUNT(*) FROM {self.DB_DOC_LIST_TABLE} WHERE docID = ?", (entry["docID"],))
+                            quoted_table = self._quote_identifier(self.DB_DOC_LIST_TABLE)
+                            cursor.execute(f"SELECT COUNT(*) FROM {quoted_table} WHERE docID = ?", (entry["docID"],))
                             if cursor.fetchone()[0] == 0:
-                                entry["Downloaded"] = "False"
+                                entry["Downloaded"] = self.STATUS_PENDING
                                 placeholders = ", ".join(["?" for _ in entry])
-                                cursor.execute(f"INSERT INTO {self.DB_DOC_LIST_TABLE} VALUES ({placeholders})", tuple(entry.values()))
+                                cursor.execute(f"INSERT INTO {quoted_table} VALUES ({placeholders})", tuple(entry.values()))
                         
                         conn.commit()
             
@@ -98,7 +112,8 @@ class Edinet:
                 used when building the download URL.
 
         Returns:
-            None
+            bool: ``True`` when the document ZIP is downloaded successfully,
+            otherwise ``False``.
         """
         if fileLocation is None:
             fileLocation = self.defaultLocation
@@ -106,7 +121,11 @@ class Edinet:
         fullURL = h.generateURL(docID, self.baseURL, self.key, docTypeCode)
         logger.info(f"Downloading document {docID} from {fullURL}...")
         # Send a GET request to download the file
-        response = requests.get(fullURL)
+        try:
+            response = requests.get(fullURL, timeout=self.REQUEST_TIMEOUT_SECONDS)
+        except requests.RequestException as e:
+            logger.error(f"Request failed for document {docID}: {e}")
+            return False
 
         # Check if the request was successful (status code 200)
         if response.status_code == 200:
@@ -115,9 +134,10 @@ class Edinet:
             with open(filename, 'wb') as f:
                 f.write(response.content)
             logger.info(f"File downloaded and saved as {filename}.")
+            return True
         else:
             logger.error(f"Failed to download file. Status code: {response.status_code}")
-            return None
+            return False
 
     def downloadDocs(self, input_table, output_table=None, filter=None):
         """Download all documents listed in the database that have not yet been downloaded.
@@ -139,7 +159,7 @@ class Edinet:
         """
         # Connect to the SQLite database
         if filter is None:
-            filter = self.generate_filter("Downloaded", "=", "False")
+            filter = self.generate_filter("Downloaded", "=", self.STATUS_PENDING)
 
         docList = self.query_database_select(input_table,filter)
 
@@ -150,37 +170,60 @@ class Edinet:
         logger.info(f"Number of documents to download: {len(docList)}")
         
         for doc in docList:
+            connection = None
+            doc_id = doc.get("docID")
+            doc_filter = self.generate_filter("docID", "=", doc_id)
+            doc_status = self.STATUS_CHECKED_ERROR
+            folder = os.path.join(self.defaultLocation, "downloadeddocs", str(doc_id))
+
+            if not doc_id:
+                print("Skipping document with missing docID.")
+                continue
+
             try:
-                #get defaults
-                doc_id = doc.get("docID")
-                folder = self.defaultLocation + "\\downloadeddocs\\" + doc_id
-                doc_filter = self.generate_filter("docID", "=", doc_id)
                 connection = sqlite3.connect(self.Database)
 
                 #create folders and download  files
                 self.create_folder(folder)
-                self.downloadDoc(doc_id, folder)
+                downloaded = self.downloadDoc(doc_id, folder)
 
-                #Unzip files
-                zipped_files = self.list_files_in_folder(folder)
-                zipped_files = [f for f in zipped_files if zipfile.is_zipfile(f)]
-                if not zipped_files:
+                if not downloaded:
                     print(f"Skipping document {doc_id}: downloaded file is not a valid ZIP.")
+                    doc_status = self.STATUS_CHECKED_UNAVAILABLE
                 else:
-                    self.unzip_files(zipped_files, folder + "\\unzipped")
-                    financialFiles = self.list_files_in_folder(folder + "\\unzipped", True)
+                    #Unzip files
+                    zipped_files = self.list_files_in_folder(folder)
+                    zipped_files = [f for f in zipped_files if zipfile.is_zipfile(f)]
+                    if not zipped_files:
+                        print(f"Skipping document {doc_id}: downloaded file is not a valid ZIP.")
+                        doc_status = self.STATUS_CHECKED_UNAVAILABLE
+                    else:
+                        unzipped_folder = os.path.join(folder, "unzipped")
+                        self.unzip_files(zipped_files, unzipped_folder)
+                        financialFiles = self.list_files_in_folder(unzipped_folder, True)
 
-                    #Load files to DB
-                    self.load_financial_data(financialFiles, output_table, doc, connection)
-
-                #Update downloaded status and clean the environment
-                self.query_database_setColumn(input_table,doc_filter, "Downloaded", "True", connection)
-                self.delete_folder(folder)
-                connection.close()
+                        if not financialFiles:
+                            print(f"No financial files found for document {doc_id}.")
+                            doc_status = self.STATUS_CHECKED_UNAVAILABLE
+                        else:
+                            #Load files to DB
+                            self.load_financial_data(financialFiles, output_table, doc, connection)
+                            doc_status = self.STATUS_DOWNLOADED
             except Exception as e:
-                print(f"Error downloading document {doc_id}: {e}")       
+                doc_status = self.STATUS_CHECKED_ERROR
+                print(f"Error downloading document {doc_id}: {e}")
+            finally:
+                if connection is not None:
+                    try:
+                        self.query_database_setColumn(input_table, doc_filter, "Downloaded", doc_status, connection)
+                    except Exception as e:
+                        print(f"Failed to persist status for document {doc_id}: {e}")
+                    connection.close()
+
+                if folder:
+                    self.delete_folder(folder)
         
-        self.delete_folder(self.defaultLocation + "\\downloadeddocs" )
+        self.delete_folder(os.path.join(self.defaultLocation, "downloadeddocs"))
 
         print("All files downloaded successfully.")
 
@@ -284,8 +327,9 @@ class Edinet:
         try:
             conn = sqlite3.connect(self.Database)
             cursor = conn.cursor()
-            
-            cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+
+            quoted_table = self._quote_identifier(table_name)
+            cursor.execute(f"DROP TABLE IF EXISTS {quoted_table}")
             conn.commit()
         except Exception as e:
             print(f"An error occurred: {e}")
@@ -428,20 +472,25 @@ class Edinet:
             list or None: A list of row dicts when ``output_table`` is not
             provided, or ``None`` when results are copied to ``output_table``.
         """
+        conn = None
         try:
             conn = sqlite3.connect(self.Database)
             cursor = conn.cursor()
+            quoted_table = self._quote_identifier(table)
             
             # Construct the WHERE clause with multiple filters
             if filters is not None:
-                filter_clauses = [f"{col} {op} ?" for col, (op, _) in filters.items()]
+                filter_clauses = []
+                for col, (op, _) in filters.items():
+                    self._validate_filter_operator(op)
+                    filter_clauses.append(f"{self._quote_identifier(col)} {op} ?")
                 where_clause = " AND ".join(filter_clauses)
-                query = f"SELECT * FROM {table} WHERE {where_clause}"
+                query = f"SELECT * FROM {quoted_table} WHERE {where_clause}"
                 
                 filter_values = [value for _, (_, value) in filters.items()]
                 cursor.execute(query, tuple(filter_values))
             else:
-                cursor.execute(f"SELECT * FROM {table}")
+                cursor.execute(f"SELECT * FROM {quoted_table}")
 
             rows = cursor.fetchall()
             
@@ -461,7 +510,8 @@ class Edinet:
             print(f"An error occurred: {e}")
             return None
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def create_table(self, table_name, columns, connection=None):
         """Create a SQLite table with TEXT columns if it does not already exist.
@@ -482,9 +532,10 @@ class Edinet:
             else:
                 conn = connection
             cursor = conn.cursor()
-            
-            column_definitions = ", ".join([f"{col} TEXT" for col in columns])
-            cursor.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({column_definitions})")
+
+            quoted_table = self._quote_identifier(table_name)
+            column_definitions = ", ".join([f"{self._quote_identifier(col)} TEXT" for col in columns])
+            cursor.execute(f"CREATE TABLE IF NOT EXISTS {quoted_table} ({column_definitions})")
         except Exception as e:
             print(f"An error occurred while creating table {table_name}: {e}")
         finally:
@@ -513,12 +564,19 @@ class Edinet:
             else:
                 conn = connection
             cursor = conn.cursor()
-            
+
+            quoted_table = self._quote_identifier(table_name)
             placeholders = ", ".join(["?" for _ in columns])
             if isinstance(rows, dict):
-                cursor.executemany(f"INSERT INTO {table_name} ({', '.join(rows.keys())}) VALUES ({placeholders})", [tuple(rows.values())])
+                row_columns = list(rows.keys())
+                row_placeholders = ", ".join(["?" for _ in row_columns])
+                quoted_columns = ", ".join([self._quote_identifier(col) for col in row_columns])
+                cursor.executemany(
+                    f"INSERT INTO {quoted_table} ({quoted_columns}) VALUES ({row_placeholders})",
+                    [tuple(rows.values())],
+                )
             else:
-                cursor.executemany(f"INSERT INTO {table_name} VALUES ({placeholders})", rows)
+                cursor.executemany(f"INSERT INTO {quoted_table} VALUES ({placeholders})", rows)
             conn.commit()
         except Exception as e:
             print(f"An error occurred while inserting data into table {table_name}: {e}")
@@ -562,11 +620,16 @@ class Edinet:
             else:
                 conn = connection
             cursor = conn.cursor()
+            quoted_table = self._quote_identifier(table)
+            quoted_column = self._quote_identifier(column)
             
             # Construct the WHERE clause with multiple filters
-            filter_clauses = [f"{col} {op} ?" for col, (op, _) in filter.items()]
+            filter_clauses = []
+            for col, (op, _) in filter.items():
+                self._validate_filter_operator(op)
+                filter_clauses.append(f"{self._quote_identifier(col)} {op} ?")
             where_clause = " AND ".join(filter_clauses)
-            query = f"UPDATE {table} SET {column} = ? WHERE {where_clause}"
+            query = f"UPDATE {quoted_table} SET {quoted_column} = ? WHERE {where_clause}"
             
             filter_values = [value for _, (_, value) in filter.items()]
             cursor.execute(query, (value,) + tuple(filter_values))
@@ -576,6 +639,17 @@ class Edinet:
         finally:
             if connection is None:
                 conn.close()
+
+    @staticmethod
+    def _quote_identifier(identifier):
+        """Safely quote SQL identifiers such as table and column names."""
+        if not isinstance(identifier, str) or not identifier.strip():
+            raise ValueError("SQL identifier must be a non-empty string.")
+        return '"' + identifier.replace('"', '""') + '"'
+
+    def _validate_filter_operator(self, operator):
+        if operator not in self.ALLOWED_FILTER_OPERATORS:
+            raise ValueError(f"Unsupported filter operator: {operator}")
 
     def store_edinetCodes(self, csv_file, target_database=None, table_name=None):
         """Store EDINET company codes from a CSV file into the SQLite database.
