@@ -276,7 +276,7 @@ class OrchestratorPage(ttk.Frame):
                                         variable=ow_var,
                                         style="Surface.TCheckbutton")
                 ow_cb.pack(anchor="w", pady=(0, PAD))
-                self._config_widgets["__overwrite__"] = ow_var
+                self._config_widgets["__overwrite__"] = ("bool", ow_var)
 
         # Build fields from the step-field registry (data-driven).
         self._build_step_fields(scroll_frame, step_name, cfg)

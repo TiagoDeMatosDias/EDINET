@@ -1,8 +1,8 @@
 {
   "run_steps": {
-    "download_documents": {
+    "generate_financial_statements": {
       "enabled": true,
-      "overwrite": false
+      "overwrite": true
     }
   },
   "get_documents_config": {
@@ -38,11 +38,11 @@
     "Target_Database": ""
   },
   "generate_financial_statements_config": {
-    "Source_Database": "",
+    "Source_Database": "C:/programming/Finance/EDINET/Databases/Base.db",
     "Source_Table": "financialData_full",
-    "Target_Database": "",
-    "Company_Info_Table": "",
-    "Stock_Prices_Table": "",
+    "Target_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
+    "Company_Info_Table": "companyInfo",
+    "Stock_Prices_Table": "Stock_Prices",
     "Mappings_Config": "config/reference/financial_statements_mappings_config.json",
     "batch_size": 2500
   },
