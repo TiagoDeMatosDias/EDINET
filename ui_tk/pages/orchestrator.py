@@ -63,8 +63,8 @@ class OrchestratorPage(ttk.Frame):
         self._build_main_area()
         self._build_run_controls()
 
-        # ── load current run_config as default ──────────────────────────
-        cfg = ctrl.load_run_config()
+        # ── load persisted UI pipeline ────────────────────────────────
+        cfg = ctrl.load_ui_pipeline()
         self.load_config(cfg, name="(active)")
 
         # ── keyboard shortcuts ──────────────────────────────────────────
@@ -191,6 +191,12 @@ class OrchestratorPage(ttk.Frame):
                            style="Danger.TButton")
         self._stop_btn.pack(side="right")
         self._stop_btn.state(["disabled"])
+
+        self._export_tpl_btn = RoundedButton(
+            bar, text="Export Template",
+            command=self._export_template,
+            style="Ghost.TButton")
+        self._export_tpl_btn.pack(side="left", padx=PAD)
 
     # ── config panel (right, on demand) ────────────────────────────────
 
@@ -490,7 +496,7 @@ class OrchestratorPage(ttk.Frame):
             self._setup_name = name
         cfg = ctrl.build_config_dict(self._steps, self._step_configs)
         ctrl.save_setup(name, cfg)
-        ctrl.save_run_config(cfg)
+        ctrl.save_ui_pipeline(cfg)
         self._setup_label.configure(text=f"Pipeline: {name}")
         logger.info(f"Setup saved: {name}")
 
@@ -553,9 +559,9 @@ class OrchestratorPage(ttk.Frame):
         # Ensure values currently visible in the config panel are captured.
         self._save_current_config_fields()
 
-        # save config before running (so CLI stays compatible)
         cfg_dict = ctrl.build_config_dict(self._steps, self._step_configs)
-        ctrl.save_run_config(cfg_dict)
+        # Persist UI pipeline state (does NOT touch run_config.json).
+        ctrl.save_ui_pipeline(cfg_dict)
 
         self._is_running = True
         self._cancel_event.clear()
@@ -613,6 +619,21 @@ class OrchestratorPage(ttk.Frame):
             self._cancel_event.set()
             logger.info("Stop requested — will halt after current step")
 
+    def _export_template(self):
+        """Export a template run_config.json that the user can customise."""
+        dest = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export run_config template",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            initialfile="run_config.template.json",
+        )
+        if not dest:
+            return
+        from pathlib import Path
+        path = ctrl.generate_template_run_config(dest=Path(dest))
+        logger.info(f"Template exported: {path}")
+
     def reapply_colors(self):
         """Re-apply theme colours to raw tk widgets."""
         t = COLORS
@@ -630,4 +651,5 @@ class OrchestratorPage(ttk.Frame):
         self._new_btn.reapply_colors()
         self._run_btn.reapply_colors()
         self._stop_btn.reapply_colors()
+        self._export_tpl_btn.reapply_colors()
         reapply_widget_tree(self._config_frame)

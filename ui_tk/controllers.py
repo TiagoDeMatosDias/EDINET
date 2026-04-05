@@ -26,10 +26,13 @@ def _base_dir() -> Path:
 
 BASE_DIR = _base_dir()
 ENV_PATH = BASE_DIR / ".env"
-STATE_DIR = BASE_DIR / "config" / "state"
+CONFIG_DIR = BASE_DIR / "config"
+STATE_DIR = CONFIG_DIR / "state"
 RUN_CONFIG_PATH = STATE_DIR / "run_config.json"
+UI_PIPELINE_PATH = STATE_DIR / "ui_pipeline.json"
 SAVED_SETUPS_DIR = STATE_DIR / "saved_setups"
 APP_STATE_PATH = STATE_DIR / "app_state.json"
+EXAMPLES_DIR = CONFIG_DIR / "examples"
 
 
 # ── Step catalogue (mirrors orchestrator + persistence.py) ──────────────
@@ -260,14 +263,19 @@ def save_setup(name: str, setup_data: dict) -> Path:
 
 
 def save_run_config(cfg: dict):
-    """Write the active config to ``config/state/run_config.json``."""
+    """Write the CLI run config to ``config/state/run_config.json``.
+
+    This file is consumed by the CLI / headless execution path
+    (``src.orchestrator.run``).  The UI does **not** read it at startup;
+    use :func:`save_ui_pipeline` / :func:`load_ui_pipeline` for that.
+    """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     with open(RUN_CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
 
 
 def load_run_config() -> dict:
-    """Load the active run config, or return defaults."""
+    """Load the CLI run config, or return defaults."""
     try:
         if RUN_CONFIG_PATH.exists():
             with open(RUN_CONFIG_PATH) as f:
@@ -276,6 +284,59 @@ def load_run_config() -> dict:
         pass
     return {"run_steps": {s: {"enabled": False, "overwrite": False}
                           for s in ALL_STEP_NAMES}}
+
+
+# ── UI pipeline persistence (separate from CLI run_config) ──────────────
+
+def save_ui_pipeline(cfg: dict):
+    """Persist the current UI pipeline state to ``config/state/ui_pipeline.json``."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(UI_PIPELINE_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def load_ui_pipeline() -> dict:
+    """Load the UI pipeline state, or return defaults."""
+    try:
+        if UI_PIPELINE_PATH.exists():
+            with open(UI_PIPELINE_PATH) as f:
+                return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {"run_steps": {s: {"enabled": False, "overwrite": False}
+                          for s in ALL_STEP_NAMES}}
+
+
+# ── Template generation ─────────────────────────────────────────────────
+
+def generate_template_run_config(dest: Path | None = None) -> Path:
+    """Generate a template ``run_config.json`` with all steps and their
+    default field values.  Returns the path of the written file.
+
+    Parameters
+    ----------
+    dest : Path, optional
+        Where to write the template.  Defaults to
+        ``config/examples/run_config.template.json``.
+    """
+    if dest is None:
+        EXAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+        dest = EXAMPLES_DIR / "run_config.template.json"
+
+    cfg: dict = {}
+    cfg["run_steps"] = {
+        s: {"enabled": False, "overwrite": False}
+        for s in ALL_STEP_NAMES
+    }
+    for sname in ALL_STEP_NAMES:
+        cfg_key = STEP_CONFIG_KEY.get(sname)
+        if cfg_key:
+            cfg[cfg_key] = copy.deepcopy(DEFAULT_STEP_CONFIGS.get(sname, {}))
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest, "w") as f:
+        json.dump(cfg, f, indent=2)
+    return dest
 
 
 # ── API key ─────────────────────────────────────────────────────────────
