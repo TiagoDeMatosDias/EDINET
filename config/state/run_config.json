@@ -1,6 +1,10 @@
 {
   "run_steps": {
-    "generate_financial_statements": {
+    "generate_ratios": {
+      "enabled": true,
+      "overwrite": true
+    },
+    "generate_historical_ratios": {
       "enabled": true,
       "overwrite": true
     }
@@ -47,14 +51,14 @@
     "batch_size": 2500
   },
   "generate_ratios_config": {
-    "Source_Database": "",
-    "Target_Database": "",
+    "Source_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
+    "Target_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
     "Formulas_Config": "config/reference/generate_ratios_formulas_config.json",
     "batch_size": 5000
   },
   "generate_historical_ratios_config": {
-    "Source_Database": "",
-    "Target_Database": "",
+    "Source_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
+    "Target_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
     "company_batch_size": 200
   },
   "Multivariate_Regression_config": {
