@@ -8,6 +8,8 @@ __pycache__/
 .venv/
 .vscode/
 .env
+docs/Feature Development/
+
 # Runtime state (user-specific, not committed)
 config/state/*
 
