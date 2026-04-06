@@ -391,11 +391,11 @@ Responsibility: Tk root bootstrap, view switching, event loop, and log handler w
 		- Purpose: Initialise root window, apply theme, build layout (tab bar, views, log panel), wire log handler.
 
 	- `def switch_view(self, name: str) -> None`
-		- Purpose: Switch between Home / Orchestrator / Data / Screening views. Views are lazily created on first access.
+		- Purpose: Switch between Home / Orchestrator / Data / Screening / Security Analysis views. Views are lazily created on first access.
 
 - `def run_tk_app() -> None`
 	- Purpose: Public entry point — creates `Tk` root, instantiates `App`, and starts `root.mainloop()`.
-	- Calls/Dependencies: `apply_theme`, `poll_events`, `QueueLogHandler`, `HomePage`, `OrchestratorPage`, `DataPage`, `ScreeningPage`.
+	- Calls/Dependencies: `apply_theme`, `poll_events`, `QueueLogHandler`, `HomePage`, `OrchestratorPage`, `DataPage`, `ScreeningPage`, `SecurityAnalysisPage`.
 
 ---
 
@@ -463,6 +463,7 @@ The step field registry (`STEP_FIELD_DEFINITIONS`) is the single source of truth
 - `def save_setup(name: str, setup_data: dict) -> Path` — Save named setup JSON.
 - `def save_run_config(cfg: dict)` / `def load_run_config() -> dict` — Read/write `run_config.json`.
 - `def get_api_key() -> str` / `def save_api_key(key: str)` — Read/write API key in `.env`.
+- `def get_default_database_path() -> str` / `def remember_database_path(db_path: str) -> None` — Resolve/persist recently used SQLite database paths for analysis views.
 - `def load_app_state() -> dict` / `def save_app_state(state: dict)` — Persist UI state.
 - `def build_config_dict(steps, step_configs) -> dict` — Serialize UI state into a run-config dict.
 - `def build_steps_from_config(run_cfg) -> list` — Convert `run_steps` into `[[name, enabled, overwrite], ...]`.
@@ -481,6 +482,16 @@ The step field registry (`STEP_FIELD_DEFINITIONS`) is the single source of truth
 - `def screening_delete(name) -> None` — Delete a saved screening.
 - `def screening_save_history(entry) -> None` — Append a screening history entry.
 - `def screening_load_history() -> list[dict]` — Load screening run history.
+
+#### Security Analysis Adapters
+
+- `def security_search(db_path: str, query: str, limit: int = 25) -> list[dict]` — Search securities by company name, ticker, EDINET code, or industry.
+- `def security_get_overview(db_path: str, edinet_code: str) -> dict` — Return company, market, fundamentals, valuation, and metadata for the selected security.
+- `def security_get_statements(db_path: str, edinet_code: str, periods: int = 8) -> dict` — Return ordered historical statement rows and period labels.
+- `def security_get_ratios(db_path: str, edinet_code: str) -> dict` — Return latest valuation and quality ratios.
+- `def security_get_price_history(db_path: str, ticker: str, start_date: str | None = None, end_date: str | None = None) -> list[dict]` — Return ordered daily price history rows.
+- `def security_get_peers(db_path: str, edinet_code: str, industry: str | None = None, limit: int = 10) -> list[dict]` — Return deterministic peer-comparison rows.
+- `def security_update_price(db_path: str, ticker: str) -> dict` — Refresh one ticker’s price history and return a structured result summary.
 
 ---
 
@@ -554,6 +565,54 @@ Responsibility: Screening view — filter companies by financial criteria with s
 
 ---
 
+### [ui_tk/pages/security_analysis.py](../ui_tk/pages/security_analysis.py)
+
+Responsibility: Security-level research view — typeahead search, overview cards, statement history, charts, and peer comparison.
+
+- `class SecurityAnalysisPage(ttk.Frame)`
+	- Layout: toolbar (refresh/update), database picker + search, summary cards, and four tabs (`Overview`, `Statements`, `Charts`, `Peers`).
+	- Search: debounced typeahead over company name, ticker, EDINET code, and industry with keyboard navigation for suggestions.
+	- Overview tab: company profile, fundamentals tree, ratio tree, and metadata panel.
+	- Statements tab: selectable statement type with historical period table.
+	- Charts tab: matplotlib-backed price, statement, and peer-comparison charts.
+	- Peers tab: default industry peers plus manual peer additions.
+	- `def reapply_colors(self)` — Re-apply colours for raw Tk widgets and redraw charts after theme changes.
+
+---
+
+### [src/security_analysis.py](../src/security_analysis.py)
+
+Responsibility: Backend queries for the Security Analysis view. Resolves schema differences, aggregates the latest filing snapshot, and provides UI-friendly payloads.
+
+- `@dataclass SecuritySchema`
+	- Purpose: Capture resolved table/column names for a specific SQLite database.
+
+- `def resolve_schema(db_path: str) -> SecuritySchema`
+	- Purpose: Resolve actual table and column names for `CompanyInfo`, `FinancialStatements`, `Stock_Prices`, optional statement/ratio tables, and optional `DocumentList` metadata when present, including fallback company-name fields used by the standardized database.
+
+- `def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[str, Any]]`
+	- Purpose: Search securities across name, ticker, EDINET code, and industry with deterministic ranking.
+
+- `def get_security_overview(db_path: str, edinet_code: str) -> dict[str, Any]`
+	- Purpose: Return company profile, market snapshot, fundamentals, valuation, quality, and metadata for the selected security.
+
+- `def get_security_ratios(db_path: str, edinet_code: str) -> dict[str, Any]`
+	- Purpose: Return latest valuation and quality ratios, including fallback calculations when direct valuation fields are missing.
+
+- `def get_security_statements(db_path: str, edinet_code: str, periods: int = 8) -> dict[str, Any]`
+	- Purpose: Return ordered historical statement rows for the Income Statement, Balance Sheet, and Cashflow Statement.
+
+- `def get_security_price_history(db_path: str, ticker: str, start_date: str | None = None, end_date: str | None = None) -> list[dict[str, Any]]`
+	- Purpose: Return ordered daily price history rows for charting and change calculations.
+
+- `def get_security_peers(db_path: str, edinet_code: str, industry: str | None = None, limit: int = 10) -> list[dict[str, Any]]`
+	- Purpose: Return deterministic peer-comparison rows based on the selected company’s industry and latest snapshot.
+
+- `def update_security_price(db_path: str, ticker: str) -> dict[str, Any]`
+	- Purpose: Refresh one ticker’s price history using the existing stock-price provider module and return a structured result summary.
+
+---
+
 ### [src/screening.py](../src/screening.py)
 
 Responsibility: Backend screening module — query building, execution, persistence, and formatting. Contains no UI logic.
@@ -583,8 +642,9 @@ Responsibility: Unit tests covering core logic and UI helpers. Each test file ta
 - `[tests/test_data_processing.py](tests/test_data_processing.py)` — tests `data` ETL methods, formula compilation, historical ratio generation, and XSD parsing helpers.
 - `[tests/test_edinet_api.py](tests/test_edinet_api.py)` — tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
 - `[tests/test_regression_analysis.py](tests/test_regression_analysis.py)` — tests OLS runner, scoring query builder, and results writer.
+- `[tests/test_security_analysis.py](tests/test_security_analysis.py)` — tests schema normalization, search ranking, overview payloads, price history, peer selection, and single-ticker price updates.
 - `[tests/test_stockprice_api.py](tests/test_stockprice_api.py)` — tests CSV import and stock price ingestion logic.
-- `[tests/test_ui_tk_smoke.py](tests/test_ui_tk_smoke.py)` — Tk UI smoke tests: imports, theme application, widget instantiation, controller functions, QueueLogHandler, ScreeningPage.
+- `[tests/test_ui_tk_smoke.py](tests/test_ui_tk_smoke.py)` — Tk UI smoke tests: imports, theme application, widget instantiation, controller functions, QueueLogHandler, ScreeningPage, and SecurityAnalysisPage.
 - `[tests/test_screening.py](tests/test_screening.py)` — Backend screening tests: query building, execution, persistence, formatting, SQL injection prevention.
 - `[tests/test_orchestrator.py](tests/test_orchestrator.py)` — Orchestrator tests: `run_pipeline` basic flow, cancellation, error handling, `execute_step` dispatch, `validate_config`, `Config.from_dict` independence and singleton behaviour.
 - `[tests/test_utils.py](tests/test_utils.py)` — small helper tests for URL generation and CSV export.

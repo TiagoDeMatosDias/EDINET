@@ -15,7 +15,7 @@ from ui_tk.shared.widgets import LogPanel, RoundedButton, reapply_widget_tree
 
 logger = logging.getLogger(__name__)
 
-VIEW_NAMES = ["Home", "Orchestrator", "Data", "Screening"]
+VIEW_NAMES = ["Home", "Orchestrator", "Data", "Screening", "Security Analysis"]
 
 
 class App:
@@ -67,6 +67,8 @@ class App:
                            lambda _: self.switch_view("Data"))
         self.root.bind_all("<Control-Key-4>",
                            lambda _: self.switch_view("Screening"))
+        self.root.bind_all("<Control-Key-5>",
+                   lambda _: self.switch_view("Security Analysis"))
 
         # ── start polling ───────────────────────────────────────────────
         self.root.after(100, self._poll_logs)
@@ -164,6 +166,16 @@ class App:
         self._active_view = name
         self._update_tab_visuals()
 
+    def show_security_analysis(self, record: dict, db_path: str | None = None):
+        """Switch to Security Analysis and open the selected company."""
+        self.switch_view("Security Analysis")
+        view = self._views.get("Security Analysis")
+        if view is None:
+            return
+        open_security = getattr(view, "open_security", None)
+        if callable(open_security):
+            open_security(record, db_path=db_path)
+
     def _create_view(self, name: str) -> ttk.Frame:
         if name == "Home":
             from ui_tk.pages.home import HomePage
@@ -174,6 +186,9 @@ class App:
         elif name == "Screening":
             from ui_tk.pages.screening import ScreeningPage
             return ScreeningPage(self._view_container, self)
+        elif name == "Security Analysis":
+            from ui_tk.pages.security_analysis import SecurityAnalysisPage
+            return SecurityAnalysisPage(self._view_container, self)
         else:
             from ui_tk.pages.data import DataPage
             return DataPage(self._view_container)

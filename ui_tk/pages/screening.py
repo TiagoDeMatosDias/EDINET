@@ -40,6 +40,7 @@ class ScreeningPage(ttk.Frame):
         self._available_periods: list[str] = []
         self._criteria_rows: list[dict] = []
         self._results_df = None
+        self._result_records_by_item: dict[str, dict] = {}
         self._sort_column: str | None = None
         self._sort_ascending: bool = True
         self._display_columns: dict[str, tk.BooleanVar] = {}
@@ -538,6 +539,7 @@ class ScreeningPage(ttk.Frame):
 
         # Clear
         self._tree.delete(*self._tree.get_children())
+        self._result_records_by_item = {}
 
         if df is None or df.empty:
             self._tree["columns"] = ()
@@ -559,10 +561,49 @@ class ScreeningPage(ttk.Frame):
                 val = row[col]
                 values.append(format_financial_value(val, col))
             tag = "even" if i % 2 == 0 else "odd"
-            self._tree.insert("", "end", values=values, tags=(tag,))
+            item_id = self._tree.insert("", "end", values=values, tags=(tag,))
+            self._result_records_by_item[item_id] = row.to_dict()
 
         logger.info("Populated results table with %d rows, %d columns",
                      len(df), len(cols))
+
+    @staticmethod
+    def _coalesce_record_value(record: dict, keys: tuple[str, ...]) -> str:
+        for key in keys:
+            value = record.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return ""
+
+    def _build_security_record(self, record: dict) -> dict | None:
+        edinet_code = self._coalesce_record_value(
+            record,
+            ("edinet_code", "edinetCode", "EdinetCode"),
+        )
+        if not edinet_code:
+            return None
+        return {
+            "edinet_code": edinet_code,
+            "ticker": self._coalesce_record_value(
+                record,
+                ("ticker", "Ticker", "Company_Ticker", "company_ticker"),
+            ),
+            "company_name": self._coalesce_record_value(
+                record,
+                ("company_name", "Company_Name", "Submitter Name"),
+            ),
+            "industry": self._coalesce_record_value(
+                record,
+                ("industry", "Industry", "Company_Industry"),
+            ),
+            "market": self._coalesce_record_value(
+                record,
+                ("market", "Market", "Listed"),
+            ),
+        }
 
     def _sort_by_column(self, col: str):
         """Sort the Treeview by a column header click."""
@@ -600,14 +641,20 @@ class ScreeningPage(ttk.Frame):
         item = self._tree.identify_row(event.y)
         if not item:
             return
-        values = self._tree.item(item, "values")
-        if values:
-            messagebox.showinfo(
-                "Company Detail",
-                f"Company Detail View — coming soon.\n\n"
-                f"Selected: {values[0] if values else 'N/A'}",
-                parent=self,
+        record = self._result_records_by_item.get(item)
+        if not record:
+            return
+        security_record = self._build_security_record(record)
+        if security_record is None:
+            self._status_var.set("Selected result cannot be opened in Security Analysis")
+            return
+        if self.app and hasattr(self.app, "show_security_analysis"):
+            self._status_var.set(
+                f"Opening {security_record.get('company_name') or security_record.get('ticker') or security_record['edinet_code']}..."
             )
+            self.app.show_security_analysis(security_record, db_path=self._db_path)
+            return
+        logger.warning("Screening row double-click ignored because the app context is unavailable")
 
     # ── Save / Load / History / Export ──────────────────────────────────
 

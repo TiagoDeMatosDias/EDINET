@@ -53,6 +53,11 @@ def _ensure_dir():
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _slug_view_name(view_name: str) -> str:
+    """Return a stable filename-friendly view name."""
+    return view_name.lower().replace(" ", "_")
+
+
 def _capture_window(root: tk.Tk, filename: str, *, settle_ms: int = 600):
     """Capture a screenshot of the given Tk root window.
 
@@ -120,7 +125,7 @@ def capture_all_views(
     Parameters
     ----------
     views : list[str] | None
-        View names to capture.  ``None`` → all (Home, Orchestrator, Data).
+        View names to capture.  ``None`` → all registered views.
     themes : list[str] | None
         ``["dark"]``, ``["light"]``, or ``["dark", "light"]``.
         ``None`` → capture the currently active theme only.
@@ -160,7 +165,7 @@ def capture_all_views(
                 root.update_idletasks()
                 root.update()
 
-                fname = f"{prefix}{view.lower()}_{theme_name}.png"
+                fname = f"{prefix}{_slug_view_name(view)}_{theme_name}.png"
                 p = _capture_window(root, fname, settle_ms=settle_ms)
                 paths.append(p)
     finally:
@@ -219,6 +224,17 @@ class TestScreenshotCapture:
         finally:
             root.destroy()
 
+    def test_capture_security_analysis_dark(self):
+        root, app = _launch_app()
+        try:
+            app.switch_view("Security Analysis")
+            root.update_idletasks()
+            root.update()
+            path = _capture_window(root, "security_analysis_dark.png")
+            assert path.exists()
+        finally:
+            root.destroy()
+
     def test_capture_light_theme(self):
         """Capture all views in light theme."""
         from ui_tk.style import toggle_theme, is_dark
@@ -232,11 +248,11 @@ class TestScreenshotCapture:
                 root.update()
                 time.sleep(0.3)
 
-            for view in ("Home", "Orchestrator", "Data", "Screening"):
+            for view in ("Home", "Orchestrator", "Data", "Screening", "Security Analysis"):
                 app.switch_view(view)
                 root.update_idletasks()
                 root.update()
-                path = _capture_window(root, f"{view.lower()}_light.png")
+                path = _capture_window(root, f"{_slug_view_name(view)}_light.png")
                 assert path.exists()
         finally:
             # Toggle back to dark so subsequent tests start in dark
@@ -250,7 +266,7 @@ class TestScreenshotAllViews:
 
     def test_capture_all_dark_and_light(self):
         paths = capture_all_views(themes=["dark", "light"])
-        assert len(paths) == 8  # 4 views × 2 themes
+        assert len(paths) == 10  # 5 views × 2 themes
         for p in paths:
             assert p.exists()
             assert p.stat().st_size > 0

@@ -5,6 +5,9 @@ instantiated with a hidden Tk root — no interactive loop required.
 """
 
 import tkinter as tk
+from types import SimpleNamespace
+
+import pandas as pd
 import pytest
 
 
@@ -29,6 +32,7 @@ def test_import_ui_tk():
     import ui_tk.pages.orchestrator
     import ui_tk.pages.data
     import ui_tk.pages.screening
+    import ui_tk.pages.security_analysis
 
 
 def test_apply_theme(root):
@@ -153,8 +157,32 @@ def test_app_switch_view(root):
     app = App(root)
     app.switch_view("Orchestrator")
     assert app._active_view == "Orchestrator"
+    app.switch_view("Security Analysis")
+    assert app._active_view == "Security Analysis"
     app.switch_view("Home")
     assert app._active_view == "Home"
+
+
+def test_app_show_security_analysis_delegates_to_view(root, monkeypatch):
+    """App helper should switch views and delegate to the Security Analysis page."""
+    from ui_tk.app import App
+
+    app = App(root)
+    app.switch_view("Security Analysis")
+    view = app._views["Security Analysis"]
+    calls = []
+
+    monkeypatch.setattr(
+        view,
+        "open_security",
+        lambda record, db_path=None: calls.append((record, db_path)),
+    )
+
+    record = {"edinet_code": "E00001", "ticker": "1001"}
+    app.show_security_analysis(record, db_path="C:/tmp/security.db")
+
+    assert app._active_view == "Security Analysis"
+    assert calls == [(record, "C:/tmp/security.db")]
 
 
 def test_screening_page_init(root):
@@ -163,6 +191,56 @@ def test_screening_page_init(root):
 
     page = ScreeningPage(root)
     page.reapply_colors()
+
+
+def test_security_analysis_page_init(root):
+    """SecurityAnalysisPage can be instantiated without error."""
+    from ui_tk.pages.security_analysis import SecurityAnalysisPage
+
+    page = SecurityAnalysisPage(root)
+    page.reapply_colors()
+
+
+def test_screening_click_opens_security_analysis(root, monkeypatch):
+    """Double-clicking a screening result should open Security Analysis."""
+    from ui_tk.pages.screening import ScreeningPage
+
+    calls = []
+
+    class DummyApp:
+        def show_security_analysis(self, record, db_path=None):
+            calls.append((record, db_path))
+
+    page = ScreeningPage(root, app=DummyApp())
+    page._db_path = "C:/tmp/sample.db"
+    page._results_df = pd.DataFrame(
+        [
+            {
+                "edinetCode": "E00001",
+                "Company_Ticker": "1001",
+                "Company_Industry": "Industrial",
+            }
+        ]
+    )
+    page._populate_results(page._results_df)
+
+    item = page._tree.get_children()[0]
+    monkeypatch.setattr(page._tree, "identify_row", lambda _y: item)
+
+    page._on_company_click(SimpleNamespace(y=0))
+
+    assert calls == [
+        (
+            {
+                "edinet_code": "E00001",
+                "ticker": "1001",
+                "company_name": "",
+                "industry": "Industrial",
+                "market": "",
+            },
+            "C:/tmp/sample.db",
+        )
+    ]
 
 
 def test_screening_controller_imports():

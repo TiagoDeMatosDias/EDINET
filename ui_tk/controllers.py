@@ -354,6 +354,35 @@ def save_api_key(key: str):
     set_key(str(ENV_PATH), "API_KEY", key)
 
 
+def get_default_database_path() -> str:
+    """Return the best available default SQLite database path for the UI."""
+    state = load_app_state()
+    recent = state.get("recent_databases", []) if isinstance(state, dict) else []
+    for path in recent:
+        if path and Path(path).exists():
+            return str(path)
+
+    if ENV_PATH.exists():
+        vals = dotenv_values(str(ENV_PATH))
+        raw = str(vals.get("DB_PATH", "")).strip().strip("\"'")
+        if raw:
+            return raw
+    return ""
+
+
+def remember_database_path(db_path: str) -> None:
+    """Persist a recently used database path for future UI sessions."""
+    clean = str(db_path).strip()
+    if not clean:
+        return
+    state = load_app_state()
+    recent = state.get("recent_databases", []) if isinstance(state, dict) else []
+    recent = [p for p in recent if str(p).strip() and str(p) != clean]
+    recent.insert(0, clean)
+    state["recent_databases"] = recent[:10]
+    save_app_state(state)
+
+
 # ── App state ───────────────────────────────────────────────────────────
 
 def load_app_state() -> dict:
@@ -503,3 +532,65 @@ def screening_load_history() -> list[dict]:
     """Load screening run history."""
     from src.screening import load_screening_history
     return load_screening_history(str(SCREENING_HISTORY_PATH))
+
+
+# ---------------------------------------------------------------------------
+# SECURITY ANALYSIS
+# ---------------------------------------------------------------------------
+
+
+def security_search(db_path: str, query: str, limit: int = 25) -> list[dict]:
+    """Search securities for the Security Analysis view."""
+    from src.security_analysis import search_securities
+    return search_securities(db_path, query, limit=limit)
+
+
+def security_get_overview(db_path: str, edinet_code: str) -> dict:
+    """Return the overview payload for a selected security."""
+    from src.security_analysis import get_security_overview
+    return get_security_overview(db_path, edinet_code)
+
+
+def security_get_statements(db_path: str, edinet_code: str, periods: int = 8) -> dict:
+    """Return financial statement history for a selected security."""
+    from src.security_analysis import get_security_statements
+    return get_security_statements(db_path, edinet_code, periods=periods)
+
+
+def security_get_ratios(db_path: str, edinet_code: str) -> dict:
+    """Return the latest ratio payload for a selected security."""
+    from src.security_analysis import get_security_ratios
+    return get_security_ratios(db_path, edinet_code)
+
+
+def security_get_price_history(
+    db_path: str,
+    ticker: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
+    """Return price history for a ticker."""
+    from src.security_analysis import get_security_price_history
+    return get_security_price_history(
+        db_path,
+        ticker,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+def security_get_peers(
+    db_path: str,
+    edinet_code: str,
+    industry: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Return peer-comparison rows for a selected security."""
+    from src.security_analysis import get_security_peers
+    return get_security_peers(db_path, edinet_code, industry=industry, limit=limit)
+
+
+def security_update_price(db_path: str, ticker: str) -> dict:
+    """Update stock-price history for a single ticker."""
+    from src.security_analysis import update_security_price
+    return update_security_price(db_path, ticker)

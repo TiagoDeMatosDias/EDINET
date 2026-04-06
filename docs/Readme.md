@@ -27,34 +27,38 @@ Each pipeline step is configured independently, including its source or target d
 11. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
 12. **Backtest set** – batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
 13. **Screening** – filter companies by financial criteria (valuation, quality, per-share metrics) with sortable results, CSV export, and saved criteria management.
+14. **Security analysis** – inspect a single company with typeahead search, overview cards, statement history, charts, price refresh, and peer comparison.
 
 ## Screenshots
 
-### Home (Dark)
+Current screenshots from the live Tk application. The dark theme is shown below for consistency; matching light-theme captures are also refreshed in `docs/images/`.
+
+### Home
 
 ![EDINET Home Dark](images/ui-home-dark.png)
 
-### Orchestrator (Dark)
+### Orchestrator
 
 ![EDINET Orchestrator Dark](images/ui-orchestrator-dark.png)
 
-### Data (Dark)
+### Data
 
 ![EDINET Data Dark](images/ui-data-dark.png)
 
-### Screening (Dark)
+### Screening
 
 ![EDINET Screening Dark](images/ui-screening-dark.png)
 
-### Orchestrator (Light)
+### Security Analysis
 
-![EDINET Orchestrator Light](images/ui-orchestrator-light.png)
+![EDINET Security Analysis Dark](images/ui-security-analysis-dark.png)
 
 ## GUI & CLI Modes
 
 The application can run in two modes:
 
 - **GUI mode** (default) — Launch the Tk desktop application with `python main.py`. The GUI provides keyboard-friendly step ordering, per-step configuration panels, setup save/load, and a live log output panel.
+- **Security Analysis view** — Search by company name, ticker, EDINET code, or industry and inspect one company in detail.
 - **CLI mode** — Run headless from the terminal with `python main.py --cli`. This reads `config/state/run_config.json` directly and executes the enabled steps in order.
 
 ## Setup
@@ -184,6 +188,7 @@ The Tk-based GUI provides:
 - **Overwrite toggle** – steps that support it (Generate Financial Statements, Generate Ratios, Generate Historical Ratios) show an "Overwrite" checkbox.
 - **Save / Load setups** – persist and recall named configurations from `config/state/saved_setups/`.
 - **Live log output** – see real-time log messages during execution in the output panel.
+- **Security analysis** – search companies, inspect statements and ratios, view charts, refresh prices, compare peers, and jump directly from screening results.
 
 ## Key EDINET document type codes
 
