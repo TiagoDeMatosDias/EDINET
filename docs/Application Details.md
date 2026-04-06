@@ -1,9 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-04-03
-
-Purpose:
+Last updated: 2026-04-06
 - Central reference for runtime/test Python modules (`src/`) and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
@@ -393,11 +391,11 @@ Responsibility: Tk root bootstrap, view switching, event loop, and log handler w
 		- Purpose: Initialise root window, apply theme, build layout (tab bar, views, log panel), wire log handler.
 
 	- `def switch_view(self, name: str) -> None`
-		- Purpose: Switch between Home / Orchestrator / Data views. Views are lazily created on first access.
+		- Purpose: Switch between Home / Orchestrator / Data / Screening views. Views are lazily created on first access.
 
 - `def run_tk_app() -> None`
 	- Purpose: Public entry point — creates `Tk` root, instantiates `App`, and starts `root.mainloop()`.
-	- Calls/Dependencies: `apply_theme`, `poll_events`, `QueueLogHandler`, `HomePage`, `OrchestratorPage`, `DataPage`.
+	- Calls/Dependencies: `apply_theme`, `poll_events`, `QueueLogHandler`, `HomePage`, `OrchestratorPage`, `DataPage`, `ScreeningPage`.
 
 ---
 
@@ -471,6 +469,19 @@ The step field registry (`STEP_FIELD_DEFINITIONS`) is the single source of truth
 - `def build_step_configs_from_config(run_cfg) -> dict` — Build per-step configs with defaults filled in.
 - `def get_default_config_for_step(step_name) -> dict` — Return a deep copy of the default config for a step.
 
+#### Screening Adapters
+
+- `def screening_get_metrics(db_path: str) -> dict[str, list[str]]` — Return available screening metrics.
+- `def screening_get_periods(db_path: str) -> list[str]` — Return available period years.
+- `def screening_run(db_path, criteria, columns, period, sort_by, sort_order) -> pd.DataFrame` — Run a screening query.
+- `def screening_export(df, output_path) -> str` — Export results to CSV.
+- `def screening_save(name, criteria, columns, period) -> Path` — Save screening criteria.
+- `def screening_load(name) -> dict` — Load saved screening criteria.
+- `def screening_list() -> list[str]` — List saved screening names.
+- `def screening_delete(name) -> None` — Delete a saved screening.
+- `def screening_save_history(entry) -> None` — Append a screening history entry.
+- `def screening_load_history() -> list[dict]` — Load screening run history.
+
 ---
 
 ### [ui_tk/shared/widgets.py](../ui_tk/shared/widgets.py)
@@ -522,6 +533,48 @@ Responsibility: Data exploration page — placeholder ("coming soon").
 
 ---
 
+### [ui_tk/pages/screening.py](../ui_tk/pages/screening.py)
+
+Responsibility: Screening view — filter companies by financial criteria with sortable results.
+
+- `class ScreeningPage(ttk.Frame)`
+	- Layout: horizontal PanedWindow with left panel (criteria builder) and right panel (results Treeview).
+	- Left panel: DatabasePickerEntry, period selector, dynamic criteria rows (metric/operator/value), column checkboxes, Run button.
+	- Right panel: sortable Treeview with alternating row colours, status bar.
+	- Toolbar: Load, Save, History, Export buttons.
+	- `def _on_db_changed(self)` — Refresh metrics/periods when database changes.
+	- `def _add_criterion(self)` / `def _remove_criterion(self, row_data)` — Manage criteria rows.
+	- `def _run_screening(self)` — Collect inputs, run in background thread, populate results.
+	- `def _populate_results(self, df)` — Clear and fill Treeview with formatted values.
+	- `def _sort_by_column(self, col)` — Client-side sort with ascending/descending toggle.
+	- `def _save_screening(self)` / `def _load_screening(self)` — Save/load criteria dialogs.
+	- `def _show_history(self)` — History dialog with re-run support.
+	- `def _export_results(self)` — CSV export via file dialog.
+	- `def reapply_colors(self)` — Theme toggle support.
+
+---
+
+### [src/screening.py](../src/screening.py)
+
+Responsibility: Backend screening module — query building, execution, persistence, and formatting. Contains no UI logic.
+
+- Constants: `SCREENING_TABLES`, `OPERATOR_MAP`, `DEFAULT_COLUMNS`, `FORMAT_RULES`.
+
+- `def get_available_metrics(db_path: str) -> dict[str, list[str]]` — Introspect DB for screening table columns.
+- `def get_available_periods(db_path: str) -> list[str]` — Return distinct periodEnd years.
+- `def build_screening_query(criteria, columns, period=None, available_metrics=None) -> tuple[str, list]` — Build parameterised SQL with validation.
+- `def run_screening(db_path, criteria, columns, period=None, sort_by=None, sort_order="ASC") -> pd.DataFrame` — Execute screening and return results.
+- `def export_screening_to_csv(df, output_path) -> str` — Export DataFrame to CSV.
+- `def format_financial_value(value, column_name) -> str` — Format values for display (percent/currency/ratio).
+- `def save_screening_criteria(name, criteria, columns, period, save_dir) -> Path` — Persist criteria as JSON.
+- `def load_screening_criteria(name, save_dir) -> dict` — Load saved criteria.
+- `def list_saved_screenings(save_dir) -> list[str]` — List saved screening names.
+- `def delete_screening_criteria(name, save_dir) -> None` — Delete saved criteria.
+- `def save_screening_history(entry, history_path) -> None` — Append to JSON-lines history.
+- `def load_screening_history(history_path) -> list[dict]` — Load history (most recent first).
+
+---
+
 ## Tests (`tests/`)
 
 Responsibility: Unit tests covering core logic and UI helpers. Each test file targets the corresponding module:
@@ -531,13 +584,14 @@ Responsibility: Unit tests covering core logic and UI helpers. Each test file ta
 - `[tests/test_edinet_api.py](tests/test_edinet_api.py)` — tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
 - `[tests/test_regression_analysis.py](tests/test_regression_analysis.py)` — tests OLS runner, scoring query builder, and results writer.
 - `[tests/test_stockprice_api.py](tests/test_stockprice_api.py)` — tests CSV import and stock price ingestion logic.
-- `[tests/test_ui_tk_smoke.py](tests/test_ui_tk_smoke.py)` — Tk UI smoke tests: imports, theme application, widget instantiation, controller functions, QueueLogHandler.
+- `[tests/test_ui_tk_smoke.py](tests/test_ui_tk_smoke.py)` — Tk UI smoke tests: imports, theme application, widget instantiation, controller functions, QueueLogHandler, ScreeningPage.
+- `[tests/test_screening.py](tests/test_screening.py)` — Backend screening tests: query building, execution, persistence, formatting, SQL injection prevention.
 - `[tests/test_orchestrator.py](tests/test_orchestrator.py)` — Orchestrator tests: `run_pipeline` basic flow, cancellation, error handling, `execute_step` dispatch, `validate_config`, `Config.from_dict` independence and singleton behaviour.
 - `[tests/test_utils.py](tests/test_utils.py)` — small helper tests for URL generation and CSV export.
 
 ---
 
-Last updated: 2026-04-03
+Last updated: 2026-04-06
 
 If you want, I can now auto-populate parameter types and short example inputs/outputs for every function (more verbose), or keep the current concise API listings. Which do you prefer?
 

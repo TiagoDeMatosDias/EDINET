@@ -26,6 +26,7 @@ Each pipeline step is configured independently, including its source or target d
 10. **Multivariate regression** – user-defined multivariate OLS regression specified as a SQL query.
 11. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
 12. **Backtest set** – batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
+13. **Screening** – filter companies by financial criteria (valuation, quality, per-share metrics) with sortable results, CSV export, and saved criteria management.
 
 ## Screenshots
 
@@ -40,6 +41,10 @@ Each pipeline step is configured independently, including its source or target d
 ### Data (Dark)
 
 ![EDINET Data Dark](images/ui-data-dark.png)
+
+### Screening (Dark)
+
+![EDINET Screening Dark](images/ui-screening-dark.png)
 
 ### Orchestrator (Light)
 

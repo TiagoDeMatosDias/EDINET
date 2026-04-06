@@ -433,3 +433,73 @@ def build_step_configs_from_config(run_cfg: dict) -> dict:
 def get_default_config_for_step(step_name: str) -> dict:
     """Return deep copy of the default config for *step_name*."""
     return copy.deepcopy(DEFAULT_STEP_CONFIGS.get(step_name, {}))
+
+
+# ---------------------------------------------------------------------------
+# SCREENING
+# ---------------------------------------------------------------------------
+
+SAVED_SCREENINGS_DIR = STATE_DIR / "saved_screenings"
+SCREENING_HISTORY_PATH = STATE_DIR / "screening_history.jsonl"
+
+
+def screening_get_metrics(db_path: str) -> dict[str, list[str]]:
+    """Return available screening metrics from the database."""
+    from src.screening import get_available_metrics
+    return get_available_metrics(db_path)
+
+
+def screening_get_periods(db_path: str) -> list[str]:
+    """Return available period years from the database."""
+    from src.screening import get_available_periods
+    return get_available_periods(db_path)
+
+
+def screening_run(db_path, criteria, columns, period, sort_by, sort_order):
+    """Run a screening query and return results as a DataFrame."""
+    from src.screening import run_screening
+    return run_screening(db_path, criteria, columns, period, sort_by, sort_order)
+
+
+def screening_export(df, output_path) -> str:
+    """Export screening results to CSV."""
+    from src.screening import export_screening_to_csv
+    return export_screening_to_csv(df, output_path)
+
+
+def screening_save(name, criteria, columns, period):
+    """Save screening criteria to disk."""
+    from src.screening import save_screening_criteria
+    return save_screening_criteria(
+        name, criteria, columns, period, str(SAVED_SCREENINGS_DIR)
+    )
+
+
+def screening_load(name) -> dict:
+    """Load saved screening criteria."""
+    from src.screening import load_screening_criteria
+    return load_screening_criteria(name, str(SAVED_SCREENINGS_DIR))
+
+
+def screening_list() -> list[str]:
+    """List saved screening names."""
+    from src.screening import list_saved_screenings
+    return list_saved_screenings(str(SAVED_SCREENINGS_DIR))
+
+
+def screening_delete(name) -> None:
+    """Delete a saved screening."""
+    from src.screening import delete_screening_criteria
+    return delete_screening_criteria(name, str(SAVED_SCREENINGS_DIR))
+
+
+def screening_save_history(entry) -> None:
+    """Append a screening history entry."""
+    from src.screening import save_screening_history
+    return save_screening_history(entry, str(SCREENING_HISTORY_PATH))
+
+
+def screening_load_history() -> list[dict]:
+    """Load screening run history."""
+    from src.screening import load_screening_history
+    return load_screening_history(str(SCREENING_HISTORY_PATH))

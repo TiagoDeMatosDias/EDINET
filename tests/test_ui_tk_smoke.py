@@ -28,6 +28,7 @@ def test_import_ui_tk():
     import ui_tk.pages.home
     import ui_tk.pages.orchestrator
     import ui_tk.pages.data
+    import ui_tk.pages.screening
 
 
 def test_apply_theme(root):
@@ -154,3 +155,27 @@ def test_app_switch_view(root):
     assert app._active_view == "Orchestrator"
     app.switch_view("Home")
     assert app._active_view == "Home"
+
+
+def test_screening_page_init(root):
+    """ScreeningPage can be instantiated without error."""
+    from ui_tk.pages.screening import ScreeningPage
+
+    page = ScreeningPage(root)
+    page.reapply_colors()
+
+
+def test_screening_controller_imports():
+    """Screening controller functions are importable."""
+    from ui_tk.controllers import (
+        screening_get_metrics,
+        screening_get_periods,
+        screening_run,
+        screening_export,
+        screening_save,
+        screening_load,
+        screening_list,
+        screening_delete,
+        screening_save_history,
+        screening_load_history,
+    )

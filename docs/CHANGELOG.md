@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Screening view** — new top-level view for filtering companies by financial criteria:
+  - Backend module (`src/screening.py`): parameterised SQL query builder, screening execution, CSV export, financial value formatting, and persistence for saved criteria and screening history.
+  - UI page (`ui_tk/pages/screening.py`): database picker, period selector, dynamic criteria builder, column selector, sortable results Treeview with alternating row colours, and toolbar with Save/Load/History/Export actions.
+  - Controller adapters in `ui_tk/controllers.py` for all screening operations.
+  - Registered as fourth view in `ui_tk/app.py` with `Ctrl+4` keyboard shortcut.
+  - Tests: `tests/test_screening.py` with 18 test cases covering query building, execution, persistence, formatting, and SQL injection prevention.
+  - Smoke tests and screenshot capture updated to include the Screening view.
+
 ### Changed
 - **Orchestration layer rework** — complete rewrite of `src/orchestrator.py`:
   - **Step handler pattern**: each orchestration step is handled by a dedicated function (`_step_get_documents`, `_step_download_documents`, etc.) registered in a `STEP_HANDLERS` dict, replacing the monolithic `if/elif` chain.

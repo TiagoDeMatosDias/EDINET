@@ -15,7 +15,7 @@ from ui_tk.shared.widgets import LogPanel, RoundedButton, reapply_widget_tree
 
 logger = logging.getLogger(__name__)
 
-VIEW_NAMES = ["Home", "Orchestrator", "Data"]
+VIEW_NAMES = ["Home", "Orchestrator", "Data", "Screening"]
 
 
 class App:
@@ -65,6 +65,8 @@ class App:
                            lambda _: self.switch_view("Orchestrator"))
         self.root.bind_all("<Control-Key-3>",
                            lambda _: self.switch_view("Data"))
+        self.root.bind_all("<Control-Key-4>",
+                           lambda _: self.switch_view("Screening"))
 
         # ── start polling ───────────────────────────────────────────────
         self.root.after(100, self._poll_logs)
@@ -169,6 +171,9 @@ class App:
         elif name == "Orchestrator":
             from ui_tk.pages.orchestrator import OrchestratorPage
             return OrchestratorPage(self._view_container, self)
+        elif name == "Screening":
+            from ui_tk.pages.screening import ScreeningPage
+            return ScreeningPage(self._view_container, self)
         else:
             from ui_tk.pages.data import DataPage
             return DataPage(self._view_container)

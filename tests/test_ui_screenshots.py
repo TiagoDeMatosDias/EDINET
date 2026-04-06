@@ -208,6 +208,17 @@ class TestScreenshotCapture:
         finally:
             root.destroy()
 
+    def test_capture_screening_dark(self):
+        root, app = _launch_app()
+        try:
+            app.switch_view("Screening")
+            root.update_idletasks()
+            root.update()
+            path = _capture_window(root, "screening_dark.png")
+            assert path.exists()
+        finally:
+            root.destroy()
+
     def test_capture_light_theme(self):
         """Capture all views in light theme."""
         from ui_tk.style import toggle_theme, is_dark
@@ -221,7 +232,7 @@ class TestScreenshotCapture:
                 root.update()
                 time.sleep(0.3)
 
-            for view in ("Home", "Orchestrator", "Data"):
+            for view in ("Home", "Orchestrator", "Data", "Screening"):
                 app.switch_view(view)
                 root.update_idletasks()
                 root.update()
@@ -239,7 +250,7 @@ class TestScreenshotAllViews:
 
     def test_capture_all_dark_and_light(self):
         paths = capture_all_views(themes=["dark", "light"])
-        assert len(paths) == 6  # 3 views × 2 themes
+        assert len(paths) == 8  # 4 views × 2 themes
         for p in paths:
             assert p.exists()
             assert p.stat().st_size > 0
