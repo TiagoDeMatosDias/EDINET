@@ -22,9 +22,58 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _OPERATORS = [">", ">=", "<", "<=", "=", "!=", "BETWEEN"]
+_COMPARISON_MODE_LABELS = {
+    "Fixed Value": "fixed",
+    "Compare to Column": "column",
+}
+_RANKING_ALGORITHM_LABELS = {
+    "None": "none",
+    "Weighted Min-Max": "weighted_minmax",
+    "Weighted Percentile": "weighted_percentile",
+}
+_RANKING_DIRECTION_LABELS = {
+    "Higher is Better": "higher",
+    "Lower is Better": "lower",
+}
 
 # Left panel fixed width
 _LEFT_WIDTH = 340
+
+
+class SearchableCombobox(ttk.Combobox):
+    """Combobox that filters its values as the user types."""
+
+    def __init__(self, parent, values=None, **kwargs):
+        kwargs.setdefault("state", "normal")
+        super().__init__(parent, **kwargs)
+        self._all_values: list[str] = []
+        self.set_source_values(values or [])
+        self.bind("<KeyRelease>", self._on_key_release, add="+")
+        self.bind("<Button-1>", self._on_pointer_open, add="+")
+        self.bind("<FocusIn>", self._on_pointer_open, add="+")
+
+    def set_source_values(self, values):
+        self._all_values = list(values or [])
+        self.configure(values=self._all_values)
+
+    def _on_pointer_open(self, _event=None):
+        self.configure(values=self._all_values)
+
+    def _on_key_release(self, event):
+        if event.keysym in {
+            "Up", "Down", "Left", "Right", "Return", "Escape", "Tab"
+        }:
+            return
+        query = self.get().strip().lower()
+        if not query:
+            filtered = self._all_values
+        else:
+            filtered = [
+                value for value in self._all_values
+                if query in value.lower()
+            ]
+        self.configure(values=filtered)
+        self.icursor(tk.END)
 
 
 class ScreeningPage(ttk.Frame):
@@ -39,6 +88,7 @@ class ScreeningPage(ttk.Frame):
         self._available_metrics: dict[str, list[str]] = {}
         self._available_periods: list[str] = []
         self._criteria_rows: list[dict] = []
+        self._ranking_rows: list[dict] = []
         self._results_df = None
         self._result_records_by_item: dict[str, dict] = {}
         self._sort_column: str | None = None
@@ -74,6 +124,12 @@ class ScreeningPage(ttk.Frame):
             command=self._export_results,
         )
         self._export_btn.pack(side="right", padx=2)
+
+        self._export_backtest_btn = RoundedButton(
+            toolbar, text="Backtest CSV", style="Ghost.TButton",
+            command=self._export_backtest_results,
+        )
+        self._export_backtest_btn.pack(side="right", padx=2)
 
         self._history_btn = RoundedButton(
             toolbar, text="History", style="Ghost.TButton",
@@ -185,6 +241,40 @@ class ScreeningPage(ttk.Frame):
         self._columns_frame = ttk.Frame(inner, style="Surface.TFrame")
         self._columns_frame.pack(fill="x", padx=pad, pady=(2, 0))
 
+        # --- Ranking ---
+        ttk.Separator(inner, orient="horizontal").pack(fill="x", padx=pad,
+                                                        pady=(pad, 2))
+        ranking_header = ttk.Frame(inner, style="Surface.TFrame")
+        ranking_header.pack(fill="x", padx=pad)
+        ttk.Label(
+            ranking_header, text="Ranking",
+            style="Surface.TLabel", font=FONT_UI_BOLD,
+        ).pack(side="left")
+        self._add_ranking_btn = RoundedButton(
+            ranking_header, text="+ Add", style="Small.TButton",
+            command=self._add_ranking_rule,
+        )
+        self._add_ranking_btn.pack(side="right")
+
+        ranking_algo_row = ttk.Frame(inner, style="Surface.TFrame")
+        ranking_algo_row.pack(fill="x", padx=pad, pady=(2, 0))
+        ttk.Label(
+            ranking_algo_row, text="Algorithm:", style="Surface.TLabel",
+        ).pack(side="left")
+        self._ranking_algorithm_var = tk.StringVar(value="None")
+        self._ranking_algorithm_combo = ttk.Combobox(
+            ranking_algo_row,
+            textvariable=self._ranking_algorithm_var,
+            values=list(_RANKING_ALGORITHM_LABELS.keys()),
+            state="readonly",
+            width=18,
+        )
+        self._ranking_algorithm_combo.pack(side="left", fill="x", expand=True,
+                                           padx=(pad, 0))
+
+        self._ranking_frame = ttk.Frame(inner, style="Surface.TFrame")
+        self._ranking_frame.pack(fill="x", padx=pad, pady=(2, 0))
+
         # --- Run button ---
         ttk.Separator(inner, orient="horizontal").pack(fill="x", padx=pad,
                                                         pady=(pad, pad // 2))
@@ -292,7 +382,10 @@ class ScreeningPage(ttk.Frame):
         """Update existing criteria row table combo values."""
         tables = self._get_table_names()
         for row in self._criteria_rows:
-            row["table_combo"]["values"] = tables
+            row["table_combo"].set_source_values(tables)
+            row["target_table_combo"].set_source_values(tables)
+        for row in self._ranking_rows:
+            row["table_combo"].set_source_values(tables)
 
     # ── Criteria builder ────────────────────────────────────────────────
 
@@ -302,21 +395,21 @@ class ScreeningPage(ttk.Frame):
 
         tables = self._get_table_names()
 
-        # Row 1: table dropdown + column dropdown + remove button
+        # Row 1: source table dropdown + source column dropdown + remove button
         top_row = ttk.Frame(row_frame, style="Surface.TFrame")
         top_row.pack(fill="x")
 
         table_var = tk.StringVar()
-        table_combo = ttk.Combobox(
+        table_combo = SearchableCombobox(
             top_row, textvariable=table_var,
-            values=tables, state="readonly", width=14,
+            values=tables, width=14,
         )
         table_combo.pack(side="left", padx=(0, 2))
 
         column_var = tk.StringVar()
-        column_combo = ttk.Combobox(
+        column_combo = SearchableCombobox(
             top_row, textvariable=column_var,
-            values=[], state="readonly",
+            values=[],
         )
         column_combo.pack(side="left", fill="x", expand=True, padx=(0, 2))
 
@@ -330,31 +423,80 @@ class ScreeningPage(ttk.Frame):
         def _on_table_change(*_):
             tbl = table_var.get()
             cols = self._get_columns_for_table(tbl)
-            column_combo["values"] = cols
-            column_var.set("")
+            column_combo.set_source_values(cols)
+            if column_var.get() not in cols:
+                column_var.set("")
 
         table_var.trace_add("write", _on_table_change)
 
-        # Row 2: operator + value(s)
+        # Row 2: comparison mode + operator
         bottom_row = ttk.Frame(row_frame, style="Surface.TFrame")
-        bottom_row.pack(fill="x", pady=(2, 4))
+        bottom_row.pack(fill="x", pady=(2, 2))
+
+        comparison_mode_var = tk.StringVar(value="Fixed Value")
+        comparison_mode_combo = ttk.Combobox(
+            bottom_row,
+            textvariable=comparison_mode_var,
+            values=list(_COMPARISON_MODE_LABELS.keys()),
+            state="readonly",
+            width=16,
+        )
+        comparison_mode_combo.pack(side="left", padx=(0, 4))
 
         op_var = tk.StringVar(value=">")
         op_combo = ttk.Combobox(
             bottom_row, textvariable=op_var,
             values=_OPERATORS, state="readonly", width=7,
         )
-        op_combo.pack(side="left", padx=(0, 4))
+        op_combo.pack(side="left")
+
+        # Row 3: fixed values or dynamic comparison target
+        compare_row = ttk.Frame(row_frame, style="Surface.TFrame")
+        compare_row.pack(fill="x", pady=(2, 4))
+
+        fixed_frame = ttk.Frame(compare_row, style="Surface.TFrame")
+        dynamic_frame = ttk.Frame(compare_row, style="Surface.TFrame")
 
         val_var = tk.StringVar()
-        val_entry = ttk.Entry(bottom_row, textvariable=val_var, width=12)
+        val_entry = ttk.Entry(fixed_frame, textvariable=val_var, width=12)
         val_entry.pack(side="left", padx=(0, 4))
 
         # Value2 entry (for BETWEEN)
         val2_var = tk.StringVar()
-        val2_entry = ttk.Entry(bottom_row, textvariable=val2_var, width=12)
+        val2_entry = ttk.Entry(fixed_frame, textvariable=val2_var, width=12)
+
+        target_table_var = tk.StringVar()
+        target_table_combo = SearchableCombobox(
+            dynamic_frame,
+            textvariable=target_table_var,
+            values=tables,
+            width=14,
+        )
+        target_table_combo.pack(side="left", padx=(0, 2))
+
+        target_column_var = tk.StringVar()
+        target_column_combo = SearchableCombobox(
+            dynamic_frame,
+            textvariable=target_column_var,
+            values=[],
+        )
+        target_column_combo.pack(side="left", fill="x", expand=True)
+
+        def _on_target_table_change(*_):
+            tbl = target_table_var.get()
+            cols = self._get_columns_for_table(tbl)
+            target_column_combo.set_source_values(cols)
+            if target_column_var.get() not in cols:
+                target_column_var.set("")
+
+        target_table_var.trace_add("write", _on_target_table_change)
 
         def _on_op_change(*_):
+            if (
+                comparison_mode_var.get() == "Compare to Column"
+                and op_var.get() == "BETWEEN"
+            ):
+                comparison_mode_var.set("Fixed Value")
             if op_var.get() == "BETWEEN":
                 val2_entry.pack(side="left", padx=(0, 4))
             else:
@@ -362,16 +504,39 @@ class ScreeningPage(ttk.Frame):
 
         op_var.trace_add("write", _on_op_change)
 
+        def _on_mode_change(*_):
+            if (
+                comparison_mode_var.get() == "Compare to Column"
+                and op_var.get() == "BETWEEN"
+            ):
+                op_var.set(">")
+            fixed_frame.pack_forget()
+            dynamic_frame.pack_forget()
+            if comparison_mode_var.get() == "Compare to Column":
+                dynamic_frame.pack(fill="x")
+            else:
+                fixed_frame.pack(fill="x")
+                _on_op_change()
+
+        comparison_mode_var.trace_add("write", _on_mode_change)
+        _on_mode_change()
+
         row_data = {
             "frame": row_frame,
             "table_var": table_var,
             "table_combo": table_combo,
             "column_var": column_var,
             "column_combo": column_combo,
+            "comparison_mode_var": comparison_mode_var,
+            "comparison_mode_combo": comparison_mode_combo,
             "op_var": op_var,
             "val_var": val_var,
             "val2_var": val2_var,
             "val2_entry": val2_entry,
+            "target_table_var": target_table_var,
+            "target_table_combo": target_table_combo,
+            "target_column_var": target_column_var,
+            "target_column_combo": target_column_combo,
             "remove_btn": remove_btn,
         }
 
@@ -381,6 +546,75 @@ class ScreeningPage(ttk.Frame):
     def _remove_criterion(self, row_data):
         row_data["frame"].destroy()
         self._criteria_rows.remove(row_data)
+
+    def _add_ranking_rule(self):
+        row_frame = ttk.Frame(self._ranking_frame, style="Surface.TFrame")
+        row_frame.pack(fill="x", pady=2)
+
+        tables = self._get_table_names()
+
+        top_row = ttk.Frame(row_frame, style="Surface.TFrame")
+        top_row.pack(fill="x")
+
+        table_var = tk.StringVar()
+        table_combo = SearchableCombobox(
+            top_row, textvariable=table_var, values=tables, width=14,
+        )
+        table_combo.pack(side="left", padx=(0, 2))
+
+        column_var = tk.StringVar()
+        column_combo = SearchableCombobox(
+            top_row, textvariable=column_var, values=[],
+        )
+        column_combo.pack(side="left", fill="x", expand=True, padx=(0, 2))
+
+        remove_btn = RoundedButton(
+            top_row, text="✕", style="Danger.TButton", width=2,
+        )
+        remove_btn.pack(side="right")
+
+        def _on_table_change(*_):
+            cols = self._get_columns_for_table(table_var.get())
+            column_combo.set_source_values(cols)
+            if column_var.get() not in cols:
+                column_var.set("")
+
+        table_var.trace_add("write", _on_table_change)
+
+        bottom_row = ttk.Frame(row_frame, style="Surface.TFrame")
+        bottom_row.pack(fill="x", pady=(2, 4))
+
+        direction_var = tk.StringVar(value="Higher is Better")
+        direction_combo = ttk.Combobox(
+            bottom_row,
+            textvariable=direction_var,
+            values=list(_RANKING_DIRECTION_LABELS.keys()),
+            state="readonly",
+            width=16,
+        )
+        direction_combo.pack(side="left", padx=(0, 4))
+
+        weight_var = tk.StringVar(value="1.0")
+        ttk.Entry(bottom_row, textvariable=weight_var, width=10).pack(
+            side="left"
+        )
+
+        row_data = {
+            "frame": row_frame,
+            "table_var": table_var,
+            "table_combo": table_combo,
+            "column_var": column_var,
+            "column_combo": column_combo,
+            "direction_var": direction_var,
+            "weight_var": weight_var,
+            "remove_btn": remove_btn,
+        }
+        remove_btn.configure(command=lambda: self._remove_ranking_rule(row_data))
+        self._ranking_rows.append(row_data)
+
+    def _remove_ranking_rule(self, row_data):
+        row_data["frame"].destroy()
+        self._ranking_rows.remove(row_data)
 
     # ── Column selector ─────────────────────────────────────────────────
 
@@ -401,11 +635,21 @@ class ScreeningPage(ttk.Frame):
             side="left",
         )
         self._col_table_var = tk.StringVar()
-        self._col_table_combo = ttk.Combobox(
+        self._col_table_combo = SearchableCombobox(
             selector_frame, textvariable=self._col_table_var,
-            values=tables, state="readonly",
+            values=tables,
         )
         self._col_table_combo.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        search_row = ttk.Frame(self._columns_frame, style="Surface.TFrame")
+        search_row.pack(fill="x", pady=(0, 4))
+        ttk.Label(search_row, text="Find:", style="Surface.TLabel").pack(
+            side="left",
+        )
+        self._col_search_var = tk.StringVar()
+        ttk.Entry(
+            search_row, textvariable=self._col_search_var,
+        ).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         # Container for column checkboxes (populated on table change)
         self._col_checks_frame = ttk.Frame(self._columns_frame,
@@ -418,13 +662,16 @@ class ScreeningPage(ttk.Frame):
                 key = f"{table}.{col}"
                 self._display_columns[key] = tk.BooleanVar(value=False)
 
-        def _on_col_table_change(*_):
+        def _render_column_checks(*_):
             # Clear current checkboxes
             for child in self._col_checks_frame.winfo_children():
                 child.destroy()
             tbl = self._col_table_var.get()
             cols = self._get_columns_for_table(tbl)
+            search_text = self._col_search_var.get().strip().lower()
             for col in cols:
+                if search_text and search_text not in col.lower():
+                    continue
                 key = f"{tbl}.{col}"
                 var = self._display_columns.get(key)
                 if var is None:
@@ -435,7 +682,8 @@ class ScreeningPage(ttk.Frame):
                 )
                 cb.pack(anchor="w")
 
-        self._col_table_var.trace_add("write", _on_col_table_change)
+        self._col_table_var.trace_add("write", _render_column_checks)
+        self._col_search_var.trace_add("write", _render_column_checks)
 
         # Select first table by default
         if tables:
@@ -452,29 +700,75 @@ class ScreeningPage(ttk.Frame):
                 continue
 
             op = row["op_var"].get()
-            try:
-                value = float(row["val_var"].get())
-            except (ValueError, TypeError):
-                continue
+            comparison_mode_label = row["comparison_mode_var"].get()
+            comparison_mode = _COMPARISON_MODE_LABELS.get(
+                comparison_mode_label, "fixed"
+            )
 
             crit = {
                 "table": table,
                 "column": column,
                 "operator": op,
-                "value": value,
+                "comparison_mode": comparison_mode,
             }
-            if op == "BETWEEN":
-                try:
-                    crit["value2"] = float(row["val2_var"].get())
-                except (ValueError, TypeError):
+
+            if comparison_mode == "column":
+                compare_table = row["target_table_var"].get()
+                compare_column = row["target_column_var"].get()
+                if not compare_table or not compare_column:
                     continue
+                crit["compare_table"] = compare_table
+                crit["compare_column"] = compare_column
+            else:
+                raw_value = row["val_var"].get().strip()
+                if not raw_value:
+                    continue
+                crit["value"] = self._coerce_criterion_value(table, raw_value)
+
+            if comparison_mode == "fixed" and op == "BETWEEN":
+                raw_value2 = row["val2_var"].get().strip()
+                if not raw_value2:
+                    continue
+                crit["value2"] = self._coerce_criterion_value(table, raw_value2)
 
             criteria.append(crit)
         return criteria
 
+    def _collect_ranking_rules(self) -> list[dict]:
+        ranking_rules = []
+        for row in self._ranking_rows:
+            table = row["table_var"].get()
+            column = row["column_var"].get()
+            if not table or not column:
+                continue
+            try:
+                weight = float(row["weight_var"].get().strip())
+            except (TypeError, ValueError):
+                continue
+            if weight <= 0:
+                continue
+            direction = _RANKING_DIRECTION_LABELS.get(
+                row["direction_var"].get(), "higher"
+            )
+            ranking_rules.append(
+                {
+                    "table": table,
+                    "column": column,
+                    "weight": weight,
+                    "direction": direction,
+                }
+            )
+        return ranking_rules
+
+    def _get_ranking_algorithm(self) -> str:
+        return _RANKING_ALGORITHM_LABELS.get(
+            self._ranking_algorithm_var.get(), "none"
+        )
+
     def _collect_columns(self) -> list[str]:
-        from src.screening import DEFAULT_COLUMNS
-        cols = list(DEFAULT_COLUMNS)
+        from src.screening import get_default_columns
+
+        cols = get_default_columns(self._available_metrics)
         for key, var in self._display_columns.items():
             if var.get() and key not in cols:
                 cols.append(key)
@@ -483,7 +777,23 @@ class ScreeningPage(ttk.Frame):
             col_ref = f"{crit['table']}.{crit['column']}"
             if col_ref not in cols:
                 cols.append(col_ref)
+        for rule in self._collect_ranking_rules():
+            col_ref = f"{rule['table']}.{rule['column']}"
+            if col_ref not in cols:
+                cols.append(col_ref)
         return cols
+
+    def _coerce_criterion_value(self, table: str, raw_value: str):
+        """Convert numeric inputs when appropriate, otherwise preserve text."""
+        if table == "CompanyInfo":
+            return raw_value
+
+        try:
+            if any(char in raw_value for char in (".", "e", "E")):
+                return float(raw_value)
+            return int(raw_value)
+        except ValueError:
+            return raw_value
 
     # ── Run screening ───────────────────────────────────────────────────
 
@@ -495,13 +805,22 @@ class ScreeningPage(ttk.Frame):
         criteria = self._collect_criteria()
         columns = self._collect_columns()
         period = self._period_var.get() or None
+        ranking_algorithm = self._get_ranking_algorithm()
+        ranking_rules = self._collect_ranking_rules()
 
         self._status_var.set("Running screening...")
         self._run_btn.state(["disabled"])
 
         def _do():
             return ctrl.screening_run(
-                self._db_path, criteria, columns, period, None, "ASC"
+                self._db_path,
+                criteria,
+                columns,
+                period,
+                self._sort_column,
+                "ASC" if self._sort_ascending else "DESC",
+                ranking_algorithm=ranking_algorithm,
+                ranking_rules=ranking_rules,
             )
 
         def _on_done(df):
@@ -519,6 +838,8 @@ class ScreeningPage(ttk.Frame):
                     "criteria": criteria,
                     "columns": columns,
                     "period": period,
+                    "ranking_algorithm": ranking_algorithm,
+                    "ranking_rules": ranking_rules,
                     "result_count": count,
                 })
             except Exception:
@@ -593,7 +914,12 @@ class ScreeningPage(ttk.Frame):
             ),
             "company_name": self._coalesce_record_value(
                 record,
-                ("company_name", "Company_Name", "Submitter Name"),
+                (
+                    "company_name",
+                    "Company_Name",
+                    "CompanyName",
+                    "Submitter Name",
+                ),
             ),
             "industry": self._coalesce_record_value(
                 record,
@@ -668,9 +994,18 @@ class ScreeningPage(ttk.Frame):
         criteria = self._collect_criteria()
         columns = self._collect_columns()
         period = self._period_var.get() or None
+        ranking_algorithm = self._get_ranking_algorithm()
+        ranking_rules = self._collect_ranking_rules()
 
         try:
-            ctrl.screening_save(name, criteria, columns, period)
+            ctrl.screening_save(
+                name,
+                criteria,
+                columns,
+                period,
+                ranking_algorithm=ranking_algorithm,
+                ranking_rules=ranking_rules,
+            )
             logger.info("Saved screening '%s'", name)
         except Exception as exc:
             logger.error("Failed to save screening: %s", exc)
@@ -750,6 +1085,9 @@ class ScreeningPage(ttk.Frame):
         for row in list(self._criteria_rows):
             row["frame"].destroy()
         self._criteria_rows.clear()
+        for row in list(self._ranking_rows):
+            row["frame"].destroy()
+        self._ranking_rows.clear()
 
         # Set period
         period = data.get("period")
@@ -762,10 +1100,47 @@ class ScreeningPage(ttk.Frame):
             row = self._criteria_rows[-1]
             row["table_var"].set(crit["table"])
             row["column_var"].set(crit["column"])
+            comparison_mode = crit.get("comparison_mode", "fixed")
+            comparison_label = next(
+                (
+                    label for label, value in _COMPARISON_MODE_LABELS.items()
+                    if value == comparison_mode
+                ),
+                "Fixed Value",
+            )
+            row["comparison_mode_var"].set(comparison_label)
             row["op_var"].set(crit.get("operator", ">"))
-            row["val_var"].set(str(crit.get("value", "")))
-            if "value2" in crit:
+            if comparison_mode == "column":
+                row["target_table_var"].set(crit.get("compare_table", ""))
+                row["target_column_var"].set(crit.get("compare_column", ""))
+            else:
+                row["val_var"].set(str(crit.get("value", "")))
+            if comparison_mode == "fixed" and "value2" in crit:
                 row["val2_var"].set(str(crit["value2"]))
+
+        ranking_label = next(
+            (
+                label for label, value in _RANKING_ALGORITHM_LABELS.items()
+                if value == data.get("ranking_algorithm", "none")
+            ),
+            "None",
+        )
+        self._ranking_algorithm_var.set(ranking_label)
+
+        for rule in data.get("ranking_rules", []):
+            self._add_ranking_rule()
+            row = self._ranking_rows[-1]
+            row["table_var"].set(rule.get("table", ""))
+            row["column_var"].set(rule.get("column", ""))
+            direction_label = next(
+                (
+                    label for label, value in _RANKING_DIRECTION_LABELS.items()
+                    if value == rule.get("direction", "higher")
+                ),
+                "Higher is Better",
+            )
+            row["direction_var"].set(direction_label)
+            row["weight_var"].set(str(rule.get("weight", 1.0)))
 
         # Set display columns
         for key, var in self._display_columns.items():
@@ -852,6 +1227,67 @@ class ScreeningPage(ttk.Frame):
         except Exception as exc:
             logger.error("Export failed: %s", exc)
 
+    def _export_backtest_results(self):
+        if not self._db_path:
+            logger.warning("No database selected")
+            return
+
+        max_companies = simpledialog.askinteger(
+            "Backtest Export",
+            "Maximum companies to export per year:",
+            parent=self,
+            minvalue=1,
+            initialvalue=25,
+        )
+        if max_companies is None:
+            return
+
+        historical = messagebox.askyesno(
+            "Backtest Export",
+            "Export a historical company list for every year in the database?",
+            parent=self,
+        )
+
+        path = filedialog.asksaveasfilename(
+            title="Export Backtest Company List",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            parent=self,
+        )
+        if not path:
+            return
+
+        criteria = self._collect_criteria()
+        columns = self._collect_columns()
+        period = self._period_var.get() or None
+        ranking_algorithm = self._get_ranking_algorithm()
+        ranking_rules = self._collect_ranking_rules()
+
+        self._status_var.set("Exporting backtest company list...")
+
+        def _do():
+            return ctrl.screening_export_backtest(
+                self._db_path,
+                criteria,
+                columns,
+                path,
+                period,
+                max_companies,
+                ranking_algorithm=ranking_algorithm,
+                ranking_rules=ranking_rules,
+                historical=historical,
+            )
+
+        def _on_done(result_path):
+            self._status_var.set(f"Backtest export saved to {result_path}")
+            logger.info("Exported backtest company list to %s", result_path)
+
+        def _on_error(exc):
+            self._status_var.set(f"Backtest export failed: {exc}")
+            logger.error("Backtest export failed: %s", exc)
+
+        run_in_background(_do, on_done=_on_done, on_error=_on_error)
+
     # ── Theme toggle support ────────────────────────────────────────────
 
     def reapply_colors(self):
@@ -861,9 +1297,20 @@ class ScreeningPage(ttk.Frame):
         self._tree.tag_configure("even", background=t["surface"])
         self._tree.tag_configure("odd", background=t["surface_alt"])
 
-        for btn in (self._export_btn, self._history_btn, self._save_btn,
-                    self._load_btn, self._add_criterion_btn, self._run_btn):
+        for btn in (
+            self._export_btn,
+            self._export_backtest_btn,
+            self._history_btn,
+            self._save_btn,
+            self._load_btn,
+            self._add_criterion_btn,
+            self._add_ranking_btn,
+            self._run_btn,
+        ):
             btn.reapply_colors()
         for row in self._criteria_rows:
+            if "remove_btn" in row:
+                row["remove_btn"].reapply_colors()
+        for row in self._ranking_rows:
             if "remove_btn" in row:
                 row["remove_btn"].reapply_colors()

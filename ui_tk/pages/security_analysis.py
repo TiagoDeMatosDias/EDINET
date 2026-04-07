@@ -153,6 +153,16 @@ class SecurityAnalysisPage(ttk.Frame):
         self._search_request_id: int = 0
         self._load_request_id: int = 0
         self._is_loading = False
+        self._suspend_search = False
+        self._price_history_request_id: int = 0
+        self._peers_request_id: int = 0
+        self._loading_price_history = False
+        self._loading_peers = False
+        self._price_history_loaded_for: str | None = None
+        self._peers_loaded_for: str | None = None
+        self._db_optimize_request_id: int = 0
+        self._db_optimized_path: str | None = None
+        self._active_tab: str = "Overview"
 
         # --- Tk variables ---
         self._status_var = tk.StringVar(value="Select a database and search for a security.")
@@ -177,6 +187,7 @@ class SecurityAnalysisPage(ttk.Frame):
         if self._db_path:
             self._db_picker.set(self._db_path)
             self._status_var.set("Database loaded. Start typing to search.")
+            self._start_database_optimization(self._db_path)
 
         self._search_var.trace_add("write", lambda *_: self._schedule_search())
         self._db_picker._var.trace_add("write", lambda *_: self._on_db_changed())
@@ -546,9 +557,11 @@ class SecurityAnalysisPage(ttk.Frame):
         if new_path == self._db_path:
             return
         self._db_path = new_path
+        self._db_optimized_path = None
         if self._db_path:
             ctrl.remember_database_path(self._db_path)
             self._status_var.set("Database updated. Start typing to search.")
+            self._start_database_optimization(self._db_path)
         else:
             self._status_var.set("Select a database to begin.")
         self._selected_security = None
@@ -557,7 +570,33 @@ class SecurityAnalysisPage(ttk.Frame):
         self._hide_suggestions()
         self._clear_rendered_data()
 
+    def _start_database_optimization(self, db_path: str):
+        clean_db_path = _safe_str(db_path)
+        if not clean_db_path or clean_db_path == self._db_optimized_path:
+            return
+
+        self._db_optimize_request_id += 1
+        request_id = self._db_optimize_request_id
+
+        def _load():
+            return ctrl.security_optimize_database(clean_db_path)
+
+        def _on_done(_result):
+            if request_id != self._db_optimize_request_id:
+                return
+            self._db_optimized_path = clean_db_path
+            logger.info("Security Analysis database optimization completed for %s", clean_db_path)
+
+        def _on_error(exc):
+            if request_id != self._db_optimize_request_id:
+                return
+            logger.warning("Security Analysis database optimization failed: %s", exc)
+
+        run_in_background(_load, on_done=_on_done, on_error=_on_error)
+
     def _schedule_search(self):
+        if self._suspend_search:
+            return
         if self._search_after_id:
             self.after_cancel(self._search_after_id)
             self._search_after_id = None
@@ -601,13 +640,14 @@ class SecurityAnalysisPage(ttk.Frame):
             self._hide_suggestions()
             return
         for record in results:
-            price = _format_currency(_safe_float(record.get("latest_price")))
-            line = (
-                f"{record.get('ticker', '')}  "
-                f"{record.get('company_name', '')}  "
-                f"{record.get('industry', '')}  "
-                f"{price}"
-            )
+            parts = [
+                _safe_str(record.get("ticker")),
+                _safe_str(record.get("company_name")),
+                _safe_str(record.get("industry")),
+            ]
+            if record.get("latest_price") is not None:
+                parts.append(_format_currency(_safe_float(record.get("latest_price"))))
+            line = "  ".join(part for part in parts if part)
             self._suggestions_list.insert("end", line.strip())
         self._suggestions_list.selection_clear(0, "end")
         self._suggestions_list.selection_set(0)
@@ -673,10 +713,23 @@ class SecurityAnalysisPage(ttk.Frame):
 
     def _select_security(self, record: dict):
         self._selected_security = record
-        self._search_var.set(record.get("company_name") or record.get("ticker") or "")
+        self._suspend_search = True
+        try:
+            self._search_var.set(record.get("company_name") or record.get("ticker") or "")
+        finally:
+            self._suspend_search = False
         self._manual_peer_codes = []
         self._hide_suggestions()
         self._load_selected_security()
+
+    @staticmethod
+    def _build_ratios_from_overview(overview: dict) -> dict:
+        ratios = dict(overview.get("valuation_latest", {}))
+        ratios.update(overview.get("quality_latest", {}))
+        metadata = overview.get("metadata", {})
+        ratios["period_end"] = metadata.get("last_financial_period_end")
+        ratios["latest_price_date"] = metadata.get("last_price_date")
+        return ratios
 
     # ------------------------------------------------------------------
     # Data loading
@@ -702,29 +755,27 @@ class SecurityAnalysisPage(ttk.Frame):
         request_id = self._load_request_id + 1
         self._load_request_id = request_id
         self._set_loading(True, f"Loading security {edinet_code}...")
+        self._price_history = []
+        self._peers = []
+        self._price_history_loaded_for = None
+        self._peers_loaded_for = None
+        self._loading_price_history = False
+        self._loading_peers = False
 
         def _load():
             overview = ctrl.security_get_overview(self._db_path, edinet_code)
-            ratios = ctrl.security_get_ratios(self._db_path, edinet_code)
             statements = ctrl.security_get_statements(self._db_path, edinet_code, periods=periods)
-            price_history = ctrl.security_get_price_history(self._db_path, ticker)
-            peers = self._build_peer_payload(edinet_code, overview)
             return {
                 "overview": overview,
-                "ratios": ratios,
                 "statements": statements,
-                "price_history": price_history,
-                "peers": peers,
             }
 
         def _on_done(payload):
             if request_id != self._load_request_id:
                 return
             self._overview = payload["overview"]
-            self._ratios = payload["ratios"]
+            self._ratios = self._build_ratios_from_overview(self._overview)
             self._statements = payload["statements"]
-            self._price_history = payload["price_history"]
-            self._peers = payload["peers"]
             self._render_all()
             company_name = self._overview.get("company", {}).get("company_name") or edinet_code
             self._set_loading(False, f"Loaded {company_name}.")
@@ -735,6 +786,72 @@ class SecurityAnalysisPage(ttk.Frame):
             logger.error("Failed to load security: %s", exc, exc_info=True)
             self._set_loading(False, f"Failed to load security: {exc}")
             messagebox.showerror("Security Analysis", str(exc), parent=self.winfo_toplevel())
+
+        run_in_background(_load, on_done=_on_done, on_error=_on_error)
+
+    def _ensure_price_history_loaded(self):
+        if not self._selected_security or not self._db_path:
+            return
+        edinet_code = self._selected_security.get("edinet_code")
+        ticker = self._selected_security.get("ticker")
+        if not ticker or self._loading_price_history or self._price_history_loaded_for == edinet_code:
+            return
+
+        request_id = self._load_request_id
+        self._price_history_request_id += 1
+        background_request_id = self._price_history_request_id
+        self._loading_price_history = True
+
+        def _load():
+            return ctrl.security_get_price_history(self._db_path, ticker)
+
+        def _on_done(price_history):
+            if request_id != self._load_request_id or background_request_id != self._price_history_request_id:
+                return
+            self._loading_price_history = False
+            self._price_history = price_history
+            self._price_history_loaded_for = edinet_code
+            self._render_peers()
+            self._redraw_chart()
+
+        def _on_error(exc):
+            if request_id != self._load_request_id or background_request_id != self._price_history_request_id:
+                return
+            self._loading_price_history = False
+            logger.error("Failed to load price history: %s", exc, exc_info=True)
+
+        run_in_background(_load, on_done=_on_done, on_error=_on_error)
+
+    def _ensure_peers_loaded(self):
+        if not self._selected_security or not self._db_path:
+            return
+        edinet_code = self._selected_security.get("edinet_code")
+        if self._loading_peers or self._peers_loaded_for == edinet_code:
+            return
+
+        request_id = self._load_request_id
+        self._peers_request_id += 1
+        background_request_id = self._peers_request_id
+        self._loading_peers = True
+        company = self._overview.get("company", {})
+
+        def _load():
+            return self._build_peer_payload(edinet_code, {"company": company})
+
+        def _on_done(peers):
+            if request_id != self._load_request_id or background_request_id != self._peers_request_id:
+                return
+            self._loading_peers = False
+            self._peers = peers
+            self._peers_loaded_for = edinet_code
+            self._render_peers()
+            self._redraw_chart()
+
+        def _on_error(exc):
+            if request_id != self._load_request_id or background_request_id != self._peers_request_id:
+                return
+            self._loading_peers = False
+            logger.error("Failed to load peers: %s", exc, exc_info=True)
 
         run_in_background(_load, on_done=_on_done, on_error=_on_error)
 
@@ -886,6 +1003,10 @@ class SecurityAnalysisPage(ttk.Frame):
         self._statements = {}
         self._price_history = []
         self._peers = []
+        self._price_history_loaded_for = None
+        self._peers_loaded_for = None
+        self._loading_price_history = False
+        self._loading_peers = False
         self._company_card_var.set("No security selected")
         self._market_card_var.set("Price data will appear here")
         self._valuation_card_var.set("Valuation data will appear here")
@@ -894,8 +1015,10 @@ class SecurityAnalysisPage(ttk.Frame):
         self._populate_key_value_tree(self._fundamentals_tree, [])
         self._populate_key_value_tree(self._ratios_tree, [])
         self._render_statement_table()
-        self._render_peers()
-        self._redraw_chart()
+        if self._active_tab == "Peers":
+            self._render_peers()
+        if self._active_tab == "Charts":
+            self._redraw_chart()
 
     def _render_all(self):
         company = self._overview.get("company", {})
@@ -984,8 +1107,10 @@ class SecurityAnalysisPage(ttk.Frame):
         self._populate_key_value_tree(self._fundamentals_tree, fundamentals_rows)
         self._populate_key_value_tree(self._ratios_tree, ratio_rows)
         self._render_statement_table()
-        self._render_peers()
-        self._redraw_chart()
+        if self._active_tab == "Peers":
+            self._render_peers()
+        if self._active_tab == "Charts":
+            self._redraw_chart()
 
     def _populate_key_value_tree(self, tree: ttk.Treeview, rows: list[tuple[str, str]]):
         tree.delete(*tree.get_children())
@@ -1057,9 +1182,21 @@ class SecurityAnalysisPage(ttk.Frame):
             )
 
     def _show_tab(self, name: str):
+        self._active_tab = name
         for frame in self._tab_frames.values():
             frame.pack_forget()
         self._tab_frames[name].pack(fill="both", expand=True)
+        if name == "Charts":
+            self._ensure_price_history_loaded()
+            if self._chart_metric_var.get() in {"P/E", "P/B", "Dividend Yield", "ROE"} and self._chart_show_peers_var.get():
+                self._ensure_peers_loaded()
+            self._redraw_chart()
+        elif name == "Peers":
+            self._ensure_price_history_loaded()
+            self._ensure_peers_loaded()
+            self._render_peers()
+        elif name == "Statements":
+            self._render_statement_table()
 
     # ------------------------------------------------------------------
     # Charting
@@ -1085,6 +1222,12 @@ class SecurityAnalysisPage(ttk.Frame):
 
         metric = self._chart_metric_var.get()
 
+        if self._active_tab == "Charts":
+            if metric == "Stock Price":
+                self._ensure_price_history_loaded()
+            elif metric in {"P/E", "P/B", "Dividend Yield", "ROE"} and self._chart_show_peers_var.get():
+                self._ensure_peers_loaded()
+
         if metric == "Stock Price":
             self._draw_price_chart(ax)
         elif metric in {"Revenue", "Operating Income", "Net Income", "Shareholders' Equity"}:
@@ -1098,7 +1241,8 @@ class SecurityAnalysisPage(ttk.Frame):
     def _draw_price_chart(self, ax):
         history = pd.DataFrame(self._price_history)
         if history.empty:
-            ax.text(0.5, 0.5, "No price history available", ha="center", va="center", color=COLORS["text_dim"])
+            message = "Loading price history..." if self._loading_price_history else "No price history available"
+            ax.text(0.5, 0.5, message, ha="center", va="center", color=COLORS["text_dim"])
             return
         history["trade_date"] = pd.to_datetime(history["trade_date"], errors="coerce")
         history["price"] = pd.to_numeric(history["price"], errors="coerce")
@@ -1157,7 +1301,8 @@ class SecurityAnalysisPage(ttk.Frame):
         if self._chart_show_peers_var.get():
             rows.extend(self._peers)
         if not rows:
-            ax.text(0.5, 0.5, "No peer data available", ha="center", va="center", color=COLORS["text_dim"])
+            message = "Loading peer data..." if self._loading_peers else "No peer data available"
+            ax.text(0.5, 0.5, message, ha="center", va="center", color=COLORS["text_dim"])
             return
         names = [row.get("ticker") or row.get("company_name") or "N/A" for row in rows]
         values = [_safe_float(row.get(field)) for row in rows]

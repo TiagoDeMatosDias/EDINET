@@ -484,10 +484,28 @@ def screening_get_periods(db_path: str) -> list[str]:
     return get_available_periods(db_path)
 
 
-def screening_run(db_path, criteria, columns, period, sort_by, sort_order):
+def screening_run(
+    db_path,
+    criteria,
+    columns,
+    period,
+    sort_by,
+    sort_order,
+    ranking_algorithm="none",
+    ranking_rules=None,
+):
     """Run a screening query and return results as a DataFrame."""
     from src.screening import run_screening
-    return run_screening(db_path, criteria, columns, period, sort_by, sort_order)
+    return run_screening(
+        db_path,
+        criteria,
+        columns,
+        period,
+        sort_by,
+        sort_order,
+        ranking_algorithm=ranking_algorithm,
+        ranking_rules=ranking_rules,
+    )
 
 
 def screening_export(df, output_path) -> str:
@@ -496,11 +514,51 @@ def screening_export(df, output_path) -> str:
     return export_screening_to_csv(df, output_path)
 
 
-def screening_save(name, criteria, columns, period):
+def screening_export_backtest(
+    db_path,
+    criteria,
+    columns,
+    output_path,
+    period,
+    max_companies,
+    ranking_algorithm="none",
+    ranking_rules=None,
+    historical=False,
+) -> str:
+    """Export screening results to the backtest-set CSV format."""
+    from src.screening import export_screening_to_backtest_csv
+
+    return export_screening_to_backtest_csv(
+        db_path,
+        criteria,
+        columns,
+        output_path,
+        period=period,
+        max_companies=max_companies,
+        ranking_algorithm=ranking_algorithm,
+        ranking_rules=ranking_rules,
+        historical=historical,
+    )
+
+
+def screening_save(
+    name,
+    criteria,
+    columns,
+    period,
+    ranking_algorithm="none",
+    ranking_rules=None,
+):
     """Save screening criteria to disk."""
     from src.screening import save_screening_criteria
     return save_screening_criteria(
-        name, criteria, columns, period, str(SAVED_SCREENINGS_DIR)
+        name,
+        criteria,
+        columns,
+        period,
+        str(SAVED_SCREENINGS_DIR),
+        ranking_algorithm=ranking_algorithm,
+        ranking_rules=ranking_rules,
     )
 
 
@@ -543,6 +601,12 @@ def security_search(db_path: str, query: str, limit: int = 25) -> list[dict]:
     """Search securities for the Security Analysis view."""
     from src.security_analysis import search_securities
     return search_securities(db_path, query, limit=limit)
+
+
+def security_optimize_database(db_path: str) -> dict:
+    """Create one-time indexes used by the Security Analysis view."""
+    from src.security_analysis import ensure_security_analysis_indexes
+    return ensure_security_analysis_indexes(db_path)
 
 
 def security_get_overview(db_path: str, edinet_code: str) -> dict:

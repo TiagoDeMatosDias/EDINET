@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from src.security_analysis import (
+    ensure_security_analysis_indexes,
     get_security_overview,
     get_security_peers,
     get_security_price_history,
@@ -232,7 +233,7 @@ def test_search_securities_matches_name_and_ticker(security_db):
     assert results
     assert results[0]["edinet_code"] == "E00001"
     assert results[0]["company_name"] == "Alpha Corp"
-    assert results[0]["latest_price"] == 1100.0
+    assert results[0]["ticker"] == "1001"
 
 
 def test_search_securities_uses_submitter_name_fallback(security_db):
@@ -240,6 +241,25 @@ def test_search_securities_uses_submitter_name_fallback(security_db):
     assert results
     assert results[0]["edinet_code"] == "E00004"
     assert results[0]["company_name"] == "Delta Seeds KK"
+
+
+def test_ensure_security_analysis_indexes_creates_expected_indexes(security_db):
+    result = ensure_security_analysis_indexes(security_db)
+    assert result["ok"] is True
+
+    conn = sqlite3.connect(security_db)
+    try:
+        company_indexes = {row[1] for row in conn.execute("PRAGMA index_list([CompanyInfo])")}
+        fs_indexes = {row[1] for row in conn.execute("PRAGMA index_list([FinancialStatements])")}
+        price_indexes = {row[1] for row in conn.execute("PRAGMA index_list([Stock_Prices])")}
+    finally:
+        conn.close()
+
+    assert "idx_sa_company_edinet" in company_indexes
+    assert "idx_sa_company_ticker" in company_indexes
+    assert "idx_sa_company_industry" in company_indexes
+    assert "idx_sa_fs_edinet_period" in fs_indexes
+    assert "idx_sa_prices_ticker_date" in price_indexes
 
 
 def test_get_security_overview_uses_ratio_fallbacks(security_db):

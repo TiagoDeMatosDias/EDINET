@@ -7,6 +7,7 @@ persist/load screening criteria and history.
 
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -30,6 +31,36 @@ SCREENING_TABLES: list[str] = [
     "Quality_Historical",
 ]
 
+COMPANYINFO_EDINET_CANDIDATES: list[str] = [
+    "edinetCode",
+    "EdinetCode",
+]
+
+COMPANYINFO_TICKER_CANDIDATES: list[str] = [
+    "Company_Ticker",
+    "Ticker",
+    "ticker",
+]
+
+COMPANYINFO_NAME_CANDIDATES: list[str] = [
+    "Company_Name",
+    "CompanyName",
+    "company_name",
+    "Submitter Name",
+    "Submitter_Name",
+    "SubmitterName",
+    "FilerName",
+    "Name",
+]
+
+COMPANYINFO_INDUSTRY_CANDIDATES: list[str] = [
+    "Company_Industry",
+    "Industry",
+    "industry",
+    "Sector",
+    "Business_Industry",
+]
+
 OPERATOR_MAP: dict[str, str] = {
     ">": ">",
     ">=": ">=",
@@ -45,6 +76,17 @@ DEFAULT_COLUMNS: list[str] = [
     "CompanyInfo.Company_Ticker",
     "FinancialStatements.periodEnd",
 ]
+
+RANKING_ALGORITHMS: dict[str, str] = {
+    "none": "None",
+    "weighted_minmax": "Weighted Min-Max",
+    "weighted_percentile": "Weighted Percentile",
+}
+
+RANKING_DIRECTIONS: dict[str, str] = {
+    "higher": "Higher is Better",
+    "lower": "Lower is Better",
+}
 
 # --- Formatting rules ---
 # Maps column-name substrings/patterns to format types.
@@ -113,16 +155,61 @@ def _interpolate_sql(sql: str, params: list) -> str:
     return "".join(result_parts)
 
 
+def _resolve_matching_column(
+    columns: list[str],
+    candidates: list[str],
+) -> str | None:
+    """Return the first candidate that exists in *columns* (case-insensitive)."""
+    column_map = {column.lower(): column for column in columns}
+    for candidate in candidates:
+        match = column_map.get(candidate.lower())
+        if match:
+            return match
+    return None
+
+
+def get_default_columns(
+    available_metrics: dict[str, list[str]] | None = None,
+) -> list[str]:
+    """Return the default screening result columns for the current schema."""
+    company_cols = (available_metrics or {}).get("CompanyInfo", [])
+    edinet_col = _resolve_matching_column(
+        company_cols, COMPANYINFO_EDINET_CANDIDATES
+    ) or "edinetCode"
+    ticker_col = _resolve_matching_column(
+        company_cols, COMPANYINFO_TICKER_CANDIDATES
+    ) or "Company_Ticker"
+
+    columns = [
+        f"CompanyInfo.{edinet_col}",
+        f"CompanyInfo.{ticker_col}",
+        "FinancialStatements.periodEnd",
+    ]
+
+    company_name_col = _resolve_matching_column(
+        company_cols, COMPANYINFO_NAME_CANDIDATES
+    )
+    if company_name_col:
+        columns.append(f"CompanyInfo.{company_name_col}")
+
+    company_industry_col = _resolve_matching_column(
+        company_cols, COMPANYINFO_INDUSTRY_CANDIDATES
+    )
+    if company_industry_col:
+        columns.append(f"CompanyInfo.{company_industry_col}")
+
+    return columns
+
+
 # ---------------------------------------------------------------------------
 # Database introspection
 # ---------------------------------------------------------------------------
 
 def get_available_metrics(db_path: str) -> dict[str, list[str]]:
-    """Return a dict of ``{table_name: [column_names]}`` for screening tables.
+    """Return a dict of ``{table_name: [column_names]}`` for screening.
 
-    Only tables that exist in the database and are in the allow-list
-    ``SCREENING_TABLES`` are included.  The ``docID`` column is excluded
-    from each table's column list.
+    Includes the screening metric tables plus ``CompanyInfo``. The ``docID``
+    column is excluded from derived metric tables.
 
     Args:
         db_path: Path to the SQLite database.
@@ -134,6 +221,15 @@ def get_available_metrics(db_path: str) -> dict[str, list[str]]:
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.cursor()
+
+        try:
+            cursor.execute("PRAGMA table_info([CompanyInfo])")
+            company_cols = [row[1] for row in cursor.fetchall()]
+            if company_cols:
+                result["CompanyInfo"] = company_cols
+        except sqlite3.OperationalError:
+            pass
+
         for table in SCREENING_TABLES:
             try:
                 cursor.execute(f"PRAGMA table_info([{table}])")
@@ -181,20 +277,37 @@ def get_available_periods(db_path: str) -> list[str]:
 def _validate_column_ref(col: str, available: dict[str, list[str]]) -> bool:
     """Check that a ``Table.Column`` reference is in the available metrics.
 
-    Also allows columns from core tables (CompanyInfo, FinancialStatements,
-    Stock_Prices) which are always joined.
+    CompanyInfo is validated against the live schema; FinancialStatements
+    and Stock_Prices are always joined.
     """
     parts = col.split(".", 1)
     if len(parts) != 2:
         return False
     table, column = parts
-    # Core tables are always available
-    if table in ("CompanyInfo", "FinancialStatements", "Stock_Prices"):
+    if table == "CompanyInfo":
+        if table not in available:
+            return True
+        available_cols = available[table]
+        if any(column.lower() == actual.lower() for actual in available_cols):
+            return True
+        company_alias_groups = (
+            COMPANYINFO_EDINET_CANDIDATES,
+            COMPANYINFO_TICKER_CANDIDATES,
+            COMPANYINFO_NAME_CANDIDATES,
+            COMPANYINFO_INDUSTRY_CANDIDATES,
+        )
+        for candidates in company_alias_groups:
+            if column.lower() not in {candidate.lower() for candidate in candidates}:
+                continue
+            if _resolve_matching_column(available_cols, candidates):
+                return True
+        return False
+    if table in ("FinancialStatements", "Stock_Prices"):
         return True
     return table in available and column in available[table]
 
 
-_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_ ]*$")
 
 
 def _safe_identifier(name: str) -> str:
@@ -240,6 +353,10 @@ def build_screening_query(
             needed_tables.add(parts[0])
     for crit in criteria:
         needed_tables.add(crit["table"])
+        if crit.get("comparison_mode") == "column":
+            compare_table = crit.get("compare_table")
+            if compare_table:
+                needed_tables.add(compare_table)
 
     # Validate columns against available metrics
     if available_metrics is not None:
@@ -249,12 +366,24 @@ def build_screening_query(
         for crit in criteria:
             table = crit["table"]
             column = crit["column"]
-            if table in SCREENING_TABLES:
-                if table not in available_metrics:
-                    raise ValueError(f"Table not available: {table!r}")
-                if column not in available_metrics[table]:
+            if not _validate_column_ref(
+                f"{table}.{column}", available_metrics
+            ):
+                raise ValueError(
+                    f"Column {column!r} not in table {table!r}"
+                )
+            if crit.get("comparison_mode") == "column":
+                compare_table = crit.get("compare_table")
+                compare_column = crit.get("compare_column")
+                if not compare_table or not compare_column:
                     raise ValueError(
-                        f"Column {column!r} not in table {table!r}"
+                        "Dynamic criteria require compare_table and compare_column"
+                    )
+                if not _validate_column_ref(
+                    f"{compare_table}.{compare_column}", available_metrics
+                ):
+                    raise ValueError(
+                        f"Column {compare_column!r} not in table {compare_table!r}"
                     )
 
     # Validate operators
@@ -324,8 +453,22 @@ def build_screening_query(
         alias = _TABLE_ALIAS.get(table, table)
         safe_col = _safe_identifier(column)
         col_ref = f"{alias}.[{safe_col}]"
+        comparison_mode = crit.get("comparison_mode", "fixed")
 
-        if op == "BETWEEN":
+        if comparison_mode == "column":
+            if op == "BETWEEN":
+                raise ValueError("Dynamic criteria do not support BETWEEN")
+            compare_table = crit.get("compare_table")
+            compare_column = crit.get("compare_column")
+            if not compare_table or not compare_column:
+                raise ValueError(
+                    "Dynamic criteria require compare_table and compare_column"
+                )
+            compare_alias = _TABLE_ALIAS.get(compare_table, compare_table)
+            safe_compare_col = _safe_identifier(compare_column)
+            compare_ref = f"{compare_alias}.[{safe_compare_col}]"
+            where_parts.append(f"{col_ref} {op} {compare_ref}")
+        elif op == "BETWEEN":
             where_parts.append(f"{col_ref} BETWEEN ? AND ?")
             params.append(crit["value"])
             params.append(crit["value2"])
@@ -356,6 +499,8 @@ def run_screening(
     period: str | None = None,
     sort_by: str | None = None,
     sort_order: str = "ASC",
+    ranking_algorithm: str = "none",
+    ranking_rules: list[dict] | None = None,
 ) -> pd.DataFrame:
     """Execute a screening query and return formatted results.
 
@@ -366,6 +511,9 @@ def run_screening(
         period: Optional year string to filter by.
         sort_by: Optional column name to sort results by.
         sort_order: ``"ASC"`` or ``"DESC"``.
+        ranking_algorithm: Ranking method to apply after filtering.
+        ranking_rules: Ranking rule dicts with table, column, weight,
+            and direction.
 
     Returns:
         DataFrame with screening results.
@@ -386,14 +534,268 @@ def run_screening(
         conn.close()
     logger.info("Query returned %d rows", len(df))
 
+    df = apply_screening_ranking(df, ranking_algorithm, ranking_rules)
+
     # --- Sort ---
-    if sort_by and sort_by in df.columns:
-        ascending = sort_order.upper() != "DESC"
-        df = df.sort_values(by=sort_by, ascending=ascending, na_position="last")
+    effective_sort_by = sort_by
+    effective_sort_order = sort_order
+    if (
+        (not effective_sort_by)
+        and ranking_algorithm != "none"
+        and ranking_rules
+        and "ScreeningScore" in df.columns
+    ):
+        effective_sort_by = "ScreeningScore"
+        effective_sort_order = "DESC"
+
+    if effective_sort_by and effective_sort_by in df.columns:
+        ascending = effective_sort_order.upper() != "DESC"
+        df = df.sort_values(
+            by=effective_sort_by,
+            ascending=ascending,
+            na_position="last",
+        )
         df = df.reset_index(drop=True)
 
     logger.info("Screening returned %d rows", len(df))
     return df
+
+
+def _resolve_result_column(df: pd.DataFrame, rule: dict) -> str | None:
+    """Resolve the DataFrame column referenced by a ranking rule."""
+    target = str(rule.get("column", ""))
+    if target in df.columns:
+        return target
+
+    table = str(rule.get("table", ""))
+    qualified = f"{table}.{target}" if table and target else ""
+    if qualified and qualified in df.columns:
+        return qualified
+
+    target_lower = target.lower()
+    matches = [col for col in df.columns if str(col).lower() == target_lower]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _build_ranking_component(
+    series: pd.Series,
+    algorithm: str,
+    direction: str,
+) -> pd.Series:
+    """Convert a numeric series into a 0..1 ranking component."""
+    numeric = pd.to_numeric(series, errors="coerce")
+    valid = numeric.dropna()
+    result = pd.Series(0.0, index=series.index, dtype=float)
+    if valid.empty:
+        return result
+
+    if algorithm == "weighted_percentile":
+        ascending = direction == "lower"
+        ranked = valid.rank(method="average", pct=True, ascending=ascending)
+        result.loc[ranked.index] = ranked.astype(float)
+        return result
+
+    min_val = float(valid.min())
+    max_val = float(valid.max())
+    if math.isclose(min_val, max_val):
+        result.loc[valid.index] = 1.0
+        return result
+
+    if direction == "lower":
+        scaled = (max_val - valid) / (max_val - min_val)
+    else:
+        scaled = (valid - min_val) / (max_val - min_val)
+    result.loc[scaled.index] = scaled.astype(float)
+    return result
+
+
+def apply_screening_ranking(
+    df: pd.DataFrame,
+    ranking_algorithm: str = "none",
+    ranking_rules: list[dict] | None = None,
+) -> pd.DataFrame:
+    """Apply weighted ranking to screening results and add score columns."""
+    if df is None or df.empty:
+        return df
+    if ranking_algorithm == "none" or not ranking_rules:
+        return df
+    if ranking_algorithm not in RANKING_ALGORITHMS:
+        raise ValueError(f"Unknown ranking algorithm: {ranking_algorithm!r}")
+
+    score = pd.Series(0.0, index=df.index, dtype=float)
+    total_weight = 0.0
+    applied_rules = 0
+
+    for rule in ranking_rules:
+        resolved_col = _resolve_result_column(df, rule)
+        if not resolved_col:
+            continue
+        try:
+            weight = float(rule.get("weight", 1.0))
+        except (TypeError, ValueError):
+            weight = 1.0
+        if weight <= 0:
+            continue
+        direction = str(rule.get("direction", "higher")).lower()
+        if direction not in RANKING_DIRECTIONS:
+            direction = "higher"
+
+        component = _build_ranking_component(
+            df[resolved_col], ranking_algorithm, direction
+        )
+        score = score + component * weight
+        total_weight += weight
+        applied_rules += 1
+
+    if applied_rules == 0 or total_weight <= 0:
+        return df
+
+    ranked = df.copy()
+    ranked["ScreeningScore"] = score / total_weight
+    ranked["ScreeningRank"] = (
+        ranked["ScreeningScore"]
+        .rank(method="dense", ascending=False)
+        .astype(int)
+    )
+    return ranked
+
+
+def _resolve_backtest_export_frame(
+    df: pd.DataFrame,
+    year: str,
+    max_companies: int,
+) -> pd.DataFrame:
+    """Convert screening results into the CSV format used by backtest sets."""
+    if df.empty:
+        return pd.DataFrame()
+
+    ticker_col = _resolve_matching_column(list(df.columns), ["Company_Ticker", "Ticker"])
+    if not ticker_col:
+        raise ValueError(
+            "Backtest export requires CompanyInfo.Company_Ticker in the screening results."
+        )
+
+    company_name_col = _resolve_matching_column(
+        list(df.columns), COMPANYINFO_NAME_CANDIDATES
+    )
+    industry_col = _resolve_matching_column(
+        list(df.columns), COMPANYINFO_INDUSTRY_CANDIDATES
+    )
+    edinet_col = _resolve_matching_column(
+        list(df.columns), ["edinetCode", "EdinetCode"]
+    )
+    period_end_col = _resolve_matching_column(list(df.columns), ["periodEnd"])
+
+    selected = df.copy()
+    if "ScreeningScore" in selected.columns:
+        selected = selected.sort_values(
+            by=["ScreeningScore", ticker_col],
+            ascending=[False, True],
+            na_position="last",
+        )
+    elif "ScreeningRank" in selected.columns:
+        selected = selected.sort_values(by=["ScreeningRank", ticker_col])
+    else:
+        selected = selected.sort_values(by=ticker_col)
+
+    selected = selected.head(max_companies).reset_index(drop=True)
+    if selected.empty:
+        return pd.DataFrame()
+
+    weight = 1.0 / len(selected)
+    export_df = pd.DataFrame(
+        {
+            "Year": [year] * len(selected),
+            "Tickers": selected[ticker_col].astype(str),
+            "Type": ["weight"] * len(selected),
+            "Amount": [weight] * len(selected),
+        }
+    )
+
+    if edinet_col:
+        export_df["EdinetCode"] = selected[edinet_col].astype(str)
+    if company_name_col:
+        export_df["CompanyName"] = selected[company_name_col].astype(str)
+    if industry_col:
+        export_df["Industry"] = selected[industry_col].astype(str)
+    if period_end_col:
+        export_df["PeriodEnd"] = selected[period_end_col].astype(str)
+    if "ScreeningRank" in selected.columns:
+        export_df["ScreeningRank"] = selected["ScreeningRank"].astype(int)
+    if "ScreeningScore" in selected.columns:
+        export_df["ScreeningScore"] = selected["ScreeningScore"].astype(float)
+
+    return export_df
+
+
+def export_screening_to_backtest_csv(
+    db_path: str,
+    criteria: list[dict],
+    columns: list[str],
+    output_path: str,
+    period: str | None = None,
+    max_companies: int = 25,
+    ranking_algorithm: str = "none",
+    ranking_rules: list[dict] | None = None,
+    historical: bool = False,
+) -> str:
+    """Export screening results in the CSV format used by run_backtest_set."""
+    if max_companies <= 0:
+        raise ValueError("max_companies must be greater than 0")
+
+    available = get_available_metrics(db_path)
+    export_columns = list(columns)
+    required_columns = get_default_columns(available)
+    company_cols = available.get("CompanyInfo", [])
+    ticker_col = _resolve_matching_column(
+        company_cols, COMPANYINFO_TICKER_CANDIDATES
+    ) or "Company_Ticker"
+    required_columns.extend([
+        f"CompanyInfo.{ticker_col}",
+        "FinancialStatements.periodEnd",
+    ])
+    for rule in ranking_rules or []:
+        ref = f"{rule.get('table', '')}.{rule.get('column', '')}".strip(".")
+        if ref:
+            required_columns.append(ref)
+    export_columns = list(dict.fromkeys([*required_columns, *export_columns]))
+
+    if historical:
+        years = get_available_periods(db_path)
+    else:
+        if not period:
+            raise ValueError("A period must be selected for non-historical export")
+        years = [period]
+
+    frames: list[pd.DataFrame] = []
+    for year in years:
+        df = run_screening(
+            db_path,
+            criteria,
+            export_columns,
+            period=year,
+            ranking_algorithm=ranking_algorithm,
+            ranking_rules=ranking_rules,
+        )
+        export_df = _resolve_backtest_export_frame(df, year, max_companies)
+        if not export_df.empty:
+            frames.append(export_df)
+
+    if not frames:
+        raise ValueError("No companies matched the screening criteria for export")
+
+    combined = pd.concat(frames, ignore_index=True)
+    resolved = os.path.abspath(output_path)
+    os.makedirs(os.path.dirname(resolved), exist_ok=True)
+    combined.to_csv(resolved, index=False)
+    logger.info(
+        "Exported backtest company list with %d rows to %s",
+        len(combined),
+        resolved,
+    )
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +849,8 @@ def save_screening_criteria(
     columns: list[str],
     period: str | None,
     save_dir: str,
+    ranking_algorithm: str = "none",
+    ranking_rules: list[dict] | None = None,
 ) -> Path:
     """Persist a named screening configuration as JSON.
 
@@ -473,6 +877,8 @@ def save_screening_criteria(
         "criteria": criteria,
         "columns": columns,
         "period": period,
+        "ranking_algorithm": ranking_algorithm,
+        "ranking_rules": ranking_rules or [],
     }
 
     file_path = save_path / f"{safe_name}.json"

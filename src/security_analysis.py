@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import lru_cache
@@ -21,6 +22,10 @@ import pandas as pd
 from src.stockprice_api import _create_prices_table, load_ticker_data
 
 logger = logging.getLogger(__name__)
+
+_OPTIMIZED_DB_PATHS: set[str] = set()
+_DB_OPTIMIZE_LOCKS: dict[str, threading.Lock] = {}
+_DB_OPTIMIZE_LOCKS_GUARD = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +66,7 @@ class SecuritySchema:
 def _connect(db_path: str) -> sqlite3.Connection:
     """Open a SQLite connection with a row factory suitable for helpers."""
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA busy_timeout = 30000")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -73,6 +79,16 @@ def _quote_ident(name: str) -> str:
 def _normalise_db_path(db_path: str) -> str:
     """Normalise a database path so schema discovery can be cached."""
     return os.path.abspath(db_path)
+
+
+def _get_db_optimization_lock(normalised_path: str) -> threading.Lock:
+    """Return a per-database lock for one-time index creation."""
+    with _DB_OPTIMIZE_LOCKS_GUARD:
+        lock = _DB_OPTIMIZE_LOCKS.get(normalised_path)
+        if lock is None:
+            lock = threading.Lock()
+            _DB_OPTIMIZE_LOCKS[normalised_path] = lock
+        return lock
 
 
 def _list_table_map(conn: sqlite3.Connection) -> dict[str, str]:
@@ -469,6 +485,95 @@ def _load_company_frame(conn: sqlite3.Connection, schema: SecuritySchema) -> pd.
     return pd.read_sql_query(sql, conn)
 
 
+@lru_cache(maxsize=4)
+def _get_cached_company_frame(db_path: str) -> pd.DataFrame:
+    """Cache the normalised company snapshot per database path."""
+    normalised_path = _normalise_db_path(db_path)
+    schema = resolve_schema(normalised_path)
+    conn = _connect(normalised_path)
+    try:
+        return _load_company_frame(conn, schema)
+    finally:
+        conn.close()
+
+
+def ensure_security_analysis_indexes(db_path: str) -> dict[str, Any]:
+    """Create one-time indexes used by the Security Analysis view.
+
+    The standardized database can be very large, especially `Stock_Prices`.
+    These indexes target the specific access patterns used by search, overview,
+    statement selection, price-history lookups, and peer comparisons.
+    """
+    normalised_path = _normalise_db_path(db_path)
+    if normalised_path in _OPTIMIZED_DB_PATHS:
+        return {"ok": True, "created": [], "cached": True}
+
+    lock = _get_db_optimization_lock(normalised_path)
+    with lock:
+        if normalised_path in _OPTIMIZED_DB_PATHS:
+            return {"ok": True, "created": [], "cached": True}
+
+        schema = resolve_schema(normalised_path)
+        conn = _connect(normalised_path)
+        created: list[str] = []
+        try:
+            statements = [
+                (
+                    "idx_sa_prices_ticker_date",
+                    f"CREATE INDEX IF NOT EXISTS [idx_sa_prices_ticker_date] "
+                    f"ON {_quote_ident(schema.prices_table)} ([Ticker], [Date])",
+                ),
+                (
+                    "idx_sa_company_edinet",
+                    f"CREATE INDEX IF NOT EXISTS [idx_sa_company_edinet] "
+                    f"ON {_quote_ident(schema.company_table)} ({_quote_ident(schema.company_edinet_col)})",
+                ),
+                (
+                    "idx_sa_company_ticker",
+                    f"CREATE INDEX IF NOT EXISTS [idx_sa_company_ticker] "
+                    f"ON {_quote_ident(schema.company_table)} ({_quote_ident(schema.company_ticker_col)})",
+                ),
+                (
+                    "idx_sa_fs_edinet_period",
+                    f"CREATE INDEX IF NOT EXISTS [idx_sa_fs_edinet_period] "
+                    f"ON {_quote_ident(schema.financial_statements_table)} "
+                    f"({_quote_ident(schema.fs_edinet_col)}, {_quote_ident(schema.fs_period_end_col)})",
+                ),
+            ]
+            if schema.company_industry_col:
+                statements.append(
+                    (
+                        "idx_sa_company_industry",
+                        f"CREATE INDEX IF NOT EXISTS [idx_sa_company_industry] "
+                        f"ON {_quote_ident(schema.company_table)} ({_quote_ident(schema.company_industry_col)})",
+                    )
+                )
+
+            for index_name, sql in statements:
+                conn.execute(sql)
+                created.append(index_name)
+            conn.commit()
+        finally:
+            conn.close()
+
+        _OPTIMIZED_DB_PATHS.add(normalised_path)
+        logger.info(
+            "Security Analysis indexes ensured for %s: %s",
+            normalised_path,
+            ", ".join(created) if created else "none",
+        )
+        return {"ok": True, "created": created, "cached": False}
+
+
+def _load_company_record(db_path: str, edinet_code: str) -> dict[str, Any] | None:
+    """Return a single company record from the cached company snapshot."""
+    company_df = _get_cached_company_frame(db_path)
+    matches = company_df[company_df["edinet_code"].astype(str) == str(edinet_code)]
+    if matches.empty:
+        return None
+    return matches.iloc[0].to_dict()
+
+
 def _load_latest_prices_frame(conn: sqlite3.Connection, schema: SecuritySchema) -> pd.DataFrame:
     """Load the latest available price row per ticker."""
     sql = f"""
@@ -481,6 +586,30 @@ def _load_latest_prices_frame(conn: sqlite3.Connection, schema: SecuritySchema) 
         ) px ON px.Ticker = p.Ticker AND px.MaxDate = p.[Date]
     """
     return pd.read_sql_query(sql, conn)
+
+
+def _load_latest_prices_for_tickers(
+    conn: sqlite3.Connection,
+    schema: SecuritySchema,
+    tickers: list[str],
+) -> pd.DataFrame:
+    """Load the latest available price row for a small set of tickers."""
+    clean_tickers = sorted({_safe_str(ticker) for ticker in tickers if _safe_str(ticker)})
+    if not clean_tickers:
+        return pd.DataFrame(columns=["ticker", "latest_price_date", "latest_price"])
+
+    placeholders = ",".join(["?"] * len(clean_tickers))
+    sql = f"""
+        SELECT p.Ticker AS ticker, p.[Date] AS latest_price_date, p.Price AS latest_price
+        FROM {_quote_ident(schema.prices_table)} p
+        INNER JOIN (
+            SELECT Ticker, MAX([Date]) AS MaxDate
+            FROM {_quote_ident(schema.prices_table)}
+            WHERE Ticker IN ({placeholders})
+            GROUP BY Ticker
+        ) px ON px.Ticker = p.Ticker AND px.MaxDate = p.[Date]
+    """
+    return pd.read_sql_query(sql, conn, params=clean_tickers)
 
 
 def _load_price_range(conn: sqlite3.Connection, schema: SecuritySchema, ticker: str) -> dict[str, Any]:
@@ -760,17 +889,9 @@ def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[st
     if not tokens:
         return []
 
-    schema = resolve_schema(db_path)
-    conn = _connect(db_path)
-    try:
-        company_df = _load_company_frame(conn, schema)
-        prices_df = _load_latest_prices_frame(conn, schema)
-    finally:
-        conn.close()
-
-    merged = company_df.merge(prices_df, on="ticker", how="left")
+    company_df = _get_cached_company_frame(db_path)
     scored: list[tuple[int, dict[str, Any]]] = []
-    for record in merged.to_dict(orient="records"):
+    for record in company_df.to_dict(orient="records"):
         score = _score_security_match(record, tokens)
         if score is None:
             continue
@@ -780,8 +901,8 @@ def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[st
             "company_name": _safe_str(record.get("company_name")),
             "industry": _safe_str(record.get("industry")),
             "market": _safe_str(record.get("market")),
-            "latest_price": _safe_float(record.get("latest_price")),
-            "latest_price_date": _safe_date_str(record.get("latest_price_date")),
+            "latest_price": None,
+            "latest_price_date": None,
         }))
 
     scored.sort(
@@ -791,6 +912,7 @@ def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[st
             item[1]["ticker"],
         )
     )
+
     return [record for _, record in scored[:limit]]
 
 
@@ -804,15 +926,14 @@ def get_security_overview(db_path: str, edinet_code: str) -> dict[str, Any]:
     Returns:
         dict[str, Any]: Company, market, fundamentals, valuation, and metadata.
     """
+    ensure_security_analysis_indexes(db_path)
     schema = resolve_schema(db_path)
+    company = _load_company_record(db_path, edinet_code)
+    if company is None:
+        raise ValueError(f"Security not found for EDINET code: {edinet_code}")
+
     conn = _connect(db_path)
     try:
-        company_df = _load_company_frame(conn, schema)
-        company_df = company_df[company_df["edinet_code"].astype(str) == str(edinet_code)]
-        if company_df.empty:
-            raise ValueError(f"Security not found for EDINET code: {edinet_code}")
-
-        company = company_df.iloc[0].to_dict()
         snapshot = _load_latest_snapshot(conn, schema, edinet_code)
         if snapshot is None:
             snapshot = {"edinet_code": edinet_code, "period_end": None}
@@ -915,6 +1036,7 @@ def get_security_statements(db_path: str, edinet_code: str, periods: int = 8) ->
     Returns:
         dict[str, Any]: Statement tables and ordered period labels.
     """
+    ensure_security_analysis_indexes(db_path)
     schema = resolve_schema(db_path)
     conn = _connect(db_path)
     try:
@@ -1040,6 +1162,7 @@ def get_security_price_history(
     if not ticker:
         return []
 
+    ensure_security_analysis_indexes(db_path)
     schema = resolve_schema(db_path)
     conn = _connect(db_path)
     try:
@@ -1083,40 +1206,46 @@ def get_security_peers(
     Returns:
         list[dict[str, Any]]: Deterministically ranked peer rows.
     """
+    ensure_security_analysis_indexes(db_path)
     schema = resolve_schema(db_path)
+    companies = _get_cached_company_frame(db_path)
+    selected_df = companies[companies["edinet_code"].astype(str) == str(edinet_code)]
+    if selected_df.empty:
+        return []
+    selected = selected_df.iloc[0].to_dict()
+    industry_value = _safe_str(industry) or _safe_str(selected.get("industry"))
+    if not industry_value:
+        return []
+
+    peer_companies = companies[
+        (companies["edinet_code"].astype(str) != str(edinet_code))
+        & (companies["industry"].fillna("").astype(str) == industry_value)
+        & (companies["ticker"].fillna("").astype(str) != "")
+    ].copy()
+    if peer_companies.empty:
+        return []
+
     conn = _connect(db_path)
     try:
-        companies = _load_company_frame(conn, schema)
-        selected_df = companies[companies["edinet_code"].astype(str) == str(edinet_code)]
-        if selected_df.empty:
-            return []
-        selected = selected_df.iloc[0].to_dict()
-        industry_value = _safe_str(industry) or _safe_str(selected.get("industry"))
-        if not industry_value:
-            return []
-
-        peer_companies = companies[
-            (companies["edinet_code"].astype(str) != str(edinet_code))
-            & (companies["industry"].fillna("").astype(str) == industry_value)
-            & (companies["ticker"].fillna("").astype(str) != "")
-        ].copy()
-        if peer_companies.empty:
-            return []
+        selected_snapshot = _load_latest_snapshot(conn, schema, edinet_code)
+        selected_price_info = _load_price_range(conn, schema, _safe_str(selected.get("ticker")))
+        selected_market_cap = _safe_float(
+            _compute_ratio_payload({
+                **(selected_snapshot or {}),
+                **selected_price_info,
+            }).get("MarketCap")
+        )
 
         edinet_codes = peer_companies["edinet_code"].astype(str).tolist()
         snapshots_df = _latest_snapshots_for_codes(conn, schema, edinet_codes)
         if snapshots_df.empty:
             return []
 
-        latest_prices_df = _load_latest_prices_frame(conn, schema)
-        returns_df = _price_return_1y(conn, schema, peer_companies["ticker"].astype(str).tolist())
+        tickers = peer_companies["ticker"].astype(str).tolist()
+        latest_prices_df = _load_latest_prices_for_tickers(conn, schema, tickers)
+        returns_df = _price_return_1y(conn, schema, tickers)
     finally:
         conn.close()
-
-    selected_overview = get_security_overview(db_path, edinet_code)
-    selected_market_cap = _safe_float(
-        selected_overview.get("valuation_latest", {}).get("MarketCap")
-    )
 
     merged = peer_companies.merge(snapshots_df, on="edinet_code", how="inner")
     merged = merged.merge(latest_prices_df, on="ticker", how="left")
@@ -1160,6 +1289,7 @@ def update_security_price(db_path: str, ticker: str) -> dict[str, Any]:
     if not ticker:
         raise ValueError("ticker is required")
 
+    ensure_security_analysis_indexes(db_path)
     schema = resolve_schema(db_path)
     conn = sqlite3.connect(db_path)
     try:

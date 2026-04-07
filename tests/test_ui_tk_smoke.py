@@ -201,6 +201,146 @@ def test_security_analysis_page_init(root):
     page.reapply_colors()
 
 
+def test_security_analysis_loads_charts_and_peers_lazily(root, monkeypatch):
+    """Overview load should not fetch chart or peer data until those tabs are opened."""
+    from ui_tk.pages import security_analysis as security_analysis_page
+
+    calls = {
+        "optimize": 0,
+        "overview": 0,
+        "statements": 0,
+        "price_history": 0,
+        "peers": 0,
+    }
+
+    def _run_now(fn, args=(), on_done=None, on_error=None):
+        try:
+            result = fn(*args)
+            if on_done:
+                on_done(result)
+        except Exception as exc:  # pragma: no cover - defensive test helper
+            if on_error:
+                on_error(exc)
+        return None
+
+    monkeypatch.setattr(security_analysis_page, "run_in_background", _run_now)
+    monkeypatch.setattr(security_analysis_page.ctrl, "get_default_database_path", lambda: "")
+    monkeypatch.setattr(
+        security_analysis_page.ctrl,
+        "security_optimize_database",
+        lambda _db_path: calls.__setitem__("optimize", calls["optimize"] + 1) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        security_analysis_page.ctrl,
+        "security_get_overview",
+        lambda _db_path, _edinet_code: calls.__setitem__("overview", calls["overview"] + 1) or {
+            "company": {
+                "edinet_code": "E00001",
+                "ticker": "1001",
+                "company_name": "Alpha Corp",
+                "industry": "Industrial",
+                "market": "JPX Prime",
+                "description": "",
+            },
+            "market": {
+                "latest_price": 1000.0,
+                "latest_price_date": "2024-12-31",
+                "previous_price": 950.0,
+                "change_pct_1d": 0.01,
+                "range_52w_low": 800.0,
+                "range_52w_high": 1100.0,
+            },
+            "fundamentals_latest": {
+                "Revenue": 100.0,
+                "OperatingIncome": 20.0,
+                "NetIncome": 10.0,
+                "TotalAssets": 500.0,
+                "ShareholdersEquity": 200.0,
+                "SharesOutstanding": 1000.0,
+            },
+            "valuation_latest": {
+                "PERatio": 10.0,
+                "PriceToBook": 1.5,
+                "DividendsYield": 0.02,
+                "MarketCap": 1000000.0,
+            },
+            "quality_latest": {
+                "ReturnOnEquity": 0.15,
+                "DebtToEquity": 0.2,
+                "CurrentRatio": 1.8,
+                "GrossMargin": 0.35,
+            },
+            "metadata": {
+                "last_financial_period_end": "2024-03-31",
+                "last_price_date": "2024-12-31",
+                "doc_id": "DOC1",
+                "data_quality_flags": [],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        security_analysis_page.ctrl,
+        "security_get_statements",
+        lambda _db_path, _edinet_code, periods=8: calls.__setitem__("statements", calls["statements"] + 1) or {
+            "periods": ["2024-03-31"],
+            "records": [{"period_end": "2024-03-31", "netSales": 100.0}],
+            "income_statement": [{"metric": "Net Sales", "field": "netSales", "values": [100.0]}],
+            "balance_sheet": [],
+            "cashflow_statement": [],
+        },
+    )
+    monkeypatch.setattr(
+        security_analysis_page.ctrl,
+        "security_get_price_history",
+        lambda _db_path, _ticker: calls.__setitem__("price_history", calls["price_history"] + 1) or [
+            {"trade_date": "2024-12-31", "price": 1000.0}
+        ],
+    )
+    monkeypatch.setattr(
+        security_analysis_page.ctrl,
+        "security_get_peers",
+        lambda _db_path, _edinet_code, industry=None, limit=8: calls.__setitem__("peers", calls["peers"] + 1) or [
+            {
+                "edinet_code": "E00002",
+                "ticker": "1002",
+                "company_name": "Beta Works",
+                "industry": industry or "Industrial",
+                "latest_price": 900.0,
+                "latest_price_date": "2024-12-31",
+                "PERatio": 9.0,
+                "PriceToBook": 1.2,
+                "DividendsYield": 0.01,
+                "ReturnOnEquity": 0.12,
+                "MarketCap": 900000.0,
+                "one_year_return": 0.05,
+                "period_end": "2024-03-31",
+            }
+        ],
+    )
+
+    page = security_analysis_page.SecurityAnalysisPage(root)
+    page._db_path = "C:/tmp/sample.db"
+    page._selected_security = {
+        "edinet_code": "E00001",
+        "ticker": "1001",
+        "company_name": "Alpha Corp",
+        "industry": "Industrial",
+    }
+    page._load_selected_security()
+
+    assert calls["overview"] == 1
+    assert calls["statements"] == 1
+    assert calls["price_history"] == 0
+    assert calls["peers"] == 0
+
+    page._show_tab("Charts")
+    assert calls["price_history"] == 1
+    assert calls["peers"] == 0
+
+    page._show_tab("Peers")
+    assert calls["peers"] == 1
+
+
 def test_screening_click_opens_security_analysis(root, monkeypatch):
     """Double-clicking a screening result should open Security Analysis."""
     from ui_tk.pages.screening import ScreeningPage
