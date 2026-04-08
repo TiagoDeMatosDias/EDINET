@@ -1,4 +1,4 @@
-"""EDINET Tk application bootstrap: root window, view switching, event loop."""
+"""EDINET Tk application bootstrap: root window, navigation shell, event loop."""
 
 import logging
 import queue
@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from ui_tk.style import (
-    COLORS, FONT_UI, FONT_UI_BOLD, FONT_HEADING, FONT_MONO, PAD,
+    COLORS, FONT_UI, FONT_UI_BOLD, PAD, SHELL_PAD,
     apply_theme, toggle_theme, is_dark,
 )
 from ui_tk.utils import QueueLogHandler, poll_events
@@ -27,35 +27,38 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("SHADE Research — EDINET")
-        self.root.geometry("1100x750")
-        self.root.minsize(900, 550)
+        self.root.geometry("1380x860")
+        self.root.minsize(1100, 700)
 
         apply_theme(self.root)
+        self.root.configure(bg=COLORS["bg"])
 
         # ── state (must be set before any widget that triggers callbacks) ─
         self._views: dict[str, ttk.Frame] = {}
         self._active_view: str | None = None
         self._tab_buttons: dict[str, RoundedButton] = {}
         self._tab_indicators: dict[str, ttk.Frame] = {}
+        self._context_title_var = tk.StringVar(value="Workspace")
+        self._context_text_var = tk.StringVar(value="Select a view to begin.")
 
         # ── log queue (fed by QueueLogHandler) ──────────────────────────
         self.log_queue: queue.Queue = queue.Queue()
         self._setup_log_handler()
 
         # ── layout skeleton ─────────────────────────────────────────────
-        # top bar (packed first so it sits at the top)
+        # top bar and context strip (packed first so they sit at the top)
         self._build_top_bar()
+        self._build_context_strip()
 
         # bottom: log panel (always visible)
         self.log_panel = LogPanel(self.root)
         self.log_panel.pack(side="bottom", fill="x")
 
         # separator above log
-        ttk.Separator(self.root, orient="horizontal").pack(side="bottom",
-                                                           fill="x")
+        ttk.Separator(self.root, orient="horizontal").pack(side="bottom", fill="x")
 
         # centre: view container (fill remaining space)
-        self._view_container = ttk.Frame(self.root)
+        self._view_container = ttk.Frame(self.root, style="App.TFrame")
         self._view_container.pack(fill="both", expand=True)
 
         # ── keyboard shortcuts ──────────────────────────────────────────
@@ -82,21 +85,20 @@ class App:
     # ── top bar ─────────────────────────────────────────────────────────
 
     def _build_top_bar(self):
-        self._top_bar = ttk.Frame(self.root, style="TopBar.TFrame")
+        self._top_bar = ttk.Frame(self.root, style="Toolbar.TFrame")
         self._top_bar.pack(side="top", fill="x")
 
-        # branding
-        brand = ttk.Label(self._top_bar, text="SHADE Research",
-                          style="TopBar.Brand.TLabel")
-        brand.pack(side="left", padx=(PAD * 2, PAD * 3), pady=(PAD + 2, PAD))
+        brand_wrap = ttk.Frame(self._top_bar, style="Toolbar.TFrame")
+        brand_wrap.pack(side="left", padx=(SHELL_PAD, PAD * 2), pady=(PAD, PAD - 2))
+        ttk.Label(brand_wrap, text="SHADE Research", style="TopBar.Brand.TLabel").pack(anchor="w")
+        ttk.Label(brand_wrap, text="EDINET research workstation", style="TopBar.Meta.TLabel").pack(anchor="w", pady=(2, 0))
 
-        # navigation tabs
-        nav = ttk.Frame(self._top_bar, style="TopBar.TFrame")
-        nav.pack(side="left", padx=PAD)
+        nav = ttk.Frame(self._top_bar, style="Toolbar.TFrame")
+        nav.pack(side="left", padx=(0, PAD), pady=(PAD, PAD - 2))
 
         for name in VIEW_NAMES:
-            tab_frame = ttk.Frame(nav, style="TopBar.TFrame")
-            tab_frame.pack(side="left", padx=2)
+            tab_frame = ttk.Frame(nav, style="Toolbar.TFrame")
+            tab_frame.pack(side="left", padx=3)
 
             btn = RoundedButton(
                 tab_frame, text=name, style="TopBar.Tab.TButton",
@@ -105,31 +107,48 @@ class App:
             btn.pack(side="top")
 
             # 2-pixel underline indicator
-            indicator = ttk.Frame(tab_frame, height=2,
-                                  style="TopBar.TFrame")
-            indicator.pack(side="top", fill="x", padx=6)
+            indicator = ttk.Frame(tab_frame, height=2, style="Toolbar.TFrame")
+            indicator.pack(side="top", fill="x", padx=6, pady=(2, 0))
 
             self._tab_buttons[name] = btn
             self._tab_indicators[name] = indicator
 
-        # right side controls
-        right = ttk.Frame(self._top_bar, style="TopBar.TFrame")
-        right.pack(side="right", padx=PAD)
+        right = ttk.Frame(self._top_bar, style="Toolbar.TFrame")
+        right.pack(side="right", padx=SHELL_PAD, pady=(PAD, PAD - 2))
 
         self._theme_btn = RoundedButton(
-            right, text="◑ Dark" if is_dark() else "◑ Light",
+            right, text="Theme" if is_dark() else "Theme",
             style="TopBar.Icon.TButton", command=self._toggle_theme,
         )
-        self._theme_btn.pack(side="right", padx=4, pady=4)
+        self._theme_btn.pack(side="right", padx=(8, 0))
 
-        self._api_btn = RoundedButton(right, text="⚿ API Key",
-                                      style="TopBar.Icon.TButton",
-                                      command=self._open_api_key)
-        self._api_btn.pack(side="right", padx=4, pady=4)
+        self._api_btn = RoundedButton(
+            right,
+            text="API Key",
+            style="TopBar.Icon.TButton",
+            command=self._open_api_key,
+        )
+        self._api_btn.pack(side="right")
 
-        # 1-pixel bottom border
-        tk.Frame(self.root, bg=COLORS["border"], height=1).pack(
-            side="top", fill="x")
+        ttk.Separator(self.root, orient="horizontal").pack(side="top", fill="x")
+
+    def _build_context_strip(self):
+        self._context_strip = ttk.Frame(self.root, style="Surface.TFrame")
+        self._context_strip.pack(side="top", fill="x")
+
+        left = ttk.Frame(self._context_strip, style="Surface.TFrame")
+        left.pack(side="left", fill="x", expand=True, padx=SHELL_PAD, pady=(8, 8))
+        ttk.Label(left, textvariable=self._context_title_var, style="Surface.TLabel", font=FONT_UI_BOLD).pack(anchor="w")
+        ttk.Label(left, textvariable=self._context_text_var, style="Surface.TLabel").pack(anchor="w", pady=(2, 0))
+
+        ttk.Label(
+            self._context_strip,
+            text="Ctrl+1-5 switch views",
+            style="Surface.TLabel",
+            font=FONT_UI,
+        ).pack(side="right", padx=SHELL_PAD, pady=(8, 8))
+
+        ttk.Separator(self.root, orient="horizontal").pack(side="top", fill="x")
 
     def _update_tab_visuals(self):
         """Update tab button styles and underline indicators."""
@@ -140,12 +159,9 @@ class App:
             if name == self._active_view:
                 btn.configure(style="TopBar.TabActive.TButton")
                 ind.configure(style="Accent.TFrame")
-                # Ensure accent frame style exists
-                ttk.Style(self.root).configure(
-                    "Accent.TFrame", background=t["accent"])
             else:
                 btn.configure(style="TopBar.Tab.TButton")
-                ind.configure(style="TopBar.TFrame")
+                ind.configure(style="Toolbar.TFrame")
 
     # ── view switching ──────────────────────────────────────────────────
 
@@ -165,6 +181,8 @@ class App:
                                fill="both", expand=True)
         self._active_view = name
         self._update_tab_visuals()
+        title, text = self._default_context_for_view(name)
+        self.set_context(title, text)
 
     def show_security_analysis(self, record: dict, db_path: str | None = None):
         """Switch to Security Analysis and open the selected company."""
@@ -191,14 +209,28 @@ class App:
             return SecurityAnalysisPage(self._view_container, self)
         else:
             from ui_tk.pages.data import DataPage
-            return DataPage(self._view_container)
+            return DataPage(self._view_container, self)
+
+    def set_context(self, title: str, text: str):
+        self._context_title_var.set(title)
+        self._context_text_var.set(text)
+
+    @staticmethod
+    def _default_context_for_view(name: str) -> tuple[str, str]:
+        mapping = {
+            "Home": ("Home", "Open a saved workflow, create a new setup, or jump into a research surface."),
+            "Orchestrator": ("Pipeline Builder", "Assemble ordered steps, inspect configuration, and run deterministic workflows."),
+            "Data": ("Data Workspace", "Review core project directories, data assets, and quick links into downstream workflows."),
+            "Screening": ("Screening", "Build ranked queries, scan result sets, and move directly into single-security analysis."),
+            "Security Analysis": ("Security Analysis", "Search a company, inspect its market snapshot, statements, charts, and peers."),
+        }
+        return mapping.get(name, (name, ""))
 
     # ── theme toggle ────────────────────────────────────────────────────
 
     def _toggle_theme(self):
         mode = toggle_theme(self.root)
-        self._theme_btn.configure(
-            text=f"◑ {'Dark' if mode == 'dark' else 'Light'}")
+        self._theme_btn.configure(text="Theme")
         self._rebuild_dynamic_widgets()
 
     def _rebuild_dynamic_widgets(self):

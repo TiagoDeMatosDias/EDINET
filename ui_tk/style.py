@@ -1,317 +1,339 @@
-﻿"""Modern dual-theme style system for the EDINET UI.
+﻿"""Design tokens and ttk styling for the EDINET Tk UI.
 
-Provides a dark and light palette with clean financial-app aesthetics.
-The module exposes a mutable ``theme`` dict that all widgets should read
-from so that switching between light and dark is a single operation.
+The UI is intentionally desktop-tool oriented: dense, calm, and highly
+readable for long research sessions. The theme system exposes a mutable
+``theme`` dict so all pages can read live colors after a theme toggle.
 """
 
 import tkinter as tk
 from tkinter import ttk
 
-# ── Palettes ────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Palette
+# ---------------------------------------------------------------------------
 
 _DARK = {
-    "bg":          "#1E1E2E",   # Deep Navy/Slate
-    "surface":     "#313244",   # Surface / card background
-    "surface_alt": "#45475A",   # Slightly raised surface
-    "border":      "#585B70",   # Subtle border
-    "text":        "#CDD6F4",   # Off-white body text
-      "text_dim":    "#C0C7E6",   # Dimmer / secondary text (higher contrast)
-    "accent":      "#5865F2",   # Muted Electric Blue (primary action)
-    "accent_hover":"#4752C4",   # Darker accent on hover
-    "success":     "#A6E3A1",   # Soft green
-    "warning":     "#F9E2AF",   # Soft amber
-    "error":       "#F38BA8",   # Soft red
-    "highlight":   "#5865F2",   # Selection highlight
-    "input_bg":    "#181825",   # Dark input / log background
-    "log_bg":      "#181825",   # Log terminal background
-    "tab_active":  "#5865F2",
-    "tab_inactive":"#A6ADC8",
-    "card":        "#313244",
-    "log_info":    "#89B4FA",   # Soft blue for INFO log lines
+      "bg": "#171B22",
+      "surface": "#1F2430",
+      "surface_alt": "#262C39",
+      "surface_soft": "#202633",
+      "panel": "#202635",
+      "panel_alt": "#2B3242",
+      "hero": "#222A3A",
+      "overlay": "#30384A",
+      "border": "#3F485C",
+      "text": "#D8E0EF",
+      "text_dim": "#97A4BC",
+      "text_muted": "#6E7990",
+      "accent": "#5B7CFA",
+      "accent_hover": "#7894FF",
+      "accent_soft": "#2B3A67",
+      "success": "#8FCB93",
+      "warning": "#D7B36A",
+      "error": "#D97E7E",
+      "highlight": "#5B7CFA",
+      "input_bg": "#151A23",
+      "log_bg": "#121721",
+      "tab_active": "#D8E0EF",
+      "tab_inactive": "#8A97B2",
+      "card": "#202635",
+      "log_info": "#88B2FF",
 }
 
 _LIGHT = {
-    "bg":          "#f2f3f7",
-    "surface":     "#ffffff",
-    "surface_alt": "#eaecf2",
-    "border":      "#cdd0da",
-    "text":        "#111118",
-    "text_dim":    "#606880",
-    "accent":      "#5865F2",
-    "accent_hover":"#4752C4",
-    "success":     "#16a34a",
-    "warning":     "#ca8a04",
-    "error":       "#dc2626",
-    "highlight":   "#5865F2",
-    "input_bg":    "#ffffff",
-    "log_bg":      "#f7f8fc",
-    "tab_active":  "#5865F2",
-    "tab_inactive":"#606880",
-    "card":        "#ffffff",
-    "log_info":    "#3451D1",   # Medium blue for INFO in light mode
+      "bg": "#EEF2F7",
+      "surface": "#FFFFFF",
+      "surface_alt": "#E8EDF5",
+      "surface_soft": "#F5F7FB",
+      "panel": "#FFFFFF",
+      "panel_alt": "#E5EBF6",
+      "hero": "#EFF4FF",
+      "overlay": "#D9E2F2",
+      "border": "#C2CBDC",
+      "text": "#172033",
+      "text_dim": "#56627A",
+      "text_muted": "#7B879D",
+      "accent": "#3F5DE0",
+      "accent_hover": "#2E4BC9",
+      "accent_soft": "#D8E3FF",
+      "success": "#2E8B57",
+      "warning": "#B7811F",
+      "error": "#C65353",
+      "highlight": "#3F5DE0",
+      "input_bg": "#F7F9FD",
+      "log_bg": "#F4F7FC",
+      "tab_active": "#172033",
+      "tab_inactive": "#5D6880",
+      "card": "#FFFFFF",
+      "log_info": "#3451D1",
 }
 
-# The live palette — start with dark.  ``toggle_theme()`` swaps it.
 theme: dict[str, str] = dict(_DARK)
-_current_mode: str = "dark"
+_current_mode = "dark"
 
-# ── Font stacks ─────────────────────────────────────────────────────────
-_SANS = ("Segoe UI", "Helvetica Neue", "Arial")
+# ---------------------------------------------------------------------------
+# Typography
+# ---------------------------------------------------------------------------
+
 _MONO = ("Cascadia Mono", "Consolas", "Courier New")
 
-FONT_UI        = (_SANS[0], 11)
-FONT_UI_BOLD   = (_SANS[0], 11, "bold")
-FONT_HEADING   = (_SANS[0], 16, "bold")
-FONT_SUBHEAD   = (_SANS[0], 13, "bold")
-FONT_TOPBAR_BRAND  = (_SANS[0], 16, "bold")
-FONT_TOPBAR_NAV    = (_SANS[0], 14, "bold")
-FONT_TOPBAR_ACTION = (_SANS[0], 13, "bold")
-FONT_LABEL     = (_SANS[0], 10, "bold")   # uppercase section labels
-FONT_SMALL     = (_SANS[0], 10)
-FONT_MONO      = (_MONO[0], 10)
+FONT_UI = (_MONO[0], 10)
+FONT_UI_BOLD = (_MONO[0], 10, "bold")
+FONT_HEADING = (_MONO[0], 18, "bold")
+FONT_TITLE = (_MONO[0], 14, "bold")
+FONT_SUBHEAD = (_MONO[0], 11)
+FONT_TOPBAR_BRAND = (_MONO[0], 13, "bold")
+FONT_TOPBAR_NAV = (_MONO[0], 10, "bold")
+FONT_TOPBAR_ACTION = (_MONO[0], 10, "bold")
+FONT_LABEL = (_MONO[0], 9, "bold")
+FONT_SMALL = (_MONO[0], 9)
+FONT_MONO = (_MONO[0], 10)
 FONT_MONO_BOLD = (_MONO[0], 10, "bold")
 
-# ── Spacing ─────────────────────────────────────────────────────────────
-PAD = 12
-BUTTON_RADIUS = 16
-BUTTON_RADIUS_SMALL = 14
+# ---------------------------------------------------------------------------
+# Geometry
+# ---------------------------------------------------------------------------
 
-# ── Legacy aliases (kept for callers that import COLORS) ────────────────
-COLORS = theme            # same dict object — always in sync
+PAD = 12
+SHELL_PAD = 16
+BUTTON_RADIUS = 10
+BUTTON_RADIUS_SMALL = 8
+
+COLORS = theme
 
 
 def is_dark() -> bool:
-    return _current_mode == "dark"
+      return _current_mode == "dark"
 
 
 def toggle_theme(root: tk.Tk) -> str:
-    """Switch between dark and light. Returns the new mode string."""
-    global _current_mode
-    src = _LIGHT if _current_mode == "dark" else _DARK
-    _current_mode = "light" if _current_mode == "dark" else "dark"
-    theme.update(src)
-    apply_theme(root)
-    return _current_mode
+      """Switch between dark and light mode and re-apply widget styles."""
+
+      global _current_mode
+      src = _LIGHT if _current_mode == "dark" else _DARK
+      _current_mode = "light" if _current_mode == "dark" else "dark"
+      theme.update(src)
+      apply_theme(root)
+      return _current_mode
 
 
 def apply_theme(root: tk.Tk):
-    """(Re-)apply the current palette to *root* and all ttk widgets."""
-    t = theme
-    root.configure(bg=t["bg"])
-    root.option_add("*Font", FONT_UI)
-    root.option_add("*Background", t["bg"])
-    root.option_add("*Foreground", t["text"])
-    root.option_add("*HighlightThickness", 0)
+      """Apply the active palette to the root window and ttk widgets."""
 
-    s = ttk.Style(root)
-    s.theme_use("clam")
+      t = theme
+      root.configure(bg=t["bg"])
+      root.option_add("*Font", FONT_UI)
+      root.option_add("*Background", t["bg"])
+      root.option_add("*Foreground", t["text"])
+      root.option_add("*HighlightThickness", 0)
 
-    # ── base ────────────────────────────────────────────────────────────
-    s.configure(".", background=t["bg"], foreground=t["text"],
-                font=FONT_UI, borderwidth=0, focuscolor="")
+      style = ttk.Style(root)
+      style.theme_use("clam")
 
-    # ── frames ──────────────────────────────────────────────────────────
-    s.configure("TFrame",         background=t["bg"])
-    s.configure("Surface.TFrame", background=t["surface"])
-    s.configure("Card.TFrame",    background=t["card"], relief="flat")
-    s.configure("TopBar.TFrame",  background=t["surface"])
+      # Base
+      style.configure(
+            ".",
+            background=t["bg"],
+            foreground=t["text"],
+            font=FONT_UI,
+            borderwidth=0,
+            focuscolor="",
+            relief="flat",
+      )
 
-    # ── labels ──────────────────────────────────────────────────────────
-    s.configure("TLabel",          background=t["bg"], foreground=t["text"],
-                font=FONT_UI)
-    s.configure("Heading.TLabel",  font=FONT_HEADING,  foreground=t["text"])
-    s.configure("Subhead.TLabel",  font=FONT_SUBHEAD,  foreground=t["text_dim"])
-    s.configure("SectionHead.TLabel", font=FONT_LABEL, foreground=t["text_dim"],
-                background=t["bg"])
-    s.configure("Dim.TLabel",      foreground=t["text_dim"])
-    s.configure("Accent.TLabel",   foreground=t["accent"])
-    s.configure("Success.TLabel",  foreground=t["success"])
-    s.configure("Warning.TLabel",  foreground=t["warning"])
-    s.configure("Error.TLabel",    foreground=t["error"])
-    s.configure("Surface.TLabel",  background=t["surface"], foreground=t["text"])
-    s.configure("TopBar.TLabel",   background=t["surface"], foreground=t["text"],
-                font=FONT_UI_BOLD)
-    s.configure("TopBar.Brand.TLabel", background=t["surface"],
-                foreground=t["text"], font=FONT_TOPBAR_BRAND)
+      # Frames
+      style.configure("TFrame", background=t["bg"])
+      style.configure("App.TFrame", background=t["bg"])
+      style.configure("Surface.TFrame", background=t["surface"])
+      style.configure("Card.TFrame", background=t["card"])
+      style.configure("Panel.TFrame", background=t["panel"])
+      style.configure("PanelAlt.TFrame", background=t["panel_alt"])
+      style.configure("Hero.TFrame", background=t["hero"])
+      style.configure("Inset.TFrame", background=t["input_bg"])
+      style.configure("Toolbar.TFrame", background=t["surface"])
+      style.configure("Console.TFrame", background=t["log_bg"])
+      style.configure("Accent.TFrame", background=t["accent"])
 
-    # tab labels
-    s.configure("Tab.TLabel", background=t["surface"],
-                foreground=t["tab_inactive"], font=FONT_UI, padding=(12, 6))
-    s.configure("TabActive.TLabel", background=t["surface"],
-                foreground=t["tab_active"], font=FONT_UI_BOLD, padding=(12, 6))
+      # Labels
+      style.configure("TLabel", background=t["bg"], foreground=t["text"], font=FONT_UI)
+      style.configure("Heading.TLabel", background=t["bg"], foreground=t["text"], font=FONT_HEADING)
+      style.configure("Title.TLabel", background=t["bg"], foreground=t["text"], font=FONT_TITLE)
+      style.configure("Subhead.TLabel", background=t["bg"], foreground=t["text_dim"], font=FONT_SUBHEAD)
+      style.configure("SectionHead.TLabel", background=t["bg"], foreground=t["text_dim"], font=FONT_LABEL)
+      style.configure("Dim.TLabel", background=t["bg"], foreground=t["text_dim"], font=FONT_UI)
+      style.configure("Meta.TLabel", background=t["bg"], foreground=t["text_muted"], font=FONT_SMALL)
+      style.configure("Accent.TLabel", background=t["bg"], foreground=t["accent"], font=FONT_UI_BOLD)
+      style.configure("Success.TLabel", background=t["bg"], foreground=t["success"], font=FONT_UI_BOLD)
+      style.configure("Warning.TLabel", background=t["bg"], foreground=t["warning"], font=FONT_UI_BOLD)
+      style.configure("Error.TLabel", background=t["bg"], foreground=t["error"], font=FONT_UI_BOLD)
 
-    # ── buttons — truly flat, hover via background only ─────────────────
-    _btn_pad = (PAD * 2, 7)
-    s.configure("TButton",
-                background=t["surface_alt"], foreground=t["text"],
-                font=FONT_UI, borderwidth=0, relief="flat",
-                padding=_btn_pad, focuscolor="")
-    s.map("TButton",
-          background=[("active",   t["border"]),
-                      ("disabled", t["bg"])],
-          foreground=[("disabled", t["text_dim"])])
+      for style_name, bg in {
+            "Surface.TLabel": t["surface"],
+            "Card.TLabel": t["card"],
+            "Panel.TLabel": t["panel"],
+            "PanelAlt.TLabel": t["panel_alt"],
+            "Hero.TLabel": t["hero"],
+            "Inset.TLabel": t["input_bg"],
+            "Console.TLabel": t["log_bg"],
+            "Toolbar.TLabel": t["surface"],
+      }.items():
+            style.configure(style_name, background=bg, foreground=t["text"], font=FONT_UI)
 
-    s.configure("Accent.TButton",
-                background=t["accent"], foreground="#ffffff",
-                font=FONT_UI_BOLD, borderwidth=0, relief="flat",
-                padding=_btn_pad, focuscolor="")
-    s.map("Accent.TButton",
-          background=[("active",   t["accent_hover"]),
-                      ("disabled", t["border"])])
+      style.configure("CardTitle.TLabel", background=t["panel"], foreground=t["text"], font=FONT_UI_BOLD)
+      style.configure("MetricName.TLabel", background=t["panel"], foreground=t["text_dim"], font=FONT_SMALL)
+      style.configure("MetricValue.TLabel", background=t["panel"], foreground=t["text"], font=FONT_TITLE)
+      style.configure("Badge.TLabel", background=t["accent_soft"], foreground=t["accent"], font=FONT_SMALL, padding=(8, 3))
 
-    s.configure("Danger.TButton",
-                background=t["error"], foreground="#ffffff",
-                font=FONT_UI_BOLD, borderwidth=0, relief="flat",
-                padding=_btn_pad, focuscolor="")
-    s.map("Danger.TButton",
-          background=[("active", "#E06480"), ("disabled", t["border"])])
+      style.configure("TopBar.TLabel", background=t["surface"], foreground=t["text"], font=FONT_UI_BOLD)
+      style.configure("TopBar.Brand.TLabel", background=t["surface"], foreground=t["text"], font=FONT_TOPBAR_BRAND)
+      style.configure("TopBar.Meta.TLabel", background=t["surface"], foreground=t["text_dim"], font=FONT_SMALL)
 
-    s.configure("Small.TButton",
-                font=FONT_SMALL, padding=(PAD, 4),
-                borderwidth=0, relief="flat", focuscolor="")
+      # Buttons
+      button_pad = (16, 8)
+      style.configure(
+            "TButton",
+            background=t["surface_alt"],
+            foreground=t["text"],
+            font=FONT_UI,
+            padding=button_pad,
+            borderwidth=0,
+            relief="flat",
+            focuscolor="",
+      )
+      style.map(
+            "TButton",
+            background=[("active", t["overlay"]), ("disabled", t["surface_soft"])],
+            foreground=[("disabled", t["text_muted"])],
+      )
 
-    s.configure("Tab.TButton",
-                background=t["surface"], foreground=t["tab_inactive"],
-                font=FONT_UI, borderwidth=0, padding=(16, 8),
-                relief="flat", focuscolor="")
-    s.map("Tab.TButton",
-          background=[("active", t["surface_alt"])],
-          foreground=[("active", t["text"])])
+      style.configure(
+            "Accent.TButton",
+            background=t["accent"],
+            foreground="#ffffff",
+            font=FONT_UI_BOLD,
+            padding=button_pad,
+            borderwidth=0,
+            relief="flat",
+      )
+      style.map("Accent.TButton", background=[("active", t["accent_hover"]), ("disabled", t["border"])])
 
-    s.configure("TabActive.TButton",
-                background=t["surface"], foreground=t["tab_active"],
-                font=FONT_UI_BOLD, borderwidth=0, padding=(16, 8),
-                relief="flat", focuscolor="")
+      style.configure(
+            "Danger.TButton",
+            background=t["error"],
+            foreground="#ffffff",
+            font=FONT_UI_BOLD,
+            padding=button_pad,
+            borderwidth=0,
+            relief="flat",
+      )
+      style.map("Danger.TButton", background=[("active", t["accent_hover"]), ("disabled", t["border"])])
 
-    # top bar tabs — separate, larger style for readability
-    s.configure("TopBar.Tab.TButton",
-                background=t["surface"], foreground=t["text"],
-                font=FONT_TOPBAR_NAV, borderwidth=0, padding=(22, 10),
-                relief="flat", focuscolor="")
-    s.map("TopBar.Tab.TButton",
-          background=[("active", t["surface_alt"])],
-          foreground=[("active", t["text"])])
+      style.configure(
+            "Ghost.TButton",
+            background=t["surface"],
+            foreground=t["text"],
+            font=FONT_UI,
+            padding=button_pad,
+            borderwidth=1,
+            relief="solid",
+            bordercolor=t["border"],
+      )
+      style.map(
+            "Ghost.TButton",
+            background=[("active", t["surface_alt"]), ("disabled", t["surface"])],
+            foreground=[("disabled", t["text_muted"])],
+      )
 
-    s.configure("TopBar.TabActive.TButton",
-                background=t["surface"], foreground=t["tab_active"],
-                font=FONT_TOPBAR_NAV, borderwidth=0, padding=(22, 10),
-                relief="flat", focuscolor="")
+      style.configure("Small.TButton", font=FONT_SMALL, padding=(12, 6), borderwidth=0, relief="flat")
+      style.configure("Chip.TButton", background=t["surface_alt"], foreground=t["text_dim"], font=FONT_SMALL, padding=(10, 5), borderwidth=0)
+      style.map("Chip.TButton", background=[("active", t["overlay"])], foreground=[("active", t["text"])])
 
-    # ghost buttons — border only, no fill (secondary actions)
-    s.configure("Ghost.TButton",
-                background=t["bg"], foreground=t["text"],
-                font=FONT_UI, borderwidth=1, bordercolor=t["border"],
-                relief="solid", padding=_btn_pad, focuscolor="")
-    s.map("Ghost.TButton",
-          background=[("active",   t["surface_alt"]),
-                      ("disabled", t["bg"])],
-          foreground=[("active",   t["text"]),
-                      ("disabled", t["text_dim"])])
+      style.configure("Tab.TButton", background=t["surface"], foreground=t["tab_inactive"], font=FONT_UI, padding=(12, 8), borderwidth=0)
+      style.configure("TabActive.TButton", background=t["surface"], foreground=t["tab_active"], font=FONT_UI_BOLD, padding=(12, 8), borderwidth=0)
+      style.map("Tab.TButton", background=[("active", t["surface_alt"])], foreground=[("active", t["text"])])
 
-    # icon buttons (theme toggle, close)
-    s.configure("Icon.TButton",
-                background=t["surface"], foreground=t["text"],
-                font=FONT_UI, borderwidth=0, padding=(8, 5),
-                relief="flat", focuscolor="")
-    s.map("Icon.TButton",
-          background=[("active", t["surface_alt"])],
-          foreground=[("active", t["text"])])
+      style.configure("TopBar.Tab.TButton", background=t["surface"], foreground=t["tab_inactive"], font=FONT_TOPBAR_NAV, padding=(14, 10), borderwidth=0)
+      style.configure("TopBar.TabActive.TButton", background=t["surface"], foreground=t["tab_active"], font=FONT_TOPBAR_NAV, padding=(14, 10), borderwidth=0)
+      style.map("TopBar.Tab.TButton", background=[("active", t["surface_alt"])], foreground=[("active", t["text"])])
 
-    # top bar action buttons — separate, larger style for readability
-    s.configure("TopBar.Icon.TButton",
-                background=t["surface"], foreground=t["text"],
-                font=FONT_TOPBAR_ACTION, borderwidth=0, padding=(12, 7),
-                relief="flat", focuscolor="")
-    s.map("TopBar.Icon.TButton",
-          background=[("active", t["surface_alt"])],
-          foreground=[("active", t["text"])])
+      style.configure("Icon.TButton", background=t["surface"], foreground=t["text"], font=FONT_UI, padding=(8, 7), borderwidth=0)
+      style.configure("TopBar.Icon.TButton", background=t["surface"], foreground=t["text"], font=FONT_TOPBAR_ACTION, padding=(10, 8), borderwidth=0)
+      style.map("Icon.TButton", background=[("active", t["surface_alt"])])
+      style.map("TopBar.Icon.TButton", background=[("active", t["surface_alt"])])
 
-    # ── entries ─────────────────────────────────────────────────────────
-    s.configure("TEntry",
-                fieldbackground=t["input_bg"], foreground=t["text"],
-                insertcolor=t["text"], borderwidth=1, relief="solid",
-                padding=6)
-    s.map("TEntry",
-          fieldbackground=[("focus", t["surface"])],
-          bordercolor=[("focus", t["accent"])])
+      # Entries / Combo
+      style.configure(
+            "TEntry",
+            fieldbackground=t["input_bg"],
+            foreground=t["text"],
+            insertcolor=t["text"],
+            borderwidth=1,
+            relief="solid",
+            bordercolor=t["border"],
+            padding=7,
+      )
+      style.map("TEntry", bordercolor=[("focus", t["accent"])], fieldbackground=[("focus", t["input_bg"])])
 
-    # ── combobox ────────────────────────────────────────────────────────
-    s.configure("TCombobox",
-                fieldbackground=t["input_bg"], foreground=t["text"],
-                borderwidth=1, padding=5, arrowcolor=t["text"])
-    s.map("TCombobox",
-          fieldbackground=[("focus", t["surface"])],
-          bordercolor=[("focus", t["accent"])])
-    root.option_add("*TCombobox*Listbox.Background",      t["surface"])
-    root.option_add("*TCombobox*Listbox.Foreground",      t["text"])
-    root.option_add("*TCombobox*Listbox.selectBackground", t["highlight"])
+      style.configure(
+            "TCombobox",
+            fieldbackground=t["input_bg"],
+            foreground=t["text"],
+            padding=6,
+            borderwidth=1,
+            bordercolor=t["border"],
+            arrowcolor=t["text_dim"],
+      )
+      style.map("TCombobox", bordercolor=[("focus", t["accent"])], fieldbackground=[("readonly", t["input_bg"]), ("focus", t["input_bg"])])
 
-    # ── checkbutton ─────────────────────────────────────────────────────
-    s.configure("TCheckbutton",
-                background=t["bg"], foreground=t["text"],
-                font=FONT_UI, focuscolor="")
-    s.map("TCheckbutton",
-          background=[("active", t["bg"])],
-          indicatorcolor=[("selected",  t["accent"]),
-                          ("!selected", t["border"])])
-    # checkbutton inside Surface panels
-    s.configure("Surface.TCheckbutton",
-                background=t["surface"], foreground=t["text"],
-                font=FONT_UI, focuscolor="")
-    s.map("Surface.TCheckbutton",
-          background=[("active", t["surface"])],
-          indicatorcolor=[("selected",  t["accent"]),
-                          ("!selected", t["border"])])
+      root.option_add("*TCombobox*Listbox.Background", t["surface"])
+      root.option_add("*TCombobox*Listbox.Foreground", t["text"])
+      root.option_add("*TCombobox*Listbox.selectBackground", t["highlight"])
 
-    # ── separator ───────────────────────────────────────────────────────
-    s.configure("TSeparator",       background=t["border"])
-    s.configure("TopBar.TSeparator",background=t["border"])
-    s.configure("TPanedwindow",     background=t["border"])
-    s.configure("Sash", sashthickness=4, gripcount=0, background=t["border"])
+      # Checkbuttons
+      style.configure("TCheckbutton", background=t["bg"], foreground=t["text"], font=FONT_UI, focuscolor="")
+      style.configure("Surface.TCheckbutton", background=t["surface"], foreground=t["text"], font=FONT_UI, focuscolor="")
+      style.configure("Panel.TCheckbutton", background=t["panel"], foreground=t["text"], font=FONT_UI, focuscolor="")
 
-    # ── scrollbar — thin, minimal ────────────────────────────────────────
-    s.configure("Vertical.TScrollbar",
-                background=t["surface_alt"], troughcolor=t["bg"],
-                borderwidth=0, arrowsize=0, width=8)
-    s.map("Vertical.TScrollbar",
-          background=[("active", t["text_dim"])])
+      # Separators / panes / scrollbars
+      style.configure("TSeparator", background=t["border"])
+      style.configure("TPanedwindow", background=t["border"])
+      style.configure("Sash", sashthickness=4, gripcount=0, background=t["border"])
+      style.configure("Vertical.TScrollbar", background=t["surface_alt"], troughcolor=t["bg"], borderwidth=0, arrowsize=0, width=10)
+      style.configure("Horizontal.TScrollbar", background=t["surface_alt"], troughcolor=t["bg"], borderwidth=0, arrowsize=0, width=10)
+      style.map("Vertical.TScrollbar", background=[("active", t["overlay"])])
+      style.map("Horizontal.TScrollbar", background=[("active", t["overlay"])])
 
-    # ── notebook ────────────────────────────────────────────────────────
-    s.configure("TNotebook", background=t["bg"], borderwidth=0)
-    s.configure("TNotebook.Tab",
-                background=t["surface"], foreground=t["text_dim"],
-                font=FONT_UI, padding=(PAD * 2, PAD // 2), borderwidth=0)
-    s.map("TNotebook.Tab",
-          background=[("selected", t["bg"])],
-          foreground=[("selected", t["accent"])])
+      # Treeview
+      style.configure(
+            "Treeview",
+            background=t["surface"],
+            foreground=t["text"],
+            fieldbackground=t["surface"],
+            font=FONT_UI,
+            rowheight=32,
+            borderwidth=0,
+            relief="flat",
+      )
+      style.map("Treeview", background=[("selected", t["accent_soft"])], foreground=[("selected", t["text"])])
+      style.configure(
+            "Treeview.Heading",
+            background=t["panel_alt"],
+            foreground=t["text_dim"],
+            font=FONT_LABEL,
+            relief="flat",
+            padding=(10, 6),
+      )
+      style.map("Treeview.Heading", background=[("active", t["overlay"])], foreground=[("active", t["text"])])
 
-    # ── treeview ─────────────────────────────────────────────────────────
-    s.configure("Treeview",
-                background=t["surface"], foreground=t["text"],
-                fieldbackground=t["surface"], font=FONT_UI,
-                rowheight=36, borderwidth=0)
-    s.configure("Treeview.Heading",
-                background=t["surface_alt"], foreground=t["text_dim"],
-                font=FONT_LABEL, relief="flat", padding=(PAD, 6))
-    s.map("Treeview",
-          background=[("selected", t["highlight"])],
-          foreground=[("selected", "#ffffff")])
-    s.map("Treeview.Heading",
-          background=[("active", t["border"])])
+      # Notebook fallback
+      style.configure("TNotebook", background=t["bg"], borderwidth=0)
+      style.configure("TNotebook.Tab", background=t["surface"], foreground=t["text_dim"], font=FONT_UI, padding=(14, 8), borderwidth=0)
+      style.map("TNotebook.Tab", background=[("selected", t["surface"])], foreground=[("selected", t["accent"])])
 
-    # ── labelframe ───────────────────────────────────────────────────────
-    s.configure("TLabelframe",
-                background=t["surface"], foreground=t["text"],
-                borderwidth=1, relief="solid")
-    s.configure("TLabelframe.Label",
-                background=t["surface"], foreground=t["accent"],
-                font=FONT_UI_BOLD)
+      # Misc
+      style.configure("TLabelframe", background=t["panel"], borderwidth=1, relief="solid", bordercolor=t["border"])
+      style.configure("TLabelframe.Label", background=t["panel"], foreground=t["text_dim"], font=FONT_LABEL)
+      style.configure("Horizontal.TProgressbar", troughcolor=t["surface_alt"], background=t["accent"], borderwidth=0, thickness=4)
 
-    # ── progressbar ──────────────────────────────────────────────────────
-    s.configure("Horizontal.TProgressbar",
-                troughcolor=t["surface_alt"], background=t["accent"],
-                borderwidth=0, thickness=3)
-
-    return s
+      return style
 

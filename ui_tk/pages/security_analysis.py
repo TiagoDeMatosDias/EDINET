@@ -10,8 +10,8 @@ from tkinter import messagebox, simpledialog, ttk
 import pandas as pd
 
 from ui_tk import controllers as ctrl
-from ui_tk.shared.widgets import DatabasePickerEntry, RoundedButton, TabBar
-from ui_tk.style import COLORS, FONT_UI_BOLD, PAD
+from ui_tk.shared.widgets import DatabasePickerEntry, PageHeader, RoundedButton, SectionCard, StatTile, TabBar
+from ui_tk.style import COLORS, FONT_SMALL, FONT_UI_BOLD, PAD
 from ui_tk.utils import run_in_background
 
 try:
@@ -167,11 +167,13 @@ class SecurityAnalysisPage(ttk.Frame):
         # --- Tk variables ---
         self._status_var = tk.StringVar(value="Select a database and search for a security.")
         self._search_var = tk.StringVar()
-        self._company_card_var = tk.StringVar(value="No security selected")
+        self._hero_company_name_var = tk.StringVar(value="No security selected")
+        self._company_card_var = tk.StringVar(value="Search for a company to load its identity, ticker, EDINET code, and industry context.")
         self._market_card_var = tk.StringVar(value="Price data will appear here")
         self._valuation_card_var = tk.StringVar(value="Valuation data will appear here")
         self._overview_company_var = tk.StringVar(value="Select a security to load company details.")
         self._overview_meta_var = tk.StringVar(value="Data quality and metadata will appear here.")
+        self._peer_summary_var = tk.StringVar(value="Peers load after a company is selected.")
         self._period_count_var = tk.StringVar(value="8")
         self._statement_kind_var = tk.StringVar(value="Income Statement")
         self._chart_metric_var = tk.StringVar(value="Stock Price")
@@ -197,10 +199,15 @@ class SecurityAnalysisPage(ttk.Frame):
     # ------------------------------------------------------------------
 
     def _build_toolbar(self):
-        toolbar = ttk.Frame(self, style="Surface.TFrame")
-        toolbar.pack(fill="x", padx=PAD, pady=(PAD // 2, 0))
+        self._header = PageHeader(
+            self,
+            title="Security Analysis",
+            subtitle="Search a company, inspect its current market snapshot, and drill into statements, charts, and peers.",
+            context="The selected company becomes the anchor for the whole workspace.",
+        )
+        self._header.pack(fill="x", padx=PAD * 2, pady=(PAD * 2, PAD))
 
-        ttk.Label(toolbar, text="Security Analysis", style="Heading.TLabel").pack(side="left")
+        toolbar = self._header.actions
 
         self._refresh_btn = RoundedButton(
             toolbar,
@@ -208,7 +215,7 @@ class SecurityAnalysisPage(ttk.Frame):
             style="Ghost.TButton",
             command=self._refresh_selected_security,
         )
-        self._refresh_btn.pack(side="right", padx=2)
+        self._refresh_btn.pack(side="right")
 
         self._update_price_btn = RoundedButton(
             toolbar,
@@ -216,31 +223,39 @@ class SecurityAnalysisPage(ttk.Frame):
             style="Accent.TButton",
             command=self._update_selected_price,
         )
-        self._update_price_btn.pack(side="right", padx=2)
+        self._update_price_btn.pack(side="right", padx=(0, 6))
         self._update_price_btn.state(["disabled"])
         self._refresh_btn.state(["disabled"])
 
     def _build_controls(self):
-        controls = ttk.Frame(self, style="Surface.TFrame")
-        controls.pack(fill="x", padx=PAD, pady=(PAD // 2, 0))
-        controls.grid_columnconfigure(1, weight=1)
+        controls = SectionCard(
+            self,
+            "Search & Context",
+            "Keep database scope compact and let search dominate the workflow.",
+            style="Panel.TFrame",
+        )
+        controls.pack(fill="x", padx=PAD * 2, pady=(0, PAD))
+        controls.body.grid_columnconfigure(1, weight=1)
 
-        self._db_picker = DatabasePickerEntry(controls, label="Database", value=self._db_path)
-        self._db_picker.grid(row=0, column=0, sticky="ew", padx=PAD, pady=PAD)
+        self._db_picker = DatabasePickerEntry(
+            controls.body,
+            label="Database",
+            value=self._db_path,
+            label_style="Panel.TLabel",
+        )
+        self._db_picker.grid(row=0, column=0, sticky="ew", padx=(0, PAD), pady=(0, PAD))
 
-        search_wrap = ttk.Frame(controls, style="Surface.TFrame")
-        search_wrap.grid(row=0, column=1, sticky="nsew", padx=(0, PAD), pady=PAD)
+        search_wrap = ttk.Frame(controls.body, style="Panel.TFrame")
+        search_wrap.grid(row=0, column=1, sticky="nsew", pady=(0, PAD))
         search_wrap.grid_columnconfigure(0, weight=1)
 
-        ttk.Label(search_wrap, text="Search Security", style="Surface.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
+        ttk.Label(search_wrap, text="Search Security", style="Panel.TLabel", font=FONT_SMALL).grid(row=0, column=0, sticky="w")
         self._search_entry = ttk.Entry(search_wrap, textvariable=self._search_var)
         self._search_entry.grid(row=1, column=0, sticky="ew", pady=(2, 0))
         self._search_entry.bind("<Down>", self._focus_suggestions)
         self._search_entry.bind("<Escape>", lambda _e: self._hide_suggestions())
 
-        self._suggestions_frame = ttk.Frame(search_wrap, style="Surface.TFrame")
+        self._suggestions_frame = ttk.Frame(search_wrap, style="Panel.TFrame")
         self._suggestions_frame.grid(row=2, column=0, sticky="ew", pady=(4, 0))
         self._suggestions_frame.grid_columnconfigure(0, weight=1)
 
@@ -263,24 +278,26 @@ class SecurityAnalysisPage(ttk.Frame):
         self._suggestions_list.bind("<Escape>", lambda _e: self._hide_suggestions())
         self._suggestions_frame.grid_remove()
 
-        ttk.Label(self, textvariable=self._status_var, style="Dim.TLabel").pack(
-            anchor="w", padx=PAD * 2, pady=(2, 0)
-        )
+        ttk.Label(controls.body, textvariable=self._status_var, style="Panel.TLabel", font=FONT_SMALL).grid(row=1, column=0, columnspan=2, sticky="w")
 
     def _build_summary_cards(self):
-        summary = ttk.Frame(self)
-        summary.pack(fill="x", padx=PAD, pady=(PAD // 2, 0))
+        summary = ttk.Frame(self, style="App.TFrame")
+        summary.pack(fill="x", padx=PAD * 2, pady=(0, PAD))
         for col in range(3):
             summary.grid_columnconfigure(col, weight=1)
 
-        self._company_card = self._make_summary_card(summary, "Company", self._company_card_var)
+        self._company_card = SectionCard(summary, "Selected Company", "Identity and listing context.", style="Hero.TFrame")
         self._company_card.grid(row=0, column=0, sticky="nsew", padx=(0, PAD // 2))
+        ttk.Label(self._company_card.body, textvariable=self._hero_company_name_var, style="Hero.TLabel", font=("Cascadia Mono", 16, "bold")).pack(anchor="w")
+        ttk.Label(self._company_card.body, textvariable=self._company_card_var, style="Hero.TLabel", justify="left", wraplength=360).pack(anchor="w", pady=(6, 0))
 
-        self._market_card = self._make_summary_card(summary, "Market", self._market_card_var)
+        self._market_card = SectionCard(summary, "Market Snapshot", "Price action and freshness.", style="Panel.TFrame")
         self._market_card.grid(row=0, column=1, sticky="nsew", padx=PAD // 2)
+        ttk.Label(self._market_card.body, textvariable=self._market_card_var, style="Panel.TLabel", justify="left", wraplength=300).pack(anchor="w")
 
-        self._valuation_card = self._make_summary_card(summary, "Valuation", self._valuation_card_var)
+        self._valuation_card = SectionCard(summary, "Valuation Snapshot", "Headline market multiples and yield.", style="Panel.TFrame")
         self._valuation_card.grid(row=0, column=2, sticky="nsew", padx=(PAD // 2, 0))
+        ttk.Label(self._valuation_card.body, textvariable=self._valuation_card_var, style="Panel.TLabel", justify="left", wraplength=300).pack(anchor="w")
 
     def _make_summary_card(self, parent, title: str, text_var: tk.StringVar) -> ttk.Frame:
         frame = ttk.Frame(parent, style="Surface.TFrame")
@@ -297,8 +314,8 @@ class SecurityAnalysisPage(ttk.Frame):
         return frame
 
     def _build_tabs(self):
-        tabs_wrap = ttk.Frame(self)
-        tabs_wrap.pack(fill="both", expand=True, padx=PAD, pady=PAD)
+        tabs_wrap = ttk.Frame(self, style="App.TFrame")
+        tabs_wrap.pack(fill="both", expand=True, padx=PAD * 2, pady=(0, PAD * 2))
 
         self._tab_container = ttk.Frame(tabs_wrap)
         self._tab_container.pack(fill="both", expand=True, pady=(PAD // 2, 0))
@@ -329,49 +346,37 @@ class SecurityAnalysisPage(ttk.Frame):
         parent.grid_rowconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
 
-        profile = ttk.Frame(parent, style="Surface.TFrame")
+        profile = SectionCard(parent, "Company Profile", "Identity, listing details, and descriptive context.", style="Panel.TFrame")
         profile.grid(row=0, column=0, sticky="nsew", padx=(0, PAD // 2), pady=(0, PAD // 2))
-        ttk.Label(profile, text="Company Profile", style="Surface.TLabel", font=FONT_UI_BOLD).pack(
-            anchor="w", padx=PAD, pady=(PAD, 0)
-        )
         ttk.Label(
-            profile,
+            profile.body,
             textvariable=self._overview_company_var,
-            style="Surface.TLabel",
+            style="Panel.TLabel",
             justify="left",
             wraplength=420,
-        ).pack(anchor="w", fill="x", padx=PAD, pady=(6, PAD))
+        ).pack(anchor="w", fill="x")
 
-        fundamentals = ttk.Frame(parent, style="Surface.TFrame")
+        fundamentals = SectionCard(parent, "Fundamentals", "Latest operating and balance sheet anchors.", style="Panel.TFrame")
         fundamentals.grid(row=0, column=1, sticky="nsew", padx=(PAD // 2, 0), pady=(0, PAD // 2))
-        ttk.Label(fundamentals, text="Fundamentals", style="Surface.TLabel", font=FONT_UI_BOLD).pack(
-            anchor="w", padx=PAD, pady=(PAD, 0)
-        )
-        self._fundamentals_tree = self._build_key_value_tree(fundamentals)
+        self._fundamentals_tree = self._build_key_value_tree(fundamentals.body)
 
-        ratios = ttk.Frame(parent, style="Surface.TFrame")
+        ratios = SectionCard(parent, "Ratios", "Valuation and quality metrics used for quick comparison.", style="Panel.TFrame")
         ratios.grid(row=1, column=0, sticky="nsew", padx=(0, PAD // 2), pady=(PAD // 2, 0))
-        ttk.Label(ratios, text="Ratios", style="Surface.TLabel", font=FONT_UI_BOLD).pack(
-            anchor="w", padx=PAD, pady=(PAD, 0)
-        )
-        self._ratios_tree = self._build_key_value_tree(ratios)
+        self._ratios_tree = self._build_key_value_tree(ratios.body)
 
-        metadata = ttk.Frame(parent, style="Surface.TFrame")
+        metadata = SectionCard(parent, "Metadata", "Freshness, source identifiers, and data quality notes.", style="Panel.TFrame")
         metadata.grid(row=1, column=1, sticky="nsew", padx=(PAD // 2, 0), pady=(PAD // 2, 0))
-        ttk.Label(metadata, text="Metadata", style="Surface.TLabel", font=FONT_UI_BOLD).pack(
-            anchor="w", padx=PAD, pady=(PAD, 0)
-        )
         ttk.Label(
-            metadata,
+            metadata.body,
             textvariable=self._overview_meta_var,
-            style="Surface.TLabel",
+            style="Panel.TLabel",
             justify="left",
             wraplength=420,
-        ).pack(anchor="w", fill="x", padx=PAD, pady=(6, PAD))
+        ).pack(anchor="w", fill="x")
 
     def _build_key_value_tree(self, parent) -> ttk.Treeview:
-        frame = ttk.Frame(parent)
-        frame.pack(fill="both", expand=True, padx=PAD, pady=(6, PAD))
+        frame = ttk.Frame(parent, style="Panel.TFrame")
+        frame.pack(fill="both", expand=True)
         tree = ttk.Treeview(frame, columns=("metric", "value"), show="headings", height=7)
         tree.heading("metric", text="Metric", anchor="w")
         tree.heading("value", text="Value", anchor="w")
@@ -384,12 +389,14 @@ class SecurityAnalysisPage(ttk.Frame):
         return tree
 
     def _build_statements_tab(self, parent):
-        controls = ttk.Frame(parent, style="Surface.TFrame")
+        controls = SectionCard(parent, "Statement View", "Switch statement type and period count without leaving the data surface.", style="Panel.TFrame")
         controls.pack(fill="x", padx=PAD, pady=PAD)
 
-        ttk.Label(controls, text="Statement", style="Surface.TLabel").pack(side="left")
+        control_row = ttk.Frame(controls.body, style="Panel.TFrame")
+        control_row.pack(fill="x")
+        ttk.Label(control_row, text="Statement", style="Panel.TLabel").pack(side="left")
         statement_combo = ttk.Combobox(
-            controls,
+            control_row,
             textvariable=self._statement_kind_var,
             values=list(_STATEMENT_KEY_MAP.keys()),
             state="readonly",
@@ -398,9 +405,9 @@ class SecurityAnalysisPage(ttk.Frame):
         statement_combo.pack(side="left", padx=(6, PAD))
         statement_combo.bind("<<ComboboxSelected>>", lambda _e: self._render_statement_table())
 
-        ttk.Label(controls, text="Periods", style="Surface.TLabel").pack(side="left")
+        ttk.Label(control_row, text="Periods", style="Panel.TLabel").pack(side="left")
         period_combo = ttk.Combobox(
-            controls,
+            control_row,
             textvariable=self._period_count_var,
             values=["4", "8", "12"],
             state="readonly",
@@ -409,7 +416,7 @@ class SecurityAnalysisPage(ttk.Frame):
         period_combo.pack(side="left", padx=(6, 0))
         period_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_selected_security())
 
-        tree_frame = ttk.Frame(parent)
+        tree_frame = ttk.Frame(parent, style="Panel.TFrame")
         tree_frame.pack(fill="both", expand=True, padx=PAD, pady=(0, PAD))
         self._statement_tree = ttk.Treeview(tree_frame, show="headings")
         ybar = ttk.Scrollbar(tree_frame, orient="vertical", command=self._statement_tree.yview)
@@ -422,12 +429,14 @@ class SecurityAnalysisPage(ttk.Frame):
         tree_frame.grid_columnconfigure(0, weight=1)
 
     def _build_charts_tab(self, parent):
-        controls = ttk.Frame(parent, style="Surface.TFrame")
+        controls = SectionCard(parent, "Chart Controls", "Adjust metric, range, and comparison overlay while keeping the chart dominant.", style="Panel.TFrame")
         controls.pack(fill="x", padx=PAD, pady=PAD)
+        control_row = ttk.Frame(controls.body, style="Panel.TFrame")
+        control_row.pack(fill="x")
 
-        ttk.Label(controls, text="Metric", style="Surface.TLabel").pack(side="left")
+        ttk.Label(control_row, text="Metric", style="Panel.TLabel").pack(side="left")
         metric_combo = ttk.Combobox(
-            controls,
+            control_row,
             textvariable=self._chart_metric_var,
             values=_CHART_METRIC_OPTIONS,
             state="readonly",
@@ -436,9 +445,9 @@ class SecurityAnalysisPage(ttk.Frame):
         metric_combo.pack(side="left", padx=(6, PAD))
         metric_combo.bind("<<ComboboxSelected>>", lambda _e: self._redraw_chart())
 
-        ttk.Label(controls, text="Range", style="Surface.TLabel").pack(side="left")
+        ttk.Label(control_row, text="Range", style="Panel.TLabel").pack(side="left")
         range_combo = ttk.Combobox(
-            controls,
+            control_row,
             textvariable=self._chart_range_var,
             values=_CHART_TIMEFRAMES,
             state="readonly",
@@ -448,13 +457,14 @@ class SecurityAnalysisPage(ttk.Frame):
         range_combo.bind("<<ComboboxSelected>>", lambda _e: self._redraw_chart())
 
         ttk.Checkbutton(
-            controls,
+            control_row,
             text="Show peers",
             variable=self._chart_show_peers_var,
+            style="Panel.TCheckbutton",
             command=self._redraw_chart,
         ).pack(side="left")
 
-        self._chart_frame = ttk.Frame(parent, style="Surface.TFrame")
+        self._chart_frame = ttk.Frame(parent, style="Panel.TFrame")
         self._chart_frame.pack(fill="both", expand=True, padx=PAD, pady=(0, PAD))
 
         if FigureCanvasTkAgg and Figure:
@@ -473,11 +483,14 @@ class SecurityAnalysisPage(ttk.Frame):
             self._chart_empty_label.pack(expand=True)
 
     def _build_peers_tab(self, parent):
-        toolbar = ttk.Frame(parent, style="Surface.TFrame")
+        toolbar = SectionCard(parent, "Peer Comparison", "Compare the selected security against industry peers and manual additions.", style="Panel.TFrame")
         toolbar.pack(fill="x", padx=PAD, pady=PAD)
+        top = ttk.Frame(toolbar.body, style="Panel.TFrame")
+        top.pack(fill="x", pady=(0, PAD))
+        ttk.Label(top, textvariable=self._peer_summary_var, style="Panel.TLabel", font=FONT_SMALL, wraplength=640, justify="left").pack(side="left", fill="x", expand=True)
 
         self._add_peer_btn = RoundedButton(
-            toolbar,
+            top,
             text="Add Peer",
             style="Ghost.TButton",
             command=self._add_manual_peer,
@@ -486,7 +499,7 @@ class SecurityAnalysisPage(ttk.Frame):
         self._add_peer_btn.state(["disabled"])
 
         self._reset_peers_btn = RoundedButton(
-            toolbar,
+            top,
             text="Reset Peers",
             style="Ghost.TButton",
             command=self._reset_manual_peers,
@@ -494,13 +507,7 @@ class SecurityAnalysisPage(ttk.Frame):
         self._reset_peers_btn.pack(side="right", padx=2)
         self._reset_peers_btn.state(["disabled"])
 
-        ttk.Label(
-            toolbar,
-            text="Industry peers and manually added comparison companies",
-            style="Surface.TLabel",
-        ).pack(side="left")
-
-        table_frame = ttk.Frame(parent)
+        table_frame = ttk.Frame(parent, style="Panel.TFrame")
         table_frame.pack(fill="both", expand=True, padx=PAD, pady=(0, PAD))
         cols = (
             "role",
@@ -1007,11 +1014,13 @@ class SecurityAnalysisPage(ttk.Frame):
         self._peers_loaded_for = None
         self._loading_price_history = False
         self._loading_peers = False
-        self._company_card_var.set("No security selected")
+        self._hero_company_name_var.set("No security selected")
+        self._company_card_var.set("Search for a company to load its identity, ticker, EDINET code, and industry context.")
         self._market_card_var.set("Price data will appear here")
         self._valuation_card_var.set("Valuation data will appear here")
         self._overview_company_var.set("Select a security to load company details.")
         self._overview_meta_var.set("Data quality and metadata will appear here.")
+        self._peer_summary_var.set("Peers load after a company is selected.")
         self._populate_key_value_tree(self._fundamentals_tree, [])
         self._populate_key_value_tree(self._ratios_tree, [])
         self._render_statement_table()
@@ -1028,13 +1037,14 @@ class SecurityAnalysisPage(ttk.Frame):
         metadata = self._overview.get("metadata", {})
         quality = self._overview.get("quality_latest", {})
 
+        self._hero_company_name_var.set(company.get("company_name") or "N/A")
         self._company_card_var.set(
             "\n".join(
                 [
-                    company.get("company_name") or "N/A",
                     f"Ticker: {company.get('ticker') or 'N/A'}",
                     f"EDINET: {company.get('edinet_code') or 'N/A'}",
                     f"Industry: {company.get('industry') or 'N/A'}",
+                    f"Market: {company.get('market') or 'N/A'}",
                 ]
             )
         )
@@ -1106,6 +1116,12 @@ class SecurityAnalysisPage(ttk.Frame):
         ]
         self._populate_key_value_tree(self._fundamentals_tree, fundamentals_rows)
         self._populate_key_value_tree(self._ratios_tree, ratio_rows)
+        if self.app is not None:
+            selected_name = company.get("company_name") or company.get("ticker") or company.get("edinet_code") or "Security Analysis"
+            self.app.set_context(
+                "Security Analysis",
+                f"{selected_name} • last price {_short_date(market.get('latest_price_date'))} • last filing {_short_date(metadata.get('last_financial_period_end'))}",
+            )
         self._render_statement_table()
         if self._active_tab == "Peers":
             self._render_peers()
@@ -1162,6 +1178,12 @@ class SecurityAnalysisPage(ttk.Frame):
         selected_row = self._selected_peer_row()
         all_rows = [selected_row] if selected_row else []
         all_rows.extend(self._peers)
+        peer_count = max(0, len(all_rows) - (1 if selected_row else 0))
+        self._peer_summary_var.set(
+            f"Selected company plus {peer_count} peer{'s' if peer_count != 1 else ''}. Manual peers remain merged into the comparison set."
+            if selected_row
+            else "Peers load after a company is selected."
+        )
         for row in all_rows:
             if not row:
                 continue

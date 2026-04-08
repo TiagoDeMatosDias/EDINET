@@ -8,10 +8,14 @@ from tkinter import ttk, filedialog, simpledialog, messagebox
 from ui_tk import controllers as ctrl
 from ui_tk.shared.widgets import (
     DatabasePickerEntry,
+    EmptyState,
+    PageHeader,
     RoundedButton,
+    ScrollableFrame,
+    SectionCard,
     reapply_widget_tree,
 )
-from ui_tk.style import COLORS, FONT_UI, FONT_UI_BOLD, FONT_HEADING, FONT_MONO, PAD
+from ui_tk.style import COLORS, FONT_SMALL, FONT_UI, FONT_UI_BOLD, PAD
 from ui_tk.utils import run_in_background
 
 logger = logging.getLogger(__name__)
@@ -94,6 +98,13 @@ class ScreeningPage(ttk.Frame):
         self._sort_column: str | None = None
         self._sort_ascending: bool = True
         self._display_columns: dict[str, tk.BooleanVar] = {}
+        self._status_var = tk.StringVar(value="Select a database and add criteria to start screening")
+        self._builder_summary_var = tk.StringVar(value="0 criteria • 0 ranking rules")
+        self._column_summary_var = tk.StringVar(value="Default columns only")
+        self._results_summary_var = tk.StringVar(value="No screening results yet")
+        self._query_summary_var = tk.StringVar(value="No active filters")
+        self._sort_summary_var = tk.StringVar(value="Sort: none")
+        self._empty_results = None
 
         # ── Layout ──────────────────────────────────────────────────────
         self._build_toolbar()
@@ -111,156 +122,90 @@ class ScreeningPage(ttk.Frame):
     # ── Toolbar ─────────────────────────────────────────────────────────
 
     def _build_toolbar(self):
-        toolbar = ttk.Frame(self, style="Surface.TFrame")
-        toolbar.pack(fill="x", padx=PAD, pady=(PAD // 2, 0))
-
-        ttk.Label(toolbar, text="Screening", style="Heading.TLabel").pack(
-            side="left"
+        self._header = PageHeader(
+            self,
+            title="Screening Workspace",
+            subtitle="Build ranked queries against financial and company tables, then move directly into security research.",
+            context="Use the builder rail to define scope and output columns. The results workbench stays stable while queries change.",
         )
+        self._header.pack(fill="x", padx=PAD * 2, pady=(PAD * 2, PAD))
 
-        # Right-side buttons
+        toolbar = self._header.actions
         self._export_btn = RoundedButton(
             toolbar, text="Export CSV", style="Ghost.TButton",
             command=self._export_results,
         )
-        self._export_btn.pack(side="right", padx=2)
+        self._export_btn.pack(side="right")
 
         self._export_backtest_btn = RoundedButton(
             toolbar, text="Backtest CSV", style="Ghost.TButton",
             command=self._export_backtest_results,
         )
-        self._export_backtest_btn.pack(side="right", padx=2)
+        self._export_backtest_btn.pack(side="right", padx=(0, 6))
 
         self._history_btn = RoundedButton(
             toolbar, text="History", style="Ghost.TButton",
             command=self._show_history,
         )
-        self._history_btn.pack(side="right", padx=2)
+        self._history_btn.pack(side="right", padx=(0, 6))
 
         self._save_btn = RoundedButton(
             toolbar, text="Save", style="Ghost.TButton",
             command=self._save_screening,
         )
-        self._save_btn.pack(side="right", padx=2)
+        self._save_btn.pack(side="right", padx=(0, 6))
 
         self._load_btn = RoundedButton(
             toolbar, text="Load", style="Ghost.TButton",
             command=self._load_screening,
         )
-        self._load_btn.pack(side="right", padx=2)
+        self._load_btn.pack(side="right", padx=(0, 6))
+
+        self._run_btn = RoundedButton(
+            toolbar, text="Run Screening", style="Accent.TButton",
+            command=self._run_screening,
+        )
+        self._run_btn.pack(side="right", padx=(0, 6))
 
     # ── Left Panel (criteria builder) ───────────────────────────────────
 
     def _build_left_panel(self):
-        # Outer frame with fixed width, fully scrollable
-        self._left = ttk.Frame(self._body, style="Surface.TFrame",
-                               width=_LEFT_WIDTH)
+        self._left = ttk.Frame(self._body, style="App.TFrame", width=_LEFT_WIDTH)
         self._left.grid(row=0, column=0, sticky="nsew")
         self._left.grid_propagate(False)
+        self._left_scroll = ScrollableFrame(self._left, bg_key="surface", width=_LEFT_WIDTH)
+        self._left_scroll.pack(fill="both", expand=True)
+        inner = self._left_scroll.interior
+        inner.configure(style="Surface.TFrame")
 
-        # Scrollable canvas for the entire left panel contents
-        self._left_canvas = tk.Canvas(
-            self._left, bg=COLORS["surface"], highlightthickness=0,
-        )
-        self._left_scrollbar = ttk.Scrollbar(
-            self._left, orient="vertical", command=self._left_canvas.yview,
-        )
-        self._left_inner = ttk.Frame(
-            self._left_canvas, style="Surface.TFrame",
-        )
-
-        self._left_inner.bind(
-            "<Configure>",
-            lambda _: self._left_canvas.configure(
-                scrollregion=self._left_canvas.bbox("all")
-            ),
-        )
-        self._left_canvas.create_window(
-            (0, 0), window=self._left_inner, anchor="nw",
-            width=_LEFT_WIDTH - 20,
-        )
-        self._left_canvas.configure(
-            yscrollcommand=self._left_scrollbar.set,
-        )
-
-        self._left_scrollbar.pack(side="right", fill="y")
-        self._left_canvas.pack(side="left", fill="both", expand=True)
-
-        # Mousewheel scrolling for left panel
-        self._left_canvas.bind("<Enter>", self._bind_left_scroll)
-        self._left_canvas.bind("<Leave>", self._unbind_left_scroll)
-
-        inner = self._left_inner
-        pad = PAD // 2
-
-        # --- Database picker ---
-        self._db_picker = DatabasePickerEntry(inner, label="Database")
-        self._db_picker.pack(fill="x", padx=pad, pady=(pad, pad // 2))
+        data_card = SectionCard(inner, "Data Context", "Database scope and screening period.", style="Panel.TFrame")
+        data_card.pack(fill="x", padx=PAD // 2, pady=(PAD // 2, PAD // 2))
+        self._db_picker = DatabasePickerEntry(data_card.body, label="Database", label_style="Panel.TLabel")
+        self._db_picker.pack(fill="x", pady=(0, PAD))
         self._db_picker._var.trace_add("write", lambda *_: self._on_db_changed())
 
-        # --- Period selector ---
-        period_frame = ttk.Frame(inner, style="Surface.TFrame")
-        period_frame.pack(fill="x", padx=pad, pady=(0, pad // 2))
-        ttk.Label(period_frame, text="Period:", style="Surface.TLabel").pack(
-            side="left"
-        )
+        period_frame = ttk.Frame(data_card.body, style="Panel.TFrame")
+        period_frame.pack(fill="x")
+        ttk.Label(period_frame, text="Period", style="Panel.TLabel", font=FONT_SMALL).pack(anchor="w")
         self._period_var = tk.StringVar()
-        self._period_combo = ttk.Combobox(
-            period_frame, textvariable=self._period_var,
-            state="readonly", width=8,
-        )
-        self._period_combo.pack(side="left", padx=(pad, 0))
+        self._period_combo = ttk.Combobox(period_frame, textvariable=self._period_var, state="readonly", width=8)
+        self._period_combo.pack(fill="x", pady=(4, 0))
 
-        # --- Screening Criteria ---
-        ttk.Separator(inner, orient="horizontal").pack(fill="x", padx=pad,
-                                                        pady=(pad, 2))
-        criteria_header = ttk.Frame(inner, style="Surface.TFrame")
-        criteria_header.pack(fill="x", padx=pad)
-        ttk.Label(
-            criteria_header, text="Criteria",
-            style="Surface.TLabel", font=FONT_UI_BOLD,
-        ).pack(side="left")
-        self._add_criterion_btn = RoundedButton(
-            criteria_header, text="+ Add", style="Small.TButton",
-            command=self._add_criterion,
-        )
+        criteria_card = SectionCard(inner, "Criteria Builder", "Compose filters against one or more tables.", style="Panel.TFrame")
+        criteria_card.pack(fill="x", padx=PAD // 2, pady=(0, PAD // 2))
+        self._add_criterion_btn = RoundedButton(criteria_card.actions, text="+ Add", style="Small.TButton", command=self._add_criterion)
         self._add_criterion_btn.pack(side="right")
+        ttk.Label(criteria_card.body, textvariable=self._builder_summary_var, style="Panel.TLabel", font=FONT_SMALL).pack(anchor="w", pady=(0, 6))
+        self._criteria_frame = ttk.Frame(criteria_card.body, style="Panel.TFrame")
+        self._criteria_frame.pack(fill="x")
 
-        # Criteria rows container (inside the left panel scroll)
-        self._criteria_frame = ttk.Frame(inner, style="Surface.TFrame")
-        self._criteria_frame.pack(fill="x", padx=pad, pady=(2, 0))
-
-        # --- Display Columns ---
-        ttk.Separator(inner, orient="horizontal").pack(fill="x", padx=pad,
-                                                        pady=(pad, 2))
-        ttk.Label(
-            inner, text="Display Columns",
-            style="Surface.TLabel", font=FONT_UI_BOLD,
-        ).pack(anchor="w", padx=pad)
-
-        self._columns_frame = ttk.Frame(inner, style="Surface.TFrame")
-        self._columns_frame.pack(fill="x", padx=pad, pady=(2, 0))
-
-        # --- Ranking ---
-        ttk.Separator(inner, orient="horizontal").pack(fill="x", padx=pad,
-                                                        pady=(pad, 2))
-        ranking_header = ttk.Frame(inner, style="Surface.TFrame")
-        ranking_header.pack(fill="x", padx=pad)
-        ttk.Label(
-            ranking_header, text="Ranking",
-            style="Surface.TLabel", font=FONT_UI_BOLD,
-        ).pack(side="left")
-        self._add_ranking_btn = RoundedButton(
-            ranking_header, text="+ Add", style="Small.TButton",
-            command=self._add_ranking_rule,
-        )
+        ranking_card = SectionCard(inner, "Ranking", "Order results by weighted metrics when needed.", style="Panel.TFrame")
+        ranking_card.pack(fill="x", padx=PAD // 2, pady=(0, PAD // 2))
+        self._add_ranking_btn = RoundedButton(ranking_card.actions, text="+ Add", style="Small.TButton", command=self._add_ranking_rule)
         self._add_ranking_btn.pack(side="right")
-
-        ranking_algo_row = ttk.Frame(inner, style="Surface.TFrame")
-        ranking_algo_row.pack(fill="x", padx=pad, pady=(2, 0))
-        ttk.Label(
-            ranking_algo_row, text="Algorithm:", style="Surface.TLabel",
-        ).pack(side="left")
+        ranking_algo_row = ttk.Frame(ranking_card.body, style="Panel.TFrame")
+        ranking_algo_row.pack(fill="x", pady=(0, PAD))
+        ttk.Label(ranking_algo_row, text="Algorithm", style="Panel.TLabel", font=FONT_SMALL).pack(anchor="w")
         self._ranking_algorithm_var = tk.StringVar(value="None")
         self._ranking_algorithm_combo = ttk.Combobox(
             ranking_algo_row,
@@ -269,20 +214,15 @@ class ScreeningPage(ttk.Frame):
             state="readonly",
             width=18,
         )
-        self._ranking_algorithm_combo.pack(side="left", fill="x", expand=True,
-                                           padx=(pad, 0))
+        self._ranking_algorithm_combo.pack(fill="x", pady=(4, 0))
+        self._ranking_frame = ttk.Frame(ranking_card.body, style="Panel.TFrame")
+        self._ranking_frame.pack(fill="x")
 
-        self._ranking_frame = ttk.Frame(inner, style="Surface.TFrame")
-        self._ranking_frame.pack(fill="x", padx=pad, pady=(2, 0))
-
-        # --- Run button ---
-        ttk.Separator(inner, orient="horizontal").pack(fill="x", padx=pad,
-                                                        pady=(pad, pad // 2))
-        self._run_btn = RoundedButton(
-            inner, text="▶ Run Screening", style="Accent.TButton",
-            command=self._run_screening,
-        )
-        self._run_btn.pack(fill="x", padx=pad, pady=(0, pad))
+        columns_card = SectionCard(inner, "Output Columns", "Control what appears in the result grid.", style="Panel.TFrame")
+        columns_card.pack(fill="x", padx=PAD // 2, pady=(0, PAD))
+        ttk.Label(columns_card.body, textvariable=self._column_summary_var, style="Panel.TLabel", font=FONT_SMALL).pack(anchor="w", pady=(0, 6))
+        self._columns_frame = ttk.Frame(columns_card.body, style="Panel.TFrame")
+        self._columns_frame.pack(fill="x")
 
     def _bind_left_scroll(self, _event=None):
         self._left_canvas.bind_all("<MouseWheel>", self._on_left_mousewheel)
@@ -296,19 +236,42 @@ class ScreeningPage(ttk.Frame):
     # ── Right Panel (results) ───────────────────────────────────────────
 
     def _build_right_panel(self):
-        self._right = ttk.Frame(self._body)
+        self._right = ttk.Frame(self._body, style="App.TFrame")
         self._right.grid(row=0, column=1, sticky="nsew", padx=(2, 0))
 
-        # --- Treeview ---
-        tree_frame = ttk.Frame(self._right)
-        tree_frame.pack(fill="both", expand=True, padx=PAD // 2,
-                        pady=(PAD // 2, 0))
+        workbench = SectionCard(
+            self._right,
+            "Results Workbench",
+            "Ranked output ready for export or deeper single-security analysis.",
+            style="Panel.TFrame",
+        )
+        workbench.pack(fill="both", expand=True, padx=PAD // 2, pady=(PAD // 2, 0))
 
+        summary = ttk.Frame(workbench.body, style="Panel.TFrame")
+        summary.pack(fill="x", pady=(0, PAD))
+        left = ttk.Frame(summary, style="Panel.TFrame")
+        left.pack(side="left", fill="x", expand=True)
+        ttk.Label(left, textvariable=self._results_summary_var, style="Panel.TLabel", font=FONT_UI_BOLD).pack(anchor="w")
+        ttk.Label(left, textvariable=self._status_var, style="Panel.TLabel", font=FONT_SMALL).pack(anchor="w", pady=(2, 0))
+        ttk.Label(left, textvariable=self._query_summary_var, style="Panel.TLabel", font=FONT_SMALL, wraplength=760, justify="left").pack(anchor="w", pady=(8, 0))
+        ttk.Label(left, textvariable=self._sort_summary_var, style="Panel.TLabel", font=FONT_SMALL).pack(anchor="w", pady=(6, 0))
+
+        self._table_area = ttk.Frame(workbench.body, style="Panel.TFrame")
+        self._table_area.pack(fill="both", expand=True)
+
+        self._empty_results = EmptyState(
+            self._table_area,
+            "No Results Yet",
+            "Choose a database, add screening criteria, and run the screen. Result rows can be double-clicked to open Security Analysis.",
+            style="Panel.TFrame",
+        )
+        self._empty_results.pack(fill="both", expand=True)
+
+        tree_frame = ttk.Frame(self._table_area, style="Panel.TFrame")
+        self._tree_frame = tree_frame
         self._tree = ttk.Treeview(tree_frame, show="headings")
-        vsb = ttk.Scrollbar(tree_frame, orient="vertical",
-                             command=self._tree.yview)
-        hsb = ttk.Scrollbar(tree_frame, orient="horizontal",
-                             command=self._tree.xview)
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self._tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self._tree.xview)
         self._tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
         self._tree.grid(row=0, column=0, sticky="nsew")
@@ -324,15 +287,49 @@ class ScreeningPage(ttk.Frame):
         # Double-click for company detail stub
         self._tree.bind("<Double-1>", self._on_company_click)
 
-        # --- Status bar ---
-        self._status_var = tk.StringVar(
-            value="Select a database and add criteria to start screening"
+        self._set_results_empty(True)
+
+    def _set_results_empty(self, show: bool):
+        if show:
+            self._tree_frame.pack_forget()
+            self._empty_results.pack(fill="both", expand=True)
+        else:
+            self._empty_results.pack_forget()
+            self._tree_frame.pack(fill="both", expand=True)
+
+    def _update_builder_summaries(self):
+        criteria_count = len(self._criteria_rows)
+        ranking_count = len(self._ranking_rows)
+        self._builder_summary_var.set(
+            f"{criteria_count} criter{'ion' if criteria_count == 1 else 'ia'} • {ranking_count} ranking rule{'s' if ranking_count != 1 else ''}"
         )
-        self._status_label = ttk.Label(
-            self._right, textvariable=self._status_var,
-            style="Dim.TLabel",
+
+        selected_columns = sum(1 for var in self._display_columns.values() if var.get())
+        self._column_summary_var.set(
+            f"{selected_columns} explicit column{'s' if selected_columns != 1 else ''} selected"
+            if selected_columns
+            else "Default output columns only"
         )
-        self._status_label.pack(padx=PAD // 2, pady=(2, PAD // 2), anchor="w")
+
+        criteria = self._collect_criteria()
+        ranking_rules = self._collect_ranking_rules()
+        query_bits: list[str] = []
+        if criteria:
+            query_bits.extend(
+                f"{crit['column']} {crit['operator']} {crit.get('value', crit.get('compare_column', '?'))}"
+                for crit in criteria[:4]
+            )
+        if ranking_rules:
+            query_bits.append(f"ranking={self._get_ranking_algorithm()}")
+        if self._period_var.get().strip():
+            query_bits.append(f"period={self._period_var.get().strip()}")
+        self._query_summary_var.set(" • ".join(query_bits) if query_bits else "No active filters")
+
+        if self.app is not None:
+            self.app.set_context(
+                "Screening",
+                f"{criteria_count} criteria • {ranking_count} ranking rules • {self._results_summary_var.get()}",
+            )
 
     # ── Database change handler ─────────────────────────────────────────
 
@@ -341,6 +338,7 @@ class ScreeningPage(ttk.Frame):
         if not db or db == self._db_path:
             return
         self._db_path = db
+        self._status_var.set("Loading screening metadata...")
 
         def _load():
             metrics = ctrl.screening_get_metrics(db)
@@ -362,11 +360,15 @@ class ScreeningPage(ttk.Frame):
 
             # Update column checkboxes
             self._rebuild_column_checkboxes()
+            self._update_builder_summaries()
+            self._status_var.set(f"Loaded screening schema from {db}")
+            self._results_summary_var.set("Ready to run screening")
 
             logger.info("Loaded metrics from %s: %d tables", db, len(metrics))
 
         def _on_error(exc):
             logger.error("Failed to load database: %s", exc)
+            self._status_var.set(f"Failed to load database: {exc}")
 
         run_in_background(_load, on_done=_on_done, on_error=_on_error)
 
@@ -390,14 +392,23 @@ class ScreeningPage(ttk.Frame):
     # ── Criteria builder ────────────────────────────────────────────────
 
     def _add_criterion(self):
-        row_frame = ttk.Frame(self._criteria_frame, style="Surface.TFrame")
-        row_frame.pack(fill="x", pady=2)
+        row_frame = ttk.Frame(self._criteria_frame, style="PanelAlt.TFrame")
+        row_frame.pack(fill="x", pady=(0, PAD // 2))
 
         tables = self._get_table_names()
 
+        row_header = ttk.Frame(row_frame, style="PanelAlt.TFrame")
+        row_header.pack(fill="x", padx=PAD, pady=(PAD, 0))
+        ttk.Label(
+            row_header,
+            text=f"Criterion {len(self._criteria_rows) + 1}",
+            style="PanelAlt.TLabel",
+            font=FONT_UI_BOLD,
+        ).pack(side="left")
+
         # Row 1: source table dropdown + source column dropdown + remove button
-        top_row = ttk.Frame(row_frame, style="Surface.TFrame")
-        top_row.pack(fill="x")
+        top_row = ttk.Frame(row_frame, style="PanelAlt.TFrame")
+        top_row.pack(fill="x", padx=PAD, pady=(8, 0))
 
         table_var = tk.StringVar()
         table_combo = SearchableCombobox(
@@ -430,8 +441,8 @@ class ScreeningPage(ttk.Frame):
         table_var.trace_add("write", _on_table_change)
 
         # Row 2: comparison mode + operator
-        bottom_row = ttk.Frame(row_frame, style="Surface.TFrame")
-        bottom_row.pack(fill="x", pady=(2, 2))
+        bottom_row = ttk.Frame(row_frame, style="PanelAlt.TFrame")
+        bottom_row.pack(fill="x", padx=PAD, pady=(8, 2))
 
         comparison_mode_var = tk.StringVar(value="Fixed Value")
         comparison_mode_combo = ttk.Combobox(
@@ -451,11 +462,11 @@ class ScreeningPage(ttk.Frame):
         op_combo.pack(side="left")
 
         # Row 3: fixed values or dynamic comparison target
-        compare_row = ttk.Frame(row_frame, style="Surface.TFrame")
-        compare_row.pack(fill="x", pady=(2, 4))
+        compare_row = ttk.Frame(row_frame, style="PanelAlt.TFrame")
+        compare_row.pack(fill="x", padx=PAD, pady=(2, PAD))
 
-        fixed_frame = ttk.Frame(compare_row, style="Surface.TFrame")
-        dynamic_frame = ttk.Frame(compare_row, style="Surface.TFrame")
+        fixed_frame = ttk.Frame(compare_row, style="PanelAlt.TFrame")
+        dynamic_frame = ttk.Frame(compare_row, style="PanelAlt.TFrame")
 
         val_var = tk.StringVar()
         val_entry = ttk.Entry(fixed_frame, textvariable=val_var, width=12)
@@ -542,19 +553,30 @@ class ScreeningPage(ttk.Frame):
 
         remove_btn.configure(command=lambda: self._remove_criterion(row_data))
         self._criteria_rows.append(row_data)
+        self._update_builder_summaries()
 
     def _remove_criterion(self, row_data):
         row_data["frame"].destroy()
         self._criteria_rows.remove(row_data)
+        self._update_builder_summaries()
 
     def _add_ranking_rule(self):
-        row_frame = ttk.Frame(self._ranking_frame, style="Surface.TFrame")
-        row_frame.pack(fill="x", pady=2)
+        row_frame = ttk.Frame(self._ranking_frame, style="PanelAlt.TFrame")
+        row_frame.pack(fill="x", pady=(0, PAD // 2))
 
         tables = self._get_table_names()
 
-        top_row = ttk.Frame(row_frame, style="Surface.TFrame")
-        top_row.pack(fill="x")
+        row_header = ttk.Frame(row_frame, style="PanelAlt.TFrame")
+        row_header.pack(fill="x", padx=PAD, pady=(PAD, 0))
+        ttk.Label(
+            row_header,
+            text=f"Ranking Rule {len(self._ranking_rows) + 1}",
+            style="PanelAlt.TLabel",
+            font=FONT_UI_BOLD,
+        ).pack(side="left")
+
+        top_row = ttk.Frame(row_frame, style="PanelAlt.TFrame")
+        top_row.pack(fill="x", padx=PAD, pady=(8, 0))
 
         table_var = tk.StringVar()
         table_combo = SearchableCombobox(
@@ -581,8 +603,8 @@ class ScreeningPage(ttk.Frame):
 
         table_var.trace_add("write", _on_table_change)
 
-        bottom_row = ttk.Frame(row_frame, style="Surface.TFrame")
-        bottom_row.pack(fill="x", pady=(2, 4))
+        bottom_row = ttk.Frame(row_frame, style="PanelAlt.TFrame")
+        bottom_row.pack(fill="x", padx=PAD, pady=(8, PAD))
 
         direction_var = tk.StringVar(value="Higher is Better")
         direction_combo = ttk.Combobox(
@@ -611,10 +633,12 @@ class ScreeningPage(ttk.Frame):
         }
         remove_btn.configure(command=lambda: self._remove_ranking_rule(row_data))
         self._ranking_rows.append(row_data)
+        self._update_builder_summaries()
 
     def _remove_ranking_rule(self, row_data):
         row_data["frame"].destroy()
         self._ranking_rows.remove(row_data)
+        self._update_builder_summaries()
 
     # ── Column selector ─────────────────────────────────────────────────
 
@@ -628,10 +652,10 @@ class ScreeningPage(ttk.Frame):
             return
 
         # Table selector dropdown
-        selector_frame = ttk.Frame(self._columns_frame, style="Surface.TFrame")
+        selector_frame = ttk.Frame(self._columns_frame, style="Panel.TFrame")
         selector_frame.pack(fill="x", pady=(2, 4))
 
-        ttk.Label(selector_frame, text="Table:", style="Surface.TLabel").pack(
+        ttk.Label(selector_frame, text="Table:", style="Panel.TLabel").pack(
             side="left",
         )
         self._col_table_var = tk.StringVar()
@@ -641,9 +665,9 @@ class ScreeningPage(ttk.Frame):
         )
         self._col_table_combo.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
-        search_row = ttk.Frame(self._columns_frame, style="Surface.TFrame")
+        search_row = ttk.Frame(self._columns_frame, style="Panel.TFrame")
         search_row.pack(fill="x", pady=(0, 4))
-        ttk.Label(search_row, text="Find:", style="Surface.TLabel").pack(
+        ttk.Label(search_row, text="Find:", style="Panel.TLabel").pack(
             side="left",
         )
         self._col_search_var = tk.StringVar()
@@ -652,15 +676,16 @@ class ScreeningPage(ttk.Frame):
         ).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         # Container for column checkboxes (populated on table change)
-        self._col_checks_frame = ttk.Frame(self._columns_frame,
-                                            style="Surface.TFrame")
+        self._col_checks_frame = ttk.Frame(self._columns_frame, style="Panel.TFrame")
         self._col_checks_frame.pack(fill="x")
 
         # Pre-register BooleanVars for all columns across all tables
         for table, cols in self._available_metrics.items():
             for col in cols:
                 key = f"{table}.{col}"
-                self._display_columns[key] = tk.BooleanVar(value=False)
+                var = tk.BooleanVar(value=False)
+                var.trace_add("write", lambda *_: self._update_builder_summaries())
+                self._display_columns[key] = var
 
         def _render_column_checks(*_):
             # Clear current checkboxes
@@ -679,6 +704,7 @@ class ScreeningPage(ttk.Frame):
                     self._display_columns[key] = var
                 cb = ttk.Checkbutton(
                     self._col_checks_frame, text=col, variable=var,
+                    style="Panel.TCheckbutton",
                 )
                 cb.pack(anchor="w")
 
@@ -688,6 +714,7 @@ class ScreeningPage(ttk.Frame):
         # Select first table by default
         if tables:
             self._col_table_var.set(tables[0])
+        self._update_builder_summaries()
 
     # ── Collect criteria from UI ────────────────────────────────────────
 
@@ -809,7 +836,9 @@ class ScreeningPage(ttk.Frame):
         ranking_rules = self._collect_ranking_rules()
 
         self._status_var.set("Running screening...")
+        self._results_summary_var.set("Running screening")
         self._run_btn.state(["disabled"])
+        self._update_builder_summaries()
 
         def _do():
             return ctrl.screening_run(
@@ -827,10 +856,14 @@ class ScreeningPage(ttk.Frame):
             self._results_df = df
             self._populate_results(df)
             count = len(df)
+            self._results_summary_var.set(
+                f"{count} {'company' if count == 1 else 'companies'} returned"
+            )
             self._status_var.set(
                 f"{count} {'company' if count == 1 else 'companies'} found"
             )
             self._run_btn.state(["!disabled"])
+            self._update_builder_summaries()
 
             # Save history entry
             try:
@@ -848,6 +881,7 @@ class ScreeningPage(ttk.Frame):
         def _on_error(exc):
             logger.error("Screening failed: %s", exc)
             self._status_var.set(f"Error: {exc}")
+            self._results_summary_var.set("Screening failed")
             self._run_btn.state(["!disabled"])
 
         run_in_background(_do, on_done=_on_done, on_error=_on_error)
@@ -864,7 +898,10 @@ class ScreeningPage(ttk.Frame):
 
         if df is None or df.empty:
             self._tree["columns"] = ()
+            self._set_results_empty(True)
             return
+
+        self._set_results_empty(False)
 
         cols = list(df.columns)
         self._tree["columns"] = cols
@@ -949,6 +986,8 @@ class ScreeningPage(ttk.Frame):
             df = df.reset_index(drop=True)
             self._results_df = df
             self._populate_results(df)
+            direction = "ascending" if self._sort_ascending else "descending"
+            self._sort_summary_var.set(f"Sort: {col} ({direction})")
         except KeyError:
             pass
 
@@ -1145,6 +1184,7 @@ class ScreeningPage(ttk.Frame):
         # Set display columns
         for key, var in self._display_columns.items():
             var.set(key in data.get("columns", []))
+        self._update_builder_summaries()
 
     def _show_history(self):
         history = ctrl.screening_load_history()
@@ -1293,9 +1333,10 @@ class ScreeningPage(ttk.Frame):
     def reapply_colors(self):
         """Re-apply theme colours after a theme toggle."""
         t = COLORS
-        self._left_canvas.configure(bg=t["surface"])
         self._tree.tag_configure("even", background=t["surface"])
         self._tree.tag_configure("odd", background=t["surface_alt"])
+        if hasattr(self, "_left_scroll"):
+            self._left_scroll.reapply_colors()
 
         for btn in (
             self._export_btn,
