@@ -75,16 +75,16 @@ _current_mode = "dark"
 # Typography
 # ---------------------------------------------------------------------------
 
-_MONO = ("Cascadia Mono", "Consolas", "Courier New")
+_MONO = ( "Consolas", "Courier New","Cascadia Mono")
 
 FONT_UI = (_MONO[0], 10)
 FONT_UI_BOLD = (_MONO[0], 10, "bold")
 FONT_HEADING = (_MONO[0], 18, "bold")
 FONT_TITLE = (_MONO[0], 14, "bold")
 FONT_SUBHEAD = (_MONO[0], 11)
-FONT_TOPBAR_BRAND = (_MONO[0], 13, "bold")
-FONT_TOPBAR_NAV = (_MONO[0], 10, "bold")
-FONT_TOPBAR_ACTION = (_MONO[0], 10, "bold")
+FONT_TOPBAR_BRAND = (_MONO[0], 15, "bold")
+FONT_TOPBAR_NAV = (_MONO[0], 12, "bold")
+FONT_TOPBAR_ACTION = (_MONO[0], 12, "bold")
 FONT_LABEL = (_MONO[0], 9, "bold")
 FONT_SMALL = (_MONO[0], 9)
 FONT_MONO = (_MONO[0], 10)
@@ -252,12 +252,12 @@ def apply_theme(root: tk.Tk):
       style.configure("TabActive.TButton", background=t["surface"], foreground=t["tab_active"], font=FONT_UI_BOLD, padding=(12, 8), borderwidth=0)
       style.map("Tab.TButton", background=[("active", t["surface_alt"])], foreground=[("active", t["text"])])
 
-      style.configure("TopBar.Tab.TButton", background=t["surface"], foreground=t["tab_inactive"], font=FONT_TOPBAR_NAV, padding=(14, 10), borderwidth=0)
-      style.configure("TopBar.TabActive.TButton", background=t["surface"], foreground=t["tab_active"], font=FONT_TOPBAR_NAV, padding=(14, 10), borderwidth=0)
+      style.configure("TopBar.Tab.TButton", background=t["surface"], foreground=t["tab_inactive"], font=FONT_TOPBAR_NAV, padding=(18, 12), borderwidth=0)
+      style.configure("TopBar.TabActive.TButton", background=t["surface"], foreground=t["tab_active"], font=FONT_TOPBAR_NAV, padding=(18, 12), borderwidth=0)
       style.map("TopBar.Tab.TButton", background=[("active", t["surface_alt"])], foreground=[("active", t["text"])])
 
       style.configure("Icon.TButton", background=t["surface"], foreground=t["text"], font=FONT_UI, padding=(8, 7), borderwidth=0)
-      style.configure("TopBar.Icon.TButton", background=t["surface"], foreground=t["text"], font=FONT_TOPBAR_ACTION, padding=(10, 8), borderwidth=0)
+      style.configure("TopBar.Icon.TButton", background=t["surface"], foreground=t["text"], font=FONT_TOPBAR_ACTION, padding=(14, 10), borderwidth=0)
       style.map("Icon.TButton", background=[("active", t["surface_alt"])])
       style.map("TopBar.Icon.TButton", background=[("active", t["surface_alt"])])
 

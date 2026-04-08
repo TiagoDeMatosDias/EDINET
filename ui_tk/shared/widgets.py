@@ -83,7 +83,7 @@ def _button_tokens(style_name: str) -> dict[str, object]:
                 "border_color": t["surface"],
                 "border_width": 0,
                 "corner_radius": BUTTON_RADIUS_SMALL,
-                "height": 34,
+                "height": 40 if style_name == "TopBar.Icon.TButton" else 34,
                 "font": FONT_TOPBAR_ACTION if style_name == "TopBar.Icon.TButton" else FONT_UI,
             }
         )
@@ -108,7 +108,7 @@ def _button_tokens(style_name: str) -> dict[str, object]:
                 "border_color": t["surface"],
                 "border_width": 0,
                 "corner_radius": BUTTON_RADIUS_SMALL,
-                "height": 36,
+                "height": 44 if style_name.startswith("TopBar") else 36,
                 "font": FONT_TOPBAR_NAV if style_name.startswith("TopBar") else FONT_UI,
             }
         )
@@ -120,7 +120,7 @@ def _button_tokens(style_name: str) -> dict[str, object]:
                 "text_color": t["tab_active"],
                 "border_color": t["surface_alt"],
                 "corner_radius": BUTTON_RADIUS_SMALL,
-                "height": 36,
+                "height": 44 if style_name.startswith("TopBar") else 36,
                 "font": FONT_TOPBAR_NAV if style_name.startswith("TopBar") else FONT_UI_BOLD,
             }
         )
@@ -156,6 +156,148 @@ def _detect_bg(widget) -> str:
     return COLORS["bg"]
 
 
+class SearchableCombobox(ttk.Combobox):
+    """Combobox that keeps a source list and filters it as the user types."""
+
+    _NAVIGATION_KEYS = {
+        "Up", "Down", "Left", "Right", "Return", "Escape", "Tab",
+        "Home", "End", "Prior", "Next",
+    }
+
+    def __init__(self, parent, values=None, **kwargs):
+        state = kwargs.pop("state", "normal")
+        if state == "readonly":
+            state = "normal"
+        initial_values = list(values or kwargs.pop("values", []) or [])
+        super().__init__(parent, values=initial_values, state=state, **kwargs)
+        self._all_values: list[str] = []
+        self._last_valid_value: str = ""
+        self.set_source_values(initial_values)
+        self.bind("<KeyRelease>", self._on_key_release, add="+")
+        self.bind("<Button-1>", self._on_pointer_open, add="+")
+        self.bind("<FocusIn>", self._on_pointer_open, add="+")
+        self.bind("<<ComboboxSelected>>", self._on_combobox_selected, add="+")
+        self.bind("<Escape>", self._on_escape, add="+")
+        self.bind("<FocusOut>", self._commit_typed_value, add="+")
+        self.bind("<Return>", self._commit_typed_value, add="+")
+        self.bind("<Tab>", self._commit_typed_value, add="+")
+
+    def configure(self, cnf=None, **kwargs):
+        if isinstance(cnf, str) and not kwargs:
+            return super().configure(cnf)
+        if cnf:
+            kwargs.update(cnf)
+        values = kwargs.pop("values", None)
+        if kwargs.get("state") == "readonly":
+            kwargs["state"] = "normal"
+        result = super().configure(**kwargs)
+        if values is not None:
+            self.set_source_values(values)
+        return result
+
+    config = configure
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if key == "values":
+            self.set_source_values(value)
+
+    def set_source_values(self, values):
+        self._all_values = [str(value) for value in list(values or [])]
+        super().configure(values=self._all_values)
+        current_value = self.get().strip()
+        matched_value = self._canonical_value(current_value)
+        if matched_value is not None:
+            self.set(matched_value)
+            self._last_valid_value = matched_value
+        elif self._last_valid_value and self._last_valid_value not in self._all_values:
+            self._last_valid_value = ""
+
+    def _restore_source_values(self, _event=None):
+        super().configure(values=self._all_values)
+
+    def _apply_filter(self, query: str | None):
+        text = (query or "").strip().lower()
+        if not text:
+            filtered = self._all_values
+        else:
+            filtered = [value for value in self._all_values if text in value.lower()]
+        super().configure(values=filtered)
+        return filtered
+
+    def _post_dropdown(self):
+        try:
+            self.tk.eval(f"ttk::combobox::Post {self}")
+        except tk.TclError:
+            return
+
+    def _on_pointer_open(self, _event=None):
+        # If current text is already a valid selected option, show full list.
+        # If user has typed a custom query, show filtered matches.
+        current_value = self.get().strip()
+        if self._canonical_value(current_value) is not None:
+            self._restore_source_values()
+        else:
+            self._apply_filter(current_value)
+
+    def _on_escape(self, _event=None):
+        if self._last_valid_value:
+            self.set(self._last_valid_value)
+        self._restore_source_values()
+
+    def _on_combobox_selected(self, _event=None):
+        matched_value = self._canonical_value(self.get().strip())
+        if matched_value is not None:
+            self.set(matched_value)
+            self._last_valid_value = matched_value
+        self._restore_source_values()
+
+    def _canonical_value(self, value: str) -> str | None:
+        text = value.strip()
+        if not text:
+            return ""
+        for option in self._all_values:
+            if option == text:
+                return option
+        lower_text = text.lower()
+        for option in self._all_values:
+            if option.lower() == lower_text:
+                return option
+        return None
+
+    def _commit_typed_value(self, _event=None):
+        if str(self.cget("state")) == "disabled":
+            return None
+        current_value = self.get().strip()
+        if not current_value:
+            self._restore_source_values()
+            return None
+
+        matched_value = self._canonical_value(current_value)
+        if matched_value is None:
+            filtered_values = [value for value in self._all_values if current_value.lower() in value.lower()]
+            if len(filtered_values) == 1:
+                matched_value = filtered_values[0]
+            elif self._last_valid_value:
+                matched_value = self._last_valid_value
+            else:
+                matched_value = ""
+
+        self.set(matched_value)
+        if matched_value:
+            self._last_valid_value = matched_value
+        self._restore_source_values()
+        return None
+
+    def _on_key_release(self, event):
+        if event.keysym in self._NAVIGATION_KEYS or str(self.cget("state")) == "disabled":
+            return
+        filtered = self._apply_filter(self.get())
+        if filtered:
+            self._post_dropdown()
+        self.icursor(tk.END)
+
+
 class RoundedButton(tk.Frame):
     """Rounded button using CTkButton when available, ttk fallback otherwise."""
 
@@ -164,18 +306,22 @@ class RoundedButton(tk.Frame):
         super().__init__(parent, bg=parent_bg, highlightthickness=0, bd=0)
         self._style_name = style
         self._is_disabled = False
+        self._textvariable = kw.pop("textvariable", None)
+        self._textvariable_trace = None
         width = kw.pop("width", None)
         self._inner = None
+        button_text = self._textvariable.get() if isinstance(self._textvariable, tk.Variable) else text
 
         if ctk is None:
-            self._inner = ttk.Button(self, text=text, command=command, style=style, width=width, **kw)
+            self._inner = ttk.Button(self, text=button_text, command=command, style=style, width=width, **kw)
             self._inner.pack(fill="both", expand=True)
+            self._bind_textvariable()
             return
 
         tokens = _button_tokens(style)
         self._inner = ctk.CTkButton(
             self,
-            text=text,
+            text=button_text,
             command=command,
             width=_coerce_button_width(width) or 0,
             height=tokens["height"],
@@ -187,17 +333,40 @@ class RoundedButton(tk.Frame):
             border_width=tokens["border_width"],
             bg_color=parent_bg,
             font=tokens["font"],
-            textvariable=kw.pop("textvariable", None),
             anchor=kw.pop("anchor", "center"),
         )
         self._inner.pack(fill="both", expand=True)
+        self._bind_textvariable()
+
+    def _bind_textvariable(self):
+        if isinstance(self._textvariable, tk.Variable) and self._textvariable_trace is not None:
+            try:
+                self._textvariable.trace_remove("write", self._textvariable_trace)
+            except tk.TclError:
+                pass
+        self._textvariable_trace = None
+        if isinstance(self._textvariable, tk.Variable):
+            self._textvariable_trace = self._textvariable.trace_add("write", self._sync_textvariable)
+            self._sync_textvariable()
+
+    def _sync_textvariable(self, *_args):
+        if not isinstance(self._textvariable, tk.Variable) or self._inner is None:
+            return
+        try:
+            self._inner.configure(text=self._textvariable.get())
+        except (tk.TclError, AttributeError):
+            pass
 
     def configure(self, cnf=None, **kw):
         if cnf:
             kw.update(cnf)
         style = kw.pop("style", None)
+        textvariable = kw.pop("textvariable", None)
         if style is not None:
             self._style_name = style
+        if textvariable is not None:
+            self._textvariable = textvariable
+            self._bind_textvariable()
         if ctk is None:
             if style is not None:
                 kw["style"] = style
@@ -248,6 +417,15 @@ class RoundedButton(tk.Frame):
 
     def configure_frame(self, **kw):
         super().configure(**kw)
+
+    def destroy(self):
+        if isinstance(self._textvariable, tk.Variable) and self._textvariable_trace is not None:
+            try:
+                self._textvariable.trace_remove("write", self._textvariable_trace)
+            except tk.TclError:
+                pass
+            self._textvariable_trace = None
+        super().destroy()
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
@@ -409,7 +587,7 @@ class LogPanel(ttk.Frame):
         self._collapse_btn = RoundedButton(toolbar, text="Hide", style="Small.TButton", command=self._toggle_collapsed)
         self._collapse_btn.pack(side="right", padx=2)
 
-        self._filter_combo = ttk.Combobox(toolbar, textvariable=self._filter_var, values=["All", "Info", "Warning", "Error"], width=8, state="readonly")
+        self._filter_combo = SearchableCombobox(toolbar, textvariable=self._filter_var, values=["All", "Info", "Warning", "Error"], width=8)
         self._filter_combo.pack(side="right", padx=(PAD // 2, 0))
         self._filter_combo.bind("<<ComboboxSelected>>", self._on_filter_changed)
         ttk.Label(toolbar, text="Level", style="Console.TLabel", font=FONT_SMALL).pack(side="right", padx=(PAD, 0))

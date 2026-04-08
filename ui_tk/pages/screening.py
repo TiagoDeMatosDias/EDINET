@@ -11,6 +11,7 @@ from ui_tk.shared.widgets import (
     EmptyState,
     PageHeader,
     RoundedButton,
+    SearchableCombobox,
     ScrollableFrame,
     SectionCard,
     reapply_widget_tree,
@@ -42,42 +43,6 @@ _RANKING_DIRECTION_LABELS = {
 
 # Left panel fixed width
 _LEFT_WIDTH = 340
-
-
-class SearchableCombobox(ttk.Combobox):
-    """Combobox that filters its values as the user types."""
-
-    def __init__(self, parent, values=None, **kwargs):
-        kwargs.setdefault("state", "normal")
-        super().__init__(parent, **kwargs)
-        self._all_values: list[str] = []
-        self.set_source_values(values or [])
-        self.bind("<KeyRelease>", self._on_key_release, add="+")
-        self.bind("<Button-1>", self._on_pointer_open, add="+")
-        self.bind("<FocusIn>", self._on_pointer_open, add="+")
-
-    def set_source_values(self, values):
-        self._all_values = list(values or [])
-        self.configure(values=self._all_values)
-
-    def _on_pointer_open(self, _event=None):
-        self.configure(values=self._all_values)
-
-    def _on_key_release(self, event):
-        if event.keysym in {
-            "Up", "Down", "Left", "Right", "Return", "Escape", "Tab"
-        }:
-            return
-        query = self.get().strip().lower()
-        if not query:
-            filtered = self._all_values
-        else:
-            filtered = [
-                value for value in self._all_values
-                if query in value.lower()
-            ]
-        self.configure(values=filtered)
-        self.icursor(tk.END)
 
 
 class ScreeningPage(ttk.Frame):
@@ -188,7 +153,7 @@ class ScreeningPage(ttk.Frame):
         period_frame.pack(fill="x")
         ttk.Label(period_frame, text="Period", style="Panel.TLabel", font=FONT_SMALL).pack(anchor="w")
         self._period_var = tk.StringVar()
-        self._period_combo = ttk.Combobox(period_frame, textvariable=self._period_var, state="readonly", width=8)
+        self._period_combo = SearchableCombobox(period_frame, textvariable=self._period_var, width=8)
         self._period_combo.pack(fill="x", pady=(4, 0))
 
         criteria_card = SectionCard(inner, "Criteria Builder", "Compose filters against one or more tables.", style="Panel.TFrame")
@@ -207,11 +172,10 @@ class ScreeningPage(ttk.Frame):
         ranking_algo_row.pack(fill="x", pady=(0, PAD))
         ttk.Label(ranking_algo_row, text="Algorithm", style="Panel.TLabel", font=FONT_SMALL).pack(anchor="w")
         self._ranking_algorithm_var = tk.StringVar(value="None")
-        self._ranking_algorithm_combo = ttk.Combobox(
+        self._ranking_algorithm_combo = SearchableCombobox(
             ranking_algo_row,
             textvariable=self._ranking_algorithm_var,
             values=list(_RANKING_ALGORITHM_LABELS.keys()),
-            state="readonly",
             width=18,
         )
         self._ranking_algorithm_combo.pack(fill="x", pady=(4, 0))
@@ -445,19 +409,18 @@ class ScreeningPage(ttk.Frame):
         bottom_row.pack(fill="x", padx=PAD, pady=(8, 2))
 
         comparison_mode_var = tk.StringVar(value="Fixed Value")
-        comparison_mode_combo = ttk.Combobox(
+        comparison_mode_combo = SearchableCombobox(
             bottom_row,
             textvariable=comparison_mode_var,
             values=list(_COMPARISON_MODE_LABELS.keys()),
-            state="readonly",
             width=16,
         )
         comparison_mode_combo.pack(side="left", padx=(0, 4))
 
         op_var = tk.StringVar(value=">")
-        op_combo = ttk.Combobox(
+        op_combo = SearchableCombobox(
             bottom_row, textvariable=op_var,
-            values=_OPERATORS, state="readonly", width=7,
+            values=_OPERATORS, width=7,
         )
         op_combo.pack(side="left")
 
@@ -607,11 +570,10 @@ class ScreeningPage(ttk.Frame):
         bottom_row.pack(fill="x", padx=PAD, pady=(8, PAD))
 
         direction_var = tk.StringVar(value="Higher is Better")
-        direction_combo = ttk.Combobox(
+        direction_combo = SearchableCombobox(
             bottom_row,
             textvariable=direction_var,
             values=list(_RANKING_DIRECTION_LABELS.keys()),
-            state="readonly",
             width=16,
         )
         direction_combo.pack(side="left", padx=(0, 4))

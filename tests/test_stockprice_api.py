@@ -2,10 +2,11 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
-from src.stockprice_api import import_stock_prices_csv
+from src.stockprice_api import _create_prices_table, import_stock_prices_csv, load_ticker_data
 
 
 class TestImportStockPricesCsv(unittest.TestCase):
@@ -86,6 +87,94 @@ class TestImportStockPricesCsv(unittest.TestCase):
             self.assertEqual(row, ("2026-01-01", "TPX", "JPY", 100.0))
         finally:
             conn.close()
+
+    def test_load_ticker_data_prefers_stooq_history(self):
+        db_path = os.path.join(self.tmpdir.name, "history.db")
+        history = pd.DataFrame(
+            {
+                "Date": ["2026-01-01", "2026-01-02"],
+                "Close": [810.0, 825.5],
+            }
+        )
+
+        with patch("src.stockprice_api._fetch_stooq_history", return_value=history) as fetch_stooq, patch(
+            "src.stockprice_api._fetch_yahoo_history"
+        ) as fetch_yahoo:
+            conn = sqlite3.connect(db_path)
+            try:
+                _create_prices_table(conn, "stock_prices")
+                ok = load_ticker_data("13010", "stock_prices", conn)
+                conn.commit()
+                rows = conn.execute(
+                    "SELECT Date, Ticker, Currency, Price FROM stock_prices ORDER BY Date"
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertTrue(ok)
+        self.assertEqual(fetch_stooq.call_args.args, ("1301.jp",))
+        self.assertEqual(fetch_stooq.call_args.kwargs, {"start_date": None})
+        fetch_yahoo.assert_not_called()
+        self.assertEqual(
+            rows,
+            [
+                ("2026-01-01", "13010", "JPY", 810.0),
+                ("2026-01-02", "13010", "JPY", 825.5),
+            ],
+        )
+
+    def test_load_ticker_data_falls_back_to_yahoo_when_stooq_fails(self):
+        db_path = os.path.join(self.tmpdir.name, "fallback-history.db")
+        history = pd.DataFrame(
+            {
+                ("Close", "1301.T"): [810.0, 825.5],
+                ("Volume", "1301.T"): [1000, 1100],
+            },
+            index=pd.to_datetime(["2026-01-01", "2026-01-02"]),
+        )
+        history.index.name = "Date"
+
+        with patch("src.stockprice_api._fetch_stooq_history", side_effect=RuntimeError("blocked")) as fetch_stooq, patch(
+            "src.stockprice_api._fetch_yahoo_history", return_value=history
+        ) as fetch_yahoo:
+            conn = sqlite3.connect(db_path)
+            try:
+                _create_prices_table(conn, "stock_prices")
+                ok = load_ticker_data("13010", "stock_prices", conn)
+                conn.commit()
+                rows = conn.execute(
+                    "SELECT Date, Ticker, Currency, Price FROM stock_prices ORDER BY Date"
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertTrue(ok)
+        self.assertEqual(fetch_stooq.call_args.args, ("1301.jp",))
+        self.assertEqual(fetch_yahoo.call_args.args, ("1301.T",))
+        self.assertEqual(
+            rows,
+            [
+                ("2026-01-01", "13010", "JPY", 810.0),
+                ("2026-01-02", "13010", "JPY", 825.5),
+            ],
+        )
+
+    def test_load_ticker_data_returns_false_when_all_providers_fail(self):
+        db_path = os.path.join(self.tmpdir.name, "invalid-history.db")
+        bad_history = pd.DataFrame({"Volume": [1000]}, index=pd.to_datetime(["2026-01-01"]))
+        bad_history.index.name = "Date"
+
+        with patch("src.stockprice_api._fetch_stooq_history", side_effect=RuntimeError("blocked")), patch(
+            "src.stockprice_api._fetch_yahoo_history", return_value=bad_history
+        ):
+            conn = sqlite3.connect(db_path)
+            try:
+                _create_prices_table(conn, "stock_prices")
+                ok = load_ticker_data("13010", "stock_prices", conn)
+            finally:
+                conn.close()
+
+        self.assertFalse(ok)
 
 
 if __name__ == "__main__":

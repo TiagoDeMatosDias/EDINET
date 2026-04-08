@@ -23,21 +23,42 @@ import pytest
 # ── Skip when a display is unavailable ──────────────────────────────────
 
 _HAS_DISPLAY = True
+_DISPLAY_REASON = ""
 try:
     _test_root = tk.Tk()
     _test_root.withdraw()
     _test_root.destroy()
-except tk.TclError:
+except tk.TclError as exc:
     _HAS_DISPLAY = False
+    _DISPLAY_REASON = f"Tk display unavailable: {exc}"
 
 try:
     from PIL import ImageGrab
-except ImportError:
+except ImportError as exc:
     _HAS_DISPLAY = False
+    _DISPLAY_REASON = f"Pillow ImageGrab unavailable: {exc}"
+
+
+def _imagegrab_available() -> tuple[bool, str]:
+    """Return whether ImageGrab can capture in this runtime environment."""
+    if not _HAS_DISPLAY:
+        return False, _DISPLAY_REASON or "No display available"
+    try:
+        # Probe actual capture capability (import alone is not enough on some
+        # Windows sessions where grabbing raises OSError: [WinError 6]).
+        ImageGrab.grab()
+        return True, ""
+    except OSError as exc:
+        return False, f"ImageGrab capture unavailable: {exc}"
+    except Exception as exc:  # pragma: no cover - defensive environment guard
+        return False, f"ImageGrab capture unavailable: {exc}"
+
+
+_CAN_GRAB, _GRAB_REASON = _imagegrab_available()
 
 pytestmark = pytest.mark.skipif(
-    not _HAS_DISPLAY,
-    reason="No display available or Pillow not installed",
+    not _CAN_GRAB,
+    reason=_GRAB_REASON or "No display available or Pillow not installed",
 )
 
 # ── Output directory ────────────────────────────────────────────────────
@@ -88,7 +109,10 @@ def _capture_window(root: tk.Tk, filename: str, *, settle_ms: int = 600):
     w = root.winfo_width()
     h = root.winfo_height()
 
-    img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+    try:
+        img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+    except OSError as exc:
+        pytest.skip(f"ImageGrab capture unavailable: {exc}")
     path = SCREENSHOT_DIR / filename
     img.save(str(path))
     print(f"  📸 saved → {path}")

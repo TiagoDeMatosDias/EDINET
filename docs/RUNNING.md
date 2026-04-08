@@ -119,7 +119,7 @@ Date,Open,High,Low,Close,Volume
 ---
 
 ### `update_stock_prices`
-Fetches historical share prices from the Stooq API for all companies in the selected database that have financial data.
+Fetches historical share prices from the Stooq API for all companies in the selected database that have financial data, with a Yahoo Finance chart fallback if Stooq is unavailable.
 
 ```json
 "update_stock_prices_config": {

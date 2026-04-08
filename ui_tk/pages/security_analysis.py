@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
 import pandas as pd
 
 from ui_tk import controllers as ctrl
-from ui_tk.shared.widgets import DatabasePickerEntry, PageHeader, RoundedButton, SectionCard, StatTile, TabBar
+from ui_tk.shared.widgets import DatabasePickerEntry, PageHeader, RoundedButton, SearchableCombobox, SectionCard, StatTile, TabBar
 from ui_tk.style import COLORS, FONT_SMALL, FONT_UI_BOLD, PAD
 from ui_tk.utils import run_in_background
 
@@ -23,23 +24,23 @@ except ImportError:  # pragma: no cover - exercised only when matplotlib missing
 
 logger = logging.getLogger(__name__)
 
+# Values may be legacy built-in source ids or direct database table names.
+# New statement tables can be surfaced by adding another label -> source entry.
 _STATEMENT_KEY_MAP = {
     "Income Statement": "income_statement",
     "Balance Sheet": "balance_sheet",
     "Cashflow Statement": "cashflow_statement",
+    "Per Share Data": "PerShare",
+    "Quality Ratios": "Quality",
+    "Valuation Ratios": "Valuation",
+    "Per Share Data - Metrics": "PerShare_Historical",
+    "Quality Ratios - Metrics": "Quality_Historical",
+    "Valuation Ratios - Metrics": "Valuation_Historical",
+    "Financial Statements": "financial_statements"
 }
 
-_CHART_METRIC_OPTIONS = [
-    "Stock Price",
-    "Revenue",
-    "Operating Income",
-    "Net Income",
-    "Shareholders' Equity",
-    "P/E",
-    "P/B",
-    "Dividend Yield",
-    "ROE",
-]
+_CHART_STOCK_TABLE = "Stock Price"
+_CHART_STOCK_COLUMN = "Price"
 
 _CHART_TIMEFRAMES = ["1Y", "3Y", "5Y", "Max"]
 
@@ -64,6 +65,10 @@ def _safe_str(value) -> str:
     if _is_missing(value):
         return ""
     return str(value).strip()
+
+
+def _normalize_metric_key(value) -> str:
+    return re.sub(r"[^a-z0-9]+", "", _safe_str(value).lower())
 
 
 def _short_date(value) -> str:
@@ -104,10 +109,39 @@ def _format_ratio(value: float | None) -> str:
     return f"{value:.2f}x"
 
 
-def _format_statement_value(value: float | None) -> str:
-    if value is None:
-        return "N/A"
-    return f"{value / 1_000_000:,.1f}"
+def _format_statement_value(value, field: str = "", source: str = "") -> str:
+    numeric_value = _safe_float(value)
+    if numeric_value is None:
+        text = _safe_str(value)
+        return text or "N/A"
+
+    field_key = _normalize_metric_key(field)
+    source_key = _normalize_metric_key(source)
+    if any(token in field_key for token in ("yield", "margin", "growth")) or field_key in {
+        "returnonequity",
+        "returnonassets",
+    }:
+        return _format_percent(numeric_value)
+    if field_key.endswith("ratio") or field_key in {
+        "peratio",
+        "pricetobook",
+        "debttoequity",
+        "currentratio",
+    }:
+        return _format_ratio(numeric_value)
+    if "zscore" in field_key:
+        return f"{numeric_value:,.2f}"
+    if source_key in {"incomestatement", "balancesheet", "cashflowstatement"} and abs(numeric_value) >= 1_000_000:
+        return f"{numeric_value / 1_000_000:,.1f}"
+    if abs(numeric_value) >= 1_000_000_000:
+        return f"{numeric_value / 1_000_000_000:.2f}B"
+    if abs(numeric_value) >= 1_000_000:
+        return f"{numeric_value / 1_000_000:.2f}M"
+    if abs(numeric_value) >= 1_000:
+        return f"{numeric_value:,.0f}"
+    if abs(numeric_value) >= 1:
+        return f"{numeric_value:,.2f}"
+    return f"{numeric_value:,.4f}"
 
 
 def _one_year_return_from_history(price_history: list[dict]) -> float | None:
@@ -158,11 +192,24 @@ class SecurityAnalysisPage(ttk.Frame):
         self._peers_request_id: int = 0
         self._loading_price_history = False
         self._loading_peers = False
+        self._loading_peer_chart_statements = False
         self._price_history_loaded_for: str | None = None
         self._peers_loaded_for: str | None = None
+        self._peer_chart_statements_loaded_key: tuple | None = None
         self._db_optimize_request_id: int = 0
         self._db_optimized_path: str | None = None
         self._active_tab: str = "Overview"
+        self._peer_chart_statement_request_id: int = 0
+        self._peer_chart_statements: dict[str, dict] = {}
+        self._peer_records_by_item: dict[str, dict] = {}
+        self._chart_column_options: dict[str, str] = {}
+        self._chart_table_combo: ttk.Combobox | None = None
+        self._chart_column_combo: ttk.Combobox | None = None
+        self._chart_style_button: RoundedButton | None = None
+        self._chart_hidden_labels: set[str] = set()
+        self._chart_series_artists: dict[str, list] = {}
+        self._chart_legend_artists: dict[str, list] = {}
+        self._chart_pick_targets: dict[object, str] = {}
 
         # --- Tk variables ---
         self._status_var = tk.StringVar(value="Select a database and search for a security.")
@@ -174,10 +221,13 @@ class SecurityAnalysisPage(ttk.Frame):
         self._overview_company_var = tk.StringVar(value="Select a security to load company details.")
         self._overview_meta_var = tk.StringVar(value="Data quality and metadata will appear here.")
         self._peer_summary_var = tk.StringVar(value="Peers load after a company is selected.")
-        self._period_count_var = tk.StringVar(value="8")
+        self._period_count_var = tk.StringVar(value="12")
         self._statement_kind_var = tk.StringVar(value="Income Statement")
-        self._chart_metric_var = tk.StringVar(value="Stock Price")
-        self._chart_range_var = tk.StringVar(value="5Y")
+        self._chart_table_var = tk.StringVar(value=_CHART_STOCK_TABLE)
+        self._chart_column_var = tk.StringVar(value=_CHART_STOCK_COLUMN)
+        self._chart_range_var = tk.StringVar(value="Max")
+        self._chart_style_var = tk.StringVar(value="Column")
+        self._chart_style_label_var = tk.StringVar(value="Line Only")
         self._chart_show_peers_var = tk.BooleanVar(value=True)
 
         # --- Layout ---
@@ -185,6 +235,7 @@ class SecurityAnalysisPage(ttk.Frame):
         self._build_controls()
         self._build_summary_cards()
         self._build_tabs()
+        self._refresh_chart_metric_options()
 
         if self._db_path:
             self._db_picker.set(self._db_path)
@@ -395,22 +446,20 @@ class SecurityAnalysisPage(ttk.Frame):
         control_row = ttk.Frame(controls.body, style="Panel.TFrame")
         control_row.pack(fill="x")
         ttk.Label(control_row, text="Statement", style="Panel.TLabel").pack(side="left")
-        statement_combo = ttk.Combobox(
+        statement_combo = SearchableCombobox(
             control_row,
             textvariable=self._statement_kind_var,
             values=list(_STATEMENT_KEY_MAP.keys()),
-            state="readonly",
             width=18,
         )
         statement_combo.pack(side="left", padx=(6, PAD))
         statement_combo.bind("<<ComboboxSelected>>", lambda _e: self._render_statement_table())
 
         ttk.Label(control_row, text="Periods", style="Panel.TLabel").pack(side="left")
-        period_combo = ttk.Combobox(
+        period_combo = SearchableCombobox(
             control_row,
             textvariable=self._period_count_var,
             values=["4", "8", "12"],
-            state="readonly",
             width=6,
         )
         period_combo.pack(side="left", padx=(6, 0))
@@ -434,27 +483,47 @@ class SecurityAnalysisPage(ttk.Frame):
         control_row = ttk.Frame(controls.body, style="Panel.TFrame")
         control_row.pack(fill="x")
 
-        ttk.Label(control_row, text="Metric", style="Panel.TLabel").pack(side="left")
-        metric_combo = ttk.Combobox(
+        ttk.Label(control_row, text="Table", style="Panel.TLabel").pack(side="left")
+        self._chart_table_combo = SearchableCombobox(
             control_row,
-            textvariable=self._chart_metric_var,
-            values=_CHART_METRIC_OPTIONS,
-            state="readonly",
-            width=20,
+            textvariable=self._chart_table_var,
+            values=[_CHART_STOCK_TABLE],
+            width=22,
         )
-        metric_combo.pack(side="left", padx=(6, PAD))
-        metric_combo.bind("<<ComboboxSelected>>", lambda _e: self._redraw_chart())
+        self._chart_table_combo.pack(side="left", padx=(6, PAD))
+        self._chart_table_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_chart_table_changed())
+
+        ttk.Label(control_row, text="Column", style="Panel.TLabel").pack(side="left")
+        self._chart_column_combo = SearchableCombobox(
+            control_row,
+            textvariable=self._chart_column_var,
+            values=[_CHART_STOCK_COLUMN],
+            state="disabled",
+            width=28,
+        )
+        self._chart_column_combo.pack(side="left", padx=(6, PAD))
+        self._chart_column_combo.bind("<<ComboboxSelected>>", lambda _e: self._redraw_chart())
 
         ttk.Label(control_row, text="Range", style="Panel.TLabel").pack(side="left")
-        range_combo = ttk.Combobox(
+        range_combo = SearchableCombobox(
             control_row,
             textvariable=self._chart_range_var,
             values=_CHART_TIMEFRAMES,
-            state="readonly",
             width=8,
         )
         range_combo.pack(side="left", padx=(6, PAD))
         range_combo.bind("<<ComboboxSelected>>", lambda _e: self._redraw_chart())
+
+        ttk.Label(control_row, text="Style", style="Panel.TLabel").pack(side="left")
+
+        self._chart_style_button = RoundedButton(
+            control_row,
+            textvariable=self._chart_style_label_var,
+            style="Ghost.TButton",
+            command=self._toggle_chart_style,
+            width=14,
+        )
+        self._chart_style_button.pack(side="left", padx=(6, PAD))
 
         ttk.Checkbutton(
             control_row,
@@ -471,6 +540,7 @@ class SecurityAnalysisPage(ttk.Frame):
             self._chart_figure = Figure(figsize=(7.2, 4.8), dpi=100)
             self._chart_canvas = FigureCanvasTkAgg(self._chart_figure, master=self._chart_frame)
             self._chart_canvas.get_tk_widget().pack(fill="both", expand=True)
+            self._chart_canvas.mpl_connect("pick_event", self._on_chart_legend_pick)
             self._chart_empty_label = None
         else:
             self._chart_figure = None
@@ -481,6 +551,7 @@ class SecurityAnalysisPage(ttk.Frame):
                 style="Dim.TLabel",
             )
             self._chart_empty_label.pack(expand=True)
+        self._update_chart_style_button_state()
 
     def _build_peers_tab(self, parent):
         toolbar = SectionCard(parent, "Peer Comparison", "Compare the selected security against industry peers and manual additions.", style="Panel.TFrame")
@@ -550,6 +621,7 @@ class SecurityAnalysisPage(ttk.Frame):
         xbar = ttk.Scrollbar(table_frame, orient="horizontal", command=self._peers_tree.xview)
         self._peers_tree.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
         self._peers_tree.grid(row=0, column=0, sticky="nsew")
+        self._peers_tree.bind("<Double-1>", self._on_peer_double_click)
         ybar.grid(row=0, column=1, sticky="ns")
         xbar.grid(row=1, column=0, sticky="ew")
         table_frame.grid_rowconfigure(0, weight=1)
@@ -720,6 +792,7 @@ class SecurityAnalysisPage(ttk.Frame):
 
     def _select_security(self, record: dict):
         self._selected_security = record
+        self._chart_hidden_labels.clear()
         self._suspend_search = True
         try:
             self._search_var.set(record.get("company_name") or record.get("ticker") or "")
@@ -752,13 +825,38 @@ class SecurityAnalysisPage(ttk.Frame):
         self._add_peer_btn.state(state)
         self._reset_peers_btn.state(["!disabled"] if self._manual_peer_codes and not is_loading else ["disabled"])
 
+    def _selected_period_count(self) -> int:
+        raw_value = _safe_str(self._period_count_var.get())
+        try:
+            period_count = int(raw_value)
+        except (TypeError, ValueError):
+            period_count = 12
+        if period_count not in {4, 8, 12}:
+            period_count = 12
+        if raw_value != str(period_count):
+            self._period_count_var.set(str(period_count))
+        return period_count
+
+    def _selected_chart_year_window(self) -> int | None:
+        timeframe = _safe_str(self._chart_range_var.get())
+        if timeframe == "Max":
+            return None
+        if timeframe not in _CHART_TIMEFRAMES:
+            self._chart_range_var.set("Max")
+            return None
+        try:
+            return int(timeframe.rstrip("Y"))
+        except (TypeError, ValueError):
+            self._chart_range_var.set("Max")
+            return None
+
     def _load_selected_security(self):
         if not self._selected_security or not self._db_path:
             return
 
         edinet_code = self._selected_security.get("edinet_code")
         ticker = self._selected_security.get("ticker")
-        periods = int(self._period_count_var.get())
+        periods = self._selected_period_count()
         request_id = self._load_request_id + 1
         self._load_request_id = request_id
         self._set_loading(True, f"Loading security {edinet_code}...")
@@ -768,10 +866,19 @@ class SecurityAnalysisPage(ttk.Frame):
         self._peers_loaded_for = None
         self._loading_price_history = False
         self._loading_peers = False
+        self._loading_peer_chart_statements = False
+        self._peer_chart_statement_request_id += 1
+        self._peer_chart_statements = {}
+        self._peer_chart_statements_loaded_key = None
 
         def _load():
             overview = ctrl.security_get_overview(self._db_path, edinet_code)
-            statements = ctrl.security_get_statements(self._db_path, edinet_code, periods=periods)
+            statements = ctrl.security_get_statements(
+                self._db_path,
+                edinet_code,
+                periods=periods,
+                statement_sources=_STATEMENT_KEY_MAP,
+            )
             return {
                 "overview": overview,
                 "statements": statements,
@@ -851,6 +958,8 @@ class SecurityAnalysisPage(ttk.Frame):
             self._loading_peers = False
             self._peers = peers
             self._peers_loaded_for = edinet_code
+            self._peer_chart_statements = {}
+            self._peer_chart_statements_loaded_key = None
             self._render_peers()
             self._redraw_chart()
 
@@ -1010,10 +1119,18 @@ class SecurityAnalysisPage(ttk.Frame):
         self._statements = {}
         self._price_history = []
         self._peers = []
+        self._peer_chart_statements = {}
+        self._peer_records_by_item = {}
         self._price_history_loaded_for = None
         self._peers_loaded_for = None
         self._loading_price_history = False
         self._loading_peers = False
+        self._loading_peer_chart_statements = False
+        self._peer_chart_statements_loaded_key = None
+        self._chart_hidden_labels.clear()
+        self._chart_series_artists = {}
+        self._chart_legend_artists = {}
+        self._chart_pick_targets = {}
         self._hero_company_name_var.set("No security selected")
         self._company_card_var.set("Search for a company to load its identity, ticker, EDINET code, and industry context.")
         self._market_card_var.set("Price data will appear here")
@@ -1023,6 +1140,8 @@ class SecurityAnalysisPage(ttk.Frame):
         self._peer_summary_var.set("Peers load after a company is selected.")
         self._populate_key_value_tree(self._fundamentals_tree, [])
         self._populate_key_value_tree(self._ratios_tree, [])
+        self._refresh_chart_metric_options()
+        self._update_chart_style_button_state()
         self._render_statement_table()
         if self._active_tab == "Peers":
             self._render_peers()
@@ -1116,12 +1235,14 @@ class SecurityAnalysisPage(ttk.Frame):
         ]
         self._populate_key_value_tree(self._fundamentals_tree, fundamentals_rows)
         self._populate_key_value_tree(self._ratios_tree, ratio_rows)
-        if self.app is not None:
+        if self.app is not None and hasattr(self.app, "set_context"):
             selected_name = company.get("company_name") or company.get("ticker") or company.get("edinet_code") or "Security Analysis"
             self.app.set_context(
                 "Security Analysis",
                 f"{selected_name} • last price {_short_date(market.get('latest_price_date'))} • last filing {_short_date(metadata.get('last_financial_period_end'))}",
             )
+        self._refresh_chart_metric_options()
+        self._update_chart_style_button_state()
         self._render_statement_table()
         if self._active_tab == "Peers":
             self._render_peers()
@@ -1151,8 +1272,255 @@ class SecurityAnalysisPage(ttk.Frame):
 
         for row in rows:
             values = [row.get("metric", "")]
-            values.extend(_format_statement_value(_safe_float(value)) for value in row.get("values", []))
+            values.extend(
+                _format_statement_value(
+                    value,
+                    field=row.get("field", ""),
+                    source=row.get("source", ""),
+                )
+                for value in row.get("values", [])
+            )
             self._statement_tree.insert("", "end", values=values)
+
+    def _statement_source_order(self) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for source_key in _STATEMENT_KEY_MAP.values():
+            if source_key in seen:
+                continue
+            seen.add(source_key)
+            ordered.append(source_key)
+        return ordered
+
+    def _chart_uses_statement_data(self, metric: str | None = None) -> bool:
+        _ = metric
+        return self._selected_chart_statement() is not None
+
+    def _selected_chart_source_key(self) -> str | None:
+        if self._chart_table_var.get() == _CHART_STOCK_TABLE:
+            return None
+        return _STATEMENT_KEY_MAP.get(self._chart_table_var.get())
+
+    def _selected_chart_statement(self) -> tuple[str, dict] | None:
+        source_key = self._selected_chart_source_key()
+        if not source_key:
+            return None
+        selected_column = self._chart_column_var.get()
+        field_name = self._chart_column_options.get(selected_column)
+        if not field_name:
+            return None
+        row = self._find_statement_row_in_payload(self._statements, source_key, field_name)
+        if row is None:
+            return None
+        return source_key, row
+
+    def _on_chart_table_changed(self):
+        self._refresh_chart_metric_options()
+        if self._active_tab == "Charts":
+            if self._chart_table_var.get() == _CHART_STOCK_TABLE:
+                self._ensure_price_history_loaded()
+            elif self._chart_show_peers_var.get():
+                self._ensure_peer_chart_statements_loaded()
+            self._redraw_chart()
+
+    def _toggle_chart_style(self):
+        if not self._chart_uses_statement_data():
+            return
+        next_style = "Line" if self._chart_style_var.get() == "Column" else "Column"
+        self._chart_style_var.set(next_style)
+        self._update_chart_style_button_state()
+        self._redraw_chart()
+
+    def _update_chart_style_button_state(self):
+        if self._chart_style_button is None:
+            return
+        if self._chart_table_var.get() == _CHART_STOCK_TABLE:
+            self._chart_style_label_var.set("Line Only")
+            self._chart_style_button.configure(text="Line Only")
+            self._chart_style_button.state(["disabled"])
+            return
+        if not self._chart_uses_statement_data():
+            self._chart_style_label_var.set("Select Column")
+            self._chart_style_button.configure(text="Select Column")
+            self._chart_style_button.state(["disabled"])
+            return
+        if self._chart_style_var.get() == "Column":
+            self._chart_style_label_var.set("Switch to Line")
+            self._chart_style_button.configure(text="Switch to Line")
+        else:
+            self._chart_style_label_var.set("Switch to Column")
+            self._chart_style_button.configure(text="Switch to Column")
+        self._chart_style_button.state(["!disabled"])
+
+    def _refresh_chart_metric_options(self):
+        if self._chart_table_combo is None or self._chart_column_combo is None:
+            return
+
+        table_values = [_CHART_STOCK_TABLE] + list(_STATEMENT_KEY_MAP.keys())
+        self._chart_table_combo.configure(values=table_values)
+        if self._chart_table_var.get() not in table_values:
+            self._chart_table_var.set(_CHART_STOCK_TABLE)
+
+        selected_table = self._chart_table_var.get()
+        self._chart_column_options = {}
+        if selected_table == _CHART_STOCK_TABLE:
+            self._chart_column_combo.configure(values=[_CHART_STOCK_COLUMN], state="disabled")
+            self._chart_column_var.set(_CHART_STOCK_COLUMN)
+            self._update_chart_style_button_state()
+            return
+
+        source_key = _STATEMENT_KEY_MAP.get(selected_table, "")
+        rows = self._statements.get(source_key, [])
+        base_counts: dict[str, int] = {}
+        for row in rows:
+            base_label = _safe_str(row.get("metric") or row.get("field"))
+            if base_label:
+                base_counts[base_label] = base_counts.get(base_label, 0) + 1
+
+        column_values: list[str] = []
+        for row in rows:
+            field_name = _safe_str(row.get("field"))
+            base_label = _safe_str(row.get("metric") or field_name)
+            if not field_name or not base_label:
+                continue
+            option_label = base_label if base_counts.get(base_label, 0) <= 1 else f"{base_label} [{field_name}]"
+            if option_label in self._chart_column_options:
+                continue
+            self._chart_column_options[option_label] = field_name
+            column_values.append(option_label)
+
+        self._chart_column_combo.configure(
+            values=column_values,
+            state="readonly" if column_values else "disabled",
+        )
+        if self._chart_column_var.get() not in column_values:
+            self._chart_column_var.set(column_values[0] if column_values else "")
+        self._update_chart_style_button_state()
+
+    def _find_statement_row(self, metric: str) -> dict | None:
+        _ = metric
+        selected = self._selected_chart_statement()
+        if selected is None:
+            return None
+        _, row = selected
+        return row
+
+    def _find_statement_row_in_payload(self, statements: dict, source_key: str, field: str) -> dict | None:
+        for row in statements.get(source_key, []):
+            if _safe_str(row.get("field")) == _safe_str(field):
+                return row
+        return None
+
+    def _statement_series_frame(self, periods: list[str], row: dict | None) -> pd.DataFrame:
+        if row is None:
+            return pd.DataFrame(columns=["label", "value", "period_date"])
+        values = list(row.get("values", []))
+        limit = min(len(periods), len(values))
+        if limit <= 0:
+            return pd.DataFrame(columns=["label", "value", "period_date"])
+        frame = pd.DataFrame(
+            {
+                "label": periods[:limit],
+                "value": [_safe_float(value) for value in values[:limit]],
+            }
+        )
+        frame["period_date"] = pd.to_datetime(frame["label"], errors="coerce")
+        return frame.dropna(subset=["value"]).reset_index(drop=True)
+
+    def _align_statement_series_entries_by_year(self, series_entries: list[dict]) -> list[dict]:
+        aligned_entries: list[dict] = []
+        for entry in series_entries:
+            frame = entry["frame"].copy()
+            if frame.empty:
+                continue
+            if frame["period_date"].notna().any():
+                frame = frame.sort_values(["period_date", "label"])
+                frame["year_label"] = frame["period_date"].dt.year.astype("Int64").astype(str)
+            else:
+                frame["year_label"] = frame["label"].astype(str).str[:4]
+            frame = frame[frame["year_label"].str.strip() != ""].drop_duplicates(subset=["year_label"], keep="last")
+            if frame.empty:
+                continue
+            frame["label"] = frame["year_label"]
+            frame["period_date"] = pd.to_datetime(frame["year_label"] + "-12-31", errors="coerce")
+            frame = frame[["label", "value", "period_date"]].reset_index(drop=True)
+            aligned_entries.append({**entry, "frame": frame})
+        return aligned_entries
+
+    def _peer_chart_cache_key(self) -> tuple | None:
+        if not self._selected_security:
+            return None
+        selected_code = _safe_str(self._selected_security.get("edinet_code"))
+        if not selected_code:
+            return None
+        peer_codes = tuple(
+            _safe_str(peer.get("edinet_code"))
+            for peer in self._peers
+            if _safe_str(peer.get("edinet_code"))
+        )
+        return (selected_code, self._selected_period_count(), peer_codes)
+
+    def _ensure_peer_chart_statements_loaded(self):
+        if not self._chart_show_peers_var.get() or not self._chart_uses_statement_data():
+            return
+        if not self._selected_security or not self._db_path:
+            return
+        selected_code = _safe_str(self._selected_security.get("edinet_code"))
+        if not selected_code:
+            return
+        if self._peers_loaded_for != selected_code:
+            self._ensure_peers_loaded()
+            return
+        cache_key = self._peer_chart_cache_key()
+        if cache_key is None or cache_key == self._peer_chart_statements_loaded_key:
+            return
+        if self._loading_peer_chart_statements:
+            return
+
+        peer_rows = [peer for peer in self._peers if _safe_str(peer.get("edinet_code"))]
+        if not peer_rows:
+            self._peer_chart_statements = {}
+            self._peer_chart_statements_loaded_key = cache_key
+            return
+
+        request_id = self._load_request_id
+        self._peer_chart_statement_request_id += 1
+        background_request_id = self._peer_chart_statement_request_id
+        self._loading_peer_chart_statements = True
+        periods = self._selected_period_count()
+
+        def _load():
+            payloads: dict[str, dict] = {}
+            for peer in peer_rows:
+                peer_code = _safe_str(peer.get("edinet_code"))
+                if not peer_code:
+                    continue
+                try:
+                    payloads[peer_code] = ctrl.security_get_statements(
+                        self._db_path,
+                        peer_code,
+                        periods=periods,
+                        statement_sources=_STATEMENT_KEY_MAP,
+                    )
+                except Exception as exc:  # pragma: no cover - recoverable UI path
+                    logger.warning("Skipping peer chart statements for %s: %s", peer_code, exc)
+            return payloads
+
+        def _on_done(payloads):
+            if request_id != self._load_request_id or background_request_id != self._peer_chart_statement_request_id:
+                return
+            self._loading_peer_chart_statements = False
+            self._peer_chart_statements = payloads
+            self._peer_chart_statements_loaded_key = cache_key
+            self._redraw_chart()
+
+        def _on_error(exc):
+            if request_id != self._load_request_id or background_request_id != self._peer_chart_statement_request_id:
+                return
+            self._loading_peer_chart_statements = False
+            logger.error("Failed to load peer chart statements: %s", exc, exc_info=True)
+
+        run_in_background(_load, on_done=_on_done, on_error=_on_error)
 
     def _selected_peer_row(self) -> dict | None:
         if not self._selected_security:
@@ -1163,8 +1531,11 @@ class SecurityAnalysisPage(ttk.Frame):
         quality = self._overview.get("quality_latest", {})
         return {
             "role": "Selected",
+            "edinet_code": company.get("edinet_code") or (self._selected_security or {}).get("edinet_code"),
             "company_name": company.get("company_name"),
             "ticker": company.get("ticker"),
+            "industry": company.get("industry"),
+            "market": company.get("market"),
             "PERatio": valuation.get("PERatio"),
             "PriceToBook": valuation.get("PriceToBook"),
             "ReturnOnEquity": quality.get("ReturnOnEquity"),
@@ -1175,6 +1546,7 @@ class SecurityAnalysisPage(ttk.Frame):
 
     def _render_peers(self):
         self._peers_tree.delete(*self._peers_tree.get_children())
+        self._peer_records_by_item = {}
         selected_row = self._selected_peer_row()
         all_rows = [selected_row] if selected_row else []
         all_rows.extend(self._peers)
@@ -1187,7 +1559,7 @@ class SecurityAnalysisPage(ttk.Frame):
         for row in all_rows:
             if not row:
                 continue
-            self._peers_tree.insert(
+            item_id = self._peers_tree.insert(
                 "",
                 "end",
                 values=(
@@ -1202,6 +1574,28 @@ class SecurityAnalysisPage(ttk.Frame):
                     _format_percent(_safe_float(row.get("one_year_return"))),
                 ),
             )
+            self._peer_records_by_item[item_id] = dict(row)
+
+    def _on_peer_double_click(self, event):
+        item = self._peers_tree.identify_row(event.y)
+        if not item:
+            return
+        record = self._peer_records_by_item.get(item)
+        if not record:
+            return
+        security_record = {
+            "edinet_code": _safe_str(record.get("edinet_code")),
+            "ticker": _safe_str(record.get("ticker")),
+            "company_name": _safe_str(record.get("company_name")),
+            "industry": _safe_str(record.get("industry")),
+            "market": _safe_str(record.get("market")),
+        }
+        if not security_record["edinet_code"]:
+            return
+        if self.app and hasattr(self.app, "show_security_analysis"):
+            self.app.show_security_analysis(security_record, db_path=self._db_path)
+            return
+        self.open_security(security_record, db_path=self._db_path)
 
     def _show_tab(self, name: str):
         self._active_tab = name
@@ -1209,9 +1603,11 @@ class SecurityAnalysisPage(ttk.Frame):
             frame.pack_forget()
         self._tab_frames[name].pack(fill="both", expand=True)
         if name == "Charts":
-            self._ensure_price_history_loaded()
-            if self._chart_metric_var.get() in {"P/E", "P/B", "Dividend Yield", "ROE"} and self._chart_show_peers_var.get():
-                self._ensure_peers_loaded()
+            self._refresh_chart_metric_options()
+            if self._chart_table_var.get() == _CHART_STOCK_TABLE:
+                self._ensure_price_history_loaded()
+            elif self._chart_show_peers_var.get():
+                self._ensure_peer_chart_statements_loaded()
             self._redraw_chart()
         elif name == "Peers":
             self._ensure_price_history_loaded()
@@ -1241,21 +1637,25 @@ class SecurityAnalysisPage(ttk.Frame):
         ax.yaxis.label.set_color(t["text"])
         ax.title.set_color(t["text"])
         ax.grid(color=t["border"], alpha=0.35)
+        self._chart_series_artists = {}
+        self._chart_legend_artists = {}
+        self._chart_pick_targets = {}
 
-        metric = self._chart_metric_var.get()
+        chart_label = self._chart_column_var.get() or self._chart_table_var.get()
+        self._update_chart_style_button_state()
 
         if self._active_tab == "Charts":
-            if metric == "Stock Price":
+            if self._chart_table_var.get() == _CHART_STOCK_TABLE:
                 self._ensure_price_history_loaded()
-            elif metric in {"P/E", "P/B", "Dividend Yield", "ROE"} and self._chart_show_peers_var.get():
-                self._ensure_peers_loaded()
+            elif self._chart_show_peers_var.get():
+                self._ensure_peer_chart_statements_loaded()
 
-        if metric == "Stock Price":
+        if self._chart_table_var.get() == _CHART_STOCK_TABLE:
             self._draw_price_chart(ax)
-        elif metric in {"Revenue", "Operating Income", "Net Income", "Shareholders' Equity"}:
-            self._draw_statement_chart(ax, metric)
+        elif self._chart_uses_statement_data(chart_label):
+            self._draw_statement_chart(ax, chart_label)
         else:
-            self._draw_peer_metric_chart(ax, metric)
+            ax.text(0.5, 0.5, "Select a table and column to render a chart.", ha="center", va="center", color=COLORS["text_dim"])
 
         fig.tight_layout()
         self._chart_canvas.draw_idle()
@@ -1273,70 +1673,251 @@ class SecurityAnalysisPage(ttk.Frame):
             ax.text(0.5, 0.5, "No price history available", ha="center", va="center", color=COLORS["text_dim"])
             return
 
-        timeframe = self._chart_range_var.get()
-        if timeframe != "Max":
-            years = int(timeframe.rstrip("Y"))
+        years = self._selected_chart_year_window()
+        if years is not None:
             cutoff = history["trade_date"].max() - pd.Timedelta(days=365 * years)
             history = history[history["trade_date"] >= cutoff]
 
         label = self._overview.get("company", {}).get("ticker") or "Price"
-        ax.plot(history["trade_date"], history["price"], color=COLORS["accent"], linewidth=2.0, label=label)
+        line, = ax.plot(history["trade_date"], history["price"], color=COLORS["accent"], linewidth=2.0, label=label)
         ax.set_title("Stock Price History")
         ax.set_ylabel("Price")
-        ax.legend(facecolor=COLORS["surface"], edgecolor=COLORS["border"], labelcolor=COLORS["text"])
+        legend = ax.legend(facecolor=COLORS["surface"], edgecolor=COLORS["border"], labelcolor=COLORS["text"])
+        self._configure_chart_legend_interaction(legend, {label: [line]})
 
     def _draw_statement_chart(self, ax, metric: str):
-        field_map = {
-            "Revenue": "netSales",
-            "Operating Income": "operatingIncome",
-            "Net Income": "netIncome",
-            "Shareholders' Equity": "shareholdersEquity",
-        }
-        field = field_map[metric]
-        records = self._statements.get("records", [])
-        if not records:
+        selected_statement = self._selected_chart_statement()
+        if selected_statement is None:
             ax.text(0.5, 0.5, "No statement history available", ha="center", va="center", color=COLORS["text_dim"])
             return
-        labels = [record.get("period_end", "") for record in records]
-        values = [_safe_float(record.get(field)) for record in records]
-        if all(value is None for value in values):
+
+        source_key, row = selected_statement
+        periods = self._statements.get("periods", [])
+        if not periods:
+            ax.text(0.5, 0.5, "No statement history available", ha="center", va="center", color=COLORS["text_dim"])
+            return
+
+        selected_series = self._statement_series_frame(periods, row)
+        if selected_series.empty:
             ax.text(0.5, 0.5, f"No {metric.lower()} data available", ha="center", va="center", color=COLORS["text_dim"])
             return
-        plotted_values = [0 if value is None else value / 1_000_000 for value in values]
-        ax.bar(labels, plotted_values, color=COLORS["accent"])
-        ax.set_title(f"{metric} by Period")
-        ax.set_ylabel("JPY mn")
-        ax.tick_params(axis="x", rotation=30)
 
-    def _draw_peer_metric_chart(self, ax, metric: str):
-        metric_map = {
-            "P/E": ("PERatio", _format_ratio),
-            "P/B": ("PriceToBook", _format_ratio),
-            "Dividend Yield": ("DividendsYield", _format_percent),
-            "ROE": ("ReturnOnEquity", _format_percent),
-        }
-        field, _formatter = metric_map[metric]
-        rows = []
-        selected = self._selected_peer_row()
-        if selected:
-            rows.append(selected)
+        series_entries = [
+            {
+                "label": self._overview.get("company", {}).get("ticker")
+                or self._overview.get("company", {}).get("company_name")
+                or "Selected",
+                "frame": selected_series,
+                "color": COLORS["accent"],
+            }
+        ]
+
         if self._chart_show_peers_var.get():
-            rows.extend(self._peers)
-        if not rows:
-            message = "Loading peer data..." if self._loading_peers else "No peer data available"
+            self._ensure_peer_chart_statements_loaded()
+            peer_palette = [
+                COLORS["success"],
+                COLORS["warning"],
+                COLORS["error"],
+                COLORS["accent_hover"],
+                COLORS["text_dim"],
+            ]
+            for index, peer in enumerate(self._peers):
+                peer_code = _safe_str(peer.get("edinet_code"))
+                peer_payload = self._peer_chart_statements.get(peer_code)
+                if not peer_code or not peer_payload:
+                    continue
+                peer_row = self._find_statement_row_in_payload(peer_payload, source_key, _safe_str(row.get("field")))
+                peer_series = self._statement_series_frame(peer_payload.get("periods", []), peer_row)
+                if peer_series.empty:
+                    continue
+                series_entries.append(
+                    {
+                        "label": _safe_str(peer.get("ticker")) or _safe_str(peer.get("company_name")) or peer_code,
+                        "frame": peer_series,
+                        "color": peer_palette[index % len(peer_palette)],
+                    }
+                )
+
+        if self._chart_show_peers_var.get() and len(series_entries) > 1:
+            series_entries = self._align_statement_series_entries_by_year(series_entries)
+
+        years = self._selected_chart_year_window()
+        if years is not None:
+            dated_maxes = [
+                entry["frame"]["period_date"].max()
+                for entry in series_entries
+                if not entry["frame"].empty and entry["frame"]["period_date"].notna().any()
+            ]
+            if dated_maxes:
+                cutoff = max(dated_maxes) - pd.Timedelta(days=365 * years)
+                filtered_entries = []
+                for entry in series_entries:
+                    frame = entry["frame"]
+                    if frame["period_date"].notna().any():
+                        frame = frame[frame["period_date"] >= cutoff]
+                    if frame.empty:
+                        continue
+                    filtered_entries.append({**entry, "frame": frame.reset_index(drop=True)})
+                series_entries = filtered_entries
+
+        if not series_entries:
+            message = "Loading peer statement data..." if self._loading_peer_chart_statements else f"No {metric.lower()} data available"
             ax.text(0.5, 0.5, message, ha="center", va="center", color=COLORS["text_dim"])
             return
-        names = [row.get("ticker") or row.get("company_name") or "N/A" for row in rows]
-        values = [_safe_float(row.get(field)) for row in rows]
-        if all(value is None for value in values):
-            ax.text(0.5, 0.5, f"No {metric.lower()} data available", ha="center", va="center", color=COLORS["text_dim"])
-            return
-        plotted_values = [0 if value is None else value * 100 for value in values] if field in {"DividendsYield", "ReturnOnEquity"} else [0 if value is None else value for value in values]
-        colors = [COLORS["accent"]] + [COLORS["success"] for _ in rows[1:]]
-        ax.bar(names, plotted_values, color=colors)
-        ax.set_title(f"{metric} Comparison")
-        ax.set_ylabel("Percent" if field in {"DividendsYield", "ReturnOnEquity"} else "Multiple")
+
+        field_key = _normalize_metric_key(row.get("field"))
+        source_key_normalized = _normalize_metric_key(source_key)
+        all_values = [
+            value
+            for entry in series_entries
+            for value in entry["frame"]["value"].tolist()
+            if value is not None
+        ]
+        ylabel = "Value"
+
+        def _transform(values: list[float]) -> list[float]:
+            return values
+
+        if any(token in field_key for token in ("yield", "margin", "growth")) or field_key in {
+            "returnonequity",
+            "returnonassets",
+        }:
+            ylabel = "Percent"
+
+            def _transform(values: list[float]) -> list[float]:
+                return [value * 100 for value in values]
+
+        elif field_key.endswith("ratio") or field_key in {
+            "peratio",
+            "pricetobook",
+            "debttoequity",
+            "currentratio",
+        } or "zscore" in field_key:
+            ylabel = "Ratio"
+        elif source_key_normalized in {"incomestatement", "balancesheet", "cashflowstatement"} and any(
+            abs(value) >= 1_000_000 for value in all_values
+        ):
+            ylabel = "Value (mn)"
+
+            def _transform(values: list[float]) -> list[float]:
+                return [value / 1_000_000 for value in values]
+
+        if self._chart_style_var.get() == "Line":
+            for entry in series_entries:
+                frame = entry["frame"]
+                plotted_values = _transform(frame["value"].tolist())
+                x_values = frame["period_date"] if frame["period_date"].notna().any() else frame["label"]
+                line, = ax.plot(
+                    x_values,
+                    plotted_values,
+                    color=entry["color"],
+                    linewidth=2.0,
+                    marker="o",
+                    label=entry["label"],
+                )
+                self._chart_series_artists[entry["label"]] = [line]
+        else:
+            period_rows = []
+            for entry in series_entries:
+                for _, period_row in entry["frame"][["label", "period_date"]].drop_duplicates(subset=["label"]).iterrows():
+                    period_rows.append((period_row["label"], period_row["period_date"]))
+            if any(pd.notna(period_date) for _, period_date in period_rows):
+                ordered_labels = [
+                    label
+                    for label, _ in sorted(
+                        period_rows,
+                        key=lambda item: (
+                            item[1] is pd.NaT or pd.isna(item[1]),
+                            item[1] if pd.notna(item[1]) else pd.Timestamp.max,
+                            item[0],
+                        ),
+                    )
+                ]
+            else:
+                ordered_labels = [label for label, _ in period_rows]
+            ordered_labels = list(dict.fromkeys(ordered_labels))
+            x_positions = list(range(len(ordered_labels)))
+            series_count = max(len(series_entries), 1)
+            width = min(0.8 / series_count, 0.32)
+            for index, entry in enumerate(series_entries):
+                frame = entry["frame"]
+                value_map = {
+                    label: value
+                    for label, value in zip(frame["label"].tolist(), _transform(frame["value"].tolist()))
+                }
+                offset = (index - (series_count - 1) / 2) * width
+                heights = [value_map.get(label, float("nan")) for label in ordered_labels]
+                bars = ax.bar(
+                    [position + offset for position in x_positions],
+                    heights,
+                    width=width * 0.92,
+                    color=entry["color"],
+                    label=entry["label"],
+                )
+                self._chart_series_artists[entry["label"]] = list(bars.patches)
+            ax.set_xticks(x_positions)
+            ax.set_xticklabels(ordered_labels, rotation=30, ha="right")
+
+        ax.set_title(f"{self._chart_table_var.get()} • {row.get('metric') or metric}")
+        ax.set_ylabel(ylabel)
+        if len(series_entries) > 1:
+            legend = ax.legend(facecolor=COLORS["surface"], edgecolor=COLORS["border"], labelcolor=COLORS["text"])
+            self._configure_chart_legend_interaction(legend, self._chart_series_artists)
         ax.tick_params(axis="x", rotation=30)
+
+    def _configure_chart_legend_interaction(self, legend, series_artists: dict[str, list]):
+        self._chart_series_artists = {label: list(artists) for label, artists in series_artists.items()}
+        self._chart_legend_artists = {label: [] for label in self._chart_series_artists}
+        self._chart_pick_targets = {}
+        self._chart_hidden_labels.intersection_update(self._chart_series_artists.keys())
+        if legend is None:
+            return
+
+        legend_handles = list(getattr(legend, "legend_handles", getattr(legend, "legendHandles", [])))
+        legend_texts = list(legend.get_texts())
+        for index, text in enumerate(legend_texts):
+            label = text.get_text()
+            if label not in self._chart_series_artists:
+                continue
+            text.set_picker(5)
+            self._chart_pick_targets[text] = label
+            self._chart_legend_artists[label].append(text)
+            if index < len(legend_handles):
+                handle = legend_handles[index]
+                try:
+                    handle.set_picker(5)
+                except AttributeError:
+                    pass
+                self._chart_pick_targets[handle] = label
+                self._chart_legend_artists[label].append(handle)
+        self._apply_chart_visibility_state()
+
+    def _apply_chart_visibility_state(self):
+        self._chart_hidden_labels.intersection_update(self._chart_series_artists.keys())
+        for label, artists in self._chart_series_artists.items():
+            visible = label not in self._chart_hidden_labels
+            for artist in artists:
+                try:
+                    artist.set_visible(visible)
+                except AttributeError:
+                    continue
+            for legend_artist in self._chart_legend_artists.get(label, []):
+                try:
+                    legend_artist.set_alpha(1.0 if visible else 0.35)
+                except AttributeError:
+                    continue
+
+    def _on_chart_legend_pick(self, event):
+        label = self._chart_pick_targets.get(getattr(event, "artist", None))
+        if not label:
+            return
+        if label in self._chart_hidden_labels:
+            self._chart_hidden_labels.remove(label)
+        else:
+            self._chart_hidden_labels.add(label)
+        self._apply_chart_visibility_state()
+        if self._chart_canvas is not None:
+            self._chart_canvas.draw_idle()
 
     # ------------------------------------------------------------------
     # Theme integration
@@ -1353,6 +1934,8 @@ class SecurityAnalysisPage(ttk.Frame):
         self._db_picker.reapply_colors()
         self._refresh_btn.reapply_colors()
         self._update_price_btn.reapply_colors()
+        if self._chart_style_button is not None:
+            self._chart_style_button.reapply_colors()
         self._add_peer_btn.reapply_colors()
         self._reset_peers_btn.reapply_colors()
         self._redraw_chart()

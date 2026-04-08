@@ -615,10 +615,20 @@ def security_get_overview(db_path: str, edinet_code: str) -> dict:
     return get_security_overview(db_path, edinet_code)
 
 
-def security_get_statements(db_path: str, edinet_code: str, periods: int = 8) -> dict:
+def security_get_statements(
+    db_path: str,
+    edinet_code: str,
+    periods: int = 8,
+    statement_sources: dict[str, str] | None = None,
+) -> dict:
     """Return financial statement history for a selected security."""
     from src.security_analysis import get_security_statements
-    return get_security_statements(db_path, edinet_code, periods=periods)
+    return get_security_statements(
+        db_path,
+        edinet_code,
+        periods=periods,
+        statement_sources=statement_sources,
+    )
 
 
 def security_get_ratios(db_path: str, edinet_code: str) -> dict:

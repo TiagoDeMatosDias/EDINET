@@ -282,6 +282,41 @@ def test_get_security_statements_returns_ordered_periods(security_db):
     assert statements["periods"] == ["2023-03-31", "2024-03-31"]
     income_rows = {row["field"]: row for row in statements["income_statement"]}
     assert income_rows["netSales"]["values"] == [9_000_000_000.0, 10_000_000_000.0]
+    per_share_rows = {row["field"]: row for row in statements["PerShare"]}
+    valuation_rows = {row["field"]: row for row in statements["Valuation"]}
+    quality_rows = {row["field"]: row for row in statements["Quality"]}
+    assert per_share_rows["EPS"]["values"] == [9.0, 10.0]
+    assert valuation_rows["PERatio"]["values"] == [100.0, None]
+    assert quality_rows["ReturnOnEquity"]["values"] == [0.15, 0.154]
+
+
+def test_get_security_statements_accepts_explicit_source_map(security_db):
+    statements = get_security_statements(
+        security_db,
+        "E00001",
+        periods=4,
+        statement_sources={
+            "Per Share Data": "PerShare",
+            "Valuation Ratios": "Valuation",
+        },
+    )
+    assert statements["periods"] == ["2023-03-31", "2024-03-31"]
+    assert {row["field"] for row in statements["PerShare"]} >= {"EPS", "BookValue", "Dividends"}
+    assert {row["field"] for row in statements["Valuation"]} >= {"PERatio", "PriceToBook", "DividendsYield", "MarketCap"}
+
+
+def test_get_security_statements_accepts_financial_statements_alias(security_db):
+    statements = get_security_statements(
+        security_db,
+        "E00001",
+        periods=4,
+        statement_sources={
+            "Financial Statements": "financial_statements",
+        },
+    )
+    fs_rows = {row["field"]: row for row in statements["financial_statements"]}
+    assert fs_rows["SharesOutstanding"]["values"] == [100_000_000.0, 100_000_000.0]
+    assert fs_rows["SharePrice"]["values"] == [900.0, 1_000.0]
 
 
 def test_get_security_price_history_returns_sorted_rows(security_db):

@@ -18,7 +18,7 @@ Each pipeline step is configured independently, including its source or target d
 2. **Download documents** – downloads the XBRL/CSV filings that match the filter criteria.
 3. **Populate company info** – loads the EDINET company code list from CSV into the database.
 4. **Import stock prices (CSV)** – imports historical prices from a user-supplied CSV file with configurable column mapping.
-5. **Update stock prices** – fetches historical share prices via Stooq API (filtered to companies with financial data).
+5. **Update stock prices** – fetches historical share prices via the Stooq API by default, with a Yahoo Finance chart fallback if Stooq is unavailable.
 6. **Parse taxonomy** – parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
 7. **Generate financial statements** – extracts tagged values from raw XBRL data into structured per-company financial tables.
 8. **Generate ratios** – calculates per-share values, valuation ratios, and derived metrics for every company.
@@ -31,27 +31,15 @@ Each pipeline step is configured independently, including its source or target d
 
 ## Screenshots
 
-Current screenshots from the live Tk application. The dark theme is shown below for consistency; matching light-theme captures are also refreshed in `docs/images/`.
+Current captures from the live Tk application. The gallery below shows the main workspaces in both dark and light themes using the latest images refreshed into `docs/images/`.
 
-### Home
-
-![EDINET Home Dark](images/ui-home-dark.png)
-
-### Orchestrator
-
-![EDINET Orchestrator Dark](images/ui-orchestrator-dark.png)
-
-### Data
-
-![EDINET Data Dark](images/ui-data-dark.png)
-
-### Screening
-
-![EDINET Screening Dark](images/ui-screening-dark.png)
-
-### Security Analysis
-
-![EDINET Security Analysis Dark](images/ui-security-analysis-dark.png)
+| View | Dark | Light |
+|---|---|---|
+| Home | <img src="images/ui-home-dark.png" alt="EDINET Home dark theme" width="420"> | <img src="images/ui-home-light.png" alt="EDINET Home light theme" width="420"> |
+| Orchestrator | <img src="images/ui-orchestrator-dark.png" alt="EDINET Orchestrator dark theme" width="420"> | <img src="images/ui-orchestrator-light.png" alt="EDINET Orchestrator light theme" width="420"> |
+| Data | <img src="images/ui-data-dark.png" alt="EDINET Data dark theme" width="420"> | <img src="images/ui-data-light.png" alt="EDINET Data light theme" width="420"> |
+| Screening | <img src="images/ui-screening-dark.png" alt="EDINET Screening dark theme" width="420"> | <img src="images/ui-screening-light.png" alt="EDINET Screening light theme" width="420"> |
+| Security Analysis | <img src="images/ui-security-analysis-dark.png" alt="EDINET Security Analysis dark theme" width="420"> | <img src="images/ui-security-analysis-light.png" alt="EDINET Security Analysis light theme" width="420"> |
 
 ## GUI & CLI Modes
 
@@ -182,13 +170,14 @@ It will look for `config/` and `.env` in the same folder as the exe.
 The Tk-based GUI provides:
 
 - **API Key dialog** – securely set the EDINET API key without editing `.env` manually.
+- **Type-to-filter dropdowns** – comboboxes across the app support partial-match filtering to make large table and column lists faster to navigate.
 - **Step ordering controls** – reorder pipeline steps with keyboard shortcuts (`Alt+Up` / `Alt+Down`) and contextual actions.
 - **Per-step enable/disable** – check or uncheck each step.
 - **Per-step configuration panel** – configure each step (including database paths and advanced options) in the side panel.
 - **Overwrite toggle** – steps that support it (Generate Financial Statements, Generate Ratios, Generate Historical Ratios) show an "Overwrite" checkbox.
 - **Save / Load setups** – persist and recall named configurations from `config/state/saved_setups/`.
 - **Live log output** – see real-time log messages during execution in the output panel.
-- **Security analysis** – search companies, inspect statements and ratios, view charts, refresh prices, compare peers, and jump directly from screening results.
+- **Security analysis** – search companies, inspect statements and ratios, view interactive charts, toggle peer visibility from chart legends, refresh prices, compare peers, and jump directly from screening or peer lists.
 
 ## Key EDINET document type codes
 

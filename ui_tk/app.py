@@ -16,6 +16,8 @@ from ui_tk.shared.widgets import LogPanel, RoundedButton, reapply_widget_tree
 logger = logging.getLogger(__name__)
 
 VIEW_NAMES = ["Home", "Orchestrator", "Data", "Screening", "Security Analysis"]
+DEFAULT_WINDOW_GEOMETRY = "1920x1080"
+DEFAULT_WINDOW_MIN_SIZE = (1200, 760)
 
 
 class App:
@@ -27,8 +29,16 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("SHADE Research — EDINET")
-        self.root.geometry("1380x860")
-        self.root.minsize(1100, 700)
+        existing_width = self.root.winfo_width()
+        existing_height = self.root.winfo_height()
+        if existing_width <= 1 or existing_height <= 1:
+            self.root.geometry(DEFAULT_WINDOW_GEOMETRY)
+            self.root.minsize(*DEFAULT_WINDOW_MIN_SIZE)
+        else:
+            self.root.minsize(
+                min(DEFAULT_WINDOW_MIN_SIZE[0], existing_width),
+                min(DEFAULT_WINDOW_MIN_SIZE[1], existing_height),
+            )
 
         apply_theme(self.root)
         self.root.configure(bg=COLORS["bg"])

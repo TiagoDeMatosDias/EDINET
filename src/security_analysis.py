@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -26,6 +27,66 @@ logger = logging.getLogger(__name__)
 _OPTIMIZED_DB_PATHS: set[str] = set()
 _DB_OPTIMIZE_LOCKS: dict[str, threading.Lock] = {}
 _DB_OPTIMIZE_LOCKS_GUARD = threading.Lock()
+
+_DEFAULT_STATEMENT_SOURCES = (
+    "income_statement",
+    "balance_sheet",
+    "cashflow_statement",
+    "PerShare",
+    "Quality",
+    "Valuation",
+    "PerShare_Historical",
+    "Quality_Historical",
+    "Valuation_Historical",
+)
+
+_LEGACY_STATEMENT_SOURCE_TABLES = {
+    "income_statement": "IncomeStatement",
+    "balance_sheet": "BalanceSheet",
+    "cashflow_statement": "CashflowStatement",
+    "financial_statements": "FinancialStatements",
+}
+
+_STATEMENT_METADATA_COLUMNS = {"docid", "edinetcode", "periodend"}
+
+_STATEMENT_LABEL_OVERRIDES = {
+    "netsales": "Net Sales",
+    "grossprofit": "Gross Profit",
+    "operatingincome": "Operating Income",
+    "netincome": "Net Income",
+    "currentassets": "Current Assets",
+    "totalassets": "Total Assets",
+    "shareholdersequity": "Shareholders' Equity",
+    "currentliabilities": "Current Liabilities",
+    "totalliabilities": "Total Liabilities",
+    "operatingcashflow": "Operating Cashflow",
+    "investmentcashflow": "Investment Cashflow",
+    "financingcashflow": "Financing Cashflow",
+    "peratio": "PE Ratio",
+    "pricetobook": "Price to Book",
+    "dividendsyield": "Dividend Yield",
+    "returnonequity": "Return on Equity",
+    "debttoequity": "Debt to Equity",
+    "currentratio": "Current Ratio",
+    "grossmargin": "Gross Margin",
+    "earningsyield": "Earnings Yield",
+    "pricetosales": "Price to Sales",
+    "enterprisevalue": "Enterprise Value",
+    "enterprisevaluetosales": "Enterprise Value to Sales",
+    "operatingmargin": "Operating Margin",
+    "netprofitmargin": "Net Profit Margin",
+}
+
+_STATEMENT_TOKEN_OVERRIDES = {
+    "eps": "EPS",
+    "pe": "PE",
+    "pb": "PB",
+    "roe": "ROE",
+    "roa": "ROA",
+    "ev": "EV",
+    "zscore": "Z-Score",
+    "stddev": "Std Dev",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +122,26 @@ class SecuritySchema:
     fs_share_price_col: str | None
     doclist_docid_col: str | None
     doclist_submit_dt_col: str | None
+
+
+@dataclass(frozen=True)
+class StatementMetricSpec:
+    """Descriptor for a single metric sourced into statement history."""
+
+    source_field: str
+    record_field: str
+    display_name: str
+
+
+@dataclass(frozen=True)
+class StatementSourceSpec:
+    """Descriptor for a statement source table joined into the history query."""
+
+    source_key: str
+    table_name: str | None
+    alias: str
+    join_clause: str | None
+    metrics: tuple[StatementMetricSpec, ...]
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -319,6 +400,185 @@ def _coalesce(*values: Any) -> Any:
     return None
 
 
+def _unique_preserve_order(values: list[str]) -> list[str]:
+    """Return unique non-empty strings while preserving input order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        text = _safe_str(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _statement_requested_sources(statement_sources: dict[str, str] | None) -> list[str]:
+    """Return the ordered set of statement source identifiers to fetch."""
+    if statement_sources:
+        raw_sources = [value for value in statement_sources.values()]
+    else:
+        raw_sources = list(_DEFAULT_STATEMENT_SOURCES)
+    return _unique_preserve_order([_safe_str(value) for value in raw_sources])
+
+
+def _statement_source_table_candidates(schema: SecuritySchema, source_key: str) -> list[str]:
+    """Return candidate table names for a statement source identifier."""
+    canonical = _LEGACY_STATEMENT_SOURCE_TABLES.get(source_key, source_key)
+    direct_table_map = {
+        "FinancialStatements": schema.financial_statements_table,
+        "IncomeStatement": schema.income_table,
+        "BalanceSheet": schema.balance_table,
+        "CashflowStatement": schema.cashflow_table,
+        "PerShare": schema.per_share_table,
+        "Valuation": schema.valuation_table,
+        "Quality": schema.quality_table,
+    }
+    candidates: list[str] = []
+    resolved = direct_table_map.get(canonical)
+    if resolved:
+        candidates.append(resolved)
+    if canonical:
+        collapsed = re.sub(r"[^0-9A-Za-z]+", "", canonical)
+        if collapsed and collapsed != canonical:
+            candidates.append(collapsed)
+    candidates.append(canonical)
+    return _unique_preserve_order(candidates)
+
+
+def _sanitise_statement_source_key(source_key: str) -> str:
+    """Return a safe fragment for generated record-field names."""
+    cleaned = re.sub(r"[^0-9A-Za-z]+", "_", _safe_str(source_key)).strip("_")
+    return cleaned or "statement_source"
+
+
+def _statement_metric_display_name(field_name: str) -> str:
+    """Convert a database column name into a readable metric label."""
+    normalized = _safe_str(field_name)
+    if not normalized:
+        return "Metric"
+
+    override = _STATEMENT_LABEL_OVERRIDES.get(normalized.lower())
+    if override:
+        return override
+
+    text = normalized.replace("_", " ")
+    text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text)
+    parts: list[str] = []
+    for token in text.split():
+        token_override = _STATEMENT_TOKEN_OVERRIDES.get(token.lower())
+        if token_override:
+            parts.append(token_override)
+        elif token.isupper() and len(token) <= 4:
+            parts.append(token)
+        elif token.isdigit():
+            parts.append(token)
+        else:
+            parts.append(token.capitalize())
+    return " ".join(parts)
+
+
+def _statement_record_field_name(source_key: str, source_field: str, used_fields: set[str]) -> str:
+    """Return a unique record-field name for a statement metric."""
+    preferred = _safe_str(source_field) or "metric"
+    if preferred.lower() not in used_fields:
+        used_fields.add(preferred.lower())
+        return preferred
+
+    prefix = _sanitise_statement_source_key(source_key)
+    candidate = f"{prefix}__{preferred}"
+    suffix = 2
+    while candidate.lower() in used_fields:
+        candidate = f"{prefix}__{preferred}_{suffix}"
+        suffix += 1
+    used_fields.add(candidate.lower())
+    return candidate
+
+
+def _build_statement_source_specs(
+    conn: sqlite3.Connection,
+    schema: SecuritySchema,
+    statement_sources: list[str],
+) -> dict[str, StatementSourceSpec]:
+    """Resolve statement source identifiers into joinable table specs."""
+    table_map = _list_table_map(conn)
+    used_fields: set[str] = set()
+    specs: dict[str, StatementSourceSpec] = {}
+
+    for index, source_key in enumerate(statement_sources):
+        alias = f"st{index}"
+        table_name = _resolve_table_name(
+            table_map,
+            _statement_source_table_candidates(schema, source_key),
+            required=False,
+        )
+        if not table_name:
+            specs[source_key] = StatementSourceSpec(
+                source_key=source_key,
+                table_name=None,
+                alias=alias,
+                join_clause=None,
+                metrics=tuple(),
+            )
+            continue
+
+        columns = _get_columns(conn, table_name)
+        docid_col = _resolve_column(columns, ["docID", "DocID"], required=False)
+        edinet_col = _resolve_column(columns, ["edinetCode", "EdinetCode"], required=False)
+        period_col = _resolve_column(columns, ["periodEnd", "PeriodEnd"], required=False)
+
+        join_clause: str | None = None
+        if docid_col:
+            join_clause = (
+                f"LEFT JOIN {_quote_ident(table_name)} {alias} "
+                f"ON {alias}.{_quote_ident(docid_col)} = fs.{_quote_ident(schema.fs_docid_col)}"
+            )
+        elif edinet_col and period_col:
+            join_clause = (
+                f"LEFT JOIN {_quote_ident(table_name)} {alias} "
+                f"ON {alias}.{_quote_ident(edinet_col)} = fs.{_quote_ident(schema.fs_edinet_col)} "
+                f"AND {alias}.{_quote_ident(period_col)} = fs.{_quote_ident(schema.fs_period_end_col)}"
+            )
+
+        if not join_clause:
+            logger.warning(
+                "Skipping statement source %s because %s has no docID or edinetCode+periodEnd join columns.",
+                source_key,
+                table_name,
+            )
+            specs[source_key] = StatementSourceSpec(
+                source_key=source_key,
+                table_name=table_name,
+                alias=alias,
+                join_clause=None,
+                metrics=tuple(),
+            )
+            continue
+
+        metrics: list[StatementMetricSpec] = []
+        for column_name in columns:
+            if column_name.lower() in _STATEMENT_METADATA_COLUMNS:
+                continue
+            metrics.append(
+                StatementMetricSpec(
+                    source_field=column_name,
+                    record_field=_statement_record_field_name(source_key, column_name, used_fields),
+                    display_name=_statement_metric_display_name(column_name),
+                )
+            )
+
+        specs[source_key] = StatementSourceSpec(
+            source_key=source_key,
+            table_name=table_name,
+            alias=alias,
+            join_clause=join_clause,
+            metrics=tuple(metrics),
+        )
+
+    return specs
+
+
 def _score_security_match(record: dict[str, Any], tokens: list[str]) -> int | None:
     """Score a company record for search ranking.
 
@@ -366,15 +626,24 @@ def _score_security_match(record: dict[str, Any], tokens: list[str]) -> int | No
     return score
 
 
-def _statement_metric_rows(records: list[dict[str, Any]], metric_map: list[tuple[str, str]]) -> list[dict[str, Any]]:
+def _statement_metric_rows(
+    records: list[dict[str, Any]],
+    metric_specs: tuple[StatementMetricSpec, ...],
+    source_key: str,
+) -> list[dict[str, Any]]:
     """Convert period records into statement-table rows for the UI."""
     rows: list[dict[str, Any]] = []
-    for field_name, display_name in metric_map:
+    for spec in metric_specs:
         rows.append(
             {
-                "metric": display_name,
-                "field": field_name,
-                "values": [_safe_float(record.get(field_name)) for record in records],
+                "metric": spec.display_name,
+                "field": spec.source_field,
+                "record_field": spec.record_field,
+                "source": source_key,
+                "values": [
+                    None if pd.isna(record.get(spec.record_field)) else record.get(spec.record_field)
+                    for record in records
+                ],
             }
         )
     return rows
@@ -1025,61 +1294,45 @@ def get_security_ratios(db_path: str, edinet_code: str) -> dict[str, Any]:
     return ratios
 
 
-def get_security_statements(db_path: str, edinet_code: str, periods: int = 8) -> dict[str, Any]:
+def get_security_statements(
+    db_path: str,
+    edinet_code: str,
+    periods: int = 8,
+    statement_sources: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Return historical financial statements for a security.
 
     Args:
         db_path (str): Path to the SQLite database.
         edinet_code (str): Selected company EDINET code.
         periods (int): Maximum number of reporting periods to return.
+        statement_sources (dict[str, str] | None): Ordered map of UI labels to
+            statement source identifiers or table names.
 
     Returns:
         dict[str, Any]: Statement tables and ordered period labels.
     """
     ensure_security_analysis_indexes(db_path)
     schema = resolve_schema(db_path)
+    requested_sources = _statement_requested_sources(statement_sources)
     conn = _connect(db_path)
     try:
+        statement_specs = _build_statement_source_specs(conn, schema, requested_sources)
         select_parts = [
             f"fs.{_quote_ident(schema.fs_docid_col)} AS docID",
             f"fs.{_quote_ident(schema.fs_period_end_col)} AS period_end",
         ]
         join_clauses: list[str] = []
 
-        if schema.income_table:
-            join_clauses.append(
-                f"LEFT JOIN {_quote_ident(schema.income_table)} i ON i.docID = fs.{_quote_ident(schema.fs_docid_col)}"
-            )
-            for col in ("netSales", "grossProfit", "operatingIncome", "netIncome"):
-                if col in _get_columns(conn, schema.income_table):
-                    select_parts.append(f"i.{_quote_ident(col)} AS {_quote_ident(col)}")
-        if schema.balance_table:
-            join_clauses.append(
-                f"LEFT JOIN {_quote_ident(schema.balance_table)} b ON b.docID = fs.{_quote_ident(schema.fs_docid_col)}"
-            )
-            for col in (
-                "cash",
-                "currentAssets",
-                "totalAssets",
-                "shareholdersEquity",
-                "currentLiabilities",
-                "TotalLiabilities",
-            ):
-                if col in _get_columns(conn, schema.balance_table):
-                    select_parts.append(f"b.{_quote_ident(col)} AS {_quote_ident(col)}")
-        if schema.cashflow_table:
-            join_clauses.append(
-                f"LEFT JOIN {_quote_ident(schema.cashflow_table)} cf ON cf.docID = fs.{_quote_ident(schema.fs_docid_col)}"
-            )
-            for col in (
-                "operatingCashflow",
-                "investmentCashflow",
-                "financingCashflow",
-                "capex",
-                "dividends",
-            ):
-                if col in _get_columns(conn, schema.cashflow_table):
-                    select_parts.append(f"cf.{_quote_ident(col)} AS {_quote_ident(col)}")
+        for source_key in requested_sources:
+            spec = statement_specs.get(source_key)
+            if spec is None or spec.join_clause is None:
+                continue
+            join_clauses.append(spec.join_clause)
+            for metric in spec.metrics:
+                select_parts.append(
+                    f"{spec.alias}.{_quote_ident(metric.source_field)} AS {_quote_ident(metric.record_field)}"
+                )
 
         sql = (
             f"SELECT {', '.join(select_parts)} "
@@ -1093,53 +1346,28 @@ def get_security_statements(db_path: str, edinet_code: str, periods: int = 8) ->
     finally:
         conn.close()
 
+    result: dict[str, Any] = {
+        "periods": [],
+        "records": [],
+    }
+    for source_key in requested_sources:
+        result[source_key] = []
+
     if df.empty:
-        return {
-            "periods": [],
-            "records": [],
-            "income_statement": [],
-            "balance_sheet": [],
-            "cashflow_statement": [],
-        }
+        return result
 
     df["period_end"] = df["period_end"].astype(str).str[:10]
     df = df.iloc[::-1].reset_index(drop=True)
     records = df.to_dict(orient="records")
 
-    return {
-        "periods": [record["period_end"] for record in records],
-        "records": records,
-        "income_statement": _statement_metric_rows(
-            records,
-            [
-                ("netSales", "Net Sales"),
-                ("grossProfit", "Gross Profit"),
-                ("operatingIncome", "Operating Income"),
-                ("netIncome", "Net Income"),
-            ],
-        ),
-        "balance_sheet": _statement_metric_rows(
-            records,
-            [
-                ("cash", "Cash"),
-                ("currentAssets", "Current Assets"),
-                ("totalAssets", "Total Assets"),
-                ("shareholdersEquity", "Shareholders' Equity"),
-                ("currentLiabilities", "Current Liabilities"),
-                ("TotalLiabilities", "Total Liabilities"),
-            ],
-        ),
-        "cashflow_statement": _statement_metric_rows(
-            records,
-            [
-                ("operatingCashflow", "Operating Cashflow"),
-                ("investmentCashflow", "Investment Cashflow"),
-                ("financingCashflow", "Financing Cashflow"),
-                ("capex", "Capex"),
-                ("dividends", "Dividends"),
-            ],
-        ),
-    }
+    result["periods"] = [record["period_end"] for record in records]
+    result["records"] = records
+    for source_key in requested_sources:
+        spec = statement_specs.get(source_key)
+        if spec is None:
+            continue
+        result[source_key] = _statement_metric_rows(records, spec.metrics, source_key)
+    return result
 
 
 def get_security_price_history(
