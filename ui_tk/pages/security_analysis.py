@@ -218,8 +218,6 @@ class SecurityAnalysisPage(ttk.Frame):
         self._company_card_var = tk.StringVar(value="Search for a company to load its identity, ticker, EDINET code, and industry context.")
         self._market_card_var = tk.StringVar(value="Price data will appear here")
         self._valuation_card_var = tk.StringVar(value="Valuation data will appear here")
-        self._overview_company_var = tk.StringVar(value="Select a security to load company details.")
-        self._overview_meta_var = tk.StringVar(value="Data quality and metadata will appear here.")
         self._peer_summary_var = tk.StringVar(value="Peers load after a company is selected.")
         self._period_count_var = tk.StringVar(value="12")
         self._statement_kind_var = tk.StringVar(value="Income Statement")
@@ -397,33 +395,16 @@ class SecurityAnalysisPage(ttk.Frame):
         parent.grid_rowconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
 
-        profile = SectionCard(parent, "Company Profile", "Identity, listing details, and descriptive context.", style="Panel.TFrame")
-        profile.grid(row=0, column=0, sticky="nsew", padx=(0, PAD // 2), pady=(0, PAD // 2))
-        ttk.Label(
-            profile.body,
-            textvariable=self._overview_company_var,
-            style="Panel.TLabel",
-            justify="left",
-            wraplength=420,
-        ).pack(anchor="w", fill="x")
 
         fundamentals = SectionCard(parent, "Fundamentals", "Latest operating and balance sheet anchors.", style="Panel.TFrame")
         fundamentals.grid(row=0, column=1, sticky="nsew", padx=(PAD // 2, 0), pady=(0, PAD // 2))
         self._fundamentals_tree = self._build_key_value_tree(fundamentals.body)
 
         ratios = SectionCard(parent, "Ratios", "Valuation and quality metrics used for quick comparison.", style="Panel.TFrame")
-        ratios.grid(row=1, column=0, sticky="nsew", padx=(0, PAD // 2), pady=(PAD // 2, 0))
+        ratios.grid(row=0, column=0, sticky="nsew", padx=(0, PAD // 2), pady=(PAD // 2, 0))
         self._ratios_tree = self._build_key_value_tree(ratios.body)
 
-        metadata = SectionCard(parent, "Metadata", "Freshness, source identifiers, and data quality notes.", style="Panel.TFrame")
-        metadata.grid(row=1, column=1, sticky="nsew", padx=(PAD // 2, 0), pady=(PAD // 2, 0))
-        ttk.Label(
-            metadata.body,
-            textvariable=self._overview_meta_var,
-            style="Panel.TLabel",
-            justify="left",
-            wraplength=420,
-        ).pack(anchor="w", fill="x")
+
 
     def _build_key_value_tree(self, parent) -> ttk.Treeview:
         frame = ttk.Frame(parent, style="Panel.TFrame")
@@ -1135,8 +1116,6 @@ class SecurityAnalysisPage(ttk.Frame):
         self._company_card_var.set("Search for a company to load its identity, ticker, EDINET code, and industry context.")
         self._market_card_var.set("Price data will appear here")
         self._valuation_card_var.set("Valuation data will appear here")
-        self._overview_company_var.set("Select a security to load company details.")
-        self._overview_meta_var.set("Data quality and metadata will appear here.")
         self._peer_summary_var.set("Peers load after a company is selected.")
         self._populate_key_value_tree(self._fundamentals_tree, [])
         self._populate_key_value_tree(self._ratios_tree, [])
@@ -1164,6 +1143,7 @@ class SecurityAnalysisPage(ttk.Frame):
                     f"EDINET: {company.get('edinet_code') or 'N/A'}",
                     f"Industry: {company.get('industry') or 'N/A'}",
                     f"Market: {company.get('market') or 'N/A'}",
+                    f"Market: {company.get('description') or 'No company description available.'}"
                 ]
             )
         )
@@ -1178,6 +1158,11 @@ class SecurityAnalysisPage(ttk.Frame):
                         f"{_format_currency(_safe_float(market.get('range_52w_high')))}"
                     ),
                     f"Updated: {_short_date(market.get('latest_price_date'))}",
+                    f"Last price date: {_short_date(metadata.get('last_price_date'))}",
+                    f"Last financial period: {_short_date(metadata.get('last_financial_period_end'))}",
+                    f"Latest docID: {metadata.get('doc_id') or 'N/A'}",
+                    "Flags: "
+                    + (", ".join(metadata.get("data_quality_flags", [])) or "None"),
                 ]
             )
         )
@@ -1192,30 +1177,7 @@ class SecurityAnalysisPage(ttk.Frame):
             )
         )
 
-        self._overview_company_var.set(
-            "\n".join(
-                [
-                    f"Company: {company.get('company_name') or 'N/A'}",
-                    f"Ticker: {company.get('ticker') or 'N/A'}",
-                    f"EDINET Code: {company.get('edinet_code') or 'N/A'}",
-                    f"Industry: {company.get('industry') or 'N/A'}",
-                    f"Market: {company.get('market') or 'N/A'}",
-                    "",
-                    company.get("description") or "No company description available.",
-                ]
-            )
-        )
-        self._overview_meta_var.set(
-            "\n".join(
-                [
-                    f"Last financial period: {_short_date(metadata.get('last_financial_period_end'))}",
-                    f"Last price date: {_short_date(metadata.get('last_price_date'))}",
-                    f"Latest docID: {metadata.get('doc_id') or 'N/A'}",
-                    "Flags: "
-                    + (", ".join(metadata.get("data_quality_flags", [])) or "None"),
-                ]
-            )
-        )
+
 
         fundamentals_rows = [
             ("Revenue", _format_currency(_safe_float(fundamentals.get("Revenue")))),
