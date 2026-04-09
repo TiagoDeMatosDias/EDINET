@@ -26,23 +26,6 @@ from ui_tk.utils import run_in_background
 
 logger = logging.getLogger(__name__)
 
-_STEP_GROUPS = {
-    "Ingest": [
-        "get_documents",
-        "download_documents",
-        "populate_company_info",
-        "import_stock_prices_csv",
-        "update_stock_prices",
-    ],
-    "Transform": [
-        "parse_taxonomy",
-        "generate_financial_statements",
-        "generate_ratios",
-        "generate_historical_ratios",
-    ],
-    "Analyze": ["Multivariate_Regression", "backtest", "backtest_set"],
-}
-
 _STATUS_TEXT = {
     "idle": "Ready",
     "pending": "Queued",
@@ -107,8 +90,7 @@ class OrchestratorPage(ttk.Frame):
         self._header = PageHeader(
             outer,
             title="Pipeline Builder",
-            subtitle="Build an ordered execution plan, inspect step configuration, and run it with visible status.",
-            context="The pipeline view is now a workbench: library, sequence, inspector.",
+            subtitle="Build an ordered execution plan, inspect step configuration, and run it with visible status."
         )
         self._header.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, PAD * 2))
 
@@ -178,21 +160,14 @@ class OrchestratorPage(ttk.Frame):
     def _build_step_library(self, parent):
         self._add_step_btn = RoundedButton(parent, text="+ Add Step Menu", style="Ghost.TButton", command=self._add_step)
         self._add_step_btn.pack(fill="x", pady=(0, PAD))
-        for group_name, step_names in _STEP_GROUPS.items():
-            block = ttk.Frame(parent, style="Panel.TFrame")
-            block.pack(fill="x", pady=(0, PAD))
-            ttk.Label(block, text=group_name, style="Panel.TLabel", font=FONT_UI_BOLD).pack(anchor="w")
-            for step_name in step_names:
-                if step_name not in ctrl.STEP_DISPLAY:
-                    continue
-                button = RoundedButton(
-                    block,
-                    text=ctrl.STEP_DISPLAY[step_name],
-                    style="Small.TButton",
-                    command=lambda name=step_name: self._do_add_step(name),
-                )
-                button.pack(fill="x", pady=(6, 0))
-                self._library_buttons.append(button)
+        ttk.Label(
+            parent,
+            text="Use the menu to add a pipeline step to the sequence.",
+            style="Panel.TLabel",
+            font=FONT_SMALL,
+            wraplength=250,
+            justify="left",
+        ).pack(anchor="w")
 
     def _build_sequence_surface(self, parent):
         meta = ttk.Frame(parent, style="Panel.TFrame")
@@ -267,7 +242,7 @@ class OrchestratorPage(ttk.Frame):
             EmptyState(
                 self._sequence_inner,
                 "No Pipeline Steps",
-                "Add a step from the library to start building a workflow. Sequence cards will appear here in execution order.",
+                "Add a step from the menu to start building a workflow. Sequence cards will appear here in execution order.",
                 style="Panel.TFrame",
             ).pack(fill="x", pady=(PAD, 0))
             return
@@ -281,6 +256,7 @@ class OrchestratorPage(ttk.Frame):
 
             top = ttk.Frame(card, style=frame_style)
             top.pack(fill="x", padx=PAD, pady=(PAD, 0))
+            top.grid_columnconfigure(1, weight=1)
 
             tk.Label(
                 top,
@@ -290,30 +266,30 @@ class OrchestratorPage(ttk.Frame):
                 font=FONT_SMALL,
                 padx=8,
                 pady=3,
-            ).pack(side="left")
+            ).grid(row=0, column=0, sticky="nw")
 
             title_wrap = ttk.Frame(top, style=frame_style)
-            title_wrap.pack(side="left", fill="x", expand=True, padx=(10, 0))
+            title_wrap.grid(row=0, column=1, sticky="ew", padx=(10, PAD))
             ttk.Label(title_wrap, text=ctrl.STEP_DISPLAY.get(step_name, step_name), style=label_style, font=FONT_UI_BOLD).pack(anchor="w")
             ttk.Label(
                 title_wrap,
                 text=self._summarize_step(step_name),
                 style=label_style,
                 font=FONT_SMALL,
-                wraplength=430,
+                wraplength=320,
                 justify="left",
             ).pack(anchor="w", pady=(4, 0))
 
             actions = ttk.Frame(top, style=frame_style)
-            actions.pack(side="right")
+            actions.grid(row=0, column=2, sticky="ne")
             select_btn = RoundedButton(actions, text="Inspect", style="Ghost.TButton", command=lambda i=idx: self._select_step(i))
-            select_btn.pack(side="left", padx=(0, 4))
+            select_btn.grid(row=0, column=0, padx=(0, 4))
             move_up_btn = RoundedButton(actions, text="↑", style="Small.TButton", width=3, command=lambda i=idx: self._move_step_to(i, i - 1))
-            move_up_btn.pack(side="left", padx=(0, 4))
+            move_up_btn.grid(row=0, column=1, padx=(0, 4))
             move_down_btn = RoundedButton(actions, text="↓", style="Small.TButton", width=3, command=lambda i=idx: self._move_step_to(i, i + 1))
-            move_down_btn.pack(side="left", padx=(0, 4))
+            move_down_btn.grid(row=0, column=2, padx=(0, 4))
             remove_btn = RoundedButton(actions, text="Remove", style="Danger.TButton", command=lambda i=idx: self._remove_step_by_index(i))
-            remove_btn.pack(side="left")
+            remove_btn.grid(row=0, column=3)
             self._sequence_buttons.extend([select_btn, move_up_btn, move_down_btn, remove_btn])
 
             bottom = ttk.Frame(card, style=frame_style)
@@ -392,6 +368,7 @@ class OrchestratorPage(ttk.Frame):
             self._selected_idx = current_idx
         self._refresh_sequence_cards()
         self._update_overview()
+        self._persist_active_pipeline()
 
     def _remove_step_by_index(self, idx: int):
         if not (0 <= idx < len(self._steps)):
@@ -407,6 +384,7 @@ class OrchestratorPage(ttk.Frame):
         logger.info("Removed step: %s", ctrl.STEP_DISPLAY.get(removed[0], removed[0]))
         self._refresh_sequence_cards()
         self._update_overview()
+        self._persist_active_pipeline()
 
     def _delete_selected_shortcut(self, _event=None):
         focus = self.focus_get()
@@ -547,6 +525,7 @@ class OrchestratorPage(ttk.Frame):
         self._step_configs[step_name] = cfg
         self._refresh_sequence_cards()
         self._update_overview()
+        self._persist_active_pipeline()
         logger.info("Config saved for: %s", step_name)
 
     # ------------------------------------------------------------------
@@ -568,6 +547,14 @@ class OrchestratorPage(ttk.Frame):
 
     def _do_add_step(self, step_name: str):
         self._save_current_config_fields()
+        existing_idx = next((idx for idx, (name, _overwrite) in enumerate(self._steps) if name == step_name), None)
+        if existing_idx is not None:
+            self._selected_idx = existing_idx
+            self._refresh_sequence_cards()
+            self._open_config_panel()
+            self._update_overview()
+            logger.info("Step already in pipeline: %s", ctrl.STEP_DISPLAY.get(step_name, step_name))
+            return
         self._steps.append([step_name, False])
         self._step_runtime_status.append("idle")
         if step_name not in self._step_configs:
@@ -576,6 +563,7 @@ class OrchestratorPage(ttk.Frame):
         self._refresh_sequence_cards()
         self._open_config_panel()
         self._update_overview()
+        self._persist_active_pipeline()
         logger.info("Added step: %s", ctrl.STEP_DISPLAY.get(step_name, step_name))
 
     # ------------------------------------------------------------------
@@ -594,6 +582,7 @@ class OrchestratorPage(ttk.Frame):
             self._select_step(self._selected_idx)
         else:
             self._show_empty_inspector()
+            self._persist_active_pipeline()
 
     def new_setup(self, name: str):
         self._setup_name = name
@@ -604,6 +593,7 @@ class OrchestratorPage(ttk.Frame):
         self._show_empty_inspector()
         self._refresh_sequence_cards()
         self._update_overview()
+        self._persist_active_pipeline()
         logger.info("New setup: %s", name)
 
     def _save_setup(self):
@@ -796,6 +786,10 @@ class OrchestratorPage(ttk.Frame):
 
         path = ctrl.generate_template_run_config(dest=Path(dest))
         logger.info("Template exported: %s", path)
+
+    def _persist_active_pipeline(self):
+        cfg = ctrl.build_config_dict(self._steps, self._step_configs)
+        ctrl.save_ui_pipeline(cfg)
 
     # ------------------------------------------------------------------
     # Helpers

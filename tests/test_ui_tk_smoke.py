@@ -4,6 +4,7 @@ Verifies that all modules import cleanly and key widgets can be
 instantiated with a hidden Tk root — no interactive loop required.
 """
 
+import copy
 import tkinter as tk
 from types import SimpleNamespace
 
@@ -183,6 +184,79 @@ def test_security_analysis_invalid_period_and_range_values_fallback(root):
     page._chart_range_var.set("nonsense")
     assert page._selected_chart_year_window() is None
     assert page._chart_range_var.get() == "Max"
+
+
+def test_orchestrator_remove_persists_active_pipeline(root, monkeypatch):
+    from ui_tk.pages import orchestrator as orchestrator_page
+
+    saved_cfgs = []
+
+    monkeypatch.setattr(orchestrator_page.ctrl, "load_ui_pipeline", lambda: {"run_steps": {}})
+    monkeypatch.setattr(
+        orchestrator_page.ctrl,
+        "save_ui_pipeline",
+        lambda cfg: saved_cfgs.append(copy.deepcopy(cfg)),
+    )
+
+    page = orchestrator_page.OrchestratorPage(root, app=None)
+    page.new_setup("Test Setup")
+    saved_cfgs.clear()
+
+    page._do_add_step("get_documents")
+    page._do_add_step("download_documents")
+    saved_cfgs.clear()
+
+    page._remove_step_by_index(0)
+
+    assert page._steps == [["download_documents", False]]
+    assert saved_cfgs
+    assert saved_cfgs[-1]["run_steps"] == {
+        "download_documents": {"enabled": True, "overwrite": False}
+    }
+
+
+def test_orchestrator_prevents_duplicate_steps(root, monkeypatch):
+    from ui_tk.pages import orchestrator as orchestrator_page
+
+    monkeypatch.setattr(orchestrator_page.ctrl, "load_ui_pipeline", lambda: {"run_steps": {}})
+    monkeypatch.setattr(orchestrator_page.ctrl, "save_ui_pipeline", lambda _cfg: None)
+
+    page = orchestrator_page.OrchestratorPage(root, app=None)
+    page.new_setup("Test Setup")
+
+    page._do_add_step("get_documents")
+    page._do_add_step("get_documents")
+
+    assert page._steps == [["get_documents", False]]
+    assert page._selected_idx == 0
+
+
+def test_orchestrator_long_step_cards_keep_action_buttons_visible(root, monkeypatch):
+    from ui_tk.pages import orchestrator as orchestrator_page
+
+    monkeypatch.setattr(orchestrator_page.ctrl, "load_ui_pipeline", lambda: {"run_steps": {}})
+    monkeypatch.setattr(orchestrator_page.ctrl, "save_ui_pipeline", lambda _cfg: None)
+
+    root.geometry("1100x750+0+0")
+    page = orchestrator_page.OrchestratorPage(root, app=None)
+    page.pack(fill="both", expand=True)
+    page.new_setup("Test Setup")
+
+    steps = [
+        "populate_company_info",
+        "generate_financial_statements",
+        "generate_ratios",
+        "generate_historical_ratios",
+        "Multivariate_Regression",
+        "backtest_set",
+    ]
+    for step_name in steps:
+        page._do_add_step(step_name)
+
+    root.update_idletasks()
+
+    assert len(page._sequence_buttons) == len(steps) * 4
+    assert all(button.winfo_ismapped() for button in page._sequence_buttons)
 
 
 def test_tab_bar(root):

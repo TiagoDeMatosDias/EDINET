@@ -26,13 +26,6 @@ class HomePage(ttk.Frame):
         body.grid_columnconfigure(1, weight=2)
         body.grid_rowconfigure(2, weight=1)
 
-        self._header = PageHeader(
-            body,
-            title="Research Workspace",
-            subtitle="Open a saved pipeline, create a new one, or jump directly into a research surface.",
-            context="The home view is now a launchpad rather than a blank list.",
-        )
-        self._header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, PAD * 2))
 
         hero = ttk.Frame(body, style="Hero.TFrame")
         hero.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, PAD * 2))
