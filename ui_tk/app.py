@@ -58,7 +58,6 @@ class App:
         # ── layout skeleton ─────────────────────────────────────────────
         # top bar and context strip (packed first so they sit at the top)
         self._build_top_bar()
-        self._build_context_strip()
 
         # bottom: log panel (always visible)
         self.log_panel = LogPanel(self.root)
@@ -142,23 +141,7 @@ class App:
 
         ttk.Separator(self.root, orient="horizontal").pack(side="top", fill="x")
 
-    def _build_context_strip(self):
-        self._context_strip = ttk.Frame(self.root, style="Surface.TFrame")
-        self._context_strip.pack(side="top", fill="x")
 
-        left = ttk.Frame(self._context_strip, style="Surface.TFrame")
-        left.pack(side="left", fill="x", expand=True, padx=SHELL_PAD, pady=(8, 8))
-        ttk.Label(left, textvariable=self._context_title_var, style="Surface.TLabel", font=FONT_UI_BOLD).pack(anchor="w")
-        ttk.Label(left, textvariable=self._context_text_var, style="Surface.TLabel").pack(anchor="w", pady=(2, 0))
-
-        ttk.Label(
-            self._context_strip,
-            text="Ctrl+1-5 switch views",
-            style="Surface.TLabel",
-            font=FONT_UI,
-        ).pack(side="right", padx=SHELL_PAD, pady=(8, 8))
-
-        ttk.Separator(self.root, orient="horizontal").pack(side="top", fill="x")
 
     def _update_tab_visuals(self):
         """Update tab button styles and underline indicators."""

@@ -89,9 +89,8 @@ class ScreeningPage(ttk.Frame):
     def _build_toolbar(self):
         self._header = PageHeader(
             self,
-            title="Screening Workspace",
-            subtitle="Build ranked queries against financial and company tables, then move directly into security research.",
-            context="Use the builder rail to define scope and output columns. The results workbench stays stable while queries change.",
+            title="Screening",
+            subtitle="Filter and rank companies based on financial metrics. Double-click results to open Security Analysis."
         )
         self._header.pack(fill="x", padx=PAD * 2, pady=(PAD * 2, PAD))
 
