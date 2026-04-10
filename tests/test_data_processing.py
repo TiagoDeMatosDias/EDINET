@@ -254,7 +254,11 @@ class TestGenerateFinancialStatements(unittest.TestCase):
         )
         rows = [
             ("jppfs_cor:NetSales", "CurrentYearDuration", "1000", "DOC1", "E00001", "120", "2024-01-01", "2024-12-31"),
+            ("jppfs_cor:OperatingIncome", "CurrentYearDuration", "150", "DOC1", "E00001", "120", "2024-01-01", "2024-12-31"),
             ("jppfs_cor:CashAndDeposits", "CurrentYearInstant", "250", "DOC1", "E00001", "120", "2024-01-01", "2024-12-31"),
+            ("jppfs_cor:CurrentAssets", "CurrentYearInstant", "800", "DOC1", "E00001", "120", "2024-01-01", "2024-12-31"),
+            ("jpcrp_cor:NumberOfEmployees", "CurrentYearInstant", "42", "DOC1", "E00001", "120", "2024-01-01", "2024-12-31"),
+            ("jpcrp_cor:DescriptionOfBusinessTextBlock", "FilingDateInstant", "Makes parts", "DOC1", "E00001", "120", "2024-01-01", "2024-12-31"),
             ("jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults", "CurrentYearInstant", "500", "DOC1", "E00001", "120", "2024-01-01", "2024-12-31"),
         ]
         source_conn.executemany(
@@ -382,6 +386,99 @@ class TestGenerateFinancialStatements(unittest.TestCase):
             self.assertEqual(counts["IncomeStatement"], 1)
             self.assertEqual(counts["BalanceSheet"], 1)
             self.assertEqual(counts["CashflowStatement"], 1)
+        finally:
+            conn.close()
+
+    def test_rerun_backfills_new_mapped_columns(self):
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        expanded_mappings = {
+            "Mappings": [
+                {
+                    "Name": "SharesOutstanding",
+                    "Table": "FinancialStatements",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults"],
+                },
+                {
+                    "Name": "NumberOfEmployees",
+                    "Table": "FinancialStatements",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jpcrp_cor:NumberOfEmployees"],
+                },
+                {
+                    "Name": "DescriptionOfBusiness",
+                    "Table": "FinancialStatements",
+                    "periods": ["FilingDateInstant"],
+                    "Terms": ["jpcrp_cor:DescriptionOfBusinessTextBlock"],
+                },
+                {
+                    "Name": "netSales",
+                    "Table": "IncomeStatement",
+                    "periods": ["CurrentYearDuration"],
+                    "Terms": ["jppfs_cor:NetSales"],
+                },
+                {
+                    "Name": "operatingIncome",
+                    "Table": "IncomeStatement",
+                    "periods": ["CurrentYearDuration"],
+                    "Terms": ["jppfs_cor:OperatingIncome"],
+                },
+                {
+                    "Name": "cash",
+                    "Table": "BalanceSheet",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jppfs_cor:CashAndDeposits"],
+                },
+                {
+                    "Name": "currentAssets",
+                    "Table": "BalanceSheet",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jppfs_cor:CurrentAssets"],
+                },
+            ]
+        }
+        with open(self.mappings_file, "w", encoding="utf-8") as f:
+            json.dump(expanded_mappings, f)
+
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            fs_cols = {row[1] for row in conn.execute("PRAGMA table_info(FinancialStatements)").fetchall()}
+            self.assertIn("NumberOfEmployees", fs_cols)
+            self.assertIn("DescriptionOfBusiness", fs_cols)
+
+            fs = conn.execute(
+                "SELECT NumberOfEmployees, DescriptionOfBusiness FROM FinancialStatements WHERE docID = ?",
+                ("DOC1",),
+            ).fetchone()
+            inc = conn.execute(
+                "SELECT operatingIncome FROM IncomeStatement WHERE docID = ?",
+                ("DOC1",),
+            ).fetchone()
+            bal = conn.execute(
+                "SELECT currentAssets FROM BalanceSheet WHERE docID = ?",
+                ("DOC1",),
+            ).fetchone()
+
+            self.assertEqual(fs, (42.0, "Makes parts"))
+            self.assertEqual(inc, (150.0,))
+            self.assertEqual(bal, (800.0,))
         finally:
             conn.close()
 

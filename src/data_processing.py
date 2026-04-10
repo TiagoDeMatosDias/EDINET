@@ -199,7 +199,8 @@ class data:
 
     def _build_amount_case_expr(self, mapping, source_alias="s",
                                col_accounting_term="AccountingTerm",
-                               col_period="Period", col_amount="Amount"):
+                               col_period="Period", col_amount="Amount",
+                               value_type="REAL"):
         """Build MAX(CASE WHEN ... THEN CAST(Amount AS REAL) END) SQL expression.
 
         Args:
@@ -224,15 +225,94 @@ class data:
             period_list = ", ".join(self._sql_literal(p) for p in periods)
             conditions.append(f"{source_alias}.{self._sql_ident(col_period)} IN ({period_list})")
 
+        storage_type = str(value_type or "REAL").upper()
+        if storage_type == "TEXT":
+            value_expr = f"CAST({source_alias}.{self._sql_ident(col_amount)} AS TEXT)"
+        else:
+            value_expr = f"CAST({source_alias}.{self._sql_ident(col_amount)} AS REAL)"
+
         condition_sql = " AND ".join(conditions)
         return (
             f"MAX(CASE WHEN {condition_sql} "
-            f"THEN CAST({source_alias}.{self._sql_ident(col_amount)} AS REAL) END)"
+            f"THEN {value_expr} END)"
         )
 
     def _is_safe_identifier(self, name):
         """Return True when *name* is a simple SQL identifier-like token."""
         return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(name or "")))
+
+    def _mapping_storage_type(self, mapping):
+        """Return SQLite storage type for a mapped financial-statement column."""
+        terms = [str(term or "") for term in (mapping or {}).get("Terms", []) or []]
+        if any("TextBlock" in term for term in terms):
+            return "TEXT"
+        return "REAL"
+
+    def _build_financial_statement_table_specs(self, mappings):
+        """Build ordered table specs for normalized financial-statement output."""
+        table_specs = {
+            "FinancialStatements": [
+                ("edinetCode", "TEXT"),
+                ("docID", "TEXT"),
+                ("docTypeCode", "TEXT"),
+                ("periodStart", "TEXT"),
+                ("periodEnd", "TIMESTAMP"),
+            ],
+            "IncomeStatement": [("docID", "TEXT")],
+            "BalanceSheet": [("docID", "TEXT")],
+            "CashflowStatement": [("docID", "TEXT")],
+        }
+
+        reserved = {
+            table_name: {col_name for col_name, _ in column_specs}
+            for table_name, column_specs in table_specs.items()
+        }
+        reserved["FinancialStatements"].add("SharePrice")
+
+        for table_name, table_mappings in (mappings or {}).items():
+            if table_name not in table_specs:
+                continue
+            for col_name, mapping in table_mappings.items():
+                if not self._is_safe_identifier(col_name):
+                    logger.warning(
+                        "Skipping mapped column %r for table %s because the name is not a safe SQL identifier.",
+                        col_name,
+                        table_name,
+                    )
+                    continue
+                if col_name in reserved[table_name]:
+                    logger.warning(
+                        "Skipping mapped column %r for table %s because that column is reserved.",
+                        col_name,
+                        table_name,
+                    )
+                    continue
+
+                table_specs[table_name].append(
+                    (col_name, self._mapping_storage_type(mapping))
+                )
+                reserved[table_name].add(col_name)
+
+        table_specs["FinancialStatements"].append(("SharePrice", "REAL"))
+        return table_specs
+
+    def _ensure_typed_table_columns(self, conn, table_name, columns):
+        """Ensure *columns* exist in *table_name* and return newly added names."""
+        info = conn.execute(f"PRAGMA table_info({self._sql_ident(table_name)})").fetchall()
+        existing_cols = {row[1] for row in info}
+        added_cols = []
+
+        for col_name, col_type in columns:
+            if col_name in existing_cols:
+                continue
+            conn.execute(
+                f"ALTER TABLE {self._sql_ident(table_name)} "
+                f"ADD COLUMN {self._sql_ident(col_name)} {col_type}"
+            )
+            existing_cols.add(col_name)
+            added_cols.append(col_name)
+
+        return added_cols
 
     def _load_generate_ratios_definitions(self, formulas_config_path):
         """Load and normalize Generate Ratios formulas config."""
@@ -911,126 +991,126 @@ class data:
         finally:
             conn.close()
 
-    def _create_financial_statement_tables(self, conn):
-        """Create target financial statement tables and docID uniqueness indexes."""
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS FinancialStatements (
-              edinetCode TEXT,
-              docID TEXT,
-              docTypeCode TEXT,
-              periodStart TEXT,
-              periodEnd TIMESTAMP,
-              SharesOutstanding REAL,
-              SharePrice REAL
-            );
+    def _create_financial_statement_tables(self, conn, table_specs):
+        """Create or expand financial statement tables and docID uniqueness indexes."""
+        index_names = {
+            "FinancialStatements": "ux_fs_docid",
+            "IncomeStatement": "ux_is_docid",
+            "BalanceSheet": "ux_bs_docid",
+            "CashflowStatement": "ux_cf_docid",
+        }
+        added_columns = {}
 
-            CREATE TABLE IF NOT EXISTS IncomeStatement (
-              docID TEXT,
-              netSales REAL,
-              costOfSales REAL,
-              grossProfit REAL,
-              operatingIncome REAL,
-              incomeBeforeTaxes REAL,
-              incomeTaxes REAL,
-              netIncome REAL
-            );
+        for table_name, column_specs in table_specs.items():
+            cols_sql = ",\n              ".join(
+                f"{self._sql_ident(col_name)} {col_type}"
+                for col_name, col_type in column_specs
+            )
+            conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {self._sql_ident(table_name)} (\n"
+                f"              {cols_sql}\n"
+                f"            )"
+            )
 
-            CREATE TABLE IF NOT EXISTS BalanceSheet (
-              docID TEXT,
-              cash REAL,
-              inventories REAL,
-              currentAssets REAL,
-              ppe REAL,
-              intangibleAssets REAL,
-              totalAssets REAL,
-              shareholdersEquity REAL,
-              currentLiabilities REAL,
-              NonCurrentLiabilities REAL,
-              LongTermDebt REAL,
-              TotalLiabilities REAL
-            );
+            added = self._ensure_typed_table_columns(conn, table_name, column_specs)
+            if added:
+                logger.info(
+                    "Expanded %s with %d mapped column(s): %s",
+                    table_name,
+                    len(added),
+                    ", ".join(added),
+                )
+            added_columns[table_name] = added
 
-            CREATE TABLE IF NOT EXISTS CashflowStatement (
-              docID TEXT,
-              operatingCashflow REAL,
-              depreciation REAL,
-              cashflowInventories REAL,
-              investmentCashflow REAL,
-              capex REAL,
-              financingCashflow REAL,
-              dividends REAL,
-              buybacks REAL
-            );
+            conn.execute(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS {self._sql_ident(index_names[table_name])} "
+                f"ON {self._sql_ident(table_name)}({self._sql_ident('docID')})"
+            )
 
-            CREATE UNIQUE INDEX IF NOT EXISTS ux_fs_docid ON FinancialStatements(docID);
-            CREATE UNIQUE INDEX IF NOT EXISTS ux_is_docid ON IncomeStatement(docID);
-            CREATE UNIQUE INDEX IF NOT EXISTS ux_bs_docid ON BalanceSheet(docID);
-            CREATE UNIQUE INDEX IF NOT EXISTS ux_cf_docid ON CashflowStatement(docID);
-            """
-        )
+        return added_columns
 
     def _insert_base_financial_statements(
-                self,
-                conn,
-                source_ref,
-                temp_docids,
-                mappings,
-            company_ref,
-            prices_ref,
-            col_names=None,
-            relevance_predicate="1=1",
-        ):
-                """Insert/update FinancialStatements base rows for the current docID batch."""
-                col_names = col_names or {}
-                col_at = col_names.get("AccountingTerm", "AccountingTerm")
-                col_period = col_names.get("Period", "Period")
-                col_amount = col_names.get("Amount", "Amount")
-                fs_map = mappings.get("FinancialStatements", {})
-                shares_expr = self._build_amount_case_expr(
-                    fs_map.get("SharesOutstanding"),
-                    col_accounting_term=col_at,
-                    col_period=col_period,
-                    col_amount=col_amount,
-                )
+        self,
+        conn,
+        source_ref,
+        temp_docids,
+        mappings,
+        fs_column_specs,
+        company_ref,
+        prices_ref,
+        col_names=None,
+        relevance_predicate="1=1",
+    ):
+        """Insert/update FinancialStatements base rows for the current docID batch."""
+        col_names = col_names or {}
+        col_at = col_names.get("AccountingTerm", "AccountingTerm")
+        col_period = col_names.get("Period", "Period")
+        col_amount = col_names.get("Amount", "Amount")
+        fs_map = mappings.get("FinancialStatements", {})
 
-                sql = f"""
+        base_select_exprs = [
+            "MAX(s.edinetCode) AS edinetCode",
+            "s.docID AS docID",
+            "MAX(s.docTypeCode) AS docTypeCode",
+            "MIN(s.periodStart) AS periodStart",
+            "MAX(s.periodEnd) AS periodEnd",
+        ]
+        insert_columns = ["edinetCode", "docID", "docTypeCode", "periodStart", "periodEnd"]
+        select_columns = [
+            "b.edinetCode",
+            "b.docID",
+            "b.docTypeCode",
+            "b.periodStart",
+            "b.periodEnd",
+        ]
+
+        for col_name, col_type in fs_column_specs:
+            expr = self._build_amount_case_expr(
+                fs_map.get(col_name),
+                col_accounting_term=col_at,
+                col_period=col_period,
+                col_amount=col_amount,
+                value_type=col_type,
+            )
+            base_select_exprs.append(f"{expr} AS {self._sql_ident(col_name)}")
+            insert_columns.append(col_name)
+            select_columns.append(f"b.{self._sql_ident(col_name)}")
+
+        insert_columns.append("SharePrice")
+        select_columns.append(
+            "("
+            "SELECT sp.Price "
+            f"FROM {prices_ref} sp "
+            f"JOIN {company_ref} c ON c.Company_Ticker = sp.Ticker "
+            "WHERE c.EdinetCode = b.edinetCode "
+            "  AND sp.Date <= b.periodEnd "
+            "ORDER BY sp.Date DESC "
+            "LIMIT 1"
+            ") AS SharePrice"
+        )
+
+        base_sql = ",\n                            ".join(base_select_exprs)
+        insert_sql = ", ".join(self._sql_ident(col_name) for col_name in insert_columns)
+        select_sql = ",\n                    ".join(select_columns)
+
+        sql = f"""
                 WITH base AS (
                         SELECT
-                            MAX(s.edinetCode) AS edinetCode,
-                            s.docID AS docID,
-                            MAX(s.docTypeCode) AS docTypeCode,
-                            MIN(s.periodStart) AS periodStart,
-                            MAX(s.periodEnd) AS periodEnd,
-                            {shares_expr} AS SharesOutstanding
+                            {base_sql}
                         FROM {source_ref} s
                         INNER JOIN {temp_docids} t ON t.docID = s.docID
                         WHERE {relevance_predicate}
                         GROUP BY s.docID
                 )
-                INSERT OR REPLACE INTO FinancialStatements
-                    (edinetCode, docID, docTypeCode, periodStart, periodEnd, SharesOutstanding, SharePrice)
+                INSERT OR REPLACE INTO {self._sql_ident('FinancialStatements')}
+                    ({insert_sql})
                 SELECT
-                    b.edinetCode,
-                    b.docID,
-                    b.docTypeCode,
-                    b.periodStart,
-                    b.periodEnd,
-                    b.SharesOutstanding,
-                    (
-                        SELECT sp.Price
-                        FROM {prices_ref} sp
-                        JOIN {company_ref} c ON c.Company_Ticker = sp.Ticker
-                        WHERE c.EdinetCode = b.edinetCode
-                            AND sp.Date <= b.periodEnd
-                        ORDER BY sp.Date DESC
-                        LIMIT 1
-                    ) AS SharePrice
+                    {select_sql}
                 FROM base b
                 """
-                conn.execute(sql)
+        conn.execute(sql)
 
-    def _insert_statement_table_rows(self, conn, source_ref, temp_docids, table_name, ordered_columns, mappings, col_names=None, relevance_predicate="1=1"):
+    def _insert_statement_table_rows(self, conn, source_ref, temp_docids, table_name, column_specs, mappings, col_names=None, relevance_predicate="1=1"):
         """Insert/update one statement table from config mappings for current docID batch."""
         col_names = col_names or {}
         col_at = col_names.get("AccountingTerm", "AccountingTerm")
@@ -1039,16 +1119,17 @@ class data:
         table_mappings = mappings.get(table_name, {})
 
         select_exprs = ["s.docID AS docID"]
-        for col in ordered_columns:
+        for col, col_type in column_specs:
             expr = self._build_amount_case_expr(
                 table_mappings.get(col),
                 col_accounting_term=col_at,
                 col_period=col_period,
                 col_amount=col_amount,
+                value_type=col_type,
             )
             select_exprs.append(f"{expr} AS {self._sql_ident(col)}")
 
-        col_list = ", ".join([self._sql_ident("docID")] + [self._sql_ident(c) for c in ordered_columns])
+        col_list = ", ".join([self._sql_ident("docID")] + [self._sql_ident(c) for c, _ in column_specs])
         sql = f"""
         INSERT OR REPLACE INTO {self._sql_ident(table_name)} ({col_list})
         SELECT
@@ -1074,8 +1155,8 @@ class data:
         """Generate normalized financial-statement tables from raw EDINET records.
 
         Supports source and target DB separation by attaching the source
-        database when needed. Processing is resumable: only missing/partial
-        docIDs are selected, and each chunk is committed atomically.
+        database when needed. Processing is resumable for missing rows, and
+        reruns backfill all relevant documents when new mapped columns are added.
         """
         source_db = source_database
         target_db = target_database
@@ -1093,6 +1174,20 @@ class data:
         batch_size = max(int(batch_size or 2500), 1)
         mappings = self._load_financial_statement_mappings(mappings_path)
         filter_config = self._collect_financial_statement_filters(mappings)
+        table_specs = self._build_financial_statement_table_specs(mappings)
+        fs_column_specs = [
+            (col_name, col_type)
+            for col_name, col_type in table_specs["FinancialStatements"]
+            if col_name not in {"edinetCode", "docID", "docTypeCode", "periodStart", "periodEnd", "SharePrice"}
+        ]
+        statement_column_specs = {
+            table_name: [
+                (col_name, col_type)
+                for col_name, col_type in table_specs[table_name]
+                if col_name != "docID"
+            ]
+            for table_name in ("IncomeStatement", "BalanceSheet", "CashflowStatement")
+        }
 
         same_db = os.path.abspath(source_db) == os.path.abspath(target_db)
         conn = sqlite3.connect(target_db)
@@ -1133,7 +1228,12 @@ class data:
                     """
                 )
 
-            self._create_financial_statement_tables(conn)
+            added_columns = self._create_financial_statement_tables(conn, table_specs)
+            schema_expanded = any(cols for cols in added_columns.values())
+            if schema_expanded and not overwrite:
+                logger.info(
+                    "Detected new financial statement columns; reprocessing all relevant documents to backfill them."
+                )
 
             # Resolve company/prices tables with fallback to source DB (if attached)
             company_in_main = self._resolve_table_name_in_schema(conn, "main", company_tbl)
@@ -1171,18 +1271,27 @@ class data:
             temp_docids = self._sql_ident("_tmp_fs_docids")
             conn.execute(f"CREATE TEMP TABLE IF NOT EXISTS {temp_docids} (docID TEXT PRIMARY KEY)")
 
-            pending_sql = f"""
-            SELECT DISTINCT s.docID
-            FROM {source_ref} s
-            LEFT JOIN FinancialStatements fs ON fs.docID = s.docID
-            LEFT JOIN IncomeStatement is1 ON is1.docID = s.docID
-            LEFT JOIN BalanceSheet bs ON bs.docID = s.docID
-            LEFT JOIN CashflowStatement cs ON cs.docID = s.docID
-            WHERE s.docID IS NOT NULL
-                            AND {relevance_predicate}
-              AND (fs.docID IS NULL OR is1.docID IS NULL OR bs.docID IS NULL OR cs.docID IS NULL)
-            ORDER BY s.docID
-            """
+            if schema_expanded and not overwrite:
+                pending_sql = f"""
+                SELECT DISTINCT s.docID
+                FROM {source_ref} s
+                WHERE s.docID IS NOT NULL
+                  AND {relevance_predicate}
+                ORDER BY s.docID
+                """
+            else:
+                pending_sql = f"""
+                SELECT DISTINCT s.docID
+                FROM {source_ref} s
+                LEFT JOIN FinancialStatements fs ON fs.docID = s.docID
+                LEFT JOIN IncomeStatement is1 ON is1.docID = s.docID
+                LEFT JOIN BalanceSheet bs ON bs.docID = s.docID
+                LEFT JOIN CashflowStatement cs ON cs.docID = s.docID
+                WHERE s.docID IS NOT NULL
+                  AND {relevance_predicate}
+                  AND (fs.docID IS NULL OR is1.docID IS NULL OR bs.docID IS NULL OR cs.docID IS NULL)
+                ORDER BY s.docID
+                """
 
             doc_cursor = conn.execute(pending_sql)
             total_docs = 0
@@ -1203,52 +1312,24 @@ class data:
                         source_ref,
                         temp_docids,
                         mappings,
+                        fs_column_specs,
                         company_ref,
                         prices_ref,
                         col_names=col_names,
                         relevance_predicate=relevance_predicate,
                     )
 
-                    self._insert_statement_table_rows(
-                        conn,
-                        source_ref,
-                        temp_docids,
-                        "IncomeStatement",
-                        [
-                            "netSales", "costOfSales", "grossProfit", "operatingIncome",
-                            "incomeBeforeTaxes", "incomeTaxes", "netIncome",
-                        ],
-                        mappings,
-                        col_names=col_names,
-                        relevance_predicate=relevance_predicate,
-                    )
-                    self._insert_statement_table_rows(
-                        conn,
-                        source_ref,
-                        temp_docids,
-                        "BalanceSheet",
-                        [
-                            "cash", "inventories", "currentAssets", "ppe", "intangibleAssets",
-                            "totalAssets", "shareholdersEquity", "currentLiabilities",
-                            "NonCurrentLiabilities", "LongTermDebt", "TotalLiabilities",
-                        ],
-                        mappings,
-                        col_names=col_names,
-                        relevance_predicate=relevance_predicate,
-                    )
-                    self._insert_statement_table_rows(
-                        conn,
-                        source_ref,
-                        temp_docids,
-                        "CashflowStatement",
-                        [
-                            "operatingCashflow", "depreciation", "cashflowInventories",
-                            "investmentCashflow", "capex", "financingCashflow", "dividends", "buybacks",
-                        ],
-                        mappings,
-                        col_names=col_names,
-                        relevance_predicate=relevance_predicate,
-                    )
+                    for table_name in ("IncomeStatement", "BalanceSheet", "CashflowStatement"):
+                        self._insert_statement_table_rows(
+                            conn,
+                            source_ref,
+                            temp_docids,
+                            table_name,
+                            statement_column_specs[table_name],
+                            mappings,
+                            col_names=col_names,
+                            relevance_predicate=relevance_predicate,
+                        )
 
                 total_docs += len(batch)
                 if total_docs % (batch_size * 10) == 0:

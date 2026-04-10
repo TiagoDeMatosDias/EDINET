@@ -1,6 +1,18 @@
 {
   "Mappings": [
     {
+      "Name": "NumberOfEmployees",
+      "Table": "FinancialStatements",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember",
+        "FilingDateInstant"
+      ],
+      "Terms": [
+        "jpcrp_cor:NumberOfEmployees"
+      ]
+    },
+    {
       "Name": "SharesOutstanding",
       "Table": "FinancialStatements",
       "periods": [
@@ -12,6 +24,16 @@
         "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults",
         "jpcrp_cor:NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
         "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc"
+      ]
+    },
+    {
+      "Name": "DescriptionOfBusiness",
+      "Table": "FinancialStatements",
+      "periods": [
+        "FilingDateInstant"
+      ],
+      "Terms": [
+        "jpcrp_cor:DescriptionOfBusinessTextBlock"
       ]
     },
     {
@@ -46,6 +68,28 @@
       ],
       "Terms": [
         "jppfs_cor:GrossProfit"
+      ]
+    },
+    {
+      "Name": "DepreciationSGA",
+      "Table": "IncomeStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:DepreciationSGA"
+      ]
+    },
+    {
+      "Name": "SellingGeneralAndAdministrativeExpenses",
+      "Table": "IncomeStatement",
+      "periods": [
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:SellingGeneralAndAdministrativeExpenses"
       ]
     },
     {
@@ -107,6 +151,51 @@
       ]
     },
     {
+      "Name": "NotesReceivableTrade",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:NotesReceivableTrade"
+      ]
+    },
+    {
+      "Name": "AccountsReceivableTrade",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:AccountsReceivableTrade"
+      ]
+    },
+    {
+      "Name": "ElectronicClaimsReceivableTrade",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:ElectronicallyRecordedMonetaryClaimsOperatingCA"
+      ]
+    },
+    {
+      "Name": "AllowanceForDoubtfulAccounts",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:AllowanceForDoubtfulAccountsCA",
+        "jppfs_cor:AllowanceForDoubtfulAccounts"
+      ]
+    },
+    {
       "Name": "inventories",
       "Table": "BalanceSheet",
       "periods": [
@@ -151,6 +240,28 @@
       ]
     },
     {
+      "Name": "investmentSecurities",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:InvestmentSecurities"
+      ]
+    },
+    {
+      "Name": "DeferredTaxAssets",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:DeferredTaxAssets"
+      ]
+    },
+    {
       "Name": "totalAssets",
       "Table": "BalanceSheet",
       "periods": [
@@ -174,6 +285,72 @@
       ]
     },
     {
+      "Name": "AccountsPayableTrade",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:AccountsPayableTrade"
+      ]
+    },
+    {
+      "Name": "ElectronicClaimsPayablesTrade",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:ElectronicallyRecordedObligationsOperatingCL"
+      ]
+    },
+    {
+      "Name": "AccountsPayableOther",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:AccountsPayableOther"
+      ]
+    },
+    {
+      "Name": "LeaseObligations_current",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:LeaseObligationsCL"
+      ]
+    },
+    {
+      "Name": "CurrentPortionOfLongTermLoansPayable",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:CurrentPortionOfLongTermLoansPayable"
+      ]
+    },
+    {
+      "Name": "IncomeTaxesPayable",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:IncomeTaxesPayable"
+      ]
+    },
+    {
       "Name": "currentLiabilities",
       "Table": "BalanceSheet",
       "periods": [
@@ -182,6 +359,28 @@
       ],
       "Terms": [
         "jppfs_cor:CurrentLiabilities"
+      ]
+    },
+    {
+      "Name": "LongTermLoans",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:LongTermLoansPayable"
+      ]
+    },
+    {
+      "Name": "LeaseObligations_noncurrent",
+      "Table": "BalanceSheet",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jppfs_cor:LeaseObligationsNCL"
       ]
     },
     {
