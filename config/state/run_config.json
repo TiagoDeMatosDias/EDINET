@@ -50,6 +50,17 @@
     "Mappings_Config": "config/reference/financial_statements_mappings_config.json",
     "batch_size": 2500
   },
+  "populate_business_descriptions_en_config": {
+    "Target_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
+    "Table_Name": "FinancialStatements",
+    "DocID_Column": "docID",
+    "Source_Column": "DescriptionOfBusiness",
+    "Target_Column": "DescriptionOfBusiness_EN",
+    "Providers_Config": "config/reference/business_description_translation_providers.example.json",
+    "Source_Language": "ja",
+    "Target_Language": "en",
+    "batch_size": 25
+  },
   "generate_ratios_config": {
     "Source_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
     "Target_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",

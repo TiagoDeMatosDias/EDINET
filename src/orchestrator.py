@@ -96,6 +96,28 @@ def _step_generate_financial_statements(config, overwrite=False):
     )
 
 
+def _step_populate_business_descriptions_en(config, overwrite=False):
+    logger.info("Populating English business descriptions...")
+    step_cfg = config.get("populate_business_descriptions_en_config", {})
+
+    processor = d.data()
+    processor.populate_business_descriptions_en(
+        target_database=step_cfg.get("Target_Database"),
+        providers_config=step_cfg.get(
+            "Providers_Config",
+            "config/reference/business_description_translation_providers.example.json",
+        ),
+        table_name=step_cfg.get("Table_Name", "FinancialStatements"),
+        docid_column=step_cfg.get("DocID_Column", "docID"),
+        source_column=step_cfg.get("Source_Column", "DescriptionOfBusiness"),
+        target_column=step_cfg.get("Target_Column", "DescriptionOfBusiness_EN"),
+        source_language=step_cfg.get("Source_Language", "ja"),
+        target_language=step_cfg.get("Target_Language", "en"),
+        overwrite=overwrite,
+        batch_size=step_cfg.get("batch_size", 25),
+    )
+
+
 def _step_generate_ratios(config, overwrite=False):
     logger.info("Generating ratios tables (PerShare / Valuation / Quality)...")
     step_cfg = config.get("generate_ratios_config", {})
@@ -222,6 +244,8 @@ STEP_HANDLERS: dict[str, Callable] = {
     "populate_company_info": _step_populate_company_info,
     "generate_financial_statements": _step_generate_financial_statements,
     "Generate Financial Statements": _step_generate_financial_statements,
+    "populate_business_descriptions_en": _step_populate_business_descriptions_en,
+    "Populate Business Descriptions (EN)": _step_populate_business_descriptions_en,
     "generate_ratios": _step_generate_ratios,
     "Generate Ratios": _step_generate_ratios,
     "generate_historical_ratios": _step_generate_historical_ratios,
@@ -250,6 +274,7 @@ STEP_REQUIRED_KEYS: dict[str, list[str]] = {
                                    "DB_STOCK_PRICES_TABLE", "DB_FINANCIAL_DATA_TABLE"],
     "parse_taxonomy":             ["DB_TAXONOMY_TABLE"],
     "generate_financial_statements": [],
+    "populate_business_descriptions_en": [],
     "generate_ratios":            [],
     "generate_historical_ratios": [],
     "Multivariate_Regression":    [],
@@ -270,6 +295,10 @@ STEP_REQUIRED_CONFIG_FIELDS: dict[str, list[tuple[str, str]]] = {
     "generate_financial_statements": [
         ("generate_financial_statements_config", "Source_Database"),
         ("generate_financial_statements_config", "Target_Database"),
+    ],
+    "populate_business_descriptions_en": [
+        ("populate_business_descriptions_en_config", "Target_Database"),
+        ("populate_business_descriptions_en_config", "Providers_Config"),
     ],
     "generate_ratios": [
         ("generate_ratios_config", "Source_Database"),

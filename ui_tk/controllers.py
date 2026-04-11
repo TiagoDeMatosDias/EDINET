@@ -45,6 +45,7 @@ STEP_CONFIG_KEY: dict[str, str] = {
     "update_stock_prices": "update_stock_prices_config",
     "parse_taxonomy": "parse_taxonomy_config",
     "generate_financial_statements": "generate_financial_statements_config",
+    "populate_business_descriptions_en": "populate_business_descriptions_en_config",
     "generate_ratios": "generate_ratios_config",
     "generate_historical_ratios": "generate_historical_ratios_config",
     "Multivariate_Regression": "Multivariate_Regression_config",
@@ -60,6 +61,7 @@ STEP_DISPLAY: dict[str, str] = {
     "update_stock_prices": "Update Stock Prices",
     "parse_taxonomy": "Parse Taxonomy",
     "generate_financial_statements": "Generate Financial Statements",
+    "populate_business_descriptions_en": "Populate Business Descriptions (EN)",
     "generate_ratios": "Generate Ratios",
     "generate_historical_ratios": "Generate Historical Ratios",
     "Multivariate_Regression": "Multivariate Regression",
@@ -71,6 +73,7 @@ ALL_STEP_NAMES: list[str] = list(STEP_DISPLAY.keys())
 
 STEPS_WITH_OVERWRITE: set[str] = {
     "generate_financial_statements",
+    "populate_business_descriptions_en",
     "generate_ratios",
     "generate_historical_ratios",
 }
@@ -151,6 +154,18 @@ STEP_FIELD_DEFINITIONS: dict[str, list[StepField]] = {
                   default="config/reference/financial_statements_mappings_config.json"),
         StepField("batch_size", "num", default=2500),
     ],
+    "populate_business_descriptions_en": [
+        StepField("Target_Database", "database"),
+        StepField("Table_Name", "str", default="FinancialStatements"),
+        StepField("DocID_Column", "str", default="docID"),
+        StepField("Source_Column", "str", default="DescriptionOfBusiness"),
+        StepField("Target_Column", "str", default="DescriptionOfBusiness_EN"),
+        StepField("Providers_Config", "file",
+                  default="config/reference/business_description_translation_providers.example.json"),
+        StepField("Source_Language", "str", default="ja"),
+        StepField("Target_Language", "str", default="en"),
+        StepField("batch_size", "num", default=25),
+    ],
     "generate_ratios": [
         StepField("Source_Database", "database"),
         StepField("Target_Database", "database"),
@@ -212,6 +227,45 @@ def _build_defaults_from_fields() -> dict[str, dict]:
 
 
 DEFAULT_STEP_CONFIGS: dict[str, dict] = _build_defaults_from_fields()
+
+
+STEP_CONFIG_INHERITANCE: dict[tuple[str, str], list[tuple[str, str]]] = {
+    ("populate_business_descriptions_en", "Target_Database"): [
+        ("generate_financial_statements", "Target_Database"),
+        ("generate_ratios", "Target_Database"),
+        ("generate_historical_ratios", "Target_Database"),
+    ],
+}
+
+
+def _has_config_value(value) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    return value not in (None, [], {})
+
+
+def _normalize_step_configs(step_configs: dict[str, dict] | None) -> dict[str, dict]:
+    """Merge defaults and inherit obvious downstream database settings."""
+    normalized: dict[str, dict] = {}
+    raw_configs = step_configs or {}
+
+    for step_name in STEP_CONFIG_KEY:
+        defaults = copy.deepcopy(DEFAULT_STEP_CONFIGS.get(step_name, {}))
+        current = raw_configs.get(step_name, {}) or {}
+        normalized[step_name] = {**defaults, **copy.deepcopy(current)}
+
+    for (step_name, field_name), fallbacks in STEP_CONFIG_INHERITANCE.items():
+        cfg = normalized.setdefault(step_name, copy.deepcopy(DEFAULT_STEP_CONFIGS.get(step_name, {})))
+        if _has_config_value(cfg.get(field_name)):
+            continue
+        for fallback_step_name, fallback_field_name in fallbacks:
+            fallback_cfg = normalized.get(fallback_step_name, {}) or {}
+            fallback_value = fallback_cfg.get(fallback_field_name)
+            if _has_config_value(fallback_value):
+                cfg[field_name] = fallback_value
+                break
+
+    return normalized
 
 
 # ── Pipeline execution ──────────────────────────────────────────────────
@@ -412,13 +466,14 @@ def build_config_dict(steps: list, step_configs: dict) -> dict:
     *steps*: list of ``[name, overwrite]`` pairs.
     *step_configs*: ``{step_name: {field: value, ...}}``.
     """
+    normalized_configs = _normalize_step_configs(step_configs)
     cfg: dict = {}
     cfg["run_steps"] = {
         name: {"enabled": True, "overwrite": overwrite}
         for name, overwrite in steps
     }
     for sname, cfg_key in STEP_CONFIG_KEY.items():
-        scfg = step_configs.get(sname)
+        scfg = normalized_configs.get(sname)
         if scfg:
             cfg[cfg_key] = scfg
     return cfg
@@ -456,12 +511,13 @@ def build_step_configs_from_config(run_cfg: dict) -> dict:
         # Whitelist: only keep loaded values whose keys exist in defaults
         filtered = {k: v for k, v in loaded.items() if k in defaults}
         step_configs[sname] = {**defaults, **filtered}
-    return step_configs
+    return _normalize_step_configs(step_configs)
 
 
-def get_default_config_for_step(step_name: str) -> dict:
+def get_default_config_for_step(step_name: str, step_configs: dict[str, dict] | None = None) -> dict:
     """Return deep copy of the default config for *step_name*."""
-    return copy.deepcopy(DEFAULT_STEP_CONFIGS.get(step_name, {}))
+    normalized = _normalize_step_configs(step_configs)
+    return copy.deepcopy(normalized.get(step_name, DEFAULT_STEP_CONFIGS.get(step_name, {})))
 
 
 # ---------------------------------------------------------------------------

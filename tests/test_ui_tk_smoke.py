@@ -301,6 +301,66 @@ def test_controllers_build_config_dict():
     assert "get_documents_config" in result
 
 
+def test_controllers_build_config_dict_infers_populate_business_descriptions_database():
+    from ui_tk.controllers import build_config_dict
+
+    steps = [
+        ["generate_financial_statements", True],
+        ["populate_business_descriptions_en", False],
+    ]
+    configs = {
+        "generate_financial_statements": {
+            "Source_Database": "base.db",
+            "Target_Database": "standardized.db",
+        },
+        "populate_business_descriptions_en": {
+            "Target_Database": "",
+            "Providers_Config": "config/reference/business_description_translation_providers.example.json",
+        },
+    }
+
+    result = build_config_dict(steps, configs)
+
+    assert result["populate_business_descriptions_en_config"]["Target_Database"] == "standardized.db"
+
+
+def test_controllers_build_step_configs_infers_populate_business_descriptions_database():
+    from ui_tk.controllers import build_step_configs_from_config
+
+    run_cfg = {
+        "generate_financial_statements_config": {
+            "Source_Database": "base.db",
+            "Target_Database": "standardized.db",
+        },
+        "populate_business_descriptions_en_config": {
+            "Target_Database": "",
+            "Providers_Config": "config/reference/business_description_translation_providers.example.json",
+        },
+    }
+
+    result = build_step_configs_from_config(run_cfg)
+
+    assert result["populate_business_descriptions_en"]["Target_Database"] == "standardized.db"
+
+
+def test_orchestrator_add_step_infers_populate_business_descriptions_database(root, monkeypatch):
+    from ui_tk.pages import orchestrator as orchestrator_page
+
+    monkeypatch.setattr(orchestrator_page.ctrl, "load_ui_pipeline", lambda: {"run_steps": {}})
+    monkeypatch.setattr(orchestrator_page.ctrl, "save_ui_pipeline", lambda _cfg: None)
+
+    page = orchestrator_page.OrchestratorPage(root, app=None)
+    page.new_setup("Test Setup")
+    page._step_configs["generate_financial_statements"] = {
+        "Source_Database": "base.db",
+        "Target_Database": "standardized.db",
+    }
+
+    page._do_add_step("populate_business_descriptions_en")
+
+    assert page._step_configs["populate_business_descriptions_en"]["Target_Database"] == "standardized.db"
+
+
 def test_queue_log_handler():
     import logging
     import queue
@@ -521,6 +581,80 @@ def test_security_analysis_loads_charts_and_peers_lazily(root, monkeypatch):
 
     page._show_tab("Peers")
     assert calls["peers"] == 1
+
+
+def test_security_analysis_company_description_uses_scrollable_text(root, monkeypatch):
+    from ui_tk.pages import security_analysis as security_analysis_page
+
+    long_description_en = "DescriptionWithoutSpaces" * 40
+    long_description_ja = "日本語の会社概要" * 30
+    summary_text = "Short summary paragraph one.\n\nShort summary paragraph two."
+
+    _fail_on_popup(monkeypatch, security_analysis_page)
+    monkeypatch.setattr(security_analysis_page, "run_in_background", _run_background_now)
+    monkeypatch.setattr(security_analysis_page.ctrl, "get_default_database_path", lambda: "")
+    monkeypatch.setattr(security_analysis_page.ctrl, "security_optimize_database", lambda _db_path: {"ok": True})
+    monkeypatch.setattr(
+        security_analysis_page.ctrl,
+        "security_get_overview",
+        lambda _db_path, _edinet_code: {
+            "company": {
+                "edinet_code": "E00001",
+                "ticker": "1001",
+                "company_name": "Alpha Corp",
+                "industry": "Industrial",
+                "market": "JPX Prime",
+                "description": long_description_en,
+                "filing_description": long_description_ja,
+                "filing_description_en": long_description_en,
+                "description_summary": summary_text,
+            },
+            "market": {
+                "latest_price": 1000.0,
+                "latest_price_date": "2024-12-31",
+            },
+            "fundamentals_latest": {},
+            "valuation_latest": {},
+            "quality_latest": {},
+            "metadata": {
+                "last_financial_period_end": "2024-03-31",
+                "last_price_date": "2024-12-31",
+                "doc_id": "DOC1",
+                "data_quality_flags": [],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        security_analysis_page.ctrl,
+        "security_get_statements",
+        lambda _db_path, _edinet_code, periods=8, statement_sources=None: {"periods": [], "records": []},
+    )
+
+    page = security_analysis_page.SecurityAnalysisPage(root)
+    page._db_path = "C:/tmp/sample.db"
+    page._selected_security = {
+        "edinet_code": "E00001",
+        "ticker": "1001",
+        "company_name": "Alpha Corp",
+        "industry": "Industrial",
+    }
+    page._load_selected_security()
+
+    assert page._company_description_text is not None
+    assert page._company_description_text.get("1.0", "end-1c") == summary_text
+    assert str(page._company_description_text.cget("wrap")) == "char"
+    assert int(page._company_description_text.cget("height")) == 7
+    assert str(page._company_description_text.cget("state")) == "disabled"
+    assert page._company_description_text.cget("yscrollcommand")
+    assert page._company_description_heading_var.get() == "Business Summary"
+    assert page._company_description_toggle_btn is not None
+    assert "!disabled" in page._company_description_toggle_btn.state()
+
+    page._toggle_company_description_mode()
+
+    assert page._company_description_text.get("1.0", "end-1c") == long_description_en
+    assert page._company_description_heading_var.get() == "Business Description"
+    assert page._company_description_toggle_var.get() == "Show Summary"
 
 
 def test_security_analysis_statement_chart_uses_peer_statement_history(root, monkeypatch):

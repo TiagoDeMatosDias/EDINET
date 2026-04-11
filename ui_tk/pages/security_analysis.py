@@ -12,7 +12,7 @@ import pandas as pd
 
 from ui_tk import controllers as ctrl
 from ui_tk.shared.widgets import DatabasePickerEntry, PageHeader, RoundedButton, SearchableCombobox, SectionCard, StatTile, TabBar
-from ui_tk.style import COLORS, FONT_SMALL, FONT_UI_BOLD, PAD
+from ui_tk.style import COLORS, FONT_SMALL, FONT_UI, FONT_UI_BOLD, PAD
 from ui_tk.utils import run_in_background
 
 try:
@@ -206,16 +206,23 @@ class SecurityAnalysisPage(ttk.Frame):
         self._chart_table_combo: ttk.Combobox | None = None
         self._chart_column_combo: ttk.Combobox | None = None
         self._chart_style_button: RoundedButton | None = None
+        self._company_description_text: tk.Text | None = None
+        self._company_description_toggle_btn: RoundedButton | None = None
         self._chart_hidden_labels: set[str] = set()
         self._chart_series_artists: dict[str, list] = {}
         self._chart_legend_artists: dict[str, list] = {}
         self._chart_pick_targets: dict[object, str] = {}
+        self._company_description_full_text = ""
+        self._company_description_summary_text = ""
+        self._company_description_mode = "full"
 
         # --- Tk variables ---
         self._status_var = tk.StringVar(value="Select a database and search for a security.")
         self._search_var = tk.StringVar()
         self._hero_company_name_var = tk.StringVar(value="No security selected")
         self._company_card_var = tk.StringVar(value="Search for a company to load its identity, ticker, EDINET code, and industry context.")
+        self._company_description_heading_var = tk.StringVar(value="Business Description")
+        self._company_description_toggle_var = tk.StringVar(value="Show Original")
         self._market_card_var = tk.StringVar(value="Price data will appear here")
         self._valuation_card_var = tk.StringVar(value="Valuation data will appear here")
         self._peer_summary_var = tk.StringVar(value="Peers load after a company is selected.")
@@ -237,7 +244,6 @@ class SecurityAnalysisPage(ttk.Frame):
 
         if self._db_path:
             self._db_picker.set(self._db_path)
-            self._status_var.set("Database loaded. Start typing to search.")
             self._start_database_optimization(self._db_path)
 
         self._search_var.trace_add("write", lambda *_: self._schedule_search())
@@ -251,10 +257,9 @@ class SecurityAnalysisPage(ttk.Frame):
         self._header = PageHeader(
             self,
             title="Security Analysis",
-            subtitle="Search a company, inspect its current market snapshot, and drill into statements, charts, and peers.",
-            context="The selected company becomes the anchor for the whole workspace.",
+            subtitle="Search a company, inspect its current market snapshot, and drill into statements, charts, and peers."
         )
-        self._header.pack(fill="x", padx=PAD * 2, pady=(PAD * 2, PAD))
+        self._header.pack(fill="x", padx=PAD * 2, pady=(PAD , PAD))
 
         toolbar = self._header.actions
 
@@ -280,8 +285,7 @@ class SecurityAnalysisPage(ttk.Frame):
         controls = SectionCard(
             self,
             "Search & Context",
-            "Keep database scope compact and let search dominate the workflow.",
-            style="Panel.TFrame",
+            style="Panel.TFrame"
         )
         controls.pack(fill="x", padx=PAD * 2, pady=(0, PAD))
         controls.body.grid_columnconfigure(1, weight=1)
@@ -337,8 +341,43 @@ class SecurityAnalysisPage(ttk.Frame):
 
         self._company_card = SectionCard(summary, "Selected Company", "Identity and listing context.", style="Hero.TFrame")
         self._company_card.grid(row=0, column=0, sticky="nsew", padx=(0, PAD // 2))
+        self._company_description_toggle_btn = RoundedButton(
+            self._company_card.actions,
+            textvariable=self._company_description_toggle_var,
+            style="Ghost.TButton",
+            command=self._toggle_company_description_mode,
+            width=14,
+        )
+        self._company_description_toggle_btn.pack(side="right")
+        self._company_description_toggle_btn.state(["disabled"])
         ttk.Label(self._company_card.body, textvariable=self._hero_company_name_var, style="Hero.TLabel", font=("Cascadia Mono", 16, "bold")).pack(anchor="w")
         ttk.Label(self._company_card.body, textvariable=self._company_card_var, style="Hero.TLabel", justify="left", wraplength=360).pack(anchor="w", pady=(6, 0))
+
+        ttk.Label(self._company_card.body, textvariable=self._company_description_heading_var, style="Hero.TLabel", font=FONT_SMALL).pack(anchor="w", pady=(10, 4))
+        description_wrap = ttk.Frame(self._company_card.body, style="Hero.TFrame")
+        description_wrap.pack(fill="both", expand=True)
+        self._company_description_text = tk.Text(
+            description_wrap,
+            height=7,
+            wrap="char",
+            state="disabled",
+            bg=COLORS["input_bg"],
+            fg=COLORS["text"],
+            font=FONT_UI,
+            insertbackground=COLORS["text"],
+            selectbackground=COLORS["highlight"],
+            relief="flat",
+            borderwidth=1,
+            highlightbackground=COLORS["border"],
+            highlightthickness=1,
+            padx=8,
+            pady=6,
+        )
+        description_scroll = ttk.Scrollbar(description_wrap, orient="vertical", command=self._company_description_text.yview)
+        self._company_description_text.configure(yscrollcommand=description_scroll.set)
+        self._company_description_text.pack(side="left", fill="both", expand=True)
+        description_scroll.pack(side="right", fill="y")
+        self._set_company_description_content("", "")
 
         self._market_card = SectionCard(summary, "Market Snapshot", "Price action and freshness.", style="Panel.TFrame")
         self._market_card.grid(row=0, column=1, sticky="nsew", padx=PAD // 2)
@@ -361,6 +400,58 @@ class SecurityAnalysisPage(ttk.Frame):
             wraplength=280,
         ).pack(anchor="w", fill="x", padx=PAD, pady=(6, PAD))
         return frame
+
+    def _set_company_description_text(self, text: str):
+        if self._company_description_text is None:
+            return
+        self._company_description_text.configure(state="normal")
+        self._company_description_text.delete("1.0", "end")
+        self._company_description_text.insert("1.0", text)
+        self._company_description_text.configure(state="disabled")
+        self._company_description_text.yview_moveto(0.0)
+
+    def _set_company_description_content(self, full_text: str, summary_text: str):
+        self._company_description_full_text = _safe_str(full_text)
+        self._company_description_summary_text = _safe_str(summary_text)
+        has_distinct_summary = bool(
+            self._company_description_summary_text
+            and self._company_description_summary_text != self._company_description_full_text
+        )
+        self._company_description_mode = "summary" if has_distinct_summary else "full"
+        self._update_company_description_display()
+
+    def _toggle_company_description_mode(self):
+        has_distinct_summary = bool(
+            self._company_description_summary_text
+            and self._company_description_summary_text != self._company_description_full_text
+        )
+        if not has_distinct_summary:
+            return
+        self._company_description_mode = "full" if self._company_description_mode == "summary" else "summary"
+        self._update_company_description_display()
+
+    def _update_company_description_display(self):
+        has_distinct_summary = bool(
+            self._company_description_summary_text
+            and self._company_description_summary_text != self._company_description_full_text
+        )
+        if has_distinct_summary and self._company_description_mode == "summary":
+            self._company_description_heading_var.set("Business Summary")
+            self._company_description_toggle_var.set("Show Original")
+            display_text = self._company_description_summary_text
+        else:
+            self._company_description_heading_var.set("Business Description")
+            self._company_description_toggle_var.set("Show Summary") if has_distinct_summary else self._company_description_toggle_var.set("Original")
+            display_text = self._company_description_full_text
+
+        if not display_text:
+            self._company_description_heading_var.set("Business Description")
+            self._company_description_toggle_var.set("Show Original")
+            display_text = "Business description will appear here."
+
+        if self._company_description_toggle_btn is not None:
+            self._company_description_toggle_btn.state(["!disabled"] if has_distinct_summary else ["disabled"])
+        self._set_company_description_text(display_text)
 
     def _build_tabs(self):
         tabs_wrap = ttk.Frame(self, style="App.TFrame")
@@ -1114,6 +1205,7 @@ class SecurityAnalysisPage(ttk.Frame):
         self._chart_pick_targets = {}
         self._hero_company_name_var.set("No security selected")
         self._company_card_var.set("Search for a company to load its identity, ticker, EDINET code, and industry context.")
+        self._set_company_description_content("", "")
         self._market_card_var.set("Price data will appear here")
         self._valuation_card_var.set("Valuation data will appear here")
         self._peer_summary_var.set("Peers load after a company is selected.")
@@ -1143,9 +1235,14 @@ class SecurityAnalysisPage(ttk.Frame):
                     f"EDINET: {company.get('edinet_code') or 'N/A'}",
                     f"Industry: {company.get('industry') or 'N/A'}",
                     f"Market: {company.get('market') or 'N/A'}",
-                    f"Market: {company.get('description') or 'No company description available.'}"
                 ]
             )
+        )
+        self._set_company_description_content(
+            company.get('description')
+            or company.get('filing_description')
+            or 'No company description available.',
+            company.get('description_summary') or '',
         )
         self._market_card_var.set(
             "\n".join(
@@ -1893,11 +1990,21 @@ class SecurityAnalysisPage(ttk.Frame):
             selectbackground=COLORS["highlight"],
             highlightbackground=COLORS["border"],
         )
+        if self._company_description_text is not None:
+            self._company_description_text.configure(
+                bg=COLORS["input_bg"],
+                fg=COLORS["text"],
+                insertbackground=COLORS["text"],
+                selectbackground=COLORS["highlight"],
+                highlightbackground=COLORS["border"],
+            )
         self._db_picker.reapply_colors()
         self._refresh_btn.reapply_colors()
         self._update_price_btn.reapply_colors()
         if self._chart_style_button is not None:
             self._chart_style_button.reapply_colors()
+        if self._company_description_toggle_btn is not None:
+            self._company_description_toggle_btn.reapply_colors()
         self._add_peer_btn.reapply_colors()
         self._reset_peers_btn.reapply_colors()
         self._redraw_chart()

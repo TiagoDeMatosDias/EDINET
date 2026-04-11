@@ -16,6 +16,7 @@ import sqlite3
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -341,7 +342,7 @@ class TestGenerateFinancialStatements(unittest.TestCase):
         conn = sqlite3.connect(self.target_db)
         try:
             fs = conn.execute(
-                "SELECT docID, edinetCode, SharesOutstanding, SharePrice FROM FinancialStatements"
+                "SELECT docID, edinetCode, SharesOutstanding, SharePrice, DescriptionOfBusiness_EN FROM FinancialStatements"
             ).fetchall()
             inc = conn.execute(
                 "SELECT docID, netSales FROM IncomeStatement"
@@ -350,7 +351,7 @@ class TestGenerateFinancialStatements(unittest.TestCase):
                 "SELECT docID, cash FROM BalanceSheet"
             ).fetchall()
 
-            self.assertEqual(fs, [("DOC1", "E00001", 500.0, 123.0)])
+            self.assertEqual(fs, [("DOC1", "E00001", 500.0, 123.0, None)])
             self.assertEqual(inc, [("DOC1", 1000.0)])
             self.assertEqual(bal, [("DOC1", 250.0)])
         finally:
@@ -462,6 +463,7 @@ class TestGenerateFinancialStatements(unittest.TestCase):
             fs_cols = {row[1] for row in conn.execute("PRAGMA table_info(FinancialStatements)").fetchall()}
             self.assertIn("NumberOfEmployees", fs_cols)
             self.assertIn("DescriptionOfBusiness", fs_cols)
+            self.assertIn("DescriptionOfBusiness_EN", fs_cols)
 
             fs = conn.execute(
                 "SELECT NumberOfEmployees, DescriptionOfBusiness FROM FinancialStatements WHERE docID = ?",
@@ -481,6 +483,74 @@ class TestGenerateFinancialStatements(unittest.TestCase):
             self.assertEqual(bal, (800.0,))
         finally:
             conn.close()
+
+    def test_populate_business_descriptions_en_updates_translation_column(self):
+        expanded_mappings = {
+            "Mappings": [
+                {
+                    "Name": "SharesOutstanding",
+                    "Table": "FinancialStatements",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults"],
+                },
+                {
+                    "Name": "DescriptionOfBusiness",
+                    "Table": "FinancialStatements",
+                    "periods": ["FilingDateInstant"],
+                    "Terms": ["jpcrp_cor:DescriptionOfBusinessTextBlock"],
+                },
+                {
+                    "Name": "netSales",
+                    "Table": "IncomeStatement",
+                    "periods": ["CurrentYearDuration"],
+                    "Terms": ["jppfs_cor:NetSales"],
+                },
+                {
+                    "Name": "cash",
+                    "Table": "BalanceSheet",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jppfs_cor:CashAndDeposits"],
+                },
+            ]
+        }
+        with open(self.mappings_file, "w", encoding="utf-8") as f:
+            json.dump(expanded_mappings, f)
+
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        with patch(
+            "src.description_translation.load_translation_providers",
+            return_value=([object()], {"chunk_char_limit": 120, "row_delay_seconds": 0.0}),
+        ), patch(
+            "src.description_translation.translate_text_with_providers",
+            return_value=("Makes parts in English.", "StubProvider"),
+        ):
+            result = self.d.populate_business_descriptions_en(
+                target_database=self.target_db,
+                providers_config="ignored.json",
+                batch_size=10,
+            )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            translated_value = conn.execute(
+                "SELECT DescriptionOfBusiness_EN FROM FinancialStatements WHERE docID = ?",
+                ("DOC1",),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        self.assertEqual(translated_value, "Makes parts in English.")
+        self.assertEqual(result["translated_rows"], 1)
+        self.assertEqual(result["failed_rows"], 0)
+        self.assertEqual(result["provider_usage"], {"StubProvider": 1})
 
     def test_shareprice_falls_back_to_source_db(self):
         # Remove lookup tables from target DB

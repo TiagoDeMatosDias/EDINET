@@ -558,7 +558,7 @@ class OrchestratorPage(ttk.Frame):
         self._steps.append([step_name, False])
         self._step_runtime_status.append("idle")
         if step_name not in self._step_configs:
-            self._step_configs[step_name] = ctrl.get_default_config_for_step(step_name)
+            self._step_configs[step_name] = ctrl.get_default_config_for_step(step_name, self._step_configs)
         self._selected_idx = len(self._steps) - 1
         self._refresh_sequence_cards()
         self._open_config_panel()

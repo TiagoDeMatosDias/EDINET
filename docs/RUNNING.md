@@ -17,18 +17,32 @@ All execution is controlled by `config/state/run_config.json`. Each step is an o
 "run_steps": {
   "get_documents": { "enabled": true, "overwrite": false },
   "generate_financial_statements": { "enabled": true, "overwrite": false },
+  "populate_business_descriptions_en": { "enabled": true, "overwrite": false },
   ...
 }
 ```
 
 - `enabled` — set to `true` to run the step, `false` to skip it.
-- `overwrite` — when `true`, the step drops and recreates its output table. Only supported by: `generate_financial_statements`, `generate_ratios`, `generate_historical_ratios`.
+- `overwrite` — when `true`, the step rebuilds or refreshes the step output. Supported by: `generate_financial_statements`, `populate_business_descriptions_en`, `generate_ratios`, `generate_historical_ratios`.
 
 Steps execute in the order they appear in the `run_steps` object. In the GUI, you can reorder steps by dragging them.
 
 ## Pre-flight Validation
 
 Before any step runs, the orchestrator checks that all required `.env` / config keys are set for every enabled step. If anything is missing, execution halts with a clear error listing the missing keys and which steps need them.
+
+## Business Description Translation APIs
+
+The Security Analysis view no longer performs runtime model translation. Instead, `FinancialStatements` includes a `DescriptionOfBusiness_EN` column that is populated ahead of time by the `populate_business_descriptions_en` pipeline step.
+
+Translation providers are defined in `config/reference/business_description_translation_providers.example.json`. Providers are tried in the order listed, so if one API is rate-limited or unavailable the step automatically falls back to the next enabled provider.
+
+The bundled example config includes:
+
+- a LibreTranslate-compatible endpoint
+- the free MyMemory API
+
+You can reorder providers, disable them, or add new ones later by editing that JSON file.
 
 ---
 
@@ -166,10 +180,44 @@ Supports `overwrite` — when enabled, the output tables are dropped and fully r
 - `Source_Database` — database containing the raw EDINET financial data.
 - `Source_Table` — the raw financial data table to read from (default: `financialData_full`).
 - `Target_Database` — database where `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, and `CashflowStatement` are written.
+- `FinancialStatements.DescriptionOfBusiness_EN` is created automatically as an empty `TEXT` column and preserved on reruns so it can be populated by the translation step.
 - `Company_Info_Table` — optional override for the company info table name.
 - `Stock_Prices_Table` — optional override for the stock prices table name.
 - `Mappings_Config` — JSON mapping file used to translate taxonomy tags into statement fields.
 - `batch_size` — rows/documents processed per batch.
+
+---
+
+### `populate_business_descriptions_en`
+Populates `FinancialStatements.DescriptionOfBusiness_EN` by translating `DescriptionOfBusiness` through an ordered list of HTTP providers.
+
+Supports `overwrite`.
+
+```json
+"populate_business_descriptions_en_config": {
+  "Target_Database": "C:/path/to/standardized.db",
+  "Table_Name": "FinancialStatements",
+  "DocID_Column": "docID",
+  "Source_Column": "DescriptionOfBusiness",
+  "Target_Column": "DescriptionOfBusiness_EN",
+  "Providers_Config": "config/reference/business_description_translation_providers.example.json",
+  "Source_Language": "ja",
+  "Target_Language": "en",
+  "batch_size": 25
+}
+```
+
+- `Target_Database` — database containing the `FinancialStatements` table to update.
+- `Table_Name` — target table containing the description columns (default: `FinancialStatements`).
+- `DocID_Column` — unique identifier column used for updates (default: `docID`).
+- `Source_Column` — source description column to translate (default: `DescriptionOfBusiness`).
+- `Target_Column` — destination English column to populate (default: `DescriptionOfBusiness_EN`).
+- `Providers_Config` — JSON file defining enabled providers and their fallback order.
+- `Source_Language` — source language passed to the providers (default: `ja`).
+- `Target_Language` — target language passed to the providers (default: `en`).
+- `batch_size` — number of rows to process per batch.
+
+The provider config supports a top-level `chunk_char_limit` for long descriptions and `row_delay_seconds` if you want to slow requests to stay under free-tier limits.
 
 ---
 

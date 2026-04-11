@@ -8,6 +8,7 @@ import numpy as np
 import json
 import os
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +258,7 @@ class data:
                 ("docTypeCode", "TEXT"),
                 ("periodStart", "TEXT"),
                 ("periodEnd", "TIMESTAMP"),
+                ("DescriptionOfBusiness_EN", "TEXT"),
             ],
             "IncomeStatement": [("docID", "TEXT")],
             "BalanceSheet": [("docID", "TEXT")],
@@ -313,6 +315,12 @@ class data:
             added_cols.append(col_name)
 
         return added_cols
+
+    def _resolve_column_name(self, conn, table_name, column_name):
+        """Return actual column name in *table_name* using case-insensitive lookup."""
+        info = conn.execute(f"PRAGMA table_info({self._sql_ident(table_name)})").fetchall()
+        by_lower = {str(row[1]).lower(): str(row[1]) for row in info}
+        return by_lower.get(str(column_name or "").lower())
 
     def _load_generate_ratios_definitions(self, formulas_config_path):
         """Load and normalize Generate Ratios formulas config."""
@@ -1178,7 +1186,15 @@ class data:
         fs_column_specs = [
             (col_name, col_type)
             for col_name, col_type in table_specs["FinancialStatements"]
-            if col_name not in {"edinetCode", "docID", "docTypeCode", "periodStart", "periodEnd", "SharePrice"}
+            if col_name not in {
+                "edinetCode",
+                "docID",
+                "docTypeCode",
+                "periodStart",
+                "periodEnd",
+                "DescriptionOfBusiness_EN",
+                "SharePrice",
+            }
         ]
         statement_column_specs = {
             table_name: [
@@ -1336,6 +1352,161 @@ class data:
                     logger.info("Generate Financial Statements progress: %d docs processed", total_docs)
 
             logger.info("Generate Financial Statements completed. Processed %d document(s).", total_docs)
+        finally:
+            conn.close()
+
+    def populate_business_descriptions_en(
+        self,
+        target_database,
+        providers_config,
+        table_name="FinancialStatements",
+        docid_column="docID",
+        source_column="DescriptionOfBusiness",
+        target_column="DescriptionOfBusiness_EN",
+        source_language="ja",
+        target_language="en",
+        overwrite=False,
+        batch_size=25,
+    ):
+        """Populate English business descriptions from configured translation APIs."""
+        if not target_database:
+            raise ValueError("target_database is required for populate_business_descriptions_en.")
+        if not providers_config:
+            raise ValueError("providers_config is required for populate_business_descriptions_en.")
+
+        from src.description_translation import (
+            TranslationError,
+            load_translation_providers,
+            translate_text_with_providers,
+        )
+
+        batch_size = max(int(batch_size or 25), 1)
+        providers, provider_settings = load_translation_providers(providers_config)
+        chunk_char_limit = provider_settings.get("chunk_char_limit", 700)
+        row_delay_seconds = float(provider_settings.get("row_delay_seconds", 0.0) or 0.0)
+
+        conn = sqlite3.connect(target_database)
+        try:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+
+            actual_table = self._resolve_table_name_in_schema(conn, "main", table_name)
+            if not actual_table:
+                raise RuntimeError(f"Table '{table_name}' not found in target database.")
+
+            actual_docid = self._resolve_column_name(conn, actual_table, docid_column)
+            actual_source = self._resolve_column_name(conn, actual_table, source_column)
+            if not actual_docid:
+                raise RuntimeError(f"Column '{docid_column}' not found in table '{actual_table}'.")
+            if not actual_source:
+                raise RuntimeError(f"Column '{source_column}' not found in table '{actual_table}'.")
+
+            actual_target = self._resolve_column_name(conn, actual_table, target_column)
+            if not actual_target:
+                self._ensure_typed_table_columns(conn, actual_table, [(target_column, "TEXT")])
+                actual_target = target_column
+                conn.commit()
+
+            existing_translation_count = 0
+            if not overwrite:
+                existing_translation_count = conn.execute(
+                    f"SELECT COUNT(*) FROM {self._sql_ident(actual_table)} "
+                    f"WHERE {self._sql_ident(actual_target)} IS NOT NULL "
+                    f"AND TRIM(CAST({self._sql_ident(actual_target)} AS TEXT)) <> ''"
+                ).fetchone()[0]
+
+            translated_rows = 0
+            failed_rows = 0
+            processed_rows = 0
+            provider_usage = {}
+            last_docid = None
+
+            while True:
+                where_clauses = [
+                    f"{self._sql_ident(actual_docid)} IS NOT NULL",
+                    f"{self._sql_ident(actual_source)} IS NOT NULL",
+                    f"TRIM(CAST({self._sql_ident(actual_source)} AS TEXT)) <> ''",
+                ]
+                params = []
+                if not overwrite:
+                    where_clauses.append(
+                        f"({self._sql_ident(actual_target)} IS NULL "
+                        f"OR TRIM(CAST({self._sql_ident(actual_target)} AS TEXT)) = '')"
+                    )
+                if last_docid is not None:
+                    where_clauses.append(f"{self._sql_ident(actual_docid)} > ?")
+                    params.append(last_docid)
+
+                sql = (
+                    f"SELECT {self._sql_ident(actual_docid)}, {self._sql_ident(actual_source)} "
+                    f"FROM {self._sql_ident(actual_table)} "
+                    f"WHERE {' AND '.join(where_clauses)} "
+                    f"ORDER BY {self._sql_ident(actual_docid)} "
+                    f"LIMIT ?"
+                )
+                params.append(batch_size)
+                rows = conn.execute(sql, params).fetchall()
+                if not rows:
+                    break
+
+                for doc_id, source_text in rows:
+                    last_docid = doc_id
+                    processed_rows += 1
+                    try:
+                        translated_text, provider_name = translate_text_with_providers(
+                            source_text,
+                            providers,
+                            source_language=source_language,
+                            target_language=target_language,
+                            chunk_char_limit=chunk_char_limit,
+                        )
+                    except TranslationError as exc:
+                        failed_rows += 1
+                        logger.warning(
+                            "Could not translate %s.%s for %s=%s: %s",
+                            actual_table,
+                            actual_target,
+                            actual_docid,
+                            doc_id,
+                            exc,
+                        )
+                        continue
+
+                    clean_translation = str(translated_text or "").strip()
+                    if not clean_translation:
+                        failed_rows += 1
+                        continue
+
+                    conn.execute(
+                        f"UPDATE {self._sql_ident(actual_table)} "
+                        f"SET {self._sql_ident(actual_target)} = ? "
+                        f"WHERE {self._sql_ident(actual_docid)} = ?",
+                        (clean_translation, doc_id),
+                    )
+                    translated_rows += 1
+                    provider_usage[provider_name] = provider_usage.get(provider_name, 0) + 1
+
+                    if row_delay_seconds > 0:
+                        time.sleep(row_delay_seconds)
+
+                conn.commit()
+
+            logger.info(
+                "Populate Business Descriptions EN completed. Processed=%d translated=%d failed=%d existing=%d providers=%s",
+                processed_rows,
+                translated_rows,
+                failed_rows,
+                existing_translation_count,
+                provider_usage,
+            )
+            return {
+                "processed_rows": processed_rows,
+                "translated_rows": translated_rows,
+                "failed_rows": failed_rows,
+                "existing_translation_rows": existing_translation_count,
+                "provider_usage": provider_usage,
+            }
         finally:
             conn.close()
 

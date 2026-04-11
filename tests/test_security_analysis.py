@@ -8,6 +8,8 @@ import pandas as pd
 import pytest
 
 from src.security_analysis import (
+    _summarize_english_text,
+    _summarize_business_description,
     ensure_security_analysis_indexes,
     get_security_overview,
     get_security_peers,
@@ -41,6 +43,8 @@ def _create_security_db(path: str) -> str:
             edinetCode TEXT,
             docID TEXT UNIQUE,
             periodEnd TEXT,
+            DescriptionOfBusiness TEXT,
+            DescriptionOfBusiness_EN TEXT,
             SharesOutstanding REAL,
             SharePrice REAL
         )
@@ -134,13 +138,27 @@ def _create_security_db(path: str) -> str:
     cur.executemany("INSERT INTO CompanyInfo VALUES (?, ?, ?, ?, ?, ?)", companies)
 
     filings = [
-        ("E00001", "DOC_A_2023", "2023-03-31", 100_000_000, 900.0),
-        ("E00001", "DOC_A_2024", "2024-03-31", 100_000_000, 1_000.0),
-        ("E00002", "DOC_B_2024", "2024-03-31", 80_000_000, 850.0),
-        ("E00003", "DOC_C_2024", "2024-03-31", 50_000_000, 650.0),
-        ("E00004", "DOC_D_2024", "2024-03-31", 75_000_000, 920.0),
+        ("E00001", "DOC_A_2023", "2023-03-31", "Legacy alpha description", "", 100_000_000, 900.0),
+        (
+            "E00001",
+            "DOC_A_2024",
+            "2024-03-31",
+            "Alpha makes industrial automation equipment.",
+            (
+                "Alpha develops industrial sensors and control equipment for factory automation. "
+                "Its main products include sensors, PLC systems, and monitoring software for production lines. "
+                "The company serves automotive, electronics, and food manufacturers in Japan and overseas. "
+                "Recurring revenue from maintenance and cloud monitoring services has expanded steadily. "
+                "Research and development is focused on energy efficiency, quality inspection automation, and remote monitoring."
+            ),
+            100_000_000,
+            1_000.0,
+        ),
+        ("E00002", "DOC_B_2024", "2024-03-31", "Beta builds industrial tools.", "", 80_000_000, 850.0),
+        ("E00003", "DOC_C_2024", "2024-03-31", "Gamma operates retail stores.", "", 50_000_000, 650.0),
+        ("E00004", "DOC_D_2024", "2024-03-31", "Delta produces agricultural materials.", "", 75_000_000, 920.0),
     ]
-    cur.executemany("INSERT INTO FinancialStatements VALUES (?, ?, ?, ?, ?)", filings)
+    cur.executemany("INSERT INTO FinancialStatements VALUES (?, ?, ?, ?, ?, ?, ?)", filings)
 
     cur.executemany(
         "INSERT INTO IncomeStatement VALUES (?, ?, ?, ?, ?)",
@@ -269,6 +287,75 @@ def test_get_security_overview_uses_ratio_fallbacks(security_db):
     assert pytest.approx(valuation["PERatio"], rel=1e-4) == 110.0
     assert pytest.approx(valuation["PriceToBook"], rel=1e-4) == (1100.0 / 65.0)
     assert pytest.approx(valuation["DividendsYield"], rel=1e-4) == (20.0 / 1100.0)
+
+
+def test_get_security_overview_prefers_latest_english_filing_description_when_available(security_db):
+    overview = get_security_overview(security_db, "E00001")
+    company = overview["company"]
+    assert company["filing_description"] == "Alpha makes industrial automation equipment."
+    assert company["filing_description_en"]
+    assert company["description"] == company["filing_description_en"]
+
+
+def test_get_security_overview_falls_back_to_japanese_filing_description_without_english_value(security_db):
+    overview = get_security_overview(security_db, "E00002")
+    company = overview["company"]
+    assert company["filing_description_en"] == ""
+    assert company["description"] == "Beta builds industrial tools."
+
+
+def test_summarize_business_description_returns_two_paragraphs_for_long_japanese_text():
+    text = (
+        "当社は産業用センサーと制御機器を開発、製造、販売しています。"
+        "主力製品は工場自動化向けのセンサー、PLC、監視ソフトウェアです。"
+        "国内では自動車、電子部品、食品工場向けに販売し、海外ではアジアと欧州に展開しています。"
+        "保守サービスとクラウド監視の継続課金収益が拡大しており、顧客基盤の安定化に寄与しています。"
+        "研究開発では省エネ制御、品質検査の自動化、遠隔監視の高度化を重点領域としています。"
+    )
+
+    summary = _summarize_business_description(text)
+
+    assert summary
+    assert "\n\n" in summary
+    assert len(summary) < len(text)
+    assert "産業用センサー" in summary or "工場自動化" in summary
+
+
+def test_summarize_english_text_returns_two_paragraphs_for_long_text():
+    text = (
+        "Alpha develops industrial sensors and control equipment for factory automation. "
+        "Its main products include sensors, PLC systems, and monitoring software for production lines. "
+        "The company serves automotive, electronics, and food manufacturers in Japan and overseas. "
+        "Recurring revenue from maintenance and cloud monitoring services has expanded steadily. "
+        "Research and development is focused on energy efficiency, quality inspection automation, and remote monitoring."
+    )
+
+    summary = _summarize_english_text(text)
+
+    assert summary
+    assert "\n\n" in summary
+    assert len(summary) < len(text)
+    assert "industrial sensors" in summary.lower() or "factory automation" in summary.lower()
+
+
+def test_get_security_overview_summarizes_english_description_column(security_db):
+    overview = get_security_overview(security_db, "E00001")
+    company = overview["company"]
+
+    assert company["description_summary"]
+    assert "\n\n" in company["description_summary"]
+    assert "industrial sensors" in company["description_summary"].lower()
+    assert set(company) >= {
+        "company_name",
+        "description",
+        "description_summary",
+        "edinet_code",
+        "filing_description",
+        "filing_description_en",
+        "industry",
+        "market",
+        "ticker",
+    }
 
 
 def test_get_security_ratios_returns_quality_metrics(security_db):

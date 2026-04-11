@@ -142,6 +142,13 @@ class TestValidateConfig:
         })
         validate_config(config, ["get_documents"])  # should not raise
 
+    def test_populate_business_descriptions_en_requires_config_fields(self):
+        from src.orchestrator import validate_config
+
+        config = Config.from_dict({})
+        with pytest.raises(RuntimeError, match="populate_business_descriptions_en_config"):
+            validate_config(config, ["populate_business_descriptions_en"])
+
 
 class TestConfigFromDict:
     """Test Config.from_dict bypass of the singleton."""

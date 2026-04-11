@@ -20,14 +20,15 @@ Each pipeline step is configured independently, including its source or target d
 4. **Import stock prices (CSV)** – imports historical prices from a user-supplied CSV file with configurable column mapping.
 5. **Update stock prices** – fetches historical share prices via the Stooq API by default, with a Yahoo Finance chart fallback if Stooq is unavailable.
 6. **Parse taxonomy** – parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
-7. **Generate financial statements** – extracts tagged values from raw XBRL data into structured per-company financial tables.
-8. **Generate ratios** – calculates per-share values, valuation ratios, and derived metrics for every company.
-9. **Generate historical ratios** – computes rolling averages, growth rates, and z-scores over time.
-10. **Multivariate regression** – user-defined multivariate OLS regression specified as a SQL query.
-11. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
-12. **Backtest set** – batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
-13. **Screening** – filter companies by financial criteria (valuation, quality, per-share metrics) with sortable results, CSV export, and saved criteria management.
-14. **Security analysis** – inspect a single company with typeahead search, overview cards, statement history, charts, price refresh, and peer comparison.
+7. **Generate financial statements** – extracts tagged values from raw XBRL data into structured per-company financial tables and creates an empty `DescriptionOfBusiness_EN` column for later translation.
+8. **Populate business descriptions (EN)** – fills `DescriptionOfBusiness_EN` via an ordered fallback list of free translation APIs defined in JSON.
+9. **Generate ratios** – calculates per-share values, valuation ratios, and derived metrics for every company.
+10. **Generate historical ratios** – computes rolling averages, growth rates, and z-scores over time.
+11. **Multivariate regression** – user-defined multivariate OLS regression specified as a SQL query.
+12. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
+13. **Backtest set** – batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
+14. **Screening** – filter companies by financial criteria (valuation, quality, per-share metrics) with sortable results, CSV export, and saved criteria management.
+15. **Security analysis** – inspect a single company with typeahead search, overview cards, statement history, charts, price refresh, and peer comparison. When available, the view prefers the translated `DescriptionOfBusiness_EN` text from `FinancialStatements`.
 
 ## Screenshots
 
@@ -133,6 +134,7 @@ EDINET.exe                                   <- built by PyInstaller (from dist/
 .env                                         <- your API keys and DB paths
 config/
     reference/
+        business_description_translation_providers.example.json
         companyinfo.csv
         jppfs_cor_2013-08-31.xsd
     state/
@@ -158,6 +160,7 @@ It will look for `config/` and `.env` in the same folder as the exe.
 |---|---|
 | `config/state/run_config.json` | Controls which steps run, their order, and step-specific parameters |
 | `config/reference/companyinfo.csv` | EDINET company code list (used by populate_company_info) |
+| `config/reference/business_description_translation_providers.example.json` | Ordered fallback translation-provider config used by `populate_business_descriptions_en` |
 | `config/reference/financial_statements_mappings_config.json` | Mapping rules used by `generate_financial_statements` |
 | `config/reference/generate_ratios_formulas_config.json` | Formula definitions used by `generate_ratios` |
 | `config/reference/jppfs_cor_2013-08-31.xsd` | XBRL taxonomy file (used by parse_taxonomy) |
@@ -174,7 +177,7 @@ The Tk-based GUI provides:
 - **Step ordering controls** – reorder pipeline steps with keyboard shortcuts (`Alt+Up` / `Alt+Down`) and contextual actions.
 - **Per-step enable/disable** – check or uncheck each step.
 - **Per-step configuration panel** – configure each step (including database paths and advanced options) in the side panel.
-- **Overwrite toggle** – steps that support it (Generate Financial Statements, Generate Ratios, Generate Historical Ratios) show an "Overwrite" checkbox.
+- **Overwrite toggle** – steps that support it (Generate Financial Statements, Populate Business Descriptions (EN), Generate Ratios, Generate Historical Ratios) show an "Overwrite" checkbox.
 - **Save / Load setups** – persist and recall named configurations from `config/state/saved_setups/`.
 - **Live log output** – see real-time log messages during execution in the output panel.
 - **Security analysis** – search companies, inspect statements and ratios, view interactive charts, toggle peer visibility from chart legends, refresh prices, compare peers, and jump directly from screening or peer lists.

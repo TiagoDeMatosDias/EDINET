@@ -1,0 +1,21 @@
+{
+  "chunk_char_limit": 700,
+  "row_delay_seconds": 0.0,
+  "providers": [
+    {
+      "name": "LibreTranslate Public",
+      "type": "libretranslate",
+      "enabled": true,
+      "base_url": "https://translate.argosopentech.com",
+      "timeout_seconds": 30
+    },
+    {
+      "name": "MyMemory",
+      "type": "mymemory",
+      "enabled": true,
+      "base_url": "https://api.mymemory.translated.net",
+      "timeout_seconds": 30,
+      "email_env": "MYMEMORY_CONTACT_EMAIL"
+    }
+  ]
+}
