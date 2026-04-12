@@ -172,10 +172,12 @@ class SearchableCombobox(ttk.Combobox):
         super().__init__(parent, values=initial_values, state=state, **kwargs)
         self._all_values: list[str] = []
         self._last_valid_value: str = ""
+        self._replace_on_next_key = False
         self.set_source_values(initial_values)
+        self.bind("<KeyPress>", self._on_key_press, add="+")
         self.bind("<KeyRelease>", self._on_key_release, add="+")
         self.bind("<Button-1>", self._on_pointer_open, add="+")
-        self.bind("<FocusIn>", self._on_pointer_open, add="+")
+        self.bind("<FocusIn>", self._on_focus_in, add="+")
         self.bind("<<ComboboxSelected>>", self._on_combobox_selected, add="+")
         self.bind("<Escape>", self._on_escape, add="+")
         self.bind("<FocusOut>", self._commit_typed_value, add="+")
@@ -228,8 +230,41 @@ class SearchableCombobox(ttk.Combobox):
     def _post_dropdown(self):
         try:
             self.tk.eval(f"ttk::combobox::Post {self}")
+            self.after_idle(self._resize_dropdown_list)
         except tk.TclError:
             return
+
+    def _resize_dropdown_list(self):
+        try:
+            popdown = self.tk.eval(f"ttk::combobox::PopdownWindow {self}")
+            listbox = f"{popdown}.f.l"
+            longest_value = max((len(value) for value in self._all_values), default=0)
+            width_chars = min(48, max(12, longest_value + 2))
+            self.tk.call(listbox, "configure", "-width", width_chars)
+        except tk.TclError:
+            return
+
+    def _prime_for_replacement(self):
+        current_value = self.get().strip()
+        matched_value = self._canonical_value(current_value)
+        if not current_value or matched_value is None:
+            self._replace_on_next_key = False
+            try:
+                self.selection_clear()
+            except tk.TclError:
+                pass
+            return
+        self.selection_range(0, tk.END)
+        self.icursor(tk.END)
+        self._replace_on_next_key = True
+
+    def _on_focus_in(self, _event=None):
+        current_value = self.get().strip()
+        if self._canonical_value(current_value) is not None:
+            self._restore_source_values()
+        else:
+            self._apply_filter(current_value)
+        self.after_idle(self._prime_for_replacement)
 
     def _on_pointer_open(self, _event=None):
         # If current text is already a valid selected option, show full list.
@@ -239,10 +274,13 @@ class SearchableCombobox(ttk.Combobox):
             self._restore_source_values()
         else:
             self._apply_filter(current_value)
+        self.after_idle(self._prime_for_replacement)
+        self.after_idle(self._post_dropdown)
 
     def _on_escape(self, _event=None):
         if self._last_valid_value:
             self.set(self._last_valid_value)
+        self._replace_on_next_key = False
         self._restore_source_values()
 
     def _on_combobox_selected(self, _event=None):
@@ -251,6 +289,7 @@ class SearchableCombobox(ttk.Combobox):
             self.set(matched_value)
             self._last_valid_value = matched_value
         self._restore_source_values()
+        self.after_idle(self._prime_for_replacement)
 
     def _canonical_value(self, value: str) -> str | None:
         text = value.strip()
@@ -268,6 +307,7 @@ class SearchableCombobox(ttk.Combobox):
     def _commit_typed_value(self, _event=None):
         if str(self.cget("state")) == "disabled":
             return None
+        self._replace_on_next_key = False
         current_value = self.get().strip()
         if not current_value:
             self._restore_source_values()
@@ -289,9 +329,32 @@ class SearchableCombobox(ttk.Combobox):
         self._restore_source_values()
         return None
 
+    def _on_key_press(self, event):
+        if str(self.cget("state")) == "disabled":
+            return None
+        if event.keysym in self._NAVIGATION_KEYS:
+            self._replace_on_next_key = False
+            return None
+        if not self._replace_on_next_key:
+            return None
+        if event.keysym in {"BackSpace", "Delete"}:
+            self.delete(0, tk.END)
+            self._replace_on_next_key = False
+            return "break"
+        if not getattr(event, "char", "") or not event.char.isprintable():
+            return None
+        self.delete(0, tk.END)
+        try:
+            self.selection_clear()
+        except tk.TclError:
+            pass
+        self._replace_on_next_key = False
+        return None
+
     def _on_key_release(self, event):
         if event.keysym in self._NAVIGATION_KEYS or str(self.cget("state")) == "disabled":
             return
+        self._replace_on_next_key = False
         filtered = self._apply_filter(self.get())
         if filtered:
             self._post_dropdown()

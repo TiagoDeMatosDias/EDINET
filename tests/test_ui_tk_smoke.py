@@ -161,6 +161,24 @@ def test_searchable_combobox_reverts_invalid_typed_value(root):
     assert combo.get() == "8"
 
 
+def test_searchable_combobox_replaces_selected_value_on_first_key(root):
+    from ui_tk.shared.widgets import SearchableCombobox
+
+    combo = SearchableCombobox(root, values=["Tokyo", "Toyota", "Nissan"])
+    combo.set("Tokyo")
+    combo._on_combobox_selected()
+
+    combo._on_focus_in()
+    root.update_idletasks()
+    assert combo.selection_present()
+
+    combo._on_key_press(SimpleNamespace(keysym="n", char="n"))
+    combo.insert(0, "n")
+    combo._on_key_release(SimpleNamespace(keysym="n", char="n"))
+
+    assert list(combo["values"]) == ["Nissan"]
+
+
 def test_rounded_button_tracks_textvariable(root):
     from ui_tk.shared.widgets import RoundedButton
 
@@ -442,6 +460,22 @@ def test_screening_page_init(root):
 
     page = ScreeningPage(root)
     page.reapply_colors()
+
+
+def test_screening_add_criterion_button_adds_row(root):
+    """The screening builder exposes a visible add button that appends a row."""
+    from ui_tk.pages.screening import ScreeningPage
+
+    page = ScreeningPage(root)
+    root.update_idletasks()
+
+    assert page._add_criterion_btn._inner.cget("text") == "Add Criterion"
+    assert len(page._criteria_rows) == 0
+
+    page._add_criterion_btn.invoke()
+    root.update_idletasks()
+
+    assert len(page._criteria_rows) == 1
 
 
 def test_security_analysis_page_init(root):

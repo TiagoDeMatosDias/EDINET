@@ -157,16 +157,19 @@ class ScreeningPage(ttk.Frame):
 
         criteria_card = SectionCard(inner, "Criteria Builder", "Compose filters against one or more tables.", style="Panel.TFrame")
         criteria_card.pack(fill="x", padx=PAD // 2, pady=(0, PAD // 2))
-        self._add_criterion_btn = RoundedButton(criteria_card.actions, text="+ Add", style="Small.TButton", command=self._add_criterion)
-        self._add_criterion_btn.pack(side="right")
         ttk.Label(criteria_card.body, textvariable=self._builder_summary_var, style="Panel.TLabel", font=FONT_SMALL).pack(anchor="w", pady=(0, 6))
         self._criteria_frame = ttk.Frame(criteria_card.body, style="Panel.TFrame")
         self._criteria_frame.pack(fill="x")
+        self._add_criterion_btn = RoundedButton(
+            criteria_card.body,
+            text="Add Criterion",
+            style="Ghost.TButton",
+            command=self._add_criterion,
+        )
+        self._add_criterion_btn.pack(fill="x", pady=(8, 0))
 
         ranking_card = SectionCard(inner, "Ranking", "Order results by weighted metrics when needed.", style="Panel.TFrame")
         ranking_card.pack(fill="x", padx=PAD // 2, pady=(0, PAD // 2))
-        self._add_ranking_btn = RoundedButton(ranking_card.actions, text="+ Add", style="Small.TButton", command=self._add_ranking_rule)
-        self._add_ranking_btn.pack(side="right")
         ranking_algo_row = ttk.Frame(ranking_card.body, style="Panel.TFrame")
         ranking_algo_row.pack(fill="x", pady=(0, PAD))
         ttk.Label(ranking_algo_row, text="Algorithm", style="Panel.TLabel", font=FONT_SMALL).pack(anchor="w")
@@ -180,6 +183,13 @@ class ScreeningPage(ttk.Frame):
         self._ranking_algorithm_combo.pack(fill="x", pady=(4, 0))
         self._ranking_frame = ttk.Frame(ranking_card.body, style="Panel.TFrame")
         self._ranking_frame.pack(fill="x")
+        self._add_ranking_btn = RoundedButton(
+            ranking_card.body,
+            text="Add Ranking Rule",
+            style="Ghost.TButton",
+            command=self._add_ranking_rule,
+        )
+        self._add_ranking_btn.pack(fill="x", pady=(8, 0))
 
         columns_card = SectionCard(inner, "Output Columns", "Control what appears in the result grid.", style="Panel.TFrame")
         columns_card.pack(fill="x", padx=PAD // 2, pady=(0, PAD))
@@ -368,32 +378,44 @@ class ScreeningPage(ttk.Frame):
             style="PanelAlt.TLabel",
             font=FONT_UI_BOLD,
         ).pack(side="left")
-
-        # Row 1: source table dropdown + source column dropdown + remove button
-        top_row = ttk.Frame(row_frame, style="PanelAlt.TFrame")
-        top_row.pack(fill="x", padx=PAD, pady=(8, 0))
-
-        table_var = tk.StringVar()
-        table_combo = SearchableCombobox(
-            top_row, textvariable=table_var,
-            values=tables, width=14,
-        )
-        table_combo.pack(side="left", padx=(0, 2))
-
-        column_var = tk.StringVar()
-        column_combo = SearchableCombobox(
-            top_row, textvariable=column_var,
-            values=[],
-        )
-        column_combo.pack(side="left", fill="x", expand=True, padx=(0, 2))
-
         remove_btn = RoundedButton(
-            top_row, text="✕", style="Danger.TButton",
+            row_header, text="✕", style="Danger.TButton",
             width=2,
         )
         remove_btn.pack(side="right")
 
-        # When table changes, update column dropdown
+        table_field = ttk.Frame(row_frame, style="PanelAlt.TFrame")
+        table_field.pack(fill="x", padx=PAD, pady=(8, 0))
+        ttk.Label(
+            table_field,
+            text="Source Table",
+            style="PanelAlt.TLabel",
+            font=FONT_SMALL,
+        ).pack(anchor="w")
+
+        table_var = tk.StringVar()
+        table_combo = SearchableCombobox(
+            table_field, textvariable=table_var,
+            values=tables,
+        )
+        table_combo.pack(fill="x", pady=(4, 0))
+
+        column_field = ttk.Frame(row_frame, style="PanelAlt.TFrame")
+        column_field.pack(fill="x", padx=PAD, pady=(8, 0))
+        ttk.Label(
+            column_field,
+            text="Source Metric",
+            style="PanelAlt.TLabel",
+            font=FONT_SMALL,
+        ).pack(anchor="w")
+
+        column_var = tk.StringVar()
+        column_combo = SearchableCombobox(
+            column_field, textvariable=column_var,
+            values=[],
+        )
+        column_combo.pack(fill="x", pady=(4, 0))
+
         def _on_table_change(*_):
             tbl = table_var.get()
             cols = self._get_columns_for_table(tbl)
@@ -403,57 +425,97 @@ class ScreeningPage(ttk.Frame):
 
         table_var.trace_add("write", _on_table_change)
 
-        # Row 2: comparison mode + operator
-        bottom_row = ttk.Frame(row_frame, style="PanelAlt.TFrame")
-        bottom_row.pack(fill="x", padx=PAD, pady=(8, 2))
+        settings_row = ttk.Frame(row_frame, style="PanelAlt.TFrame")
+        settings_row.pack(fill="x", padx=PAD, pady=(8, 0))
+
+        comparison_mode_field = ttk.Frame(settings_row, style="PanelAlt.TFrame")
+        comparison_mode_field.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        ttk.Label(
+            comparison_mode_field,
+            text="Comparison",
+            style="PanelAlt.TLabel",
+            font=FONT_SMALL,
+        ).pack(anchor="w")
 
         comparison_mode_var = tk.StringVar(value="Fixed Value")
         comparison_mode_combo = SearchableCombobox(
-            bottom_row,
+            comparison_mode_field,
             textvariable=comparison_mode_var,
             values=list(_COMPARISON_MODE_LABELS.keys()),
-            width=16,
         )
-        comparison_mode_combo.pack(side="left", padx=(0, 4))
+        comparison_mode_combo.pack(fill="x", pady=(4, 0))
+
+        operator_field = ttk.Frame(settings_row, style="PanelAlt.TFrame")
+        operator_field.pack(side="left", fill="x")
+        ttk.Label(
+            operator_field,
+            text="Operator",
+            style="PanelAlt.TLabel",
+            font=FONT_SMALL,
+        ).pack(anchor="w")
 
         op_var = tk.StringVar(value=">")
         op_combo = SearchableCombobox(
-            bottom_row, textvariable=op_var,
-            values=_OPERATORS, width=7,
+            operator_field, textvariable=op_var,
+            values=_OPERATORS, width=10,
         )
-        op_combo.pack(side="left")
+        op_combo.pack(fill="x", pady=(4, 0))
 
-        # Row 3: fixed values or dynamic comparison target
         compare_row = ttk.Frame(row_frame, style="PanelAlt.TFrame")
-        compare_row.pack(fill="x", padx=PAD, pady=(2, PAD))
+        compare_row.pack(fill="x", padx=PAD, pady=(8, PAD))
 
         fixed_frame = ttk.Frame(compare_row, style="PanelAlt.TFrame")
         dynamic_frame = ttk.Frame(compare_row, style="PanelAlt.TFrame")
 
-        val_var = tk.StringVar()
-        val_entry = ttk.Entry(fixed_frame, textvariable=val_var, width=12)
-        val_entry.pack(side="left", padx=(0, 4))
+        ttk.Label(
+            fixed_frame,
+            text="Value",
+            style="PanelAlt.TLabel",
+            font=FONT_SMALL,
+        ).pack(anchor="w")
+        fixed_inputs = ttk.Frame(fixed_frame, style="PanelAlt.TFrame")
+        fixed_inputs.pack(fill="x", pady=(4, 0))
 
-        # Value2 entry (for BETWEEN)
+        val_var = tk.StringVar()
+        val_entry = ttk.Entry(fixed_inputs, textvariable=val_var)
+        val_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
         val2_var = tk.StringVar()
-        val2_entry = ttk.Entry(fixed_frame, textvariable=val2_var, width=12)
+        val2_entry = ttk.Entry(fixed_inputs, textvariable=val2_var)
+
+        target_table_field = ttk.Frame(dynamic_frame, style="PanelAlt.TFrame")
+        target_table_field.pack(fill="x")
+        ttk.Label(
+            target_table_field,
+            text="Target Table",
+            style="PanelAlt.TLabel",
+            font=FONT_SMALL,
+        ).pack(anchor="w")
 
         target_table_var = tk.StringVar()
         target_table_combo = SearchableCombobox(
-            dynamic_frame,
+            target_table_field,
             textvariable=target_table_var,
             values=tables,
-            width=14,
         )
-        target_table_combo.pack(side="left", padx=(0, 2))
+        target_table_combo.pack(fill="x", pady=(4, 0))
+
+        target_column_field = ttk.Frame(dynamic_frame, style="PanelAlt.TFrame")
+        target_column_field.pack(fill="x", pady=(8, 0))
+        ttk.Label(
+            target_column_field,
+            text="Target Metric",
+            style="PanelAlt.TLabel",
+            font=FONT_SMALL,
+        ).pack(anchor="w")
 
         target_column_var = tk.StringVar()
         target_column_combo = SearchableCombobox(
-            dynamic_frame,
+            target_column_field,
             textvariable=target_column_var,
             values=[],
         )
-        target_column_combo.pack(side="left", fill="x", expand=True)
+        target_column_combo.pack(fill="x", pady=(4, 0))
 
         def _on_target_table_change(*_):
             tbl = target_table_var.get()
@@ -471,7 +533,7 @@ class ScreeningPage(ttk.Frame):
             ):
                 comparison_mode_var.set("Fixed Value")
             if op_var.get() == "BETWEEN":
-                val2_entry.pack(side="left", padx=(0, 4))
+                val2_entry.pack(side="left", fill="x", expand=True)
             else:
                 val2_entry.pack_forget()
 
@@ -536,26 +598,40 @@ class ScreeningPage(ttk.Frame):
             style="PanelAlt.TLabel",
             font=FONT_UI_BOLD,
         ).pack(side="left")
+        remove_btn = RoundedButton(
+            row_header, text="✕", style="Danger.TButton", width=2,
+        )
+        remove_btn.pack(side="right")
 
-        top_row = ttk.Frame(row_frame, style="PanelAlt.TFrame")
-        top_row.pack(fill="x", padx=PAD, pady=(8, 0))
+        table_field = ttk.Frame(row_frame, style="PanelAlt.TFrame")
+        table_field.pack(fill="x", padx=PAD, pady=(8, 0))
+        ttk.Label(
+            table_field,
+            text="Ranking Table",
+            style="PanelAlt.TLabel",
+            font=FONT_SMALL,
+        ).pack(anchor="w")
 
         table_var = tk.StringVar()
         table_combo = SearchableCombobox(
-            top_row, textvariable=table_var, values=tables, width=14,
+            table_field, textvariable=table_var, values=tables,
         )
-        table_combo.pack(side="left", padx=(0, 2))
+        table_combo.pack(fill="x", pady=(4, 0))
+
+        column_field = ttk.Frame(row_frame, style="PanelAlt.TFrame")
+        column_field.pack(fill="x", padx=PAD, pady=(8, 0))
+        ttk.Label(
+            column_field,
+            text="Ranking Metric",
+            style="PanelAlt.TLabel",
+            font=FONT_SMALL,
+        ).pack(anchor="w")
 
         column_var = tk.StringVar()
         column_combo = SearchableCombobox(
-            top_row, textvariable=column_var, values=[],
+            column_field, textvariable=column_var, values=[],
         )
-        column_combo.pack(side="left", fill="x", expand=True, padx=(0, 2))
-
-        remove_btn = RoundedButton(
-            top_row, text="✕", style="Danger.TButton", width=2,
-        )
-        remove_btn.pack(side="right")
+        column_combo.pack(fill="x", pady=(4, 0))
 
         def _on_table_change(*_):
             cols = self._get_columns_for_table(table_var.get())
@@ -568,18 +644,35 @@ class ScreeningPage(ttk.Frame):
         bottom_row = ttk.Frame(row_frame, style="PanelAlt.TFrame")
         bottom_row.pack(fill="x", padx=PAD, pady=(8, PAD))
 
+        direction_field = ttk.Frame(bottom_row, style="PanelAlt.TFrame")
+        direction_field.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        ttk.Label(
+            direction_field,
+            text="Direction",
+            style="PanelAlt.TLabel",
+            font=FONT_SMALL,
+        ).pack(anchor="w")
+
         direction_var = tk.StringVar(value="Higher is Better")
         direction_combo = SearchableCombobox(
-            bottom_row,
+            direction_field,
             textvariable=direction_var,
             values=list(_RANKING_DIRECTION_LABELS.keys()),
-            width=16,
         )
-        direction_combo.pack(side="left", padx=(0, 4))
+        direction_combo.pack(fill="x", pady=(4, 0))
+
+        weight_field = ttk.Frame(bottom_row, style="PanelAlt.TFrame")
+        weight_field.pack(side="left", fill="x")
+        ttk.Label(
+            weight_field,
+            text="Weight",
+            style="PanelAlt.TLabel",
+            font=FONT_SMALL,
+        ).pack(anchor="w")
 
         weight_var = tk.StringVar(value="1.0")
-        ttk.Entry(bottom_row, textvariable=weight_var, width=10).pack(
-            side="left"
+        ttk.Entry(weight_field, textvariable=weight_var, width=10).pack(
+            fill="x", pady=(4, 0)
         )
 
         row_data = {
