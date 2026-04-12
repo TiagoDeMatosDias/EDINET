@@ -685,6 +685,88 @@ class TestGenerateFinancialStatements(unittest.TestCase):
         self.assertTrue(any("Stopping Populate Business Descriptions EN early" in message for message in logs.output))
         self.assertEqual(target_values, [("DOC1", None), ("DOC2", None)])
 
+    def test_populate_business_descriptions_en_prioritizes_latest_reports_by_company_translation_state(self):
+        expanded_mappings = {
+            "Mappings": [
+                {
+                    "Name": "SharesOutstanding",
+                    "Table": "FinancialStatements",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults"],
+                },
+                {
+                    "Name": "DescriptionOfBusiness",
+                    "Table": "FinancialStatements",
+                    "periods": ["FilingDateInstant"],
+                    "Terms": ["jpcrp_cor:DescriptionOfBusinessTextBlock"],
+                },
+            ]
+        }
+        with open(self.mappings_file, "w", encoding="utf-8") as f:
+            json.dump(expanded_mappings, f)
+
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            conn.execute(
+                "UPDATE FinancialStatements SET DescriptionOfBusiness_EN = ? WHERE docID = ?",
+                ("Existing English description.", "DOC1"),
+            )
+            conn.executemany(
+                """
+                INSERT INTO FinancialStatements (
+                    edinetCode, docID, docTypeCode, periodStart, periodEnd,
+                    DescriptionOfBusiness, DescriptionOfBusiness_EN
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    ("E00001", "DOC2", "120", "2025-01-01", "2025-12-31", "Latest partially translated company", None),
+                    ("E00002", "DOC3", "120", "2024-01-01", "2024-12-31", "Older untranslated company", None),
+                    ("E00002", "DOC4", "120", "2025-01-01", "2025-12-31", "Latest untranslated company", None),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        translated_sources = []
+
+        def _record_translation(source_text, _providers, **_kwargs):
+            translated_sources.append(source_text)
+            return (f"{source_text} EN", "StubProvider")
+
+        with patch(
+            "src.description_translation.load_translation_providers",
+            return_value=([object()], {"chunk_char_limit": 120, "row_delay_seconds": 0.0}),
+        ), patch(
+            "src.description_translation.translate_text_with_providers",
+            side_effect=_record_translation,
+        ):
+            result = self.d.populate_business_descriptions_en(
+                target_database=self.target_db,
+                providers_config="ignored.json",
+                batch_size=1,
+            )
+
+        self.assertEqual(
+            translated_sources,
+            [
+                "Latest untranslated company",
+                "Latest partially translated company",
+                "Older untranslated company",
+            ],
+        )
+        self.assertEqual(result["translated_rows"], 3)
+        self.assertEqual(result["failed_rows"], 0)
+
     def test_shareprice_falls_back_to_source_db(self):
         # Remove lookup tables from target DB
         target_conn = sqlite3.connect(self.target_db)

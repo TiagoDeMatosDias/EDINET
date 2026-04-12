@@ -1408,6 +1408,9 @@ class data:
                 actual_target = target_column
                 conn.commit()
 
+            actual_company = self._resolve_column_name(conn, actual_table, "edinetCode")
+            actual_period_end = self._resolve_column_name(conn, actual_table, "periodEnd")
+
             existing_translation_count = 0
             if not overwrite:
                 existing_translation_count = conn.execute(
@@ -1420,33 +1423,98 @@ class data:
             failed_rows = 0
             processed_rows = 0
             provider_usage = {}
-            last_docid = None
             stopped_early = False
             stop_reason = ""
 
+            attempted_docids = self._sql_ident("_tmp_desc_translation_attempted")
+            conn.execute(f"CREATE TEMP TABLE IF NOT EXISTS {attempted_docids} (docID TEXT PRIMARY KEY)")
+            conn.execute(f"DELETE FROM {attempted_docids}")
+
+            target_expr = self._sql_ident(actual_target)
+            nonblank_target_expr = (
+                f"{target_expr} IS NOT NULL AND TRIM(CAST({target_expr} AS TEXT)) <> ''"
+            )
+
             while True:
                 where_clauses = [
-                    f"{self._sql_ident(actual_docid)} IS NOT NULL",
-                    f"{self._sql_ident(actual_source)} IS NOT NULL",
-                    f"TRIM(CAST({self._sql_ident(actual_source)} AS TEXT)) <> ''",
+                    f"t.{self._sql_ident(actual_docid)} IS NOT NULL",
+                    f"t.{self._sql_ident(actual_source)} IS NOT NULL",
+                    f"TRIM(CAST(t.{self._sql_ident(actual_source)} AS TEXT)) <> ''",
+                    f"attempted.docID IS NULL",
                 ]
                 params = []
                 if not overwrite:
                     where_clauses.append(
-                        f"({self._sql_ident(actual_target)} IS NULL "
-                        f"OR TRIM(CAST({self._sql_ident(actual_target)} AS TEXT)) = '')"
+                        f"(t.{self._sql_ident(actual_target)} IS NULL "
+                        f"OR TRIM(CAST(t.{self._sql_ident(actual_target)} AS TEXT)) = '')"
                     )
-                if last_docid is not None:
-                    where_clauses.append(f"{self._sql_ident(actual_docid)} > ?")
-                    params.append(last_docid)
 
-                sql = (
-                    f"SELECT {self._sql_ident(actual_docid)}, {self._sql_ident(actual_source)}, {self._sql_ident(actual_target)} "
-                    f"FROM {self._sql_ident(actual_table)} "
-                    f"WHERE {' AND '.join(where_clauses)} "
-                    f"ORDER BY {self._sql_ident(actual_docid)} "
-                    f"LIMIT ?"
+                base_from = (
+                    f"FROM {self._sql_ident(actual_table)} t "
+                    f"LEFT JOIN {attempted_docids} attempted "
+                    f"ON attempted.docID = t.{self._sql_ident(actual_docid)}"
                 )
+
+                if actual_company and actual_period_end:
+                    company_key_expr = (
+                        f"COALESCE(NULLIF(TRIM(CAST(t.{self._sql_ident(actual_company)} AS TEXT)), ''), "
+                        f"CAST(t.{self._sql_ident(actual_docid)} AS TEXT))"
+                    )
+                    existing_company_key_expr = (
+                        f"COALESCE(NULLIF(TRIM(CAST(existing.{self._sql_ident(actual_company)} AS TEXT)), ''), "
+                        f"CAST(existing.{self._sql_ident(actual_docid)} AS TEXT))"
+                    )
+                    period_null_sort_expr = (
+                        f"CASE WHEN t.{self._sql_ident(actual_period_end)} IS NULL "
+                        f"OR TRIM(CAST(t.{self._sql_ident(actual_period_end)} AS TEXT)) = '' THEN 1 ELSE 0 END"
+                    )
+                    period_sort_expr = f"CAST(t.{self._sql_ident(actual_period_end)} AS TEXT)"
+                    docid_sort_expr = f"CAST(t.{self._sql_ident(actual_docid)} AS TEXT)"
+                    sql = f"""
+                    WITH eligible AS (
+                        SELECT
+                            t.{self._sql_ident(actual_docid)} AS doc_id,
+                            t.{self._sql_ident(actual_source)} AS source_text,
+                            t.{self._sql_ident(actual_target)} AS current_target,
+                            CASE WHEN EXISTS (
+                                SELECT 1
+                                FROM {self._sql_ident(actual_table)} existing
+                                WHERE {existing_company_key_expr} = {company_key_expr}
+                                  AND existing.{nonblank_target_expr}
+                            ) THEN 1 ELSE 0 END AS company_has_translation,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY {company_key_expr}
+                                ORDER BY {period_null_sort_expr}, {period_sort_expr} DESC, {docid_sort_expr} DESC
+                            ) AS company_report_rank,
+                            {period_null_sort_expr} AS period_null_sort,
+                            {period_sort_expr} AS period_sort_value
+                            {base_from}
+                        WHERE {' AND '.join(where_clauses)}
+                    )
+                    SELECT doc_id, source_text, current_target
+                    FROM eligible
+                    ORDER BY
+                        CASE
+                            WHEN company_report_rank = 1 AND company_has_translation = 0 THEN 0
+                            WHEN company_report_rank = 1 AND company_has_translation = 1 THEN 1
+                            WHEN company_has_translation = 0 THEN 2
+                            ELSE 3
+                        END,
+                        period_null_sort,
+                        period_sort_value DESC,
+                        CAST(doc_id AS TEXT) DESC
+                    LIMIT ?
+                    """
+                else:
+                    sql = (
+                        f"SELECT t.{self._sql_ident(actual_docid)}, "
+                        f"t.{self._sql_ident(actual_source)}, "
+                        f"t.{self._sql_ident(actual_target)} "
+                        f"{base_from} "
+                        f"WHERE {' AND '.join(where_clauses)} "
+                        f"ORDER BY CAST(t.{self._sql_ident(actual_docid)} AS TEXT) DESC "
+                        f"LIMIT ?"
+                    )
                 params.append(batch_size)
                 rows = conn.execute(sql, params).fetchall()
                 if not rows:
@@ -1454,8 +1522,11 @@ class data:
 
                 stop_requested = False
                 for doc_id, source_text, current_target in rows:
-                    last_docid = doc_id
                     if not overwrite and str(current_target or "").strip():
+                        conn.execute(
+                            f"INSERT OR IGNORE INTO {attempted_docids}(docID) VALUES (?)",
+                            (doc_id,),
+                        )
                         continue
                     processed_rows += 1
                     try:
@@ -1479,6 +1550,10 @@ class data:
                             )
                             stop_requested = True
                             break
+                        conn.execute(
+                            f"INSERT OR IGNORE INTO {attempted_docids}(docID) VALUES (?)",
+                            (doc_id,),
+                        )
                         logger.warning(
                             "Could not translate %s.%s for %s=%s: %s",
                             actual_table,
@@ -1502,6 +1577,10 @@ class data:
                     )
                     translated_rows += 1
                     provider_usage[provider_name] = provider_usage.get(provider_name, 0) + 1
+                    conn.execute(
+                        f"INSERT OR IGNORE INTO {attempted_docids}(docID) VALUES (?)",
+                        (doc_id,),
+                    )
 
                     if row_delay_seconds > 0:
                         time.sleep(row_delay_seconds)
