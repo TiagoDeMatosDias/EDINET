@@ -21,7 +21,11 @@ class TranslationError(RuntimeError):
     """Raised when no translation provider can successfully translate text."""
 
 
-class TranslationRateLimitError(TranslationError):
+class TranslationProviderUnavailableError(TranslationError):
+    """Raised when a provider should be disabled for the rest of the run."""
+
+
+class TranslationRateLimitError(TranslationProviderUnavailableError):
     """Raised when a provider signals quota exhaustion or rate limiting."""
 
 
@@ -158,7 +162,7 @@ class TranslationProvider:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise TranslationError(f"{self.name} returned invalid JSON.") from exc
+            raise TranslationProviderUnavailableError(f"{self.name} returned invalid JSON.") from exc
 
         if response.status_code == 429:
             raise TranslationRateLimitError(f"{self.name} returned HTTP 429.")
@@ -166,7 +170,7 @@ class TranslationProvider:
             message = _payload_message(payload) or f"HTTP {response.status_code}"
             if _is_rate_limit_message(message):
                 raise TranslationRateLimitError(message)
-            raise TranslationError(message)
+            raise TranslationProviderUnavailableError(message)
         return payload
 
     def translate(
@@ -208,7 +212,7 @@ class LibreTranslateProvider(TranslationProvider):
         base_url = self._setting("base_url").rstrip("/")
         endpoint = self._setting("endpoint") or (f"{base_url}/translate" if base_url else "")
         if not endpoint:
-            raise TranslationError(f"{self.name} is missing endpoint/base_url.")
+            raise TranslationProviderUnavailableError(f"{self.name} is missing endpoint/base_url.")
 
         payload = {
             "q": text,
@@ -228,7 +232,7 @@ class LibreTranslateProvider(TranslationProvider):
         try:
             response = session.post(endpoint, data=payload, headers=headers, timeout=self.timeout_seconds)
         except requests.RequestException as exc:
-            raise TranslationError(f"{self.name} request failed: {exc}") from exc
+            raise TranslationProviderUnavailableError(f"{self.name} request failed: {exc}") from exc
 
         payload_json = self._response_json(response)
         translated_text = _clean_text_block(payload_json.get("translatedText"))
@@ -253,7 +257,7 @@ class MyMemoryProvider(TranslationProvider):
         base_url = self._setting("base_url").rstrip("/")
         endpoint = self._setting("endpoint") or (f"{base_url}/get" if base_url else "")
         if not endpoint:
-            raise TranslationError(f"{self.name} is missing endpoint/base_url.")
+            raise TranslationProviderUnavailableError(f"{self.name} is missing endpoint/base_url.")
 
         params = {
             "q": text,
@@ -266,7 +270,7 @@ class MyMemoryProvider(TranslationProvider):
         try:
             response = session.get(endpoint, params=params, timeout=self.timeout_seconds)
         except requests.RequestException as exc:
-            raise TranslationError(f"{self.name} request failed: {exc}") from exc
+            raise TranslationProviderUnavailableError(f"{self.name} request failed: {exc}") from exc
 
         payload_json = self._response_json(response)
         status = payload_json.get("responseStatus")
@@ -274,7 +278,7 @@ class MyMemoryProvider(TranslationProvider):
         if status not in (None, 200):
             if _is_rate_limit_message(details):
                 raise TranslationRateLimitError(details)
-            raise TranslationError(details or f"{self.name} returned status {status}.")
+            raise TranslationProviderUnavailableError(details or f"{self.name} returned status {status}.")
 
         translated_text = _clean_text_block(
             ((payload_json.get("responseData") or {}).get("translatedText"))
@@ -335,6 +339,14 @@ def load_translation_providers(config_path: str) -> tuple[list[TranslationProvid
     return providers, settings
 
 
+def _retire_provider(providers: list[TranslationProvider], failed_provider: TranslationProvider) -> None:
+    """Remove a failed provider from the active provider list when present."""
+    try:
+        providers.remove(failed_provider)
+    except ValueError:
+        pass
+
+
 def translate_text_with_providers(
     text: Any,
     providers: list[TranslationProvider],
@@ -343,8 +355,14 @@ def translate_text_with_providers(
     target_language: str = "en",
     chunk_char_limit: int = _DEFAULT_CHUNK_CHAR_LIMIT,
     session: requests.Session | None = None,
+    retire_failed_providers: bool = False,
 ) -> tuple[str, str]:
-    """Translate text using ordered provider fallback and return text plus provider name."""
+    """Translate text using ordered provider fallback and return text plus provider name.
+
+    When ``retire_failed_providers`` is true, providers that fail with run-scoped
+    availability errors are removed from *providers* in place so later calls do
+    not retry the same dead endpoint again during the same run.
+    """
     cleaned = _clean_text_block(text)
     if not cleaned:
         return "", ""
@@ -356,7 +374,7 @@ def translate_text_with_providers(
     errors: list[str] = []
     try:
         paragraph_chunks = split_text_chunks(cleaned, chunk_char_limit=chunk_char_limit)
-        for provider in providers:
+        for provider in list(providers):
             try:
                 translated_paragraphs: list[str] = []
                 for paragraph in paragraph_chunks:
@@ -381,11 +399,31 @@ def translate_text_with_providers(
                     return translated_text, provider.name
                 errors.append(f"{provider.name}: empty translation")
             except TranslationRateLimitError as exc:
-                logger.warning("Translation provider %s rate-limited: %s", provider.name, exc)
+                logger.warning(
+                    "Translation provider %s rate-limited and disabled for the remainder of this run: %s",
+                    provider.name,
+                    exc,
+                )
                 errors.append(f"{provider.name}: {exc}")
+                if retire_failed_providers:
+                    _retire_provider(providers, provider)
+            except TranslationProviderUnavailableError as exc:
+                logger.warning(
+                    "Translation provider %s unavailable and disabled for the remainder of this run: %s",
+                    provider.name,
+                    exc,
+                )
+                errors.append(f"{provider.name}: {exc}")
+                if retire_failed_providers:
+                    _retire_provider(providers, provider)
             except TranslationError as exc:
                 logger.warning("Translation provider %s failed: %s", provider.name, exc)
                 errors.append(f"{provider.name}: {exc}")
+        if retire_failed_providers and not providers:
+            raise TranslationError(
+                "All translation providers are unavailable for the remainder of this run. "
+                + "; ".join(errors)
+            )
         raise TranslationError("All translation providers failed. " + "; ".join(errors))
     finally:
         if owns_session:

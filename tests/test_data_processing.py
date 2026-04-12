@@ -552,6 +552,139 @@ class TestGenerateFinancialStatements(unittest.TestCase):
         self.assertEqual(result["failed_rows"], 0)
         self.assertEqual(result["provider_usage"], {"StubProvider": 1})
 
+    def test_populate_business_descriptions_en_skips_existing_translations(self):
+        expanded_mappings = {
+            "Mappings": [
+                {
+                    "Name": "SharesOutstanding",
+                    "Table": "FinancialStatements",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults"],
+                },
+                {
+                    "Name": "DescriptionOfBusiness",
+                    "Table": "FinancialStatements",
+                    "periods": ["FilingDateInstant"],
+                    "Terms": ["jpcrp_cor:DescriptionOfBusinessTextBlock"],
+                },
+            ]
+        }
+        with open(self.mappings_file, "w", encoding="utf-8") as f:
+            json.dump(expanded_mappings, f)
+
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            conn.execute(
+                "UPDATE FinancialStatements SET DescriptionOfBusiness_EN = ? WHERE docID = ?",
+                ("Already translated.", "DOC1"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with patch(
+            "src.description_translation.load_translation_providers",
+            return_value=([object()], {"chunk_char_limit": 120, "row_delay_seconds": 0.0}),
+        ), patch(
+            "src.description_translation.translate_text_with_providers",
+        ) as mock_translate:
+            result = self.d.populate_business_descriptions_en(
+                target_database=self.target_db,
+                providers_config="ignored.json",
+                batch_size=10,
+            )
+
+        mock_translate.assert_not_called()
+        self.assertEqual(result["processed_rows"], 0)
+        self.assertEqual(result["translated_rows"], 0)
+        self.assertEqual(result["failed_rows"], 0)
+        self.assertEqual(result["existing_translation_rows"], 1)
+        self.assertFalse(result["stopped_early"])
+
+    def test_populate_business_descriptions_en_stops_when_providers_are_exhausted(self):
+        from src.description_translation import TranslationError
+
+        expanded_mappings = {
+            "Mappings": [
+                {
+                    "Name": "SharesOutstanding",
+                    "Table": "FinancialStatements",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults"],
+                },
+                {
+                    "Name": "DescriptionOfBusiness",
+                    "Table": "FinancialStatements",
+                    "periods": ["FilingDateInstant"],
+                    "Terms": ["jpcrp_cor:DescriptionOfBusinessTextBlock"],
+                },
+            ]
+        }
+        with open(self.mappings_file, "w", encoding="utf-8") as f:
+            json.dump(expanded_mappings, f)
+
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            conn.execute(
+                "INSERT INTO FinancialStatements (docID, DescriptionOfBusiness) VALUES (?, ?)",
+                ("DOC2", "Builds robots"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        def _exhaust_providers(_text, providers, **_kwargs):
+            providers.clear()
+            raise TranslationError("All translation providers are unavailable for the remainder of this run.")
+
+        with patch(
+            "src.description_translation.load_translation_providers",
+            return_value=([object(), object()], {"chunk_char_limit": 120, "row_delay_seconds": 0.0}),
+        ), patch(
+            "src.description_translation.translate_text_with_providers",
+            side_effect=_exhaust_providers,
+        ) as mock_translate, self.assertLogs("src.data_processing", level="WARNING") as logs:
+            result = self.d.populate_business_descriptions_en(
+                target_database=self.target_db,
+                providers_config="ignored.json",
+                batch_size=10,
+            )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            target_values = conn.execute(
+                "SELECT docID, DescriptionOfBusiness_EN FROM FinancialStatements ORDER BY docID"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertEqual(mock_translate.call_count, 1)
+        self.assertEqual(result["processed_rows"], 1)
+        self.assertEqual(result["translated_rows"], 0)
+        self.assertEqual(result["failed_rows"], 1)
+        self.assertTrue(result["stopped_early"])
+        self.assertIn("All translation providers are unavailable", result["stop_reason"])
+        self.assertTrue(any("Stopping Populate Business Descriptions EN early" in message for message in logs.output))
+        self.assertEqual(target_values, [("DOC1", None), ("DOC2", None)])
+
     def test_shareprice_falls_back_to_source_db(self):
         # Remove lookup tables from target DB
         target_conn = sqlite3.connect(self.target_db)

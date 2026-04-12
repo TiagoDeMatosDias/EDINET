@@ -1421,6 +1421,8 @@ class data:
             processed_rows = 0
             provider_usage = {}
             last_docid = None
+            stopped_early = False
+            stop_reason = ""
 
             while True:
                 where_clauses = [
@@ -1439,7 +1441,7 @@ class data:
                     params.append(last_docid)
 
                 sql = (
-                    f"SELECT {self._sql_ident(actual_docid)}, {self._sql_ident(actual_source)} "
+                    f"SELECT {self._sql_ident(actual_docid)}, {self._sql_ident(actual_source)}, {self._sql_ident(actual_target)} "
                     f"FROM {self._sql_ident(actual_table)} "
                     f"WHERE {' AND '.join(where_clauses)} "
                     f"ORDER BY {self._sql_ident(actual_docid)} "
@@ -1450,8 +1452,11 @@ class data:
                 if not rows:
                     break
 
-                for doc_id, source_text in rows:
+                stop_requested = False
+                for doc_id, source_text, current_target in rows:
                     last_docid = doc_id
+                    if not overwrite and str(current_target or "").strip():
+                        continue
                     processed_rows += 1
                     try:
                         translated_text, provider_name = translate_text_with_providers(
@@ -1460,9 +1465,20 @@ class data:
                             source_language=source_language,
                             target_language=target_language,
                             chunk_char_limit=chunk_char_limit,
+                            retire_failed_providers=True,
                         )
                     except TranslationError as exc:
                         failed_rows += 1
+                        if not providers:
+                            stopped_early = True
+                            stop_reason = str(exc)
+                            logger.warning(
+                                "Stopping Populate Business Descriptions EN early after %d attempted row(s): %s",
+                                processed_rows,
+                                stop_reason,
+                            )
+                            stop_requested = True
+                            break
                         logger.warning(
                             "Could not translate %s.%s for %s=%s: %s",
                             actual_table,
@@ -1491,13 +1507,16 @@ class data:
                         time.sleep(row_delay_seconds)
 
                 conn.commit()
+                if stop_requested:
+                    break
 
             logger.info(
-                "Populate Business Descriptions EN completed. Processed=%d translated=%d failed=%d existing=%d providers=%s",
+                "Populate Business Descriptions EN completed. Processed=%d translated=%d failed=%d existing=%d stopped_early=%s providers=%s",
                 processed_rows,
                 translated_rows,
                 failed_rows,
                 existing_translation_count,
+                stopped_early,
                 provider_usage,
             )
             return {
@@ -1506,6 +1525,8 @@ class data:
                 "failed_rows": failed_rows,
                 "existing_translation_rows": existing_translation_count,
                 "provider_usage": provider_usage,
+                "stopped_early": stopped_early,
+                "stop_reason": stop_reason,
             }
         finally:
             conn.close()
