@@ -79,7 +79,8 @@ def _create_sample_db(path: str) -> str:
             docID TEXT UNIQUE,
             PERatio REAL,
             EarningsYield REAL,
-            MarketCap REAL
+            MarketCap REAL,
+            PriceToBook REAL
         )
     """)
     c.execute("""
@@ -93,7 +94,8 @@ def _create_sample_db(path: str) -> str:
     c.execute("""
         CREATE TABLE Valuation_Historical (
             docID TEXT UNIQUE,
-            PERatio_5Year_Average REAL
+            PERatio_5Year_Average REAL,
+            PriceToBook REAL
         )
     """)
 
@@ -137,13 +139,13 @@ def _create_sample_db(path: str) -> str:
         c.execute("INSERT INTO PerShare VALUES (?,?,?,?)", row)
 
     valuation = [
-        ("DOC001", 10.0, 0.10, 1500000000),
-        ("DOC002", 10.0, 0.10, 1600000000),
-        ("DOC003", 10.67, 0.094, 1600000000),
-        ("DOC004", 10.0, 0.10, 1200000000),
+        ("DOC001", 10.0, 0.10, 1500000000, 1.25),
+        ("DOC002", 10.0, 0.10, 1600000000, 0.95),
+        ("DOC003", 10.67, 0.094, 1600000000, 1.40),
+        ("DOC004", 10.0, 0.10, 1200000000, 1.10),
     ]
     for row in valuation:
-        c.execute("INSERT INTO Valuation VALUES (?,?,?,?)", row)
+        c.execute("INSERT INTO Valuation VALUES (?,?,?,?,?)", row)
 
     quality = [
         ("DOC001", 0.15, 0.40, 0.8),
@@ -155,13 +157,13 @@ def _create_sample_db(path: str) -> str:
         c.execute("INSERT INTO Quality VALUES (?,?,?,?)", row)
 
     valuation_historical = [
-        ("DOC001", 11.0),
-        ("DOC002", 9.5),
-        ("DOC003", 12.0),
-        ("DOC004", 9.0),
+        ("DOC001", 11.0, 1.10),
+        ("DOC002", 9.5, 0.90),
+        ("DOC003", 12.0, 1.35),
+        ("DOC004", 9.0, 1.00),
     ]
     for row in valuation_historical:
-        c.execute("INSERT INTO Valuation_Historical VALUES (?, ?)", row)
+        c.execute("INSERT INTO Valuation_Historical VALUES (?, ?, ?)", row)
 
     conn.commit()
     conn.close()
@@ -466,14 +468,30 @@ def test_run_screening_dynamic_column_filter(sample_db):
     assert set(df["CompanyName"]) == {"Alpha Corp", "Gamma Ltd"}
 
 
-def test_run_screening_with_weighted_ranking(sample_db):
-    """Weighted ranking should add score columns and sort by score."""
+def test_run_screening_qualifies_duplicate_result_column_names(sample_db):
+    """Duplicate metric names from different tables should stay distinct."""
     criteria = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 0}]
     columns = [
         "CompanyInfo.CompanyName",
-        "Valuation.PERatio",
-        "Quality.ReturnOnEquity",
+        "Valuation.PriceToBook",
+        "Valuation_Historical.PriceToBook",
     ]
+
+    df = run_screening(sample_db, criteria, columns, period="2024")
+
+    assert "Valuation.PriceToBook" in df.columns
+    assert "Valuation_Historical.PriceToBook" in df.columns
+    assert "PriceToBook" not in df.columns
+
+    alpha = df.loc[df["CompanyName"] == "Alpha Corp"].iloc[0]
+    assert alpha["Valuation.PriceToBook"] == pytest.approx(1.25)
+    assert alpha["Valuation_Historical.PriceToBook"] == pytest.approx(1.10)
+
+
+def test_run_screening_with_weighted_ranking(sample_db):
+    """Weighted ranking should add a rank column and sort by it."""
+    criteria = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 0}]
+    columns = ["CompanyInfo.CompanyName"]
     ranking_rules = [
         {
             "table": "Valuation",
@@ -498,9 +516,32 @@ def test_run_screening_with_weighted_ranking(sample_db):
         ranking_rules=ranking_rules,
     )
 
-    assert "ScreeningScore" in df.columns
     assert "ScreeningRank" in df.columns
+    assert "PERatio" not in df.columns
+    assert "ReturnOnEquity" not in df.columns
     assert df.iloc[0]["CompanyName"] == "Gamma Ltd"
+    assert list(df["ScreeningRank"]) == sorted(df["ScreeningRank"].tolist())
+
+
+def test_run_screening_weighted_percentile_respects_lower_direction(sample_db):
+    """Lower-is-better percentile ranking should favor smaller values."""
+    criteria = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 0}]
+    df = run_screening(
+        sample_db,
+        criteria,
+        ["CompanyInfo.CompanyName"],
+        period="2024",
+        ranking_algorithm="weighted_percentile",
+        ranking_rules=[{
+            "table": "Valuation",
+            "column": "PERatio",
+            "weight": 1.0,
+            "direction": "lower",
+        }],
+    )
+
+    assert list(df["ScreeningRank"]) == [1, 1, 2]
+    assert df.iloc[-1]["CompanyName"] == "Gamma Ltd"
 
 
 # ---------------------------------------------------------------------------
@@ -598,17 +639,25 @@ def test_export_screening_to_backtest_csv_historical(tmp_path, sample_db):
 def test_format_financial_value_percent():
     assert format_financial_value(0.15, "ReturnOnEquity") == "0.15"
     assert format_financial_value(0.035, "GrossMargin") == "0.035"
+    assert format_financial_value(0.15, "ReturnOnEquity", formatted=True) == "15.00%"
 
 
 def test_format_financial_value_currency():
     assert format_financial_value(1_500_000_000, "MarketCap") == "1500000000"
     assert format_financial_value(5_000_000, "EnterpriseValue") == "5000000"
     assert format_financial_value(999, "SharePrice") == "999"
+    assert format_financial_value(1_500_000_000, "MarketCap", formatted=True) == "1,500,000,000"
 
 
 def test_format_financial_value_ratio():
     result = format_financial_value(10.567, "PERatio")
     assert result == "10.567"
+    assert format_financial_value(10.567, "PERatio", formatted=True) == "10.57"
+
+
+def test_format_financial_value_screening_columns():
+    assert format_financial_value(3, "ScreeningRank", formatted=True) == "3"
+    assert format_financial_value(0.81234, "ScreeningScore", formatted=True) == "0.812"
 
 
 def test_format_financial_value_none():
@@ -688,6 +737,20 @@ def test_list_saved_screenings(tmp_path):
 
     names = list_saved_screenings(str(tmp_path))
     assert names == ["alpha", "beta", "gamma"]
+
+
+def test_saved_screening_name_sanitization_avoids_collisions(tmp_path):
+    """Different names that sanitize to the same stem should both be preserved."""
+    criteria_a = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 1}]
+    criteria_b = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 5}]
+
+    save_screening_criteria("A/B", criteria_a, [], None, str(tmp_path))
+    save_screening_criteria("AB", criteria_b, [], "2025", str(tmp_path))
+
+    assert len(list(Path(tmp_path).glob("*.json"))) == 2
+    assert set(list_saved_screenings(str(tmp_path))) == {"A/B", "AB"}
+    assert load_screening_criteria("A/B", str(tmp_path))["criteria"] == criteria_a
+    assert load_screening_criteria("AB", str(tmp_path))["criteria"] == criteria_b
 
 
 def test_delete_screening_criteria(tmp_path):

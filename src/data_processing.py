@@ -1384,6 +1384,10 @@ class data:
         providers, provider_settings = load_translation_providers(providers_config)
         chunk_char_limit = provider_settings.get("chunk_char_limit", 700)
         row_delay_seconds = float(provider_settings.get("row_delay_seconds", 0.0) or 0.0)
+        slow_provider_warning_seconds = float(
+            provider_settings.get("slow_provider_warning_seconds", 10.0) or 10.0
+        )
+        provider_names = [getattr(provider, "name", type(provider).__name__) for provider in providers]
 
         conn = sqlite3.connect(target_database)
         try:
@@ -1411,6 +1415,18 @@ class data:
             actual_company = self._resolve_column_name(conn, actual_table, "edinetCode")
             actual_period_end = self._resolve_column_name(conn, actual_table, "periodEnd")
 
+            logger.info(
+                "Populate Business Descriptions EN starting: table=%s source=%s target=%s overwrite=%s batch_size=%d providers=%s chunk_char_limit=%s row_delay_seconds=%.2f",
+                actual_table,
+                actual_source,
+                actual_target,
+                overwrite,
+                batch_size,
+                provider_names,
+                chunk_char_limit,
+                row_delay_seconds,
+            )
+
             existing_translation_count = 0
             if not overwrite:
                 existing_translation_count = conn.execute(
@@ -1430,11 +1446,64 @@ class data:
             conn.execute(f"CREATE TEMP TABLE IF NOT EXISTS {attempted_docids} (docID TEXT PRIMARY KEY)")
             conn.execute(f"DELETE FROM {attempted_docids}")
 
-            target_expr = self._sql_ident(actual_target)
-            nonblank_target_expr = (
-                f"{target_expr} IS NOT NULL AND TRIM(CAST({target_expr} AS TEXT)) <> ''"
-            )
+            def _qualified_column(column_name, alias=None):
+                qualified = self._sql_ident(column_name)
+                if alias:
+                    return f"{alias}.{qualified}"
+                return qualified
 
+            def _nonblank_target_expr(alias=None):
+                qualified_target = _qualified_column(actual_target, alias)
+                return (
+                    f"{qualified_target} IS NOT NULL "
+                    f"AND TRIM(CAST({qualified_target} AS TEXT)) <> ''"
+                )
+
+            def _company_key_expr(alias=None):
+                qualified_docid = f"CAST({_qualified_column(actual_docid, alias)} AS TEXT)"
+                if not actual_company:
+                    return qualified_docid
+                qualified_company = _qualified_column(actual_company, alias)
+                return (
+                    f"COALESCE(NULLIF(TRIM(CAST({qualified_company} AS TEXT)), ''), "
+                    f"{qualified_docid})"
+                )
+
+            company_key_base_expr = _company_key_expr()
+            eligible_where_clauses = [
+                f"{self._sql_ident(actual_docid)} IS NOT NULL",
+                f"{self._sql_ident(actual_source)} IS NOT NULL",
+                f"TRIM(CAST({self._sql_ident(actual_source)} AS TEXT)) <> ''",
+            ]
+            if not overwrite:
+                eligible_where_clauses.append(
+                    f"({self._sql_ident(actual_target)} IS NULL "
+                    f"OR TRIM(CAST({self._sql_ident(actual_target)} AS TEXT)) = '')"
+                )
+            eligible_row_count = conn.execute(
+                f"SELECT COUNT(*) FROM {self._sql_ident(actual_table)} "
+                f"WHERE {' AND '.join(eligible_where_clauses)}"
+            ).fetchone()[0]
+            eligible_company_count = conn.execute(
+                f"SELECT COUNT(*) FROM ("
+                f"SELECT {company_key_base_expr} AS company_key "
+                f"FROM {self._sql_ident(actual_table)} "
+                f"WHERE {' AND '.join(eligible_where_clauses)} "
+                f"GROUP BY company_key"
+                f")"
+            ).fetchone()[0]
+            logger.info(
+                "Populate Business Descriptions EN found %d eligible row(s) across %d company(s); existing_translation_rows=%d",
+                eligible_row_count,
+                eligible_company_count,
+                existing_translation_count,
+            )
+            if eligible_row_count == 0:
+                logger.info("Populate Business Descriptions EN has no rows to translate.")
+
+            batch_index = 0
+            attempted_company_keys: set[str] = set()
+            updated_company_keys: set[str] = set()
             while True:
                 where_clauses = [
                     f"t.{self._sql_ident(actual_docid)} IS NOT NULL",
@@ -1456,14 +1525,7 @@ class data:
                 )
 
                 if actual_company and actual_period_end:
-                    company_key_expr = (
-                        f"COALESCE(NULLIF(TRIM(CAST(t.{self._sql_ident(actual_company)} AS TEXT)), ''), "
-                        f"CAST(t.{self._sql_ident(actual_docid)} AS TEXT))"
-                    )
-                    existing_company_key_expr = (
-                        f"COALESCE(NULLIF(TRIM(CAST(existing.{self._sql_ident(actual_company)} AS TEXT)), ''), "
-                        f"CAST(existing.{self._sql_ident(actual_docid)} AS TEXT))"
-                    )
+                    company_key_expr = _company_key_expr("t")
                     period_null_sort_expr = (
                         f"CASE WHEN t.{self._sql_ident(actual_period_end)} IS NULL "
                         f"OR TRIM(CAST(t.{self._sql_ident(actual_period_end)} AS TEXT)) = '' THEN 1 ELSE 0 END"
@@ -1471,17 +1533,20 @@ class data:
                     period_sort_expr = f"CAST(t.{self._sql_ident(actual_period_end)} AS TEXT)"
                     docid_sort_expr = f"CAST(t.{self._sql_ident(actual_docid)} AS TEXT)"
                     sql = f"""
-                    WITH eligible AS (
+                    WITH company_status AS (
+                        SELECT
+                            {_company_key_expr("base")} AS company_key,
+                            MAX(CASE WHEN {_nonblank_target_expr("base")} THEN 1 ELSE 0 END) AS company_has_translation
+                        FROM {self._sql_ident(actual_table)} base
+                        GROUP BY company_key
+                    ),
+                    eligible AS (
                         SELECT
                             t.{self._sql_ident(actual_docid)} AS doc_id,
                             t.{self._sql_ident(actual_source)} AS source_text,
                             t.{self._sql_ident(actual_target)} AS current_target,
-                            CASE WHEN EXISTS (
-                                SELECT 1
-                                FROM {self._sql_ident(actual_table)} existing
-                                WHERE {existing_company_key_expr} = {company_key_expr}
-                                  AND existing.{nonblank_target_expr}
-                            ) THEN 1 ELSE 0 END AS company_has_translation,
+                            {company_key_expr} AS company_key,
+                            COALESCE(status.company_has_translation, 0) AS company_has_translation,
                             ROW_NUMBER() OVER (
                                 PARTITION BY {company_key_expr}
                                 ORDER BY {period_null_sort_expr}, {period_sort_expr} DESC, {docid_sort_expr} DESC
@@ -1489,9 +1554,11 @@ class data:
                             {period_null_sort_expr} AS period_null_sort,
                             {period_sort_expr} AS period_sort_value
                             {base_from}
+                            LEFT JOIN company_status status
+                            ON status.company_key = {company_key_expr}
                         WHERE {' AND '.join(where_clauses)}
                     )
-                    SELECT doc_id, source_text, current_target
+                    SELECT doc_id, source_text, current_target, company_key
                     FROM eligible
                     ORDER BY
                         CASE
@@ -1509,26 +1576,65 @@ class data:
                     sql = (
                         f"SELECT t.{self._sql_ident(actual_docid)}, "
                         f"t.{self._sql_ident(actual_source)}, "
-                        f"t.{self._sql_ident(actual_target)} "
+                        f"t.{self._sql_ident(actual_target)}, "
+                        f"CAST(t.{self._sql_ident(actual_docid)} AS TEXT) "
                         f"{base_from} "
                         f"WHERE {' AND '.join(where_clauses)} "
                         f"ORDER BY CAST(t.{self._sql_ident(actual_docid)} AS TEXT) DESC "
                         f"LIMIT ?"
                     )
                 params.append(batch_size)
+                next_batch_number = batch_index + 1
+                if next_batch_number == 1:
+                    logger.info("Populate Business Descriptions EN selecting initial batch.")
+                selection_started_at = time.perf_counter()
                 rows = conn.execute(sql, params).fetchall()
+                selection_elapsed = time.perf_counter() - selection_started_at
+                if next_batch_number == 1 or selection_elapsed >= 5.0:
+                    logger.info(
+                        "Populate Business Descriptions EN selected %d row(s) for batch %d in %.2fs.",
+                        len(rows),
+                        next_batch_number,
+                        selection_elapsed,
+                    )
                 if not rows:
                     break
 
+                batch_index += 1
+                batch_processed = 0
+                batch_translated = 0
+                batch_failed = 0
+                batch_company_updates = 0
+
                 stop_requested = False
-                for doc_id, source_text, current_target in rows:
+                for doc_id, source_text, current_target, company_key in rows:
                     if not overwrite and str(current_target or "").strip():
                         conn.execute(
                             f"INSERT OR IGNORE INTO {attempted_docids}(docID) VALUES (?)",
                             (doc_id,),
                         )
                         continue
+                    normalized_company_key = str(company_key or doc_id).strip() or str(doc_id)
+                    if normalized_company_key not in attempted_company_keys:
+                        attempted_company_keys.add(normalized_company_key)
+                        attempted_company_count = len(attempted_company_keys)
+                        if attempted_company_count == 1 or attempted_company_count % 10 == 0:
+                            logger.info(
+                                "Populate Business Descriptions EN started company %d/%d (docID=%s).",
+                                attempted_company_count,
+                                eligible_company_count,
+                                doc_id,
+                            )
+                    provider_log_context = None
+                    provider_log_activity = False
+                    if attempted_company_count == 1 or attempted_company_count % 10 == 0:
+                        provider_log_context = (
+                            f"company {attempted_company_count}/{eligible_company_count} "
+                            f"(docID={doc_id})"
+                        )
+                        provider_log_activity = True
                     processed_rows += 1
+                    batch_processed += 1
                     try:
                         translated_text, provider_name = translate_text_with_providers(
                             source_text,
@@ -1537,6 +1643,9 @@ class data:
                             target_language=target_language,
                             chunk_char_limit=chunk_char_limit,
                             retire_failed_providers=True,
+                            log_context=provider_log_context,
+                            log_provider_activity=provider_log_activity,
+                            slow_request_warning_seconds=slow_provider_warning_seconds,
                         )
                     except TranslationError as exc:
                         failed_rows += 1
@@ -1554,6 +1663,7 @@ class data:
                             f"INSERT OR IGNORE INTO {attempted_docids}(docID) VALUES (?)",
                             (doc_id,),
                         )
+                        batch_failed += 1
                         logger.warning(
                             "Could not translate %s.%s for %s=%s: %s",
                             actual_table,
@@ -1567,6 +1677,7 @@ class data:
                     clean_translation = str(translated_text or "").strip()
                     if not clean_translation:
                         failed_rows += 1
+                        batch_failed += 1
                         continue
 
                     conn.execute(
@@ -1576,16 +1687,42 @@ class data:
                         (clean_translation, doc_id),
                     )
                     translated_rows += 1
+                    batch_translated += 1
                     provider_usage[provider_name] = provider_usage.get(provider_name, 0) + 1
                     conn.execute(
                         f"INSERT OR IGNORE INTO {attempted_docids}(docID) VALUES (?)",
                         (doc_id,),
                     )
 
+                    if normalized_company_key not in updated_company_keys:
+                        updated_company_keys.add(normalized_company_key)
+                        batch_company_updates += 1
+                        updated_company_count = len(updated_company_keys)
+                        if updated_company_count == 1 or updated_company_count % 10 == 0:
+                            logger.info(
+                                "Populate Business Descriptions EN updated %d/%d company(s).",
+                                updated_company_count,
+                                eligible_company_count,
+                            )
+
                     if row_delay_seconds > 0:
                         time.sleep(row_delay_seconds)
 
                 conn.commit()
+                logger.info(
+                    "Populate Business Descriptions EN progress: batch=%d batch_processed=%d batch_translated=%d batch_failed=%d batch_company_updates=%d total_processed=%d total_translated=%d total_failed=%d updated_companies=%d/%d active_providers=%s",
+                    batch_index,
+                    batch_processed,
+                    batch_translated,
+                    batch_failed,
+                    batch_company_updates,
+                    processed_rows,
+                    translated_rows,
+                    failed_rows,
+                    len(updated_company_keys),
+                    eligible_company_count,
+                    [getattr(provider, "name", type(provider).__name__) for provider in providers],
+                )
                 if stop_requested:
                     break
 

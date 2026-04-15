@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -356,6 +357,9 @@ def translate_text_with_providers(
     chunk_char_limit: int = _DEFAULT_CHUNK_CHAR_LIMIT,
     session: requests.Session | None = None,
     retire_failed_providers: bool = False,
+    log_context: str | None = None,
+    log_provider_activity: bool = False,
+    slow_request_warning_seconds: float | None = 10.0,
 ) -> tuple[str, str]:
     """Translate text using ordered provider fallback and return text plus provider name.
 
@@ -374,7 +378,18 @@ def translate_text_with_providers(
     errors: list[str] = []
     try:
         paragraph_chunks = split_text_chunks(cleaned, chunk_char_limit=chunk_char_limit)
+        total_chunks = sum(len(paragraph) for paragraph in paragraph_chunks)
+        context_suffix = f" for {log_context}" if log_context else ""
         for provider in list(providers):
+            provider_started_at = time.perf_counter()
+            if log_provider_activity:
+                logger.info(
+                    "Translation provider %s started%s with %d chunk(s) (timeout=%.1fs).",
+                    provider.name,
+                    context_suffix,
+                    total_chunks,
+                    provider.timeout_seconds,
+                )
             try:
                 translated_paragraphs: list[str] = []
                 for paragraph in paragraph_chunks:
@@ -394,30 +409,60 @@ def translate_text_with_providers(
                     if translated_chunks:
                         translated_paragraphs.append(" ".join(translated_chunks).strip())
 
+                elapsed_seconds = time.perf_counter() - provider_started_at
                 translated_text = "\n\n".join(paragraph.strip() for paragraph in translated_paragraphs if paragraph.strip()).strip()
                 if translated_text:
+                    if slow_request_warning_seconds is not None and elapsed_seconds >= slow_request_warning_seconds:
+                        logger.warning(
+                            "Translation provider %s was slow%s: %.1fs for %d chunk(s).",
+                            provider.name,
+                            context_suffix,
+                            elapsed_seconds,
+                            total_chunks,
+                        )
+                    elif log_provider_activity:
+                        logger.info(
+                            "Translation provider %s completed%s in %.1fs across %d chunk(s).",
+                            provider.name,
+                            context_suffix,
+                            elapsed_seconds,
+                            total_chunks,
+                        )
                     return translated_text, provider.name
                 errors.append(f"{provider.name}: empty translation")
             except TranslationRateLimitError as exc:
+                elapsed_seconds = time.perf_counter() - provider_started_at
                 logger.warning(
-                    "Translation provider %s rate-limited and disabled for the remainder of this run: %s",
+                    "Translation provider %s rate-limited%s after %.1fs and disabled for the remainder of this run: %s",
                     provider.name,
+                    context_suffix,
+                    elapsed_seconds,
                     exc,
                 )
                 errors.append(f"{provider.name}: {exc}")
                 if retire_failed_providers:
                     _retire_provider(providers, provider)
             except TranslationProviderUnavailableError as exc:
+                elapsed_seconds = time.perf_counter() - provider_started_at
                 logger.warning(
-                    "Translation provider %s unavailable and disabled for the remainder of this run: %s",
+                    "Translation provider %s unavailable%s after %.1fs and disabled for the remainder of this run: %s",
                     provider.name,
+                    context_suffix,
+                    elapsed_seconds,
                     exc,
                 )
                 errors.append(f"{provider.name}: {exc}")
                 if retire_failed_providers:
                     _retire_provider(providers, provider)
             except TranslationError as exc:
-                logger.warning("Translation provider %s failed: %s", provider.name, exc)
+                elapsed_seconds = time.perf_counter() - provider_started_at
+                logger.warning(
+                    "Translation provider %s failed%s after %.1fs: %s",
+                    provider.name,
+                    context_suffix,
+                    elapsed_seconds,
+                    exc,
+                )
                 errors.append(f"{provider.name}: {exc}")
         if retire_failed_providers and not providers:
             raise TranslationError(

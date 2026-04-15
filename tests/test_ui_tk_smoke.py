@@ -478,6 +478,47 @@ def test_screening_add_criterion_button_adds_row(root):
     assert len(page._criteria_rows) == 1
 
 
+def test_screening_ranking_rules_do_not_force_visible_columns(root):
+    """Ranking metrics should be fetched internally, not injected into visible columns."""
+    from ui_tk.pages.screening import ScreeningPage
+
+    page = ScreeningPage(root)
+    page._available_metrics = {
+        "CompanyInfo": ["edinetCode", "Company_Ticker", "CompanyName", "Industry"],
+        "Valuation": ["PERatio"],
+    }
+
+    page._add_ranking_rule()
+    row = page._ranking_rows[0]
+    row["table_var"].set("Valuation")
+    row["column_var"].set("PERatio")
+
+    cols = page._collect_columns()
+
+    assert "Valuation.PERatio" not in cols
+    assert "CompanyInfo.edinetCode" in cols
+
+
+def test_screening_format_toggle_reformats_visible_values(root):
+    """Screening results should toggle between raw and formatted display values."""
+    from ui_tk.pages.screening import ScreeningPage
+
+    page = ScreeningPage(root)
+    page._results_df = pd.DataFrame([
+        {"MarketCap": 1_500_000_000, "ReturnOnEquity": 0.15}
+    ])
+    page._populate_results(page._results_df)
+
+    item = page._tree.get_children()[0]
+    assert page._tree.item(item, "values") == ("1500000000.0", "0.15")
+
+    page._toggle_value_format()
+
+    item = page._tree.get_children()[0]
+    assert page._format_toggle_btn._inner.cget("text") == "Values: Formatted"
+    assert page._tree.item(item, "values") == ("1,500,000,000", "15.00%")
+
+
 def test_security_analysis_page_init(root):
     """SecurityAnalysisPage can be instantiated without error."""
     from ui_tk.pages.security_analysis import SecurityAnalysisPage

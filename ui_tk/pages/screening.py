@@ -63,6 +63,7 @@ class ScreeningPage(ttk.Frame):
         self._sort_column: str | None = None
         self._sort_ascending: bool = True
         self._display_columns: dict[str, tk.BooleanVar] = {}
+        self._formatted_values = False
         self._status_var = tk.StringVar(value="Select a database and add criteria to start screening")
         self._builder_summary_var = tk.StringVar(value="0 criteria • 0 ranking rules")
         self._column_summary_var = tk.StringVar(value="Default columns only")
@@ -100,6 +101,12 @@ class ScreeningPage(ttk.Frame):
             command=self._export_results,
         )
         self._export_btn.pack(side="right")
+
+        self._format_toggle_btn = RoundedButton(
+            toolbar, text="Values: Raw", style="Ghost.TButton",
+            command=self._toggle_value_format,
+        )
+        self._format_toggle_btn.pack(side="right", padx=(0, 6))
 
         self._export_backtest_btn = RoundedButton(
             toolbar, text="Backtest CSV", style="Ghost.TButton",
@@ -269,6 +276,13 @@ class ScreeningPage(ttk.Frame):
         else:
             self._empty_results.pack_forget()
             self._tree_frame.pack(fill="both", expand=True)
+
+    def _toggle_value_format(self):
+        self._formatted_values = not self._formatted_values
+        label = "Values: Formatted" if self._formatted_values else "Values: Raw"
+        self._format_toggle_btn.configure(text=label)
+        if self._results_df is not None and not self._results_df.empty:
+            self._populate_results(self._results_df)
 
     def _update_builder_summaries(self):
         criteria_count = len(self._criteria_rows)
@@ -858,10 +872,6 @@ class ScreeningPage(ttk.Frame):
             col_ref = f"{crit['table']}.{crit['column']}"
             if col_ref not in cols:
                 cols.append(col_ref)
-        for rule in self._collect_ranking_rules():
-            col_ref = f"{rule['table']}.{rule['column']}"
-            if col_ref not in cols:
-                cols.append(col_ref)
         return cols
 
     def _coerce_criterion_value(self, table: str, raw_value: str):
@@ -971,7 +981,13 @@ class ScreeningPage(ttk.Frame):
             values = []
             for col in cols:
                 val = row[col]
-                values.append(format_financial_value(val, col))
+                values.append(
+                    format_financial_value(
+                        val,
+                        col,
+                        formatted=self._formatted_values,
+                    )
+                )
             tag = "even" if i % 2 == 0 else "odd"
             item_id = self._tree.insert("", "end", values=values, tags=(tag,))
             self._result_records_by_item[item_id] = row.to_dict()
@@ -1394,6 +1410,7 @@ class ScreeningPage(ttk.Frame):
 
         for btn in (
             self._export_btn,
+            self._format_toggle_btn,
             self._export_backtest_btn,
             self._history_btn,
             self._save_btn,

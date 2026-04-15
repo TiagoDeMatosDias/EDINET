@@ -531,7 +531,7 @@ class TestGenerateFinancialStatements(unittest.TestCase):
         ), patch(
             "src.description_translation.translate_text_with_providers",
             return_value=("Makes parts in English.", "StubProvider"),
-        ):
+        ), self.assertLogs("src.data_processing", level="INFO") as logs:
             result = self.d.populate_business_descriptions_en(
                 target_database=self.target_db,
                 providers_config="ignored.json",
@@ -551,6 +551,12 @@ class TestGenerateFinancialStatements(unittest.TestCase):
         self.assertEqual(result["translated_rows"], 1)
         self.assertEqual(result["failed_rows"], 0)
         self.assertEqual(result["provider_usage"], {"StubProvider": 1})
+        self.assertTrue(any("Populate Business Descriptions EN starting" in message for message in logs.output))
+        self.assertTrue(any("Populate Business Descriptions EN found 1 eligible row(s) across 1 company(s)" in message for message in logs.output))
+        self.assertTrue(any("Populate Business Descriptions EN started company 1/1" in message for message in logs.output))
+        self.assertTrue(any("Populate Business Descriptions EN updated 1/1 company(s)." in message for message in logs.output))
+        self.assertTrue(any("Populate Business Descriptions EN progress" in message for message in logs.output))
+        self.assertTrue(any("Populate Business Descriptions EN completed" in message for message in logs.output))
 
     def test_populate_business_descriptions_en_skips_existing_translations(self):
         expanded_mappings = {
@@ -596,7 +602,7 @@ class TestGenerateFinancialStatements(unittest.TestCase):
             return_value=([object()], {"chunk_char_limit": 120, "row_delay_seconds": 0.0}),
         ), patch(
             "src.description_translation.translate_text_with_providers",
-        ) as mock_translate:
+        ) as mock_translate, self.assertLogs("src.data_processing", level="INFO") as logs:
             result = self.d.populate_business_descriptions_en(
                 target_database=self.target_db,
                 providers_config="ignored.json",
@@ -609,6 +615,8 @@ class TestGenerateFinancialStatements(unittest.TestCase):
         self.assertEqual(result["failed_rows"], 0)
         self.assertEqual(result["existing_translation_rows"], 1)
         self.assertFalse(result["stopped_early"])
+        self.assertTrue(any("Populate Business Descriptions EN found 0 eligible row(s) across 0 company(s)" in message for message in logs.output))
+        self.assertTrue(any("Populate Business Descriptions EN has no rows to translate." in message for message in logs.output))
 
     def test_populate_business_descriptions_en_stops_when_providers_are_exhausted(self):
         from src.description_translation import TranslationError
@@ -766,6 +774,78 @@ class TestGenerateFinancialStatements(unittest.TestCase):
         )
         self.assertEqual(result["translated_rows"], 3)
         self.assertEqual(result["failed_rows"], 0)
+
+    def test_populate_business_descriptions_en_logs_every_tenth_company(self):
+        expanded_mappings = {
+            "Mappings": [
+                {
+                    "Name": "DescriptionOfBusiness",
+                    "Table": "FinancialStatements",
+                    "periods": ["FilingDateInstant"],
+                    "Terms": ["jpcrp_cor:DescriptionOfBusinessTextBlock"],
+                },
+            ]
+        }
+        with open(self.mappings_file, "w", encoding="utf-8") as f:
+            json.dump(expanded_mappings, f)
+
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            conn.executemany(
+                """
+                INSERT INTO FinancialStatements (
+                    edinetCode, docID, docTypeCode, periodStart, periodEnd,
+                    DescriptionOfBusiness, DescriptionOfBusiness_EN
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        f"E{i:05d}",
+                        f"DOC{i}",
+                        "120",
+                        "2025-01-01",
+                        "2025-12-31",
+                        f"Description {i}",
+                        None,
+                    )
+                    for i in range(2, 11)
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        def _record_translation(source_text, _providers, **_kwargs):
+            return (f"{source_text} EN", "StubProvider")
+
+        with patch(
+            "src.description_translation.load_translation_providers",
+            return_value=([object()], {"chunk_char_limit": 120, "row_delay_seconds": 0.0}),
+        ), patch(
+            "src.description_translation.translate_text_with_providers",
+            side_effect=_record_translation,
+        ), self.assertLogs("src.data_processing", level="INFO") as logs:
+            result = self.d.populate_business_descriptions_en(
+                target_database=self.target_db,
+                providers_config="ignored.json",
+                batch_size=3,
+            )
+
+        self.assertEqual(result["translated_rows"], 10)
+        self.assertTrue(any("Populate Business Descriptions EN found 10 eligible row(s) across 10 company(s)" in message for message in logs.output))
+        self.assertTrue(any("Populate Business Descriptions EN started company 1/10" in message for message in logs.output))
+        self.assertTrue(any("Populate Business Descriptions EN started company 10/10" in message for message in logs.output))
+        self.assertTrue(any("Populate Business Descriptions EN updated 1/10 company(s)." in message for message in logs.output))
+        self.assertTrue(any("Populate Business Descriptions EN updated 10/10 company(s)." in message for message in logs.output))
 
     def test_shareprice_falls_back_to_source_db(self):
         # Remove lookup tables from target DB

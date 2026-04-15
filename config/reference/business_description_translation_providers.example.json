@@ -1,6 +1,7 @@
 {
-  "chunk_char_limit": 700,
+  "chunk_char_limit": 450,
   "row_delay_seconds": 0.0,
+  "slow_provider_warning_seconds": 10.0,
   "providers": [
     {
       "name": "LibreTranslate Public",
