@@ -1,8 +1,9 @@
-"""HTTP translation helpers for FinancialStatements business descriptions."""
+"""Ordered translation helpers for FinancialStatements business descriptions."""
 
 from __future__ import annotations
 
 import html
+import importlib
 import json
 import logging
 import os
@@ -137,7 +138,7 @@ def _is_rate_limit_message(message: str) -> bool:
 
 
 class TranslationProvider:
-    """Base class for ordered-fallback HTTP translation providers."""
+    """Base class for ordered-fallback translation providers."""
 
     def __init__(self, config: TranslationProviderConfig):
         self.config = config
@@ -291,7 +292,85 @@ class MyMemoryProvider(TranslationProvider):
         raise TranslationError(details or f"{self.name} returned an empty translation.")
 
 
+def _load_argos_translation(source_language: str, target_language: str) -> Any:
+    """Return an installed Argos translation object for a language pair."""
+    try:
+        argos_translate = importlib.import_module("argostranslate.translate")
+    except ImportError as exc:
+        raise TranslationProviderUnavailableError(
+            "Optional dependency 'argostranslate' is not installed."
+        ) from exc
+
+    try:
+        installed_languages = argos_translate.get_installed_languages()
+    except Exception as exc:
+        raise TranslationProviderUnavailableError(
+            f"Argos Translate could not inspect installed language packs: {exc}"
+        ) from exc
+
+    normalized_source = str(source_language or "").strip().lower()
+    normalized_target = str(target_language or "").strip().lower()
+    source_lang = next(
+        (language for language in installed_languages if getattr(language, "code", "").lower() == normalized_source),
+        None,
+    )
+    target_lang = next(
+        (language for language in installed_languages if getattr(language, "code", "").lower() == normalized_target),
+        None,
+    )
+    if source_lang is None or target_lang is None:
+        raise TranslationProviderUnavailableError(
+            f"Installed Argos language packs for {normalized_source}->{normalized_target} were not found."
+        )
+
+    translation = source_lang.get_translation(target_lang)
+    if translation is None:
+        raise TranslationProviderUnavailableError(
+            f"No installed Argos model is available for {normalized_source}->{normalized_target}."
+        )
+    return translation
+
+
+class ArgosTranslateProvider(TranslationProvider):
+    """Local provider backed by installed Argos Translate language packs."""
+
+    def __init__(self, config: TranslationProviderConfig):
+        super().__init__(config)
+        self._translation_cache: dict[tuple[str, str], Any] = {}
+
+    def _translation_for_languages(self, source_language: str, target_language: str) -> Any:
+        pair = (
+            str(source_language or "").strip().lower(),
+            str(target_language or "").strip().lower(),
+        )
+        translation = self._translation_cache.get(pair)
+        if translation is not None:
+            return translation
+        translation = _load_argos_translation(pair[0], pair[1])
+        self._translation_cache[pair] = translation
+        return translation
+
+    def translate(
+        self,
+        session: requests.Session,
+        text: str,
+        source_language: str,
+        target_language: str,
+    ) -> str:
+        del session
+        translation = self._translation_for_languages(source_language, target_language)
+        try:
+            translated_text = _clean_text_block(translation.translate(text))
+        except Exception as exc:
+            raise TranslationError(f"{self.name} local translation failed: {exc}") from exc
+        if translated_text:
+            return translated_text
+        raise TranslationError(f"{self.name} returned an empty translation.")
+
+
 PROVIDER_TYPES: dict[str, type[TranslationProvider]] = {
+    "argos": ArgosTranslateProvider,
+    "argos_translate": ArgosTranslateProvider,
     "libretranslate": LibreTranslateProvider,
     "mymemory": MyMemoryProvider,
 }

@@ -13,6 +13,29 @@
       ]
     },
     {
+      "Name": "TotalShareholderReturn",
+      "Table": "FinancialStatements",
+      "periods": [
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember",
+        "FilingDateInstant"
+      ],
+      "Terms": [
+        "jpcrp_cor:TotalShareholderReturn"
+      ]
+    },
+    {
+      "Name": "DividendPerShare",
+      "Table": "FinancialStatements",
+      "periods": [
+        "urrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember"
+      ],
+      "Terms": [
+        "jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults"
+      ]
+    },
+    {
       "Name": "SharesOutstanding",
       "Table": "FinancialStatements",
       "periods": [

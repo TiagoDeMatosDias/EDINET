@@ -17,6 +17,11 @@
       "base_url": "https://api.mymemory.translated.net",
       "timeout_seconds": 30,
       "email_env": "MYMEMORY_CONTACT_EMAIL"
+    },
+    {
+      "name": "Argos Translate (Local)",
+      "type": "argos_translate",
+      "enabled": true
     }
   ]
 }
