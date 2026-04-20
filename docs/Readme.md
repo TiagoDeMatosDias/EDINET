@@ -174,7 +174,7 @@ It will look for `config/` and `.env` in the same folder as the exe.
 | File | Purpose |
 |---|---|
 | `config/state/run_config.json` | Controls which steps run, their order, and step-specific parameters |
-| `config/reference/companyinfo.csv` | EDINET company code list (used by populate_company_info) |
+| `config/reference/companyinfo.csv` | Optional local company info CSV override for `populate_company_info` |
 | `config/reference/business_description_translation_providers.example.json` | Ordered fallback translation-provider config used by `populate_business_descriptions_en` |
 | `config/reference/financial_statements_mappings_config.json` | Mapping rules used by `generate_financial_statements` |
 | `config/reference/generate_ratios_formulas_config.json` | Formula definitions used by `generate_ratios` |

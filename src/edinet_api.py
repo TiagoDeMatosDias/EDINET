@@ -8,9 +8,32 @@ import zipfile
 import chardet
 import csv
 import shutil
+import base64
+import io
+import json
 import pandas as pd
+import re
+import time
+from html.parser import HTMLParser
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
+
+
+class _HiddenInputValueParser(HTMLParser):
+    """Extract a hidden input value from an HTML document."""
+
+    def __init__(self, target_id):
+        super().__init__()
+        self.target_id = target_id
+        self.value = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() != "input" or self.value is not None:
+            return
+        attr_map = {key.lower(): value for key, value in attrs}
+        if attr_map.get("id") == self.target_id or attr_map.get("name") == self.target_id:
+            self.value = attr_map.get("value")
 
 class Edinet:
     REQUEST_TIMEOUT_SECONDS = 30
@@ -19,6 +42,57 @@ class Edinet:
     STATUS_CHECKED_UNAVAILABLE = "Checked_Unavailable"
     STATUS_CHECKED_ERROR = "Checked_Error"
     ALLOWED_FILTER_OPERATORS = {"=", "<", ">", "<=", ">=", "!=", "<>", "LIKE"}
+    EDINET_CODE_LIST_PAGE_URLS = {
+        "en": "https://disclosure2.edinet-fsa.go.jp/weee0020.aspx",
+    }
+    EDINET_CODE_LIST_DOWNLOAD_EVENT = "'DODOWNLOADEDINET'"
+    EDINET_CODE_LIST_TARGET_COLUMNS = (
+        "EdinetCode",
+        "Type of Submitter",
+        "Listed",
+        "Consolidated",
+        "Capital_Stock",
+        "Closing_Date",
+        "Submitter Name",
+        "Company_Name",
+        "Submitter Name（phonetic）",
+        "Province",
+        "Company_Industry",
+        "Company_Ticker",
+        "Company_Number",
+    )
+    EDINET_CODE_LIST_COLUMN_ALIASES = {
+        "EdinetCode": ("EdinetCode", "EDINET Code", "edinetCode"),
+        "Type of Submitter": ("Type of Submitter",),
+        "Listed": ("Listed", "Listed company / Unlisted company"),
+        "Consolidated": ("Consolidated", "Consolidated / NonConsolidated"),
+        "Capital_Stock": ("Capital_Stock", "Capital stock"),
+        "Closing_Date": ("Closing_Date", "account closing date"),
+        "Submitter Name": ("Submitter Name",),
+        "Company_Name": (
+            "Company_Name",
+            "Company Name",
+            "Submitter Name（alphabetic）",
+            "Submitter Name(alphabetic)",
+        ),
+        "Submitter Name（phonetic）": (
+            "Submitter Name（phonetic）",
+            "Submitter Name(phonetic)",
+        ),
+        "Province": ("Province",),
+        "Company_Industry": ("Company_Industry", "Submitter's industry"),
+        "Company_Ticker": ("Company_Ticker", "Securities Identification Code"),
+        "Company_Number": (
+            "Company_Number",
+            "Submitter's Japan Corporate Number",
+        ),
+    }
+    EDINET_CODE_LIST_ENCODING_CANDIDATES = (
+        "cp932",
+        "shift_jis",
+        "utf-8-sig",
+        "utf-8",
+    )
 
     def __init__(self, base_url, api_key, db_path, raw_docs_path=None,
                  doc_list_table=None, company_info_table=None,
@@ -651,11 +725,237 @@ class Edinet:
         if operator not in self.ALLOWED_FILTER_OPERATORS:
             raise ValueError(f"Unsupported filter operator: {operator}")
 
+    @classmethod
+    def _canonicalize_company_info_column_name(cls, column_name):
+        value = str(column_name or "").strip().replace("\ufeff", "")
+        value = value.replace("（", "(").replace("）", ")")
+        value = value.replace("_", " ")
+        value = re.sub(r"\s+", " ", value)
+        return value.lower()
+
+    @classmethod
+    def _find_company_info_column(cls, columns, aliases):
+        alias_keys = {
+            cls._canonicalize_company_info_column_name(alias)
+            for alias in aliases
+        }
+        for column in columns:
+            if cls._canonicalize_company_info_column_name(column) in alias_keys:
+                return column
+        return None
+
+    def _looks_like_edinet_code_dataframe(self, df):
+        if df is None or df.empty:
+            return False
+
+        columns = list(df.columns)
+        has_edinet_code = self._find_company_info_column(
+            columns,
+            self.EDINET_CODE_LIST_COLUMN_ALIASES["EdinetCode"],
+        )
+        has_company_name = self._find_company_info_column(
+            columns,
+            self.EDINET_CODE_LIST_COLUMN_ALIASES["Company_Name"],
+        )
+        has_ticker = self._find_company_info_column(
+            columns,
+            self.EDINET_CODE_LIST_COLUMN_ALIASES["Company_Ticker"],
+        )
+        return bool(has_edinet_code and (has_company_name or has_ticker))
+
+    def _normalize_edinet_code_dataframe(self, df):
+        normalized_df = pd.DataFrame()
+        working_df = df.copy().fillna("")
+        used_columns = set()
+        source_columns = list(working_df.columns)
+
+        for target_column in self.EDINET_CODE_LIST_TARGET_COLUMNS:
+            match = self._find_company_info_column(
+                source_columns,
+                self.EDINET_CODE_LIST_COLUMN_ALIASES[target_column],
+            )
+            if match is None or match in used_columns:
+                continue
+            normalized_df[target_column] = working_df[match].astype(str)
+            used_columns.add(match)
+
+        for column in source_columns:
+            if column in used_columns or column in normalized_df.columns:
+                continue
+            normalized_df[column] = working_df[column].astype(str)
+
+        return normalized_df
+
+    def _parse_edinet_code_csv_bytes(self, csv_bytes):
+        errors = []
+        for encoding in self.EDINET_CODE_LIST_ENCODING_CANDIDATES:
+            for header_row in (0, 1):
+                try:
+                    df = pd.read_csv(
+                        io.BytesIO(csv_bytes),
+                        encoding=encoding,
+                        header=header_row,
+                        dtype=str,
+                        keep_default_na=False,
+                    )
+                except (UnicodeDecodeError, pd.errors.ParserError, ValueError) as exc:
+                    errors.append(f"encoding={encoding}, header={header_row}: {exc}")
+                    continue
+
+                if self._looks_like_edinet_code_dataframe(df):
+                    logger.info(
+                        "Loaded EDINET code list CSV with encoding=%s header=%s",
+                        encoding,
+                        header_row,
+                    )
+                    return self._normalize_edinet_code_dataframe(df)
+
+        raise ValueError(
+            "Unable to parse the EDINET code list CSV. "
+            + (" Attempts: " + " | ".join(errors) if errors else "")
+        )
+
+    def _extract_csv_from_edinet_code_zip(self, zip_bytes):
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+            csv_entries = [
+                info for info in archive.infolist()
+                if not info.is_dir() and info.filename.lower().endswith(".csv")
+            ]
+            if not csv_entries:
+                raise ValueError("Downloaded EDINET code list ZIP does not contain a CSV file.")
+
+            entry = csv_entries[0]
+            return entry.filename, archive.read(entry)
+
+    def _load_edinet_code_dataframe_from_path(self, csv_file):
+        if not os.path.exists(csv_file):
+            raise FileNotFoundError(f"EDINET company info source file not found: {csv_file}")
+
+        if zipfile.is_zipfile(csv_file):
+            with open(csv_file, "rb") as handle:
+                _, csv_bytes = self._extract_csv_from_edinet_code_zip(handle.read())
+            return self._parse_edinet_code_csv_bytes(csv_bytes)
+
+        with open(csv_file, "rb") as handle:
+            return self._parse_edinet_code_csv_bytes(handle.read())
+
+    def _extract_hidden_input_value(self, html_text, input_id):
+        parser = _HiddenInputValueParser(input_id)
+        parser.feed(html_text)
+        if parser.value is None:
+            raise ValueError(f"Hidden input '{input_id}' not found in EDINET download page.")
+        return parser.value
+
+    def _build_edinet_code_download_payload(self, gx_state):
+        required_keys = (
+            "vPGMNAME",
+            "vPGMDESC",
+            "gxhash_vPGMNAME",
+            "gxhash_vPGMDESC",
+        )
+        missing = [key for key in required_keys if not gx_state.get(key)]
+        if missing:
+            raise ValueError(
+                "Missing GeneXus state required for EDINET code-list download: "
+                + ", ".join(missing)
+            )
+
+        return {
+            "MPage": False,
+            "cmpCtx": "",
+            "parms": [gx_state["vPGMNAME"], gx_state["vPGMDESC"]],
+            "hsh": [
+                {"hsh": gx_state["gxhash_vPGMNAME"], "row": ""},
+                {"hsh": gx_state["gxhash_vPGMDESC"], "row": ""},
+            ],
+            "objClass": "weee0020",
+            "pkgName": "GeneXus.Programs",
+            "events": [self.EDINET_CODE_LIST_DOWNLOAD_EVENT],
+            "grids": {},
+        }
+
+    def _build_edinet_code_download_headers(self, gx_state, page_url):
+        origin_parts = urlsplit(page_url)
+        origin = f"{origin_parts.scheme}://{origin_parts.netloc}"
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "GXAjaxRequest": "1",
+            "Origin": origin,
+            "Referer": page_url,
+        }
+
+        ajax_security_token = gx_state.get("AJAX_SECURITY_TOKEN")
+        if ajax_security_token:
+            headers["AJAX_SECURITY_TOKEN"] = ajax_security_token
+
+        auth_token = gx_state.get(f"GX_AUTH_{gx_state.get('vPGMNAME', '')}")
+        if auth_token:
+            headers["X-GXAuth-Token"] = auth_token
+
+        return headers
+
+    def _extract_edinet_code_zip_bytes(self, download_response):
+        gx_props = download_response.get("gxProps") or []
+        if not gx_props:
+            raise ValueError("EDINET code-list download response is missing gxProps.")
+
+        script_caption = (gx_props[0].get("TXTSCRIPT") or {}).get("Caption") or ""
+        match = re.search(r"base64,([^\"']+)", script_caption)
+        if not match:
+            raise ValueError("Unable to find the EDINET code-list ZIP payload in the response.")
+
+        return base64.b64decode(match.group(1))
+
+    def _download_official_edinet_code_dataframe(self, language="en"):
+        page_url = self.EDINET_CODE_LIST_PAGE_URLS.get((language or "en").lower())
+        if not page_url:
+            raise ValueError(f"Unsupported EDINET code-list language: {language}")
+
+        session = requests.Session()
+        try:
+            page_response = session.get(page_url, timeout=self.REQUEST_TIMEOUT_SECONDS)
+            page_response.raise_for_status()
+
+            gx_state_raw = self._extract_hidden_input_value(page_response.text, "GXState")
+            gx_state = json.loads(gx_state_raw)
+            ajax_iv = gx_state.get("GX_AJAX_IV")
+            if not ajax_iv:
+                raise ValueError("EDINET download page is missing the GX_AJAX_IV token.")
+
+            payload = self._build_edinet_code_download_payload(gx_state)
+            headers = self._build_edinet_code_download_headers(gx_state, page_url)
+            post_url = f"{page_url}?{str(ajax_iv).lower()},gx-no-cache={int(time.time() * 1000)}"
+            download_response = session.post(
+                post_url,
+                data=json.dumps(payload, separators=(",", ":")),
+                headers=headers,
+                timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
+            download_response.raise_for_status()
+
+            zip_bytes = self._extract_edinet_code_zip_bytes(download_response.json())
+            entry_name, csv_bytes = self._extract_csv_from_edinet_code_zip(zip_bytes)
+            logger.info("Downloaded EDINET code list entry %s", entry_name)
+            return self._parse_edinet_code_csv_bytes(csv_bytes)
+        finally:
+            session.close()
+
+    def _load_edinet_code_dataframe(self, csv_file=None):
+        if csv_file:
+            logger.info("Loading EDINET company info from %s", csv_file)
+            return self._load_edinet_code_dataframe_from_path(csv_file)
+
+        logger.info("Downloading the official EDINET code list (English)")
+        return self._download_official_edinet_code_dataframe(language="en")
+
     def store_edinetCodes(self, csv_file, target_database=None, table_name=None):
         """Store EDINET company codes from a CSV file into the SQLite database.
 
         Args:
-            csv_file (str): Path to the CSV file containing EDINET codes.
+            csv_file (str): Optional path to a local CSV or ZIP file containing
+                EDINET company codes. When omitted or blank, the official
+                English EDINET code list is downloaded from the EDINET site.
             target_database (str, optional): Destination SQLite DB path.
                 Defaults to the configured DB path.
             table_name (str, optional): Destination table name.
@@ -666,17 +966,13 @@ class Edinet:
         """
           
         try:
-
-            # Load CSV into a pandas DataFrame
-            df = pd.read_csv(csv_file, encoding=self.detect_file_encoding(csv_file))
+            df = self._load_edinet_code_dataframe(csv_file)
             
             # Connect to SQLite database
             destination_db = target_database or self.Database
             destination_table = table_name or self.DB_COMPANY_INFO_TABLE
             conn = sqlite3.connect(destination_db)
-            cursor = conn.cursor()
-            
-            
+
             # Insert data into the table
             df.to_sql(destination_table, conn, if_exists="replace", index=False)
             

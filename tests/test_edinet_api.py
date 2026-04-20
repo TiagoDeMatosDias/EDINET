@@ -1,9 +1,14 @@
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
+import base64
+import io
+import json
 import os
 import sys
 import sqlite3
 import pandas as pd
+import tempfile
+import zipfile
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.edinet_api import Edinet
 
@@ -23,7 +28,47 @@ def _make_edinet(**overrides):
     return Edinet(**defaults)
 
 
+def _build_mock_edinet_companyinfo_page(gx_state):
+    escaped = json.dumps(gx_state).replace('"', '&quot;')
+    return f"<html><body><input type=\"hidden\" name=\"GXState\" value='{escaped}' /></body></html>"
+
+
+def _build_mock_edinet_download_response(zip_bytes):
+    encoded = base64.b64encode(zip_bytes).decode("ascii")
+    return {
+        "gxProps": [
+            {
+                "TXTSCRIPT": {
+                    "Caption": (
+                        '<script type="text/javascript">'
+                        f'const linkSource = "data:;base64,{encoded}";'
+                        '</script>'
+                    )
+                }
+            }
+        ]
+    }
+
+
+def _build_mock_edinet_companyinfo_zip(csv_text, encoding="cp932"):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("EdinetcodeDlInfo.csv", csv_text.encode(encoding))
+    return buffer.getvalue()
+
+
 class TestEdinet(unittest.TestCase):
+
+    OFFICIAL_ENGLISH_COMPANYINFO_CSV = "\n".join([
+        "Date of download data creation,As Of 2026.04.21,Number of data,1",
+        "EDINET Code,Type of Submitter,Listed company / Unlisted company,Consolidated / NonConsolidated,Capital stock,account closing date,Submitter Name,Submitter Name（alphabetic）,Submitter Name（phonetic）,Province,Submitter's industry,Securities Identification Code,Submitter's Japan Corporate Number",
+        '"E00004","内国法人・組合","Listed company","Consolidated","1491","5.31","カネコ種苗株式会社","KANEKO SEEDS CO., LTD.","カネコシュビョウカブシキガイシャ","前橋市古市町一丁目５０番地１２","Fishery, Agriculture & Forestry","13760","5070001000715"',
+    ])
+
+    NORMALIZED_COMPANYINFO_CSV = "\n".join([
+        "EdinetCode,Type of Submitter,Listed,Consolidated,Capital_Stock,Closing_Date,Submitter Name,Company_Name,Submitter Name（phonetic）,Province,Company_Industry,Company_Ticker,Company_Number",
+        '"E00004","Domestic corporation","Listed company","Consolidated","1491","5.31","Kaneko Seeds Co Ltd","KANEKO SEEDS CO., LTD.","KANEKO SHUBYO KABUSHIKIGAISHA","Maebashi","Fishery, Agriculture & Forestry","13760","5070001000715"',
+    ])
 
     def setUp(self):
         pass
@@ -210,19 +255,91 @@ class TestEdinet(unittest.TestCase):
         # Assert that the to_sql method was called on the dataframe
         mock_to_sql.assert_called()
 
-    @patch('src.edinet_api.pd.read_csv')
-    @patch('src.edinet_api.Edinet.detect_file_encoding')
+    def test_load_edinet_code_dataframe_from_path_preserves_normalized_csv_schema(self):
+        self.edinet = _make_edinet(company_info_table="companyInfo")
+        with tempfile.NamedTemporaryFile("wb", suffix=".csv", delete=False) as handle:
+            handle.write(self.NORMALIZED_COMPANYINFO_CSV.encode("cp932"))
+            csv_path = handle.name
+
+        self.addCleanup(lambda: os.path.exists(csv_path) and os.remove(csv_path))
+
+        df = self.edinet._load_edinet_code_dataframe_from_path(csv_path)
+
+        self.assertEqual(df.columns.tolist(), list(self.edinet.EDINET_CODE_LIST_TARGET_COLUMNS))
+        self.assertEqual(df.iloc[0]["EdinetCode"], "E00004")
+        self.assertEqual(df.iloc[0]["Company_Name"], "KANEKO SEEDS CO., LTD.")
+        self.assertEqual(df.iloc[0]["Company_Ticker"], "13760")
+
+    @patch('src.edinet_api.requests.Session')
+    def test_load_edinet_code_dataframe_downloads_official_english_zip_when_csv_not_provided(self, mock_session_cls):
+        self.edinet = _make_edinet(company_info_table="companyInfo")
+        gx_state = {
+            "vPGMNAME": "WEEE0020",
+            "vPGMDESC": "EDINET TAXONOMY&CODE LIST",
+            "gxhash_vPGMNAME": "hash-name",
+            "gxhash_vPGMDESC": "hash-desc",
+            "GX_AJAX_IV": "ABCDEF0123456789",
+            "AJAX_SECURITY_TOKEN": "ajax-security-token",
+            "GX_AUTH_WEEE0020": "page-auth-token",
+        }
+        zip_bytes = _build_mock_edinet_companyinfo_zip(self.OFFICIAL_ENGLISH_COMPANYINFO_CSV)
+
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        mock_page_response = MagicMock()
+        mock_page_response.text = _build_mock_edinet_companyinfo_page(gx_state)
+        mock_page_response.raise_for_status.return_value = None
+
+        mock_download_response = MagicMock()
+        mock_download_response.raise_for_status.return_value = None
+        mock_download_response.json.return_value = _build_mock_edinet_download_response(zip_bytes)
+
+        mock_session.get.return_value = mock_page_response
+        mock_session.post.return_value = mock_download_response
+
+        df = self.edinet._load_edinet_code_dataframe("")
+
+        mock_session.get.assert_called_once_with(
+            self.edinet.EDINET_CODE_LIST_PAGE_URLS["en"],
+            timeout=self.edinet.REQUEST_TIMEOUT_SECONDS,
+        )
+        self.assertTrue(mock_session.post.called)
+
+        post_url = mock_session.post.call_args.args[0]
+        self.assertTrue(post_url.startswith(self.edinet.EDINET_CODE_LIST_PAGE_URLS["en"] + "?abcdef0123456789,gx-no-cache="))
+
+        payload = json.loads(mock_session.post.call_args.kwargs["data"])
+        self.assertEqual(payload["events"], [self.edinet.EDINET_CODE_LIST_DOWNLOAD_EVENT])
+        self.assertEqual(payload["parms"], [gx_state["vPGMNAME"], gx_state["vPGMDESC"]])
+
+        headers = mock_session.post.call_args.kwargs["headers"]
+        self.assertEqual(headers["Content-Type"], "application/json")
+        self.assertEqual(headers["Accept"], "*/*")
+        self.assertEqual(headers["GXAjaxRequest"], "1")
+        self.assertEqual(headers["AJAX_SECURITY_TOKEN"], gx_state["AJAX_SECURITY_TOKEN"])
+        self.assertEqual(headers["X-GXAuth-Token"], gx_state["GX_AUTH_WEEE0020"])
+        self.assertEqual(headers["Origin"], "https://disclosure2.edinet-fsa.go.jp")
+        self.assertEqual(headers["Referer"], self.edinet.EDINET_CODE_LIST_PAGE_URLS["en"])
+
+        self.assertEqual(df.columns.tolist(), list(self.edinet.EDINET_CODE_LIST_TARGET_COLUMNS))
+        self.assertEqual(df.iloc[0]["EdinetCode"], "E00004")
+        self.assertEqual(df.iloc[0]["Company_Name"], "KANEKO SEEDS CO., LTD.")
+        self.assertEqual(df.iloc[0]["Company_Ticker"], "13760")
+        self.assertEqual(df.iloc[0]["Company_Industry"], "Fishery, Agriculture & Forestry")
+
     @patch('src.edinet_api.sqlite3.connect')
     @patch('pandas.DataFrame.to_sql')
-    def test_store_edinetCodes_uses_target_database(self, mock_to_sql, mock_sqlite_connect, mock_detect_encoding, mock_read_csv):
+    @patch('src.edinet_api.Edinet._load_edinet_code_dataframe')
+    def test_store_edinetCodes_uses_target_database(self, mock_load_dataframe, mock_to_sql, mock_sqlite_connect):
         self.edinet = _make_edinet(company_info_table="companyInfo")
-        mock_detect_encoding.return_value = "utf-8"
-        mock_read_csv.return_value = pd.DataFrame({"A": [1]})
+        mock_load_dataframe.return_value = pd.DataFrame({"A": [1]})
         mock_conn = MagicMock()
         mock_sqlite_connect.return_value = mock_conn
 
         self.edinet.store_edinetCodes("codes.csv", target_database="custom.db")
 
+        mock_load_dataframe.assert_called_once_with("codes.csv")
         mock_sqlite_connect.assert_called_with("custom.db")
         mock_to_sql.assert_called_with("companyInfo", mock_conn, if_exists="replace", index=False)
 

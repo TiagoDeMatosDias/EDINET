@@ -21,7 +21,7 @@
     "Target_Database": "C:/programming/Finance/EDINET/Databases/Base.db"
   },
   "populate_company_info_config": {
-    "csv_file": "config/reference/companyinfo.csv",
+    "csv_file": "",
     "Target_Database": ""
   },
   "import_stock_prices_csv_config": {

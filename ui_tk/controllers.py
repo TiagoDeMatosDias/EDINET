@@ -122,7 +122,8 @@ STEP_FIELD_DEFINITIONS: dict[str, list[StepField]] = {
     ],
     "populate_company_info": [
         StepField("csv_file", "file",
-                  default="config/reference/companyinfo.csv"),
+                  default="",
+                  label="csv_file (optional)"),
         StepField("Target_Database", "database"),
     ],
     "import_stock_prices_csv": [

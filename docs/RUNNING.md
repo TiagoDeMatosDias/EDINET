@@ -85,16 +85,19 @@ Downloads filings for documents already in the document list that match the filt
 ---
 
 ### `populate_company_info`
-Loads the EDINET company code list from a CSV file into the database.
+Loads the EDINET company code list into the database.
+
+When `csv_file` is blank, the app downloads the official English EDINET code list ZIP from the EDINET code-list page, reads the CSV inside it, normalizes the column names to the existing schema, and stores the result in the company info table. When `csv_file` is provided, that local file is used instead.
 
 ```json
 "populate_company_info_config": {
-  "csv_file": "config/reference/companyinfo.csv",
+  "csv_file": "",
   "Target_Database": "C:/path/to/standardized.db"
 }
 ```
 
 - `Target_Database` — database where the company info table will be written.
+- `csv_file` — optional local CSV override. Leave blank to download the official English EDINET code list.
 
 ---
 
