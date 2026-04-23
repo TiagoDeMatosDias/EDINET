@@ -27,7 +27,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.backtesting import (
+from src.orchestrator.common.backtesting import (
     get_portfolio_prices,
     get_dividend_data,
     calculate_portfolio_returns,

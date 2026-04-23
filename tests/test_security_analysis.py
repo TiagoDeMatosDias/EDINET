@@ -1,4 +1,4 @@
-"""Tests for the security analysis module."""
+"""Tests for the security analysis package."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from src.security_analysis import (
+    DISCOVERED_SECURITY_ANALYSIS_MODULES,
     _summarize_english_text,
     _summarize_business_description,
     ensure_security_analysis_indexes,
@@ -19,6 +20,10 @@ from src.security_analysis import (
     search_securities,
     update_security_price,
 )
+
+
+def test_security_analysis_package_discovery_exposes_main_module():
+    assert "src.security_analysis.security_analysis" in DISCOVERED_SECURITY_ANALYSIS_MODULES
 
 
 def _create_security_db(path: str) -> str:

@@ -209,19 +209,34 @@ Parameters:
 
 The pipeline is designed so that adding a new step requires changes in exactly three places, with no UI-specific branching needed:
 
-#### 1. Orchestrator handler (`src/orchestrator.py`)
+#### 1. Orchestrator step package (`src/orchestrator/<step_name>/`)
 
-Create a handler function and register it in `STEP_HANDLERS`:
+Create a new step package with an `__init__.py` and a same-named implementation module. The orchestrator discovers it automatically, so no core registry edit is needed:
 
 ```python
-def _step_my_new_step(config, overwrite=False):
+from src.orchestrator.common import StepDefinition
+
+
+def run_my_new_step(config, overwrite=False):
     step_cfg = config.get("my_new_step_config", {})
     # ... call the relevant module with explicit params ...
 
-STEP_HANDLERS["my_new_step"] = _step_my_new_step
+STEP_DEFINITION = StepDefinition(
+    name="my_new_step",
+    handler=run_my_new_step,
+    required_config_fields=(("my_new_step_config", "Target_Database"),),
+)
 ```
 
-Add validation entries to `STEP_REQUIRED_KEYS` and `STEP_REQUIRED_CONFIG_FIELDS` if the step requires top-level config keys or step-config fields.
+Example package layout:
+
+```text
+src/orchestrator/my_new_step/
+├── __init__.py
+└── my_new_step.py
+```
+
+Declare any required top-level keys with `required_keys` and any required step-config fields with `required_config_fields` inside the `StepDefinition`.
 
 #### 2. Step catalogue & field registry (`ui_tk/controllers.py`)
 

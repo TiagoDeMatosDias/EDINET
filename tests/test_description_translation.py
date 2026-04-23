@@ -6,7 +6,7 @@ import json
 
 import requests
 
-from src.description_translation import (
+from src.orchestrator.populate_business_descriptions_en.description_translation import (
     load_translation_providers,
     translate_text_with_providers,
 )
@@ -174,7 +174,7 @@ def test_translate_text_with_providers_falls_back_to_local_argos_after_remote_fa
         raise requests.RequestException("dns failure")
 
     monkeypatch.setattr(requests.Session, "post", _fake_post)
-    monkeypatch.setattr("src.description_translation._load_argos_translation", lambda source_language, target_language: fake_argos)
+    monkeypatch.setattr("src.orchestrator.populate_business_descriptions_en.description_translation._load_argos_translation", lambda source_language, target_language: fake_argos)
 
     translated_text, provider_name = translate_text_with_providers(
         "当社は産業用センサーを製造しています。",
@@ -255,7 +255,7 @@ def test_translate_text_with_providers_warns_on_slow_provider(tmp_path, monkeypa
     perf_counter_values = iter([0.0, 12.5])
 
     monkeypatch.setattr(requests.Session, "post", _fake_post)
-    monkeypatch.setattr("src.description_translation.time.perf_counter", lambda: next(perf_counter_values))
+    monkeypatch.setattr("src.orchestrator.populate_business_descriptions_en.description_translation.time.perf_counter", lambda: next(perf_counter_values))
 
     caplog.set_level("WARNING", logger="src.description_translation")
     translated_text, provider_name = translate_text_with_providers(

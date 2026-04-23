@@ -8,7 +8,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from src import taxonomy_processing
+from src.orchestrator.parse_taxonomy import taxonomy_processing
 
 
 def _build_taxonomy_archive_bytes() -> bytes:
@@ -1195,10 +1195,10 @@ class TestTaxonomyProcessing(unittest.TestCase):
         fake_session_factory = lambda: _FakeSession(self.html_text, self.archive_bytes)
 
         with patch(
-            "src.taxonomy_processing.requests.get",
+            "src.orchestrator.parse_taxonomy.taxonomy_processing.requests.get",
             return_value=_FakeResponse(text=self.html_text),
         ), patch(
-            "src.taxonomy_processing.requests.Session",
+            "src.orchestrator.parse_taxonomy.taxonomy_processing.requests.Session",
             side_effect=fake_session_factory,
         ):
             stats = taxonomy_processing.sync_taxonomy_releases(

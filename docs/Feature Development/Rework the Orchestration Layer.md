@@ -21,6 +21,11 @@ The goal of this rework is to clean up the orchestration layer and make it more 
 
 ## What Was Done
 
+Current structure note:
+- The original `src/orchestrator.py` entrypoint has since been converted into the `src/orchestrator/` package.
+- Step registration now lives in package-per-step modules directly under `src/orchestrator/`, extracted workflow bodies live under `src/orchestrator/services/`, and the shared helper mixins used by those services now live under `src/orchestrator/processor/`.
+- `src/data_processing.py` remains as a backward-compatible facade/subclass rather than the primary orchestrator implementation surface.
+
 ### 1. `src/orchestrator.py` — Full rewrite
 - **Step handler pattern**: Replaced the monolithic `if/elif` chain with a `STEP_HANDLERS` dict mapping step names to dedicated handler functions (`_step_get_documents`, `_step_download_documents`, etc.).
 - **No shared state**: `run()` and `run_pipeline()` no longer pre-create shared `Edinet` or `data` instances. Each handler creates what it needs with explicit params.

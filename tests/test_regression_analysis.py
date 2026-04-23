@@ -19,7 +19,7 @@ import pandas as pd
 import statsmodels.api as sm
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from src.regression_analysis import (
+from src.orchestrator.multivariate_regression.analysis import (
     Run_Model,
     build_scoring_query,
     multivariate_regression,

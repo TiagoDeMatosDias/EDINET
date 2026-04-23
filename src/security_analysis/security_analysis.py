@@ -9,6 +9,7 @@ retrieves price history, and provides a deterministic peer comparison.
 from __future__ import annotations
 
 import html
+import importlib
 import json
 import logging
 import os
@@ -28,7 +29,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     TfidfVectorizer = None
 
-from src.stockprice_api import _create_prices_table, load_ticker_data
+from src.utilities.stock_prices import _create_prices_table, load_ticker_data
 
 logger = logging.getLogger(__name__)
 
@@ -2315,16 +2316,17 @@ def update_security_price(db_path: str, ticker: str) -> dict[str, Any]:
 
     ensure_security_analysis_indexes(db_path)
     schema = resolve_schema(db_path)
+    package_module = importlib.import_module(__package__)
     conn = sqlite3.connect(db_path)
     try:
-        _create_prices_table(conn, schema.prices_table)
+        package_module._create_prices_table(conn, schema.prices_table)
 
         before_count = conn.execute(
             f"SELECT COUNT(*) FROM {_quote_ident(schema.prices_table)} WHERE Ticker = ?",
             [ticker],
         ).fetchone()[0]
 
-        ok = load_ticker_data(ticker, schema.prices_table, conn)
+        ok = package_module.load_ticker_data(ticker, schema.prices_table, conn)
         conn.commit()
 
         after_count = conn.execute(

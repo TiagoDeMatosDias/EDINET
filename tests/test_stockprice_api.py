@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from src.stockprice_api import _create_prices_table, import_stock_prices_csv, load_ticker_data
+from src.utilities.stock_prices import _create_prices_table, import_stock_prices_csv, load_ticker_data
 
 
 class TestImportStockPricesCsv(unittest.TestCase):
@@ -137,8 +137,8 @@ class TestImportStockPricesCsv(unittest.TestCase):
             }
         )
 
-        with patch("src.stockprice_api._fetch_stooq_history", return_value=history) as fetch_stooq, patch(
-            "src.stockprice_api._fetch_yahoo_history"
+        with patch("src.utilities.stock_prices._fetch_stooq_history", return_value=history) as fetch_stooq, patch(
+            "src.utilities.stock_prices._fetch_yahoo_history"
         ) as fetch_yahoo:
             conn = sqlite3.connect(db_path)
             try:
@@ -174,8 +174,8 @@ class TestImportStockPricesCsv(unittest.TestCase):
         )
         history.index.name = "Date"
 
-        with patch("src.stockprice_api._fetch_stooq_history", side_effect=RuntimeError("blocked")) as fetch_stooq, patch(
-            "src.stockprice_api._fetch_yahoo_history", return_value=history
+        with patch("src.utilities.stock_prices._fetch_stooq_history", side_effect=RuntimeError("blocked")) as fetch_stooq, patch(
+            "src.utilities.stock_prices._fetch_yahoo_history", return_value=history
         ) as fetch_yahoo:
             conn = sqlite3.connect(db_path)
             try:
@@ -204,8 +204,8 @@ class TestImportStockPricesCsv(unittest.TestCase):
         bad_history = pd.DataFrame({"Volume": [1000]}, index=pd.to_datetime(["2026-01-01"]))
         bad_history.index.name = "Date"
 
-        with patch("src.stockprice_api._fetch_stooq_history", side_effect=RuntimeError("blocked")), patch(
-            "src.stockprice_api._fetch_yahoo_history", return_value=bad_history
+        with patch("src.utilities.stock_prices._fetch_stooq_history", side_effect=RuntimeError("blocked")), patch(
+            "src.utilities.stock_prices._fetch_yahoo_history", return_value=bad_history
         ):
             conn = sqlite3.connect(db_path)
             try:

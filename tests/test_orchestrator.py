@@ -1,10 +1,60 @@
 """Tests for the orchestrator module."""
 
+import importlib
+from pathlib import Path
+import sys
+import textwrap
 import threading
 import pytest
 from unittest.mock import patch, MagicMock
 
 from config import Config
+
+
+def _purge_package_modules(package_name: str) -> None:
+    for module_name in list(sys.modules):
+        if module_name == package_name or module_name.startswith(f"{package_name}."):
+            sys.modules.pop(module_name, None)
+
+
+def _write_step_package(
+    root_path: Path,
+    package_name: str,
+    step_name: str,
+    alias: str,
+) -> None:
+    package_dir = root_path / package_name
+    package_dir.mkdir(parents=True, exist_ok=True)
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+
+    step_dir = package_dir / step_name
+    step_dir.mkdir(parents=True, exist_ok=True)
+    (step_dir / "__init__.py").write_text(
+        f"from .{step_name} import STEP_DEFINITION, run_{step_name}\n\n"
+        f"__all__ = [\"STEP_DEFINITION\", \"run_{step_name}\"]\n",
+        encoding="utf-8",
+    )
+    (step_dir / f"{step_name}.py").write_text(
+        textwrap.dedent(
+            f"""\
+            from src.orchestrator.common import StepDefinition
+
+
+            def run_{step_name}(config, overwrite=False):
+                return {{"step": "{step_name}", "overwrite": overwrite}}
+
+
+            STEP_DEFINITION = StepDefinition(
+                name="{step_name}",
+                handler=run_{step_name},
+                aliases=("{alias}",),
+                required_keys=("API_KEY",),
+                required_config_fields=(("{step_name}_config", "Target_Database"),),
+            )
+            """
+        ),
+        encoding="utf-8",
+    )
 
 
 class TestRunPipeline:
@@ -115,6 +165,62 @@ class TestExecuteStep:
         config = Config.from_dict({})
         execute_step("nonexistent_step", config)  # should not raise
 
+    def test_discovery_registers_canonical_steps(self):
+        from src.orchestrator import STEP_HANDLERS, list_available_steps
+
+        available_steps = list_available_steps()
+
+        assert "generate_financial_statements" in STEP_HANDLERS
+        assert "Generate Financial Statements" in STEP_HANDLERS
+        assert "generate_financial_statements" in available_steps
+
+
+def test_build_step_registry_discovers_custom_step_package(tmp_path, monkeypatch):
+    from src.orchestrator.common import build_step_registry
+
+    package_name = "temp_orchestrator_pkg"
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _write_step_package(tmp_path, package_name, "alpha_step", "Alpha Step")
+
+    importlib.invalidate_caches()
+    _purge_package_modules(package_name)
+    handlers, required_keys, required_config_fields, canonical_names, discovered_modules = build_step_registry(
+        package_name=package_name,
+    )
+
+    assert "alpha_step" in handlers
+    assert "Alpha Step" in handlers
+    assert required_keys["alpha_step"] == ["API_KEY"]
+    assert required_config_fields["alpha_step"] == [("alpha_step_config", "Target_Database")]
+    assert canonical_names["Alpha Step"] == "alpha_step"
+    assert f"{package_name}.alpha_step" in discovered_modules
+
+
+def test_build_step_registry_picks_up_new_step_folder_on_refresh(tmp_path, monkeypatch):
+    from src.orchestrator.common import build_step_registry
+
+    package_name = "temp_orchestrator_pkg_refresh"
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _write_step_package(tmp_path, package_name, "alpha_step", "Alpha Step")
+
+    importlib.invalidate_caches()
+    _purge_package_modules(package_name)
+    handlers, _, _, _, discovered_modules = build_step_registry(package_name=package_name)
+    assert "alpha_step" in handlers
+    assert "beta_step" not in handlers
+    assert f"{package_name}.alpha_step" in discovered_modules
+
+    _write_step_package(tmp_path, package_name, "beta_step", "Beta Step")
+
+    importlib.invalidate_caches()
+    _purge_package_modules(package_name)
+    handlers, _, _, canonical_names, discovered_modules = build_step_registry(package_name=package_name)
+
+    assert "beta_step" in handlers
+    assert "Beta Step" in handlers
+    assert canonical_names["Beta Step"] == "beta_step"
+    assert f"{package_name}.beta_step" in discovered_modules
+
 
 class TestValidateConfig:
     """Test pre-flight config validation."""
@@ -168,7 +274,6 @@ class TestParseTaxonomyStep:
     def test_syncs_remote_taxonomy_when_no_local_xsd_is_supplied(self):
         from src.orchestrator import _step_parse_taxonomy
 
-        processor = MagicMock()
         config = Config.from_dict({
             "parse_taxonomy_config": {
                 "Target_Database": "taxonomy.db",
@@ -180,10 +285,12 @@ class TestParseTaxonomyStep:
             }
         })
 
-        with patch("src.orchestrator.d.data", return_value=processor):
+        with patch(
+            "src.orchestrator.parse_taxonomy.parse_taxonomy.taxonomy_processing.sync_taxonomy_releases"
+        ) as mock_sync:
             _step_parse_taxonomy(config, overwrite=False)
 
-        processor.sync_taxonomy_releases.assert_called_once_with(
+        mock_sync.assert_called_once_with(
             target_database="taxonomy.db",
             release_selection="all",
             release_years=[2025],
@@ -212,7 +319,9 @@ class TestImportStockPricesCsvStep:
             },
         })
 
-        with patch("src.orchestrator.stockprice_api.import_stock_prices_csv") as mock_import:
+        with patch(
+            "src.orchestrator.import_stock_prices_csv.import_stock_prices_csv.stockprice_api.import_stock_prices_csv"
+        ) as mock_import:
             _step_import_stock_prices_csv(config, overwrite=False)
 
         mock_import.assert_called_once_with(
@@ -238,7 +347,6 @@ class TestGenerateFinancialStatementsStep:
     def test_passes_statement_hierarchy_depth(self):
         from src.orchestrator import _step_generate_financial_statements
 
-        processor = MagicMock()
         config = Config.from_dict({
             "DB_FINANCIAL_DATA_TABLE": "financialData_full",
             "DB_COMPANY_INFO_TABLE": "companyInfo",
@@ -251,10 +359,12 @@ class TestGenerateFinancialStatementsStep:
             },
         })
 
-        with patch("src.orchestrator.d.data", return_value=processor):
+        with patch(
+            "src.orchestrator.generate_financial_statements.generate_financial_statements.financial_statement_services.generate_financial_statements"
+        ) as mock_generate:
             _step_generate_financial_statements(config, overwrite=False)
 
-        processor.generate_financial_statements.assert_called_once_with(
+        mock_generate.assert_called_once_with(
             source_database="base.db",
             source_table="financialData_full",
             target_database="standardized.db",

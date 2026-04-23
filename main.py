@@ -5,7 +5,7 @@ def _run_cli():
     """Original headless / CLI execution path."""
     import logging
     import src.orchestrator as o
-    from src.logger import setup_logging
+    from src.utilities.logger import setup_logging
 
     logger, log_path = setup_logging()
     logger.info("=" * 80)
@@ -24,7 +24,7 @@ def _run_cli():
 
 def _run_gui():
     """Launch the Tkinter terminal-style GUI."""
-    from src.logger import setup_logging
+    from src.utilities.logger import setup_logging
     setup_logging()
     from ui_tk import run_tk_app
     run_tk_app()

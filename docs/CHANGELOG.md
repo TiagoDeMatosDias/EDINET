@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - **Screening view** — new top-level view for filtering companies by financial criteria:
-  - Backend module (`src/screening.py`): parameterised SQL query builder, screening execution, CSV export, financial value formatting, and persistence for saved criteria and screening history.
+  - Backend package (`src/screening/`): package facade plus screening implementation for parameterised SQL query building, screening execution, CSV export, financial value formatting, and persistence for saved criteria and screening history.
   - UI page (`ui_tk/pages/screening.py`): database picker, period selector, dynamic criteria builder, column selector, sortable results Treeview with alternating row colours, and toolbar with Save/Load/History/Export actions.
   - Controller adapters in `ui_tk/controllers.py` for all screening operations.
   - Registered as fourth view in `ui_tk/app.py` with `Ctrl+4` keyboard shortcut.
@@ -14,7 +14,7 @@ All notable changes to this project will be documented in this file.
   - Smoke tests and screenshot capture updated to include the Screening view.
 
 ### Changed
-- **Orchestration layer rework** — complete rewrite of `src/orchestrator.py`:
+- **Orchestration layer rework** — complete rewrite of the orchestration entrypoint, now exposed through `src/orchestrator/`:
   - **Step handler pattern**: each orchestration step is handled by a dedicated function (`_step_get_documents`, `_step_download_documents`, etc.) registered in a `STEP_HANDLERS` dict, replacing the monolithic `if/elif` chain.
   - **No shared state**: `run()` and `run_pipeline()` no longer pre-create shared `Edinet` or `data` instances. Each step handler creates its own module instances with explicit parameters.
   - **`execute_step` simplified**: signature changed from `(step_name, config, edinet=None, data=None, overwrite=False)` to `(step_name, config, overwrite=False)`.

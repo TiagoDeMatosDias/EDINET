@@ -1,7 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-04-19
+Last updated: 2026-04-23
 - Central reference for runtime/test Python modules (`src/`), Tk UI modules (`ui_tk/`), and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
@@ -41,15 +41,17 @@ Suggested per-function format:
 
 ## Runtime modules (`src`)
 
-### [src/orchestrator.py](src/orchestrator.py)
+### [src/orchestrator/__init__.py](src/orchestrator/__init__.py)
 
-Responsibility: application orchestration and step dispatch. The orchestrator is a thin dispatcher with **no business logic**. Each step is handled by a dedicated handler function that extracts configuration and calls the appropriate module with explicit parameters. No shared mutable state is carried between steps.
+Responsibility: public orchestration API and step dispatch. The orchestrator is a thin dispatcher with **no business logic**. Step execution is discovered dynamically from step packages directly under `src/orchestrator`, so new step packages can be added without modifying the orchestrator runtime.
 
 Architecture:
-- **Step handlers** (`_step_get_documents`, `_step_download_documents`, etc.): one function per step. Each creates its own module instances with explicit params from config.
-- **`STEP_HANDLERS`**: dict mapping step names to handler functions.
-- **`validate_config()`**: pre-flight validation extracted into its own function.
-- **No class instantiation** of `Edinet` or `data` in `run()` / `run_pipeline()` — each handler creates what it needs.
+- **`src/orchestrator/orchestrator.py`**: runtime entry point that owns the step registries, validation, execution, and legacy `_step_*` wrappers.
+- **`src/orchestrator/common.py`**: shared `StepDefinition` type plus discovery helpers that scan immediate child step packages under `src/orchestrator`.
+- **Discovered step packages**: each step lives in its own package such as `src/orchestrator/generate_financial_statements/` and exports step definitions with handlers and validation requirements.
+- **`STEP_HANDLERS`**: generated registry mapping step names and aliases to discovered handlers.
+- **`validate_config()`**: pre-flight validation built from the discovered step metadata.
+- **Backward-compatible wrappers**: legacy `_step_*` functions still exist for tests and any direct imports, but they forward through the discovered registry.
 
 - `def execute_step(step_name: str, config, overwrite: bool = False) -> None`
 	- Purpose: Dispatch to the registered handler for `step_name` via `STEP_HANDLERS`.
@@ -73,6 +75,12 @@ Architecture:
 	- Inputs: `steps` (list of dicts with `name` and optional `overwrite`), `config`, optional callbacks, optional `cancel_event`.
 	- Output: None.
 	- Calls/Dependencies: `execute_step`, `threading.Event`.
+
+- `def refresh_step_registry() -> None`
+	- Purpose: Rebuild the discovered step registry after scanning the immediate child step packages under `src/orchestrator`.
+	- Inputs: none.
+	- Output: None.
+	- Calls/Dependencies: discovery helpers in `src/orchestrator/common.py`.
 
 ---
 
@@ -177,12 +185,20 @@ Responsibility: portfolio construction, price/dividend ingestion, return calcula
 
 ---
 
+### [src/orchestrator/processor](src/orchestrator/processor)
+
+Responsibility: Orchestrator-owned processor mixins that provide the shared SQLite/schema helpers consumed by the extracted orchestrator services.
+
+- `OrchestratorDataProcessor`
+	- Purpose: Compose the shared base helpers plus the ratio, financial-statement, and taxonomy helper mixins used by `src/orchestrator/services/*`.
+	- Notes: Instantiated directly by orchestrator step modules; preserves the historical `d.data()` test seam without importing `src/data_processing.py`.
+
 ### [src/data_processing.py](src/data_processing.py)
 
-Responsibility: ETL and transformation of EDINET raw data into normalized financial tables and ratio series.
+Responsibility: Backward-compatible facade over orchestrator-owned services and the remaining legacy ETL helpers that have not been moved yet.
 
 `class data`
-	- Purpose: Stateless namespace for data-processing operations. No Config dependency; all parameters are passed explicitly by the caller (orchestrator).
+	- Purpose: Compatibility subclass of `OrchestratorDataProcessor` that keeps the legacy public API stable while delegating orchestrator-facing workflows into `src/orchestrator/services/*`.
 
 	- `def generate_financial_statements(self, source_database, source_table, target_database, mappings_config, company_table=None, prices_table=None, overwrite=False, batch_size=2500, max_line_depth=3) -> None`
 		- Purpose: Generate taxonomy-backed wide financial-statement tables from raw EDINET records; resumable chunked processing by `docID`.
@@ -318,7 +334,15 @@ Responsibility: OLS regression tooling, model fitting, scoring query generation 
 
 ---
 
-### [src/utils.py](src/utils.py)
+### [src/utilities/__init__.py](src/utilities/__init__.py)
+
+Responsibility: public utilities package facade and discovery entry point.
+
+- Package structure: `src/utilities/__init__.py`, `src/utilities/utils.py`, `src/utilities/logger.py`.
+- Discovery: `DISCOVERED_UTILITY_MODULES` is built from modules under `src/utilities/`.
+- Backward compatibility: `src/utils.py` and `src/logger.py` remain as thin facades that forward to the new package modules.
+
+### [src/utilities/utils.py](src/utilities/utils.py)
 
 Responsibility: Small helpers used across modules (URL building, CSV helpers, simple CSV queries).
 
@@ -333,7 +357,7 @@ Responsibility: Small helpers used across modules (URL building, CSV helpers, si
 
 ---
 
-### [src/logger.py](src/logger.py)
+### [src/utilities/logger.py](src/utilities/logger.py)
 
 Responsibility: Centralized logging setup.
 
@@ -642,9 +666,14 @@ Responsibility: Security-level research view — typeahead search, overview card
 
 ---
 
-### [src/security_analysis.py](../src/security_analysis.py)
+### [src/security_analysis/__init__.py](../src/security_analysis/__init__.py)
 
-Responsibility: Backend queries for the Security Analysis view. Resolves schema differences, aggregates the latest filing snapshot, and provides UI-friendly payloads.
+Responsibility: public package facade for the Security Analysis backend. It re-exports the main query helpers from `src/security_analysis/security_analysis.py` and exposes package discovery state for future submodules.
+
+- Package structure: `src/security_analysis/__init__.py`, `src/security_analysis/common.py`, `src/security_analysis/security_analysis.py`.
+- Discovery: `DISCOVERED_SECURITY_ANALYSIS_MODULES` is built from modules under `src/security_analysis/`.
+
+Core implementation in `src/security_analysis/security_analysis.py`:
 
 - `@dataclass SecuritySchema`
 	- Purpose: Capture resolved table/column names for a specific SQLite database.
@@ -678,9 +707,14 @@ Responsibility: Backend queries for the Security Analysis view. Resolves schema 
 
 ---
 
-### [src/screening.py](../src/screening.py)
+### [src/screening/__init__.py](../src/screening/__init__.py)
 
-Responsibility: Backend screening module — query building, execution, persistence, and formatting. Contains no UI logic.
+Responsibility: public package facade for backend screening logic. It re-exports the main screening helpers from `src/screening/screening.py` and exposes package discovery state for future screening modules.
+
+- Package structure: `src/screening/__init__.py`, `src/screening/common.py`, `src/screening/screening.py`.
+- Discovery: `DISCOVERED_SCREENING_MODULES` is built from modules under `src/screening/`.
+
+Core implementation in `src/screening/screening.py`:
 
 - Constants: `SCREENING_TABLES`, `OPERATOR_MAP`, `DEFAULT_COLUMNS`, `FORMAT_RULES`, ranking-related constants, and column alias helpers.
 
@@ -719,7 +753,7 @@ Responsibility: Unit tests covering core logic and UI helpers. Each test file ta
 
 ---
 
-Last updated: 2026-04-19
+Last updated: 2026-04-23
 
 Keep this document aligned with code changes in the same PR or commit.
 

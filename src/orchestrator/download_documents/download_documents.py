@@ -1,0 +1,42 @@
+import logging
+
+from src.orchestrator.common import StepDefinition
+from src.orchestrator.common.edinet import Edinet
+
+logger = logging.getLogger(__name__)
+
+
+def run_download_documents(config, overwrite=False):
+    logger.info("Downloading documents...")
+    step_cfg = config.get("download_documents_config", {})
+    target_database = step_cfg.get("Target_Database")
+    doc_list_table = config.get("DB_DOC_LIST_TABLE")
+    financial_data_table = config.get("DB_FINANCIAL_DATA_TABLE")
+
+    edinet = Edinet(
+        base_url=config.get("baseURL"),
+        api_key=config.get("API_KEY"),
+        db_path=target_database,
+        raw_docs_path=config.get("RAW_DOCUMENTS_PATH"),
+        doc_list_table=doc_list_table,
+    )
+
+    filters = edinet.generate_filter("docTypeCode", "=", step_cfg.get("docTypeCode"))
+    filters = edinet.generate_filter("csvFlag", "=", step_cfg.get("csvFlag"), filters)
+    filters = edinet.generate_filter("Downloaded", "=", step_cfg.get("Downloaded"), filters)
+
+    edinet.downloadDocs(doc_list_table, financial_data_table, filters)
+
+
+STEP_DEFINITION = StepDefinition(
+    name="download_documents",
+    handler=run_download_documents,
+    required_keys=(
+        "DB_DOC_LIST_TABLE",
+        "DB_FINANCIAL_DATA_TABLE",
+        "RAW_DOCUMENTS_PATH",
+        "baseURL",
+        "API_KEY",
+    ),
+    required_config_fields=(("download_documents_config", "Target_Database"),),
+)

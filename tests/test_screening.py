@@ -1,4 +1,4 @@
-"""Tests for the screening module (src/screening.py).
+"""Tests for the screening package (src/screening/).
 
 Each test uses an in-memory SQLite database with pre-populated sample data
 so no external files are required.
@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from src.screening import (
+    DISCOVERED_SCREENING_MODULES,
     build_screening_query,
     delete_screening_criteria,
     export_screening_to_backtest_csv,
@@ -27,6 +28,10 @@ from src.screening import (
     save_screening_criteria,
     save_screening_history,
 )
+
+
+def test_screening_package_discovery_exposes_main_module():
+    assert "src.screening.screening" in DISCOVERED_SCREENING_MODULES
 
 
 # ---------------------------------------------------------------------------

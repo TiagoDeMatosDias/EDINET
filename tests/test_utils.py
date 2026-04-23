@@ -4,9 +4,15 @@ import os
 import sys
 import csv
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from src import utils
+from src.utilities import utils
+from src.utilities import DISCOVERED_UTILITY_MODULES
 
 class TestHelper(unittest.TestCase):
+
+    def test_utility_package_discovery_lists_logger_and_utils(self):
+        self.assertIn("src.utilities.logger", DISCOVERED_UTILITY_MODULES)
+        self.assertIn("src.utilities.stock_prices", DISCOVERED_UTILITY_MODULES)
+        self.assertIn("src.utilities.utils", DISCOVERED_UTILITY_MODULES)
 
     def test_generateURL(self):
         docID = "test_doc_id"

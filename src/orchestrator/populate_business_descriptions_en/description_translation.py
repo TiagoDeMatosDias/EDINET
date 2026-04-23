@@ -14,7 +14,7 @@ from typing import Any
 
 import requests
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("src.description_translation")
 
 _DEFAULT_CHUNK_CHAR_LIMIT = 700
 

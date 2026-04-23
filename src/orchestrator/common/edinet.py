@@ -1,7 +1,7 @@
 import requests
 from datetime import datetime, timedelta
 import logging
-import src.utils as h
+from src.utilities import utils as h
 import sqlite3
 import os
 import zipfile
