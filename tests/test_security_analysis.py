@@ -239,10 +239,129 @@ def _create_security_db(path: str) -> str:
     return path
 
 
+def _create_taxonomy_security_db(path: str) -> str:
+    _create_security_db(path)
+
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    cur.executescript(
+        """
+        ALTER TABLE FinancialStatements ADD COLUMN netSales REAL;
+        ALTER TABLE FinancialStatements ADD COLUMN operatingIncome REAL;
+        ALTER TABLE FinancialStatements ADD COLUMN netIncome REAL;
+        ALTER TABLE FinancialStatements ADD COLUMN totalAssets REAL;
+        ALTER TABLE FinancialStatements ADD COLUMN shareholdersEquity REAL;
+
+        UPDATE FinancialStatements
+        SET
+            netSales = (SELECT i.netSales FROM IncomeStatement i WHERE i.docID = FinancialStatements.docID),
+            operatingIncome = (SELECT i.operatingIncome FROM IncomeStatement i WHERE i.docID = FinancialStatements.docID),
+            netIncome = (SELECT i.netIncome FROM IncomeStatement i WHERE i.docID = FinancialStatements.docID),
+            totalAssets = (SELECT b.totalAssets FROM BalanceSheet b WHERE b.docID = FinancialStatements.docID),
+            shareholdersEquity = (SELECT b.shareholdersEquity FROM BalanceSheet b WHERE b.docID = FinancialStatements.docID);
+
+        DROP TABLE IncomeStatement;
+        DROP TABLE BalanceSheet;
+        DROP TABLE CashflowStatement;
+
+        CREATE TABLE statement_line_items (
+            statement_family TEXT NOT NULL,
+            concept_qname TEXT NOT NULL,
+            column_name TEXT,
+            display_label TEXT,
+            concept_name TEXT,
+            taxonomy_release_id INTEGER,
+            role_uri TEXT,
+            presentation_parent_qname TEXT,
+            parent_column_name TEXT,
+            line_order REAL,
+            line_depth INTEGER,
+            period_key TEXT,
+            value_type TEXT,
+            is_abstract INTEGER,
+            is_required_metric INTEGER,
+            PRIMARY KEY (statement_family, concept_qname)
+        );
+
+        CREATE TABLE IncomeStatement (
+            docID TEXT PRIMARY KEY,
+            [Net Sales] REAL,
+            [Gross Profit] REAL,
+            [Operating Income] REAL,
+            [Net Income] REAL
+        );
+
+        CREATE TABLE BalanceSheet (
+            docID TEXT PRIMARY KEY,
+            [Current Assets] REAL,
+            [Current Liabilities] REAL,
+            [Total Assets] REAL,
+            "Shareholders' Equity" REAL
+        );
+
+        CREATE TABLE CashflowStatement (
+            docID TEXT PRIMARY KEY,
+            [Operating Cashflow] REAL,
+            [Investment Cashflow] REAL,
+            [Financing Cashflow] REAL
+        );
+        """
+    )
+
+    cur.executemany(
+        'INSERT INTO IncomeStatement (docID, [Net Sales], [Gross Profit], [Operating Income], [Net Income]) VALUES (?, ?, ?, ?, ?)',
+        [
+            ("DOC_A_2023", 9_000_000_000.0, 3_200_000_000.0, 1_100_000_000.0, 900_000_000.0),
+            ("DOC_A_2024", 10_000_000_000.0, 3_500_000_000.0, 1_300_000_000.0, 1_000_000_000.0),
+        ],
+    )
+    cur.executemany(
+        "INSERT INTO BalanceSheet (docID, [Current Assets], [Current Liabilities], [Total Assets], \"Shareholders' Equity\") VALUES (?, ?, ?, ?, ?)",
+        [
+            ("DOC_A_2023", 3_000_000_000.0, 1_700_000_000.0, 12_000_000_000.0, 6_000_000_000.0),
+            ("DOC_A_2024", 3_200_000_000.0, 1_800_000_000.0, 13_000_000_000.0, 6_500_000_000.0),
+        ],
+    )
+    cur.executemany(
+        'INSERT INTO CashflowStatement (docID, [Operating Cashflow], [Investment Cashflow], [Financing Cashflow]) VALUES (?, ?, ?, ?)',
+        [
+            ("DOC_A_2023", 1_500_000_000.0, -600_000_000.0, -300_000_000.0),
+            ("DOC_A_2024", 1_700_000_000.0, -650_000_000.0, -350_000_000.0),
+        ],
+    )
+    cur.executemany(
+        "INSERT INTO statement_line_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("IncomeStatement", "jppfs_cor:NetSales", "Net Sales", "Net Sales", "NetSales", 1, "role://income-statement", None, None, 1.0, 1, "CurrentYearDuration", "REAL", 0, 0),
+            ("IncomeStatement", "jppfs_cor:GrossProfit", "Gross Profit", "Gross Profit", "GrossProfit", 1, "role://income-statement", None, None, 2.0, 1, "CurrentYearDuration", "REAL", 0, 0),
+            ("IncomeStatement", "jppfs_cor:OperatingIncome", "Operating Income", "Operating Income", "OperatingIncome", 1, "role://income-statement", None, None, 3.0, 1, "CurrentYearDuration", "REAL", 0, 0),
+            ("IncomeStatement", "jppfs_cor:NetIncome", "Net Income", "Net Income", "NetIncome", 1, "role://income-statement", None, None, 4.0, 1, "CurrentYearDuration", "REAL", 0, 0),
+            ("BalanceSheet", "jppfs_cor:CurrentAssets", "Current Assets", "Current Assets", "CurrentAssets", 1, "role://balance-sheet", None, None, 1.0, 1, "CurrentYearInstant", "REAL", 0, 0),
+            ("BalanceSheet", "jppfs_cor:CurrentLiabilities", "Current Liabilities", "Current Liabilities", "CurrentLiabilities", 1, "role://balance-sheet", None, None, 2.0, 1, "CurrentYearInstant", "REAL", 0, 0),
+            ("BalanceSheet", "jppfs_cor:TotalAssets", "Total Assets", "Total Assets", "TotalAssets", 1, "role://balance-sheet", None, None, 3.0, 1, "CurrentYearInstant", "REAL", 0, 0),
+            ("BalanceSheet", "jppfs_cor:ShareholdersEquity", "Shareholders' Equity", "Shareholders' Equity", "ShareholdersEquity", 1, "role://balance-sheet", None, None, 4.0, 1, "CurrentYearInstant", "REAL", 0, 0),
+            ("CashflowStatement", "jppfs_cor:NetCashProvidedByUsedInOperatingActivities", "Operating Cashflow", "Operating Cashflow", "NetCashProvidedByUsedInOperatingActivities", 1, "role://cashflow-statement", None, None, 1.0, 1, "CurrentYearDuration", "REAL", 0, 0),
+            ("CashflowStatement", "jppfs_cor:NetCashProvidedByUsedInInvestmentActivities", "Investment Cashflow", "Investment Cashflow", "NetCashProvidedByUsedInInvestmentActivities", 1, "role://cashflow-statement", None, None, 2.0, 1, "CurrentYearDuration", "REAL", 0, 0),
+            ("CashflowStatement", "jppfs_cor:NetCashProvidedByUsedInFinancingActivities", "Financing Cashflow", "Financing Cashflow", "NetCashProvidedByUsedInFinancingActivities", 1, "role://cashflow-statement", None, None, 3.0, 1, "CurrentYearDuration", "REAL", 0, 0),
+        ],
+    )
+
+    conn.commit()
+    conn.close()
+    return path
+
+
 @pytest.fixture
 def security_db(tmp_path):
     db_path = str(tmp_path / "security.db")
     _create_security_db(db_path)
+    return db_path
+
+
+@pytest.fixture
+def taxonomy_security_db(tmp_path):
+    db_path = str(tmp_path / "taxonomy_security.db")
+    _create_taxonomy_security_db(db_path)
     return db_path
 
 
@@ -404,6 +523,37 @@ def test_get_security_statements_accepts_financial_statements_alias(security_db)
     fs_rows = {row["field"]: row for row in statements["financial_statements"]}
     assert fs_rows["SharesOutstanding"]["values"] == [100_000_000.0, 100_000_000.0]
     assert fs_rows["SharePrice"]["values"] == [900.0, 1_000.0]
+
+
+def test_get_security_overview_uses_financial_statements_fallbacks_for_taxonomy_wide_tables(taxonomy_security_db):
+    overview = get_security_overview(taxonomy_security_db, "E00001")
+    fundamentals = overview["fundamentals_latest"]
+
+    assert fundamentals["Revenue"] == 10_000_000_000.0
+    assert fundamentals["OperatingIncome"] == 1_300_000_000.0
+    assert fundamentals["NetIncome"] == 1_000_000_000.0
+    assert fundamentals["TotalAssets"] == 13_000_000_000.0
+    assert fundamentals["ShareholdersEquity"] == 6_500_000_000.0
+
+
+def test_get_security_statements_returns_taxonomy_rows_for_wide_taxonomy_tables(taxonomy_security_db):
+    statements = get_security_statements(taxonomy_security_db, "E00001", periods=4)
+
+    assert statements["periods"] == ["2023-03-31", "2024-03-31"]
+
+    net_sales_row = next(
+        row for row in statements["income_statement"] if row["field"] == "jppfs_cor:NetSales"
+    )
+    equity_row = next(
+        row for row in statements["balance_sheet"] if row["field"] == "jppfs_cor:ShareholdersEquity"
+    )
+    eps_row = next(row for row in statements["PerShare"] if row["field"] == "EPS")
+
+    assert net_sales_row["values"] == [9_000_000_000.0, 10_000_000_000.0]
+    assert equity_row["values"] == [6_000_000_000.0, 6_500_000_000.0]
+    assert net_sales_row["record_field"] == "Net Sales"
+    assert equity_row["record_field"] == "Shareholders' Equity"
+    assert eps_row["values"] == [9.0, 10.0]
 
 
 def test_get_security_price_history_returns_sorted_rows(security_db):

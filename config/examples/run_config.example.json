@@ -34,7 +34,7 @@
     "default_ticker": "",
     "default_currency": "JPY",
     "date_column": "Date",
-    "price_column": "Close",
+    "price_column": "Price",
     "ticker_column": "",
     "currency_column": ""
   },
@@ -42,7 +42,20 @@
     "Target_Database": ""
   },
   "parse_taxonomy_config": {
-    "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd",
+    "xsd_file": "",
+    "namespace_prefix": "jppfs_cor",
+    "release_label": "",
+    "release_year": "",
+    "taxonomy_date": "",
+    "release_selection": "all",
+    "release_years": [],
+    "namespaces": [
+      "jppfs_cor",
+      "jpcrp_cor"
+    ],
+    "download_dir": "assets/taxonomy",
+    "force_download": "False",
+    "force_reparse": "False",
     "Target_Database": ""
   },
   "generate_financial_statements_config": {
@@ -51,7 +64,8 @@
     "Target_Database": "",
     "Company_Info_Table": "",
     "Stock_Prices_Table": "",
-    "Mappings_Config": "config/reference/financial_statements_mappings_config.json",
+    "Mappings_Config": "config/reference/canonical_metrics_config.json",
+    "max_line_depth": 3,
     "batch_size": 2500
   },
   "populate_business_descriptions_en_config": {

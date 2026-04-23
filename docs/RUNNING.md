@@ -111,7 +111,7 @@ Imports historical stock prices from a user-supplied CSV file into the `stock_pr
   "default_ticker": "TPX",
   "default_currency": "JPY",
   "date_column": "Date",
-  "price_column": "Close",
+  "price_column": "Price",
   "ticker_column": "Ticker",
   "currency_column": "Currency"
 }
@@ -122,15 +122,15 @@ Imports historical stock prices from a user-supplied CSV file into the `stock_pr
 - `default_ticker` — fallback ticker assigned when the CSV has no ticker column or the row value is blank.
 - `default_currency` — fallback currency assigned when the CSV has no currency column or the row value is blank.
 - `date_column` — name of the CSV column that contains dates.
-- `price_column` — name of the CSV column that contains the price values (e.g. `Close`, `Open`, `High`).
-- `ticker_column` — optional ticker column in the CSV.
-- `currency_column` — optional currency column in the CSV.
+- `price_column` — name of the CSV column that contains the price values. The standardized backup CSV uses `Price`; common alternatives such as `Close` are also detected automatically.
+- `ticker_column` — optional ticker column in the CSV. If left blank, the importer auto-detects `Ticker` when present before falling back to `default_ticker`.
+- `currency_column` — optional currency column in the CSV. If left blank, the importer auto-detects `Currency` when present before falling back to `default_currency`.
 
 Example CSV format:
 ```
-Date,Open,High,Low,Close,Volume
-2015-01-05,1400.87,1410.26,1388.37,1401.09,2044459904
-2015-01-06,1377.53,1377.88,1361.14,1361.14,2684290816
+Date,Ticker,Currency,Price
+2015-01-05,13010,JPY,1401.09
+2015-01-06,13010,JPY,1361.14
 ```
 
 ---
@@ -149,17 +149,32 @@ Fetches historical share prices from the Stooq API for all companies in the sele
 ---
 
 ### `parse_taxonomy`
-Parses an EDINET XBRL taxonomy XSD file and stores element metadata (name, statement type, balance type) into the taxonomy table.
+Syncs EDINET taxonomy releases into normalized taxonomy tables, or imports a local XSD file for offline use.
 
 ```json
 "parse_taxonomy_config": {
-  "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd",
+  "xsd_file": "",
+  "namespace_prefix": "jppfs_cor",
+  "release_label": "",
+  "release_year": "",
+  "taxonomy_date": "",
+  "release_selection": "all",
+  "release_years": [],
+  "namespaces": ["jppfs_cor", "jpcrp_cor"],
+  "download_dir": "assets/taxonomy",
+  "force_download": "False",
+  "force_reparse": "False",
   "Target_Database": "C:/path/to/standardized.db"
 }
 ```
 
-- `xsd_file` — taxonomy XSD file to parse.
-- `Target_Database` — database where the taxonomy table will be written.
+- Leave `xsd_file` empty to download and parse official EDINET taxonomy releases.
+- Set `xsd_file` to import a local XSD instead; `namespace_prefix`, `release_label`, `release_year`, and `taxonomy_date` are only used in that local-import mode.
+- `release_selection`, `release_years`, and `namespaces` control which official releases are synced. The default `all` setting downloads the full historical set for the selected namespaces.
+- `download_dir` stores downloaded taxonomy ZIP archives locally.
+- `force_download` redownloads archives even if they already exist locally.
+- `force_reparse` rebuilds normalized taxonomy tables even if the archive hash is unchanged.
+- `Target_Database` — database where the normalized taxonomy tables will be written.
 
 ---
 
@@ -175,19 +190,28 @@ Supports `overwrite` — when enabled, the output tables are dropped and fully r
   "Target_Database": "C:/path/to/standardized.db",
   "Company_Info_Table": "",
   "Stock_Prices_Table": "",
-  "Mappings_Config": "config/reference/financial_statements_mappings_config.json",
+  "Mappings_Config": "config/reference/canonical_metrics_config.json",
+  "max_line_depth": 3,
   "batch_size": 2500
 }
 ```
 
 - `Source_Database` — database containing the raw EDINET financial data.
 - `Source_Table` — the raw financial data table to read from (default: `financialData_full`).
-- `Target_Database` — database where `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, and `CashflowStatement` are written.
+- `Target_Database` — database where `FinancialStatements`, `statement_line_items`, and the wide taxonomy-backed `IncomeStatement`, `BalanceSheet`, and `CashflowStatement` tables are written.
 - `FinancialStatements.DescriptionOfBusiness_EN` is created automatically as an empty `TEXT` column and preserved on reruns so it can be populated by the translation step.
 - `Company_Info_Table` — optional override for the company info table name.
 - `Stock_Prices_Table` — optional override for the stock prices table name.
-- `Mappings_Config` — JSON mapping file used to translate taxonomy tags into statement fields.
+- `Mappings_Config` — JSON registry used for doc-level `FinancialStatements` fields such as share-count and filing-description values. When taxonomy metadata has not been loaded yet, it also provides a fallback concept list for statement generation.
+- `max_line_depth` — maximum taxonomy presentation depth to materialize into the three main statement tables. The tables always use the primary current-year contexts only: `CurrentYearInstant` for `BalanceSheet`, `CurrentYearDuration` for `IncomeStatement` and `CashflowStatement`.
 - `batch_size` — rows/documents processed per batch.
+
+Runtime notes:
+
+- `IncomeStatement`, `BalanceSheet`, and `CashflowStatement` now contain `docID` plus taxonomy-label columns only.
+- `statement_line_items` stores the hierarchy metadata for those columns: concept QName, label, parent concept, parent column, order, depth, and statement family.
+- `taxonomy_levels` is populated by `parse_taxonomy` and gives a release-scoped one-row-per-concept table with `release_id`, `statement_family`, `data_type`, `namespace_prefix`, `concept_qname`, `primary_label_en`, `parent_concept_qname`, and `level`. These rows are derived from one canonical standard EDINET role per statement family, with root wrapper concepts compressed out and a headings-first projection applied so abstract section concepts define the visible structure. `generate_financial_statements` uses this table first when it is available.
+- The legacy normalized statement-storage tables (`statement_documents`, `statement_contexts`, `statement_facts`, `statement_fact_dimensions`) are no longer part of the generated output and are dropped on rerun.
 
 ---
 

@@ -1,5 +1,5 @@
+import json
 import logging
-import sqlite3
 import threading
 from typing import Callable
 
@@ -11,6 +11,12 @@ import src.regression_analysis as regression
 import src.backtesting as backtesting
 
 logger = logging.getLogger(__name__)
+
+
+def _as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -87,12 +93,13 @@ def _step_generate_financial_statements(config, overwrite=False):
         target_database=step_cfg.get("Target_Database"),
         mappings_config=step_cfg.get(
             "Mappings_Config",
-            "config/reference/financial_statements_mappings_config.json",
+            "config/reference/canonical_metrics_config.json",
         ),
         company_table=step_cfg.get("Company_Info_Table") or config.get("DB_COMPANY_INFO_TABLE"),
         prices_table=step_cfg.get("Stock_Prices_Table") or config.get("DB_STOCK_PRICES_TABLE"),
         overwrite=overwrite,
         batch_size=step_cfg.get("batch_size", 2500),
+        max_line_depth=step_cfg.get("max_line_depth", 3),
     )
 
 
@@ -159,7 +166,7 @@ def _step_import_stock_prices_csv(config, overwrite=False):
         default_ticker=step_cfg.get("default_ticker", step_cfg.get("ticker", "")),
         default_currency=step_cfg.get("default_currency", step_cfg.get("currency", "JPY")),
         date_column=step_cfg.get("date_column", "Date"),
-        price_column=step_cfg.get("price_column", "Close"),
+        price_column=step_cfg.get("price_column", "Price"),
         ticker_column=step_cfg.get("ticker_column", ""),
         currency_column=step_cfg.get("currency_column", ""),
     )
@@ -181,18 +188,45 @@ def _step_parse_taxonomy(config, overwrite=False):
     logger.info("Parsing EDINET taxonomy...")
     step_cfg = config.get("parse_taxonomy_config", {})
     target_database = step_cfg.get("Target_Database")
-    taxonomy_table = config.get("DB_TAXONOMY_TABLE")
+    processor = d.data()
 
-    conn = sqlite3.connect(target_database)
-    try:
-        processor = d.data()
-        processor.parse_edinet_taxonomy(
-            step_cfg.get("xsd_file"),
-            taxonomy_table,
-            connection=conn,
+    xsd_file = step_cfg.get("xsd_file")
+    if xsd_file:
+        release_year = step_cfg.get("release_year")
+        processor.import_local_taxonomy_xsd(
+            target_database=target_database,
+            xsd_file=xsd_file,
+            namespace_prefix=step_cfg.get("namespace_prefix"),
+            release_label=step_cfg.get("release_label"),
+            release_year=int(release_year) if str(release_year or "").strip() else None,
+            taxonomy_date=step_cfg.get("taxonomy_date"),
         )
-    finally:
-        conn.close()
+        return
+
+    raw_years = step_cfg.get("release_years") or []
+    if isinstance(raw_years, str):
+        try:
+            raw_years = json.loads(raw_years)
+        except Exception:
+            raw_years = [raw_years]
+    release_years = [int(value) for value in raw_years if str(value).strip()]
+
+    raw_namespaces = step_cfg.get("namespaces") or ["jppfs_cor", "jpcrp_cor"]
+    if isinstance(raw_namespaces, str):
+        try:
+            raw_namespaces = json.loads(raw_namespaces)
+        except Exception:
+            raw_namespaces = [raw_namespaces]
+
+    processor.sync_taxonomy_releases(
+        target_database=target_database,
+        release_selection=step_cfg.get("release_selection", "all"),
+        release_years=release_years,
+        namespaces=raw_namespaces,
+        download_dir=step_cfg.get("download_dir", "assets/taxonomy"),
+        force_download=_as_bool(step_cfg.get("force_download", False)),
+        force_reparse=_as_bool(step_cfg.get("force_reparse", overwrite)),
+    )
 
 
 def _step_multivariate_regression(config, overwrite=False):
@@ -272,7 +306,7 @@ STEP_REQUIRED_KEYS: dict[str, list[str]] = {
     "import_stock_prices_csv":    ["DB_STOCK_PRICES_TABLE"],
     "update_stock_prices":        ["DB_COMPANY_INFO_TABLE",
                                    "DB_STOCK_PRICES_TABLE", "DB_FINANCIAL_DATA_TABLE"],
-    "parse_taxonomy":             ["DB_TAXONOMY_TABLE"],
+    "parse_taxonomy":             [],
     "generate_financial_statements": [],
     "populate_business_descriptions_en": [],
     "generate_ratios":            [],

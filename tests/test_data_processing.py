@@ -344,18 +344,532 @@ class TestGenerateFinancialStatements(unittest.TestCase):
             fs = conn.execute(
                 "SELECT docID, edinetCode, SharesOutstanding, SharePrice, DescriptionOfBusiness_EN FROM FinancialStatements"
             ).fetchall()
+            inc_cols = {row[1] for row in conn.execute("PRAGMA table_info(IncomeStatement)").fetchall()}
+            bal_cols = {row[1] for row in conn.execute("PRAGMA table_info(BalanceSheet)").fetchall()}
             inc = conn.execute(
-                "SELECT docID, netSales FROM IncomeStatement"
+                "SELECT docID, [NetSales] FROM IncomeStatement"
             ).fetchall()
             bal = conn.execute(
-                "SELECT docID, cash FROM BalanceSheet"
+                "SELECT docID, [CashAndDeposits] FROM BalanceSheet"
+            ).fetchall()
+            metadata = conn.execute(
+                """
+                SELECT statement_family, concept_qname, column_name, period_key
+                FROM statement_line_items
+                WHERE column_name IS NOT NULL
+                ORDER BY statement_family, concept_qname
+                """
             ).fetchall()
 
             self.assertEqual(fs, [("DOC1", "E00001", 500.0, 123.0, None)])
+            self.assertIn("NetSales", inc_cols)
+            self.assertIn("CashAndDeposits", bal_cols)
+            self.assertNotIn("netSales", inc_cols)
+            self.assertNotIn("cash", bal_cols)
             self.assertEqual(inc, [("DOC1", 1000.0)])
             self.assertEqual(bal, [("DOC1", 250.0)])
+            self.assertEqual(
+                metadata,
+                [
+                    ("BalanceSheet", "jppfs_cor:CashAndDeposits", "CashAndDeposits", "CurrentYearInstant"),
+                    ("IncomeStatement", "jppfs_cor:NetSales", "NetSales", "CurrentYearDuration"),
+                ],
+            )
         finally:
             conn.close()
+
+    def test_populates_statement_line_item_metadata_and_removes_legacy_storage(self):
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            metadata = conn.execute(
+                """
+                SELECT statement_family, concept_qname, column_name, line_depth, is_abstract
+                FROM statement_line_items
+                ORDER BY statement_family, concept_qname
+                """
+            ).fetchall()
+            legacy_tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'statement_%'"
+                ).fetchall()
+            }
+
+            self.assertEqual(
+                metadata,
+                [
+                    ("BalanceSheet", "jppfs_cor:CashAndDeposits", "CashAndDeposits", None, 0),
+                    ("IncomeStatement", "jppfs_cor:NetSales", "NetSales", None, 0),
+                ],
+            )
+            self.assertEqual(legacy_tables, {"statement_line_items"})
+        finally:
+            conn.close()
+
+    def test_uses_taxonomy_release_metadata_when_available(self):
+        conn = sqlite3.connect(self.target_db)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE taxonomy_releases (
+                    release_id INTEGER PRIMARY KEY,
+                    release_key TEXT,
+                    release_label TEXT,
+                    release_year INTEGER,
+                    taxonomy_date TEXT,
+                    valid_from TEXT,
+                    valid_to TEXT
+                );
+                CREATE TABLE taxonomy_concepts (
+                    release_id INTEGER NOT NULL,
+                    namespace_prefix TEXT,
+                    namespace_uri TEXT,
+                    concept_qname TEXT NOT NULL,
+                    concept_name TEXT,
+                    element_id TEXT,
+                    period_type TEXT,
+                    balance TEXT,
+                    is_abstract INTEGER,
+                    data_type TEXT,
+                    substitution_group TEXT,
+                    statement_family_default TEXT,
+                    primary_role_uri TEXT,
+                    primary_parent_concept_qname TEXT,
+                    primary_line_order REAL,
+                    primary_line_depth INTEGER,
+                    primary_label TEXT,
+                    primary_label_en TEXT,
+                    PRIMARY KEY (release_id, concept_qname)
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO taxonomy_releases (
+                    release_id, release_key, release_label, release_year, taxonomy_date, valid_from, valid_to
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (1, "2024-11-01", "EDINET Taxonomy 2025", 2025, "2024-11-01", "2024-11-01", None),
+            )
+            conn.execute(
+                """
+                INSERT INTO taxonomy_concepts (
+                    release_id,
+                    namespace_prefix,
+                    namespace_uri,
+                    concept_qname,
+                    concept_name,
+                    element_id,
+                    period_type,
+                    balance,
+                    is_abstract,
+                    data_type,
+                    substitution_group,
+                    statement_family_default,
+                    primary_role_uri,
+                    primary_parent_concept_qname,
+                    primary_line_order,
+                    primary_line_depth,
+                    primary_label,
+                    primary_label_en
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    1,
+                    "jppfs_cor",
+                    "http://example.com/jppfs",
+                    "jppfs_cor:NetSales",
+                    "NetSales",
+                    "jppfs_cor_NetSales",
+                    "duration",
+                    "credit",
+                    0,
+                    "xbrli:monetaryItemType",
+                    None,
+                    "IncomeStatement",
+                    "role://income-statement",
+                    "jppfs_cor:NetSalesAbstract",
+                    1.0,
+                    1,
+                    "Net Sales",
+                    "Net Sales",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            document = conn.execute(
+                "SELECT taxonomy_release_id, release_resolution_method FROM FinancialStatements WHERE docID = ?",
+                ("DOC1",),
+            ).fetchone()
+            line_item = conn.execute(
+                """
+                SELECT statement_family, role_uri, display_label, line_order, line_depth, column_name
+                FROM statement_line_items
+                WHERE concept_qname = ?
+                """,
+                ("jppfs_cor:NetSales",),
+            ).fetchone()
+            statement_row = conn.execute(
+                "SELECT docID, [Net Sales] FROM IncomeStatement WHERE docID = ?",
+                ("DOC1",),
+            ).fetchone()
+
+            self.assertEqual(document, (1, "period_end_fallback"))
+            self.assertEqual(line_item, ("IncomeStatement", "role://income-statement", "Net Sales", 1.0, 1, "Net Sales"))
+            self.assertEqual(statement_row, ("DOC1", 1000.0))
+        finally:
+            conn.close()
+
+    def test_uses_taxonomy_levels_for_statement_generation_without_statement_mappings(self):
+        conn = sqlite3.connect(self.target_db)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE taxonomy_releases (
+                    release_id INTEGER PRIMARY KEY,
+                    release_key TEXT,
+                    release_label TEXT,
+                    release_year INTEGER,
+                    taxonomy_date TEXT,
+                    valid_from TEXT,
+                    valid_to TEXT
+                );
+                CREATE TABLE taxonomy_levels (
+                    release_id INTEGER NOT NULL,
+                    statement_family TEXT,
+                    data_type TEXT,
+                    namespace_prefix TEXT NOT NULL,
+                    concept_qname TEXT NOT NULL,
+                    primary_label_en TEXT,
+                    parent_concept_qname TEXT,
+                    level INTEGER,
+                    PRIMARY KEY (release_id, namespace_prefix, concept_qname)
+                );
+                CREATE TABLE taxonomy_concepts (
+                    release_id INTEGER NOT NULL,
+                    namespace_prefix TEXT NOT NULL,
+                    concept_qname TEXT NOT NULL,
+                    concept_name TEXT,
+                    statement_family_default TEXT,
+                    primary_role_uri TEXT,
+                    primary_parent_concept_qname TEXT,
+                    primary_line_order REAL,
+                    primary_line_depth INTEGER,
+                    primary_label TEXT,
+                    primary_label_en TEXT,
+                    is_abstract INTEGER,
+                    data_type TEXT,
+                    PRIMARY KEY (release_id, concept_qname)
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO taxonomy_releases (
+                    release_id, release_key, release_label, release_year, taxonomy_date, valid_from, valid_to
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (1, "2024-11-01", "EDINET Taxonomy 2025", 2025, "2024-11-01", "2024-11-01", None),
+            )
+            conn.executemany(
+                """
+                INSERT INTO taxonomy_levels (
+                    release_id,
+                    statement_family,
+                    data_type,
+                    namespace_prefix,
+                    concept_qname,
+                    primary_label_en,
+                    parent_concept_qname,
+                    level
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        1, "IncomeStatement", None, "jppfs_cor", "jppfs_cor:RevenueAbstract", None, None, 0,
+                    ),
+                    (
+                        1, "IncomeStatement", "xbrli:monetaryItemType", "jppfs_cor", "jppfs_cor:NetSales", None, "jppfs_cor:RevenueAbstract", 1,
+                    ),
+                    (
+                        1, "BalanceSheet", None, "jppfs_cor", "jppfs_cor:AssetsAbstract", None, None, 0,
+                    ),
+                    (
+                        1, "BalanceSheet", "xbrli:monetaryItemType", "jppfs_cor", "jppfs_cor:CashAndDeposits", None, "jppfs_cor:AssetsAbstract", 1,
+                    ),
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO taxonomy_concepts (
+                    release_id,
+                    namespace_prefix,
+                    concept_qname,
+                    concept_name,
+                    statement_family_default,
+                    primary_role_uri,
+                    primary_parent_concept_qname,
+                    primary_line_order,
+                    primary_line_depth,
+                    primary_label,
+                    primary_label_en,
+                    is_abstract,
+                    data_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (1, "jppfs_cor", "jppfs_cor:RevenueAbstract", "RevenueAbstract", "IncomeStatement", "role://income-statement", None, 1.0, 0, "Revenue", "Revenue", 1, None),
+                    (1, "jppfs_cor", "jppfs_cor:NetSales", "NetSales", "IncomeStatement", "role://income-statement", "jppfs_cor:RevenueAbstract", 2.0, 1, "Net Sales", "Net Sales", 0, "xbrli:monetaryItemType"),
+                    (1, "jppfs_cor", "jppfs_cor:AssetsAbstract", "AssetsAbstract", "BalanceSheet", "role://balance-sheet", None, 1.0, 0, "Assets", "Assets", 1, None),
+                    (1, "jppfs_cor", "jppfs_cor:CashAndDeposits", "CashAndDeposits", "BalanceSheet", "role://balance-sheet", "jppfs_cor:AssetsAbstract", 2.0, 1, "Cash and Deposits", "Cash and Deposits", 0, "xbrli:monetaryItemType"),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        taxonomy_first_mappings = {
+            "Mappings": [
+                {
+                    "Name": "SharesOutstanding",
+                    "Table": "FinancialStatements",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults"],
+                }
+            ]
+        }
+        with open(self.mappings_file, "w", encoding="utf-8") as f:
+            json.dump(taxonomy_first_mappings, f)
+
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            fs_cols = {row[1] for row in conn.execute("PRAGMA table_info(FinancialStatements)").fetchall()}
+            inc_cols = {row[1] for row in conn.execute("PRAGMA table_info(IncomeStatement)").fetchall()}
+            bal_cols = {row[1] for row in conn.execute("PRAGMA table_info(BalanceSheet)").fetchall()}
+            income_row = conn.execute(
+                'SELECT docID, [Net Sales] FROM IncomeStatement WHERE docID = ?',
+                ("DOC1",),
+            ).fetchone()
+            balance_row = conn.execute(
+                'SELECT docID, [Cash and Deposits] FROM BalanceSheet WHERE docID = ?',
+                ("DOC1",),
+            ).fetchone()
+            metadata = conn.execute(
+                """
+                SELECT concept_qname, column_name, line_depth, presentation_parent_qname
+                FROM statement_line_items
+                WHERE statement_family IN ('IncomeStatement', 'BalanceSheet')
+                ORDER BY statement_family, line_depth, line_order, concept_qname
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertIn("SharesOutstanding", fs_cols)
+        self.assertNotIn("netSales", fs_cols)
+        self.assertNotIn("cash", fs_cols)
+        self.assertIn("Net Sales", inc_cols)
+        self.assertIn("Cash and Deposits", bal_cols)
+        self.assertEqual(income_row, ("DOC1", 1000.0))
+        self.assertEqual(balance_row, ("DOC1", 250.0))
+        self.assertEqual(
+            metadata,
+            [
+                ("jppfs_cor:AssetsAbstract", None, 0, None),
+                ("jppfs_cor:CashAndDeposits", "Cash and Deposits", 1, "jppfs_cor:AssetsAbstract"),
+                ("jppfs_cor:RevenueAbstract", None, 0, None),
+                ("jppfs_cor:NetSales", "Net Sales", 1, "jppfs_cor:RevenueAbstract"),
+            ],
+        )
+
+    def test_prefers_english_taxonomy_labels_for_statement_columns(self):
+        conn = sqlite3.connect(self.target_db)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE taxonomy_releases (
+                    release_id INTEGER PRIMARY KEY,
+                    release_key TEXT,
+                    release_label TEXT,
+                    release_year INTEGER,
+                    taxonomy_date TEXT,
+                    valid_from TEXT,
+                    valid_to TEXT
+                );
+                CREATE TABLE taxonomy_levels (
+                    release_id INTEGER NOT NULL,
+                    statement_family TEXT,
+                    data_type TEXT,
+                    namespace_prefix TEXT NOT NULL,
+                    concept_qname TEXT NOT NULL,
+                    primary_label_en TEXT,
+                    parent_concept_qname TEXT,
+                    level INTEGER,
+                    PRIMARY KEY (release_id, namespace_prefix, concept_qname)
+                );
+                CREATE TABLE taxonomy_concepts (
+                    release_id INTEGER NOT NULL,
+                    namespace_prefix TEXT NOT NULL,
+                    concept_qname TEXT NOT NULL,
+                    concept_name TEXT,
+                    statement_family_default TEXT,
+                    primary_role_uri TEXT,
+                    primary_parent_concept_qname TEXT,
+                    primary_line_order REAL,
+                    primary_line_depth INTEGER,
+                    primary_label TEXT,
+                    primary_label_en TEXT,
+                    is_abstract INTEGER,
+                    data_type TEXT,
+                    PRIMARY KEY (release_id, concept_qname)
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO taxonomy_releases (
+                    release_id, release_key, release_label, release_year, taxonomy_date, valid_from, valid_to
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (1, "2024-11-01", "EDINET Taxonomy 2025", 2025, "2024-11-01", "2024-11-01", None),
+            )
+            conn.executemany(
+                """
+                INSERT INTO taxonomy_levels (
+                    release_id,
+                    statement_family,
+                    data_type,
+                    namespace_prefix,
+                    concept_qname,
+                    primary_label_en,
+                    parent_concept_qname,
+                    level
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (1, "BalanceSheet", None, "jppfs_cor", "jppfs_cor:AssetsAbstract", "Assets", None, 0),
+                    (1, "BalanceSheet", "xbrli:monetaryItemType", "jppfs_cor", "jppfs_cor:CurrentAssets", "Current Assets", "jppfs_cor:AssetsAbstract", 1),
+                    (1, "BalanceSheet", "xbrli:monetaryItemType", "jppfs_cor", "jppfs_cor:CashAndDeposits", "Cash and Deposits", "jppfs_cor:AssetsAbstract", 1),
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO taxonomy_concepts (
+                    release_id,
+                    namespace_prefix,
+                    concept_qname,
+                    concept_name,
+                    statement_family_default,
+                    primary_role_uri,
+                    primary_parent_concept_qname,
+                    primary_line_order,
+                    primary_line_depth,
+                    primary_label,
+                    primary_label_en,
+                    is_abstract,
+                    data_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (1, "jppfs_cor", "jppfs_cor:AssetsAbstract", "AssetsAbstract", "BalanceSheet", "role://balance-sheet", None, 1.0, 0, "資産", "Assets", 1, None),
+                    (1, "jppfs_cor", "jppfs_cor:CurrentAssets", "CurrentAssets", "BalanceSheet", "role://balance-sheet", "jppfs_cor:AssetsAbstract", 2.0, 1, "流動資産", "Current Assets", 0, "xbrli:monetaryItemType"),
+                    (1, "jppfs_cor", "jppfs_cor:CashAndDeposits", "CashAndDeposits", "BalanceSheet", "role://balance-sheet", "jppfs_cor:AssetsAbstract", 3.0, 1, "現金預金", "Cash and Deposits", 0, "xbrli:monetaryItemType"),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        taxonomy_first_mappings = {
+            "Mappings": [
+                {
+                    "Name": "SharesOutstanding",
+                    "Table": "FinancialStatements",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults"],
+                }
+            ]
+        }
+        with open(self.mappings_file, "w", encoding="utf-8") as f:
+            json.dump(taxonomy_first_mappings, f)
+
+        self.d.generate_financial_statements(
+            source_database=self.source_db,
+            source_table="Standard_Data",
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            bal_cols = {row[1] for row in conn.execute("PRAGMA table_info(BalanceSheet)").fetchall()}
+            current_assets_row = conn.execute(
+                'SELECT docID, [Current Assets] FROM BalanceSheet WHERE docID = ?',
+                ("DOC1",),
+            ).fetchone()
+            cash_row = conn.execute(
+                'SELECT docID, [Cash and Deposits] FROM BalanceSheet WHERE docID = ?',
+                ("DOC1",),
+            ).fetchone()
+            metadata = conn.execute(
+                """
+                SELECT concept_qname, display_label, column_name
+                FROM statement_line_items
+                WHERE statement_family = 'BalanceSheet'
+                  AND concept_qname IN ('jppfs_cor:AssetsAbstract', 'jppfs_cor:CurrentAssets', 'jppfs_cor:CashAndDeposits')
+                ORDER BY line_depth, line_order, concept_qname
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertIn("Current Assets", bal_cols)
+        self.assertIn("Cash and Deposits", bal_cols)
+        self.assertNotIn("流動資産", bal_cols)
+        self.assertNotIn("現金預金", bal_cols)
+        self.assertEqual(current_assets_row, ("DOC1", 800.0))
+        self.assertEqual(cash_row, ("DOC1", 250.0))
+        self.assertEqual(
+            metadata,
+            [
+                ("jppfs_cor:AssetsAbstract", "Assets", None),
+                ("jppfs_cor:CurrentAssets", "Current Assets", "Current Assets"),
+                ("jppfs_cor:CashAndDeposits", "Cash and Deposits", "Cash and Deposits"),
+            ],
+        )
 
     def test_rerun_is_idempotent(self):
         self.d.generate_financial_statements(
@@ -461,26 +975,38 @@ class TestGenerateFinancialStatements(unittest.TestCase):
         conn = sqlite3.connect(self.target_db)
         try:
             fs_cols = {row[1] for row in conn.execute("PRAGMA table_info(FinancialStatements)").fetchall()}
+            inc_cols = {row[1] for row in conn.execute("PRAGMA table_info(IncomeStatement)").fetchall()}
+            bal_cols = {row[1] for row in conn.execute("PRAGMA table_info(BalanceSheet)").fetchall()}
             self.assertIn("NumberOfEmployees", fs_cols)
             self.assertIn("DescriptionOfBusiness", fs_cols)
             self.assertIn("DescriptionOfBusiness_EN", fs_cols)
+            self.assertNotIn("netSales", fs_cols)
+            self.assertNotIn("operatingIncome", fs_cols)
+            self.assertNotIn("cash", fs_cols)
+            self.assertNotIn("currentAssets", fs_cols)
+            self.assertIn("NetSales", inc_cols)
+            self.assertIn("OperatingIncome", inc_cols)
+            self.assertIn("CashAndDeposits", bal_cols)
+            self.assertIn("CurrentAssets", bal_cols)
+            self.assertNotIn("operatingIncome", inc_cols)
+            self.assertNotIn("currentAssets", bal_cols)
 
             fs = conn.execute(
                 "SELECT NumberOfEmployees, DescriptionOfBusiness FROM FinancialStatements WHERE docID = ?",
                 ("DOC1",),
             ).fetchone()
             inc = conn.execute(
-                "SELECT operatingIncome FROM IncomeStatement WHERE docID = ?",
+                "SELECT [NetSales], [OperatingIncome] FROM IncomeStatement WHERE docID = ?",
                 ("DOC1",),
-            ).fetchone()
+            ).fetchall()
             bal = conn.execute(
-                "SELECT currentAssets FROM BalanceSheet WHERE docID = ?",
+                "SELECT [CashAndDeposits], [CurrentAssets] FROM BalanceSheet WHERE docID = ?",
                 ("DOC1",),
-            ).fetchone()
+            ).fetchall()
 
             self.assertEqual(fs, (42.0, "Makes parts"))
-            self.assertEqual(inc, (150.0,))
-            self.assertEqual(bal, (800.0,))
+            self.assertEqual(inc, [(1000.0, 150.0)])
+            self.assertEqual(bal, [(250.0, 800.0)])
         finally:
             conn.close()
 
@@ -1004,6 +1530,222 @@ class TestGenerateRatios(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_generate_ratios_uses_financial_statements_canonical_columns_when_statement_tables_are_taxonomy_wide(self):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.executescript(
+                """
+                ALTER TABLE FinancialStatements ADD COLUMN netIncome REAL;
+                ALTER TABLE FinancialStatements ADD COLUMN netSales REAL;
+                ALTER TABLE FinancialStatements ADD COLUMN currentAssets REAL;
+                ALTER TABLE FinancialStatements ADD COLUMN currentLiabilities REAL;
+                ALTER TABLE FinancialStatements ADD COLUMN totalAssets REAL;
+                ALTER TABLE FinancialStatements ADD COLUMN shareholdersEquity REAL;
+
+                UPDATE FinancialStatements
+                SET
+                    netIncome = 50.0,
+                    netSales = 1000.0,
+                    currentAssets = 400.0,
+                    currentLiabilities = 200.0,
+                    totalAssets = 1200.0,
+                    shareholdersEquity = 700.0;
+
+                DROP TABLE IncomeStatement;
+                DROP TABLE BalanceSheet;
+                DROP TABLE CashflowStatement;
+
+                CREATE TABLE statement_line_items (
+                    statement_family TEXT NOT NULL,
+                    concept_qname TEXT NOT NULL,
+                    column_name TEXT,
+                    display_label TEXT,
+                    concept_name TEXT,
+                    taxonomy_release_id INTEGER,
+                    role_uri TEXT,
+                    presentation_parent_qname TEXT,
+                    parent_column_name TEXT,
+                    line_order REAL,
+                    line_depth INTEGER,
+                    period_key TEXT,
+                    value_type TEXT,
+                    is_abstract INTEGER,
+                    is_required_metric INTEGER,
+                    PRIMARY KEY (statement_family, concept_qname)
+                );
+
+                CREATE TABLE IncomeStatement (
+                    docID TEXT PRIMARY KEY,
+                    [Net Income] REAL,
+                    [Net Sales] REAL
+                );
+
+                CREATE TABLE BalanceSheet (
+                    docID TEXT PRIMARY KEY,
+                    [Current Assets] REAL,
+                    [Current Liabilities] REAL,
+                    [Total Assets] REAL,
+                    "Shareholders' Equity" REAL
+                );
+
+                CREATE TABLE CashflowStatement (
+                    docID TEXT PRIMARY KEY
+                );
+                """
+            )
+            conn.execute(
+                'INSERT INTO IncomeStatement (docID, [Net Income], [Net Sales]) VALUES (?, ?, ?)',
+                ("DOC1", 50.0, 1000.0),
+            )
+            conn.execute(
+                "INSERT INTO BalanceSheet (docID, [Current Assets], [Current Liabilities], [Total Assets], \"Shareholders' Equity\") VALUES (?, ?, ?, ?, ?)",
+                ("DOC1", 400.0, 200.0, 1200.0, 700.0),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        formulas = {
+            "Quality": [
+                {"Column": "CurrentRatio", "Formula": "BalanceSheet.currentAssets / BalanceSheet.currentLiabilities"},
+                {"Column": "ReturnOnAssets", "Formula": "IncomeStatement.netIncome / BalanceSheet.totalAssets"},
+            ],
+            "PerShare": [
+                {"Column": "EPS", "Formula": "IncomeStatement.netIncome / FinancialStatements.SharesOutstanding"},
+            ],
+            "Valuation": [
+                {"Column": "PERatio", "Formula": "FinancialStatements.SharePrice / PerShare.EPS"},
+            ],
+        }
+        with open(self.formulas_file, "w", encoding="utf-8") as f:
+            json.dump(formulas, f)
+
+        self.d.generate_ratios(
+            source_database=self.db_path,
+            target_database=self.db_path,
+            formulas_config=self.formulas_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            per_share = conn.execute("SELECT docID, EPS FROM PerShare").fetchall()
+            valuation = conn.execute("SELECT docID, PERatio FROM Valuation").fetchall()
+            quality = conn.execute("SELECT docID, CurrentRatio, ReturnOnAssets FROM Quality").fetchall()
+
+            self.assertEqual(per_share, [("DOC1", 0.1)])
+            self.assertEqual(valuation, [("DOC1", 1000.0)])
+            self.assertEqual(quality, [("DOC1", 2.0, 50.0 / 1200.0)])
+        finally:
+            conn.close()
+
+    def test_generate_ratios_uses_statement_facts_when_statement_tables_are_taxonomy_shaped(self):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.executescript(
+                """
+                DROP TABLE IncomeStatement;
+                DROP TABLE BalanceSheet;
+                DROP TABLE CashflowStatement;
+
+                CREATE TABLE statement_documents (
+                    docID TEXT PRIMARY KEY
+                );
+
+                CREATE TABLE statement_facts (
+                    docID TEXT NOT NULL,
+                    concept_qname TEXT,
+                    statement_family TEXT,
+                    source_period TEXT,
+                    value_numeric REAL,
+                    raw_value_text TEXT
+                );
+
+                CREATE TABLE IncomeStatement (
+                    docID TEXT,
+                    concept_qname TEXT,
+                    value_numeric REAL
+                );
+
+                CREATE TABLE BalanceSheet (
+                    docID TEXT,
+                    concept_qname TEXT,
+                    value_numeric REAL
+                );
+
+                CREATE TABLE CashflowStatement (
+                    docID TEXT,
+                    concept_qname TEXT,
+                    value_numeric REAL
+                );
+                """
+            )
+            conn.execute("INSERT INTO statement_documents (docID) VALUES (?)", ("DOC1",))
+            conn.executemany(
+                "INSERT INTO statement_facts (docID, concept_qname, statement_family, source_period, value_numeric, raw_value_text) VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    ("DOC1", "jppfs_cor:NetIncome", "IncomeStatement", "CurrentYearDuration", 50.0, "50"),
+                    ("DOC1", "jppfs_cor:NetSales", "IncomeStatement", "CurrentYearDuration", 1000.0, "1000"),
+                    ("DOC1", "jppfs_cor:CurrentAssets", "BalanceSheet", "CurrentYearInstant", 400.0, "400"),
+                    ("DOC1", "jppfs_cor:CurrentLiabilities", "BalanceSheet", "CurrentYearInstant", 200.0, "200"),
+                    ("DOC1", "jppfs_cor:TotalAssets", "BalanceSheet", "CurrentYearInstant", 1200.0, "1200"),
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO IncomeStatement (docID, concept_qname, value_numeric) VALUES (?, ?, ?)",
+                [
+                    ("DOC1", "jppfs_cor:NetIncome", 50.0),
+                    ("DOC1", "jppfs_cor:NetSales", 1000.0),
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO BalanceSheet (docID, concept_qname, value_numeric) VALUES (?, ?, ?)",
+                [
+                    ("DOC1", "jppfs_cor:CurrentAssets", 400.0),
+                    ("DOC1", "jppfs_cor:CurrentLiabilities", 200.0),
+                    ("DOC1", "jppfs_cor:TotalAssets", 1200.0),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        formulas = {
+            "Quality": [
+                {"Column": "CurrentRatio", "Formula": "BalanceSheet.currentAssets / BalanceSheet.currentLiabilities"},
+                {"Column": "ReturnOnAssets", "Formula": "IncomeStatement.netIncome / BalanceSheet.totalAssets"},
+            ],
+            "PerShare": [
+                {"Column": "EPS", "Formula": "IncomeStatement.netIncome / FinancialStatements.SharesOutstanding"},
+            ],
+            "Valuation": [
+                {"Column": "PERatio", "Formula": "FinancialStatements.SharePrice / PerShare.EPS"},
+            ],
+        }
+        with open(self.formulas_file, "w", encoding="utf-8") as f:
+            json.dump(formulas, f)
+
+        self.d.generate_ratios(
+            source_database=self.db_path,
+            target_database=self.db_path,
+            formulas_config=self.formulas_file,
+            overwrite=False,
+            batch_size=10,
+        )
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            per_share = conn.execute("SELECT docID, EPS FROM PerShare").fetchall()
+            valuation = conn.execute("SELECT docID, PERatio FROM Valuation").fetchall()
+            quality = conn.execute("SELECT docID, CurrentRatio, ReturnOnAssets FROM Quality").fetchall()
+
+            self.assertEqual(per_share, [("DOC1", 0.1)])
+            self.assertEqual(valuation, [("DOC1", 1000.0)])
+            self.assertEqual(quality, [("DOC1", 2.0, 50.0 / 1200.0)])
+        finally:
+            conn.close()
+
     def test_generate_ratios_logs_cyclic_dependencies_and_executes_independent_formulas(self):
         formulas = {
             "Quality": [
@@ -1042,6 +1784,172 @@ class TestGenerateRatios(unittest.TestCase):
             self.assertEqual(valuation, [("DOC1", None)])
         finally:
             conn.close()
+
+
+class TestRefreshStatementHierarchy(unittest.TestCase):
+    """Tests for data.refresh_statement_hierarchy() — the fast metadata-only update path."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.target_db = os.path.join(self.tmpdir.name, "target.db")
+        self.mappings_file = os.path.join(self.tmpdir.name, "mappings.json")
+
+        # Minimal mappings — only a FinancialStatements metric so generate_financial_statements
+        # would not create IncomeStatement/BalanceSheet columns normally.
+        mappings = {
+            "Mappings": [
+                {
+                    "Name": "SharesOutstanding",
+                    "Table": "FinancialStatements",
+                    "periods": ["CurrentYearInstant"],
+                    "Terms": ["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults"],
+                },
+            ]
+        }
+        with open(self.mappings_file, "w", encoding="utf-8") as f:
+            json.dump(mappings, f)
+
+        # Seed target DB with taxonomy tables and a pre-existing wide statement row
+        # (simulates a previously-run generate_financial_statements)
+        conn = sqlite3.connect(self.target_db)
+        conn.executescript(
+            """
+            CREATE TABLE taxonomy_releases (
+                release_id INTEGER PRIMARY KEY,
+                release_key TEXT,
+                release_label TEXT,
+                release_year INTEGER,
+                taxonomy_date TEXT,
+                valid_from TEXT,
+                valid_to TEXT
+            );
+            CREATE TABLE taxonomy_levels (
+                release_id INTEGER NOT NULL,
+                statement_family TEXT,
+                data_type TEXT,
+                namespace_prefix TEXT NOT NULL,
+                concept_qname TEXT NOT NULL,
+                primary_label_en TEXT,
+                parent_concept_qname TEXT,
+                level INTEGER,
+                PRIMARY KEY (release_id, namespace_prefix, concept_qname)
+            );
+            CREATE TABLE taxonomy_concepts (
+                release_id INTEGER NOT NULL,
+                namespace_prefix TEXT NOT NULL,
+                concept_qname TEXT NOT NULL,
+                concept_name TEXT,
+                statement_family_default TEXT,
+                primary_role_uri TEXT,
+                primary_parent_concept_qname TEXT,
+                primary_line_order REAL,
+                primary_line_depth INTEGER,
+                primary_label TEXT,
+                primary_label_en TEXT,
+                is_abstract INTEGER,
+                data_type TEXT,
+                PRIMARY KEY (release_id, concept_qname)
+            );
+            -- Minimal wide statement table so we can verify it is untouched
+            CREATE TABLE IncomeStatement (
+                docID TEXT PRIMARY KEY,
+                [Net Sales] REAL
+            );
+            INSERT INTO IncomeStatement (docID, [Net Sales]) VALUES ('DOC1', 9999.0);
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO taxonomy_releases (release_id, release_key, release_label, release_year, taxonomy_date, valid_from, valid_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1, "2024-11-01", "EDINET Taxonomy 2025", 2025, "2024-11-01", "2024-11-01", None),
+        )
+        conn.executemany(
+            """
+            INSERT INTO taxonomy_levels (
+                release_id, statement_family, data_type, namespace_prefix,
+                concept_qname, primary_label_en, parent_concept_qname, level
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, "IncomeStatement", None, "jppfs_cor", "jppfs_cor:RevenueAbstract", "Revenue", None, 0),
+                (1, "IncomeStatement", "xbrli:monetaryItemType", "jppfs_cor", "jppfs_cor:NetSales", "Net Sales", "jppfs_cor:RevenueAbstract", 1),
+                (1, "BalanceSheet", None, "jppfs_cor", "jppfs_cor:AssetsAbstract", "Assets", None, 0),
+                (1, "BalanceSheet", "xbrli:monetaryItemType", "jppfs_cor", "jppfs_cor:CashAndDeposits", "Cash and Deposits", "jppfs_cor:AssetsAbstract", 1),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO taxonomy_concepts (
+                release_id, namespace_prefix, concept_qname, concept_name,
+                statement_family_default, primary_role_uri, primary_parent_concept_qname,
+                primary_line_order, primary_line_depth, primary_label, primary_label_en,
+                is_abstract, data_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, "jppfs_cor", "jppfs_cor:RevenueAbstract", "RevenueAbstract", "IncomeStatement", "role://income-statement", None, 1.0, 0, "Revenue", "Revenue", 1, None),
+                (1, "jppfs_cor", "jppfs_cor:NetSales", "NetSales", "IncomeStatement", "role://income-statement", "jppfs_cor:RevenueAbstract", 2.0, 1, "Net Sales", "Net Sales", 0, "xbrli:monetaryItemType"),
+                (1, "jppfs_cor", "jppfs_cor:AssetsAbstract", "AssetsAbstract", "BalanceSheet", "role://balance-sheet", None, 1.0, 0, "Assets", "Assets", 1, None),
+                (1, "jppfs_cor", "jppfs_cor:CashAndDeposits", "CashAndDeposits", "BalanceSheet", "role://balance-sheet", "jppfs_cor:AssetsAbstract", 2.0, 1, "Cash and Deposits", "Cash and Deposits", 0, "xbrli:monetaryItemType"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        self.d = _make_data_instance()
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_populates_statement_line_items_from_taxonomy_levels(self):
+        self.d.refresh_statement_hierarchy(
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            max_line_depth=3,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            metadata = conn.execute(
+                """
+                SELECT concept_qname, column_name, line_depth, presentation_parent_qname
+                FROM statement_line_items
+                WHERE statement_family IN ('IncomeStatement', 'BalanceSheet')
+                ORDER BY statement_family, line_depth, line_order, concept_qname
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertEqual(
+            metadata,
+            [
+                ("jppfs_cor:AssetsAbstract", None, 0, None),
+                ("jppfs_cor:CashAndDeposits", "Cash and Deposits", 1, "jppfs_cor:AssetsAbstract"),
+                ("jppfs_cor:RevenueAbstract", None, 0, None),
+                ("jppfs_cor:NetSales", "Net Sales", 1, "jppfs_cor:RevenueAbstract"),
+            ],
+        )
+
+    def test_does_not_modify_wide_statement_tables(self):
+        self.d.refresh_statement_hierarchy(
+            target_database=self.target_db,
+            mappings_config=self.mappings_file,
+            max_line_depth=3,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            row = conn.execute(
+                "SELECT docID, [Net Sales] FROM IncomeStatement WHERE docID = 'DOC1'"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        # The pre-existing IncomeStatement row must be untouched
+        self.assertEqual(row, ("DOC1", 9999.0))
 
 
 class TestGenerateHistoricalRatios(unittest.TestCase):

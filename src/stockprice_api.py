@@ -407,28 +407,88 @@ def import_stock_prices_csv(
         csv_path, default_ticker, default_currency,
     )
 
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(csv_path, low_memory=False)
+    available_columns = [str(column) for column in df.columns]
+    columns_by_lower = {str(column).strip().lower(): str(column) for column in df.columns}
 
-    if date_column not in df.columns:
-        raise ValueError(f"Date column '{date_column}' not found in CSV. "
-                         f"Available columns: {list(df.columns)}")
-    if price_column not in df.columns:
-        raise ValueError(f"Price column '{price_column}' not found in CSV. "
-                         f"Available columns: {list(df.columns)}")
-    if ticker_column and ticker_column not in df.columns:
-        raise ValueError(f"Ticker column '{ticker_column}' not found in CSV. "
-                         f"Available columns: {list(df.columns)}")
-    if currency_column and currency_column not in df.columns:
-        raise ValueError(f"Currency column '{currency_column}' not found in CSV. "
-                         f"Available columns: {list(df.columns)}")
+    def _resolve_column(configured_name, column_kind, candidates=None, allow_missing=False):
+        configured_text = str(configured_name or "").strip()
+        if configured_text:
+            actual_name = columns_by_lower.get(configured_text.lower())
+            if actual_name:
+                return actual_name
+
+        for candidate in candidates or []:
+            candidate_text = str(candidate or "").strip()
+            if not candidate_text:
+                continue
+            actual_name = columns_by_lower.get(candidate_text.lower())
+            if actual_name:
+                if configured_text and actual_name.lower() != configured_text.lower():
+                    logger.info(
+                        "CSV import: using %s column '%s' instead of configured '%s'.",
+                        column_kind,
+                        actual_name,
+                        configured_text,
+                    )
+                elif not configured_text:
+                    logger.info(
+                        "CSV import: auto-detected %s column '%s'.",
+                        column_kind,
+                        actual_name,
+                    )
+                return actual_name
+
+        if allow_missing:
+            return None
+
+        expected_name = configured_text or (candidates or [column_kind])[0]
+        raise ValueError(
+            f"{column_kind.capitalize()} column '{expected_name}' not found in CSV. "
+            f"Available columns: {available_columns}"
+        )
+
+    resolved_date_column = _resolve_column(
+        date_column,
+        "date",
+        candidates=[date_column, "Date", "TradeDate", "Datetime"],
+    )
+    resolved_price_column = _resolve_column(
+        price_column,
+        "price",
+        candidates=[price_column, "Price", "Close", "Adj Close", "AdjClose", "Adjusted Close", "Last"],
+    )
+    resolved_ticker_column = _resolve_column(
+        ticker_column,
+        "ticker",
+        candidates=[ticker_column, "Ticker", "Code", "Symbol"],
+        allow_missing=True,
+    )
+    resolved_currency_column = _resolve_column(
+        currency_column,
+        "currency",
+        candidates=[currency_column, "Currency"],
+        allow_missing=True,
+    )
+
+    if not resolved_ticker_column and not str(default_ticker or "").strip():
+        raise ValueError(
+            "Ticker column was not found in CSV and no default_ticker was supplied. "
+            f"Available columns: {available_columns}"
+        )
+    if not resolved_currency_column and not str(default_currency or "").strip():
+        raise ValueError(
+            "Currency column was not found in CSV and no default_currency was supplied. "
+            f"Available columns: {available_columns}"
+        )
 
     ticker_series = (
-        df[ticker_column].fillna("").astype(str).str.strip()
-        if ticker_column else pd.Series([default_ticker] * len(df), index=df.index)
+        df[resolved_ticker_column].fillna("").astype(str).str.strip()
+        if resolved_ticker_column else pd.Series([default_ticker] * len(df), index=df.index)
     )
     currency_series = (
-        df[currency_column].fillna("").astype(str).str.strip()
-        if currency_column else pd.Series([default_currency] * len(df), index=df.index)
+        df[resolved_currency_column].fillna("").astype(str).str.strip()
+        if resolved_currency_column else pd.Series([default_currency] * len(df), index=df.index)
     )
 
     ticker_series = ticker_series.replace({"nan": "", "None": ""})
@@ -440,10 +500,10 @@ def import_stock_prices_csv(
         currency_series = currency_series.replace("", default_currency)
 
     out = pd.DataFrame({
-        "Date": pd.to_datetime(df[date_column]).dt.strftime("%Y-%m-%d"),
+        "Date": pd.to_datetime(df[resolved_date_column]).dt.strftime("%Y-%m-%d"),
         "Ticker": ticker_series,
         "Currency": currency_series,
-        "Price": pd.to_numeric(df[price_column], errors="coerce"),
+        "Price": pd.to_numeric(df[resolved_price_column], errors="coerce"),
     })
 
     out = out.dropna(subset=["Date", "Price"]).copy()

@@ -9,6 +9,7 @@ retrieves price history, and provides a deterministic peer comparison.
 from __future__ import annotations
 
 import html
+import json
 import logging
 import os
 import re
@@ -94,6 +95,19 @@ _STATEMENT_TOKEN_OVERRIDES = {
     "zscore": "Z-Score",
     "stddev": "Std Dev",
 }
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_CANONICAL_METRICS_CONFIG_PATH = os.path.join(
+    _REPO_ROOT,
+    "config",
+    "reference",
+    "canonical_metrics_config.json",
+)
+_OVERVIEW_TAXONOMY_METRICS = {
+    "IncomeStatement": ("netSales", "operatingIncome", "netIncome"),
+    "BalanceSheet": ("totalAssets", "shareholdersEquity"),
+}
+_STATEMENT_LINE_ITEMS_TABLE = "statement_line_items"
 
 # ---------------------------------------------------------------------------
 # Schema discovery
@@ -820,6 +834,16 @@ def _build_statement_source_specs(
             )
             continue
 
+        if _is_taxonomy_statement_table(conn, table_name):
+            specs[source_key] = StatementSourceSpec(
+                source_key=source_key,
+                table_name=table_name,
+                alias=alias,
+                join_clause=None,
+                metrics=tuple(),
+            )
+            continue
+
         columns = _get_columns(conn, table_name)
         docid_col = _resolve_column(columns, ["docID", "DocID"], required=False)
         edinet_col = _resolve_column(columns, ["edinetCode", "EdinetCode"], required=False)
@@ -944,6 +968,420 @@ def _statement_metric_rows(
             }
         )
     return rows
+
+
+def _sql_literal(value: Any) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _normalise_taxonomy_term(value: Any) -> str | None:
+    text = _safe_str(value)
+    if not text:
+        return None
+    if ":" in text:
+        return text
+    match = re.match(r"^([A-Za-z0-9\-]+_[A-Za-z0-9\-]+)_(.+)$", text)
+    if match:
+        return f"{match.group(1)}:{match.group(2)}"
+    return text
+
+
+def _statement_family_for_table_name(table_name: str | None) -> str | None:
+    normalized = re.sub(r"[^0-9A-Za-z]+", "", _safe_str(table_name)).lower()
+    families = {
+        "incomestatement": "IncomeStatement",
+        "balancesheet": "BalanceSheet",
+        "cashflowstatement": "CashflowStatement",
+    }
+    return families.get(normalized)
+
+
+def _load_statement_line_items(
+    conn: sqlite3.Connection,
+    table_name: str | None,
+) -> list[dict[str, Any]]:
+    family = _statement_family_for_table_name(table_name)
+    if not family:
+        return []
+
+    table_map = _list_table_map(conn)
+    metadata_table = _resolve_table_name(table_map, [_STATEMENT_LINE_ITEMS_TABLE], required=False)
+    if not metadata_table:
+        return []
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            statement_family,
+            concept_qname,
+            column_name,
+            display_label,
+            concept_name,
+            role_uri,
+            presentation_parent_qname,
+            parent_column_name,
+            line_order,
+            line_depth,
+            period_key,
+            value_type,
+            is_abstract,
+            is_required_metric
+        FROM {_quote_ident(metadata_table)}
+        WHERE statement_family = ?
+        ORDER BY
+            COALESCE(role_uri, ''),
+            COALESCE(line_order, 999999999.0),
+            COALESCE(line_depth, 0),
+            COALESCE(display_label, concept_name, concept_qname, column_name, '')
+        """,
+        (family,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _is_taxonomy_statement_table(conn: sqlite3.Connection, table_name: str | None) -> bool:
+    if not table_name:
+        return False
+    columns = {column.lower() for column in _get_columns(conn, table_name)}
+    if "concept_qname" in columns:
+        return True
+    return any(_safe_str(row.get("column_name")) for row in _load_statement_line_items(conn, table_name))
+
+
+@lru_cache(maxsize=1)
+def _load_canonical_metric_mappings() -> dict[str, dict[str, dict[str, Any]]]:
+    normalized: dict[str, dict[str, dict[str, Any]]] = {
+        "FinancialStatements": {},
+        "IncomeStatement": {},
+        "BalanceSheet": {},
+        "CashflowStatement": {},
+    }
+    if not os.path.exists(_CANONICAL_METRICS_CONFIG_PATH):
+        return normalized
+
+    with open(_CANONICAL_METRICS_CONFIG_PATH, "r", encoding="utf-8") as handle:
+        raw = json.load(handle)
+
+    if isinstance(raw, dict) and isinstance(raw.get("Metrics"), list):
+        for entry in raw.get("Metrics", []):
+            if not isinstance(entry, dict):
+                continue
+            table_name = entry.get("OutputTable") or entry.get("Table")
+            metric_name = entry.get("Key") or entry.get("Name")
+            if table_name not in normalized or not metric_name:
+                continue
+
+            selectors = entry.get("Selectors", []) or []
+            terms: list[str] = []
+            periods: list[str] = []
+            statement_family = None
+            for selector in selectors:
+                if not isinstance(selector, dict):
+                    continue
+                selector_terms = selector.get("concepts") or selector.get("Terms") or []
+                selector_periods = selector.get("periods") or []
+                if selector.get("statement_family") and not statement_family:
+                    statement_family = selector.get("statement_family")
+                terms.extend(term for term in selector_terms if term)
+                periods.extend(period for period in selector_periods if period)
+
+            if not terms:
+                terms = entry.get("Terms", []) or []
+            if not periods:
+                periods = entry.get("periods", []) or []
+
+            normalized[table_name][metric_name] = {
+                "Terms": list(dict.fromkeys(terms)),
+                "periods": list(dict.fromkeys(periods)),
+                "statement_family": statement_family,
+                "ValueType": entry.get("ValueType"),
+            }
+        return normalized
+
+    mappings = raw.get("Mappings", []) if isinstance(raw, dict) else []
+    for entry in mappings:
+        if not isinstance(entry, dict):
+            continue
+        table_name = entry.get("Table")
+        metric_name = entry.get("Name")
+        if table_name not in normalized or not metric_name:
+            continue
+        normalized[table_name][metric_name] = {
+            "Terms": entry.get("Terms", []) or [],
+            "periods": entry.get("periods", []) or [],
+            "statement_family": entry.get("statement_family"),
+            "ValueType": entry.get("ValueType"),
+        }
+
+    return normalized
+
+
+def _canonical_metric_expr(mapping: dict[str, Any] | None, facts_alias: str = "sf") -> str:
+    if not mapping:
+        return "NULL"
+
+    terms = [_normalise_taxonomy_term(term) or term for term in (mapping.get("Terms", []) or []) if term]
+    periods = [_safe_str(period) for period in (mapping.get("periods", []) or []) if _safe_str(period)]
+    statement_family = _safe_str(mapping.get("statement_family"))
+    if not terms:
+        return "NULL"
+
+    value_column = "raw_value_text" if _safe_str(mapping.get("ValueType")).upper() == "TEXT" else "value_numeric"
+    term_list = ", ".join(_sql_literal(term) for term in terms)
+    conditions = [f"{facts_alias}.[concept_qname] IN ({term_list})"]
+    if periods:
+        period_list = ", ".join(_sql_literal(period) for period in periods)
+        conditions.append(f"{facts_alias}.[source_period] IN ({period_list})")
+    if statement_family:
+        conditions.append(f"{facts_alias}.[statement_family] = {_sql_literal(statement_family)}")
+
+    return (
+        f"MAX(CASE WHEN {' AND '.join(conditions)} "
+        f"THEN {facts_alias}.[{value_column}] END)"
+    )
+
+
+def _load_statement_fact_metric_values(
+    conn: sqlite3.Connection,
+    doc_id: str | None,
+    metric_request: dict[str, tuple[str, ...]],
+) -> dict[str, Any]:
+    if not doc_id or not metric_request:
+        return {}
+
+    values: dict[str, Any] = {}
+    table_map = _list_table_map(conn)
+    fs_table = _resolve_table_name(table_map, ["FinancialStatements"], required=False)
+    if fs_table:
+        fs_columns = _get_columns(conn, fs_table)
+        fs_docid_col = _resolve_column(fs_columns, ["docID", "DocID"], required=False)
+        fs_column_map = {column.lower(): column for column in fs_columns}
+        wanted = []
+        for metric_names in metric_request.values():
+            for metric_name in metric_names:
+                actual_column = fs_column_map.get(metric_name.lower())
+                if actual_column and metric_name not in values:
+                    wanted.append((metric_name, actual_column))
+
+        if fs_docid_col and wanted:
+            row = conn.execute(
+                f"SELECT {', '.join(f'fs.{_quote_ident(actual)} AS {_quote_ident(metric)}' for metric, actual in wanted)} "
+                f"FROM {_quote_ident(fs_table)} fs "
+                f"WHERE fs.{_quote_ident(fs_docid_col)} = ?",
+                (doc_id,),
+            ).fetchone()
+            if row:
+                values.update(dict(row))
+
+    table_map = _load_canonical_metric_mappings()
+    missing_request: dict[str, tuple[str, ...]] = {}
+    for table_name, metric_names in metric_request.items():
+        missing = [metric for metric in metric_names if values.get(metric) is None]
+        if missing:
+            missing_request[table_name] = tuple(missing)
+
+    if not missing_request or _resolve_table_name(_list_table_map(conn), ["statement_facts"], required=False) is None:
+        return values
+
+    select_parts: list[str] = []
+    for table_name, metric_names in missing_request.items():
+        for metric_name in metric_names:
+            select_parts.append(
+                f"{_canonical_metric_expr(table_map.get(table_name, {}).get(metric_name))} AS {_quote_ident(metric_name)}"
+            )
+
+    if not select_parts:
+        return values
+
+    row = conn.execute(
+        f"SELECT {', '.join(select_parts)} FROM [statement_facts] sf WHERE sf.[docID] = ?",
+        (doc_id,),
+    ).fetchone()
+    if row:
+        for key, value in dict(row).items():
+            if values.get(key) is None:
+                values[key] = value
+    return values
+
+
+def _taxonomy_statement_context_parts(row: dict[str, Any]) -> list[str]:
+    parts = [
+        _safe_str(row.get("source_period")),
+        _safe_str(row.get("source_relative_year")),
+        _safe_str(row.get("source_consolidation")),
+    ]
+    role_uri = _safe_str(row.get("role_uri"))
+    if role_uri:
+        parts.append(role_uri.rsplit("/", 1)[-1])
+    return [part for part in parts if part]
+
+
+def _taxonomy_statement_rows(
+    conn: sqlite3.Connection,
+    table_name: str,
+    records: list[dict[str, Any]],
+    source_key: str,
+) -> list[dict[str, Any]]:
+    if not table_name:
+        return []
+
+    table_columns = {column.lower() for column in _get_columns(conn, table_name)}
+    if "concept_qname" not in table_columns:
+        doc_ids = [_safe_str(record.get("docID")) for record in records if _safe_str(record.get("docID"))]
+        if not doc_ids:
+            return []
+
+        metadata_rows = [
+            row for row in _load_statement_line_items(conn, table_name)
+            if _safe_str(row.get("column_name"))
+        ]
+        if not metadata_rows:
+            return []
+
+        placeholders = ",".join(["?"] * len(doc_ids))
+        statement_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"SELECT * FROM {_quote_ident(table_name)} WHERE docID IN ({placeholders})",
+                doc_ids,
+            ).fetchall()
+        ]
+        rows_by_docid = {
+            _safe_str(row.get("docID")): dict(row)
+            for row in statement_rows
+            if _safe_str(row.get("docID"))
+        }
+        label_counts: Counter[str] = Counter(
+            _safe_str(row.get("display_label")) or _safe_str(row.get("concept_name")) or _safe_str(row.get("column_name"))
+            for row in metadata_rows
+        )
+
+        out_rows: list[dict[str, Any]] = []
+        for meta in metadata_rows:
+            column_name = _safe_str(meta.get("column_name"))
+            if not column_name:
+                continue
+            metric_name = _safe_str(meta.get("display_label")) or _safe_str(meta.get("concept_name")) or column_name
+            concept_qname = _safe_str(meta.get("concept_qname")) or column_name
+            if label_counts[metric_name] > 1:
+                metric_name = f"{metric_name} [{concept_qname}]"
+
+            values: list[Any] = []
+            for record in records:
+                doc_id = _safe_str(record.get("docID"))
+                row = rows_by_docid.get(doc_id, {})
+                value = row.get(column_name)
+                if pd.isna(value):
+                    value = None
+                values.append(value)
+
+            out_rows.append(
+                {
+                    "metric": metric_name,
+                    "field": concept_qname,
+                    "record_field": column_name,
+                    "source": source_key,
+                    "values": values,
+                    "line_depth": meta.get("line_depth"),
+                    "parent_field": _safe_str(meta.get("presentation_parent_qname")) or None,
+                    "parent_record_field": _safe_str(meta.get("parent_column_name")) or None,
+                    "role_uri": _safe_str(meta.get("role_uri")) or None,
+                }
+            )
+        return out_rows
+
+    doc_ids = [_safe_str(record.get("docID")) for record in records if _safe_str(record.get("docID"))]
+    if not doc_ids:
+        return []
+
+    placeholders = ",".join(["?"] * len(doc_ids))
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT
+                docID,
+                concept_qname,
+                concept_name,
+                display_label,
+                role_uri,
+                line_order,
+                line_depth,
+                source_period,
+                source_relative_year,
+                source_consolidation,
+                value_numeric,
+                raw_value_text
+            FROM {_quote_ident(table_name)}
+            WHERE docID IN ({placeholders})
+            """,
+            doc_ids,
+        ).fetchall()
+    ]
+    if not rows:
+        return []
+
+    doc_index = {doc_id: index for index, doc_id in enumerate(doc_ids)}
+    latest_priority = {doc_id: len(doc_ids) - index for doc_id, index in doc_index.items()}
+    rows.sort(
+        key=lambda row: (
+            -latest_priority.get(_safe_str(row.get("docID")), 0),
+            _safe_str(row.get("role_uri")),
+            float(row.get("line_order")) if row.get("line_order") is not None else float("inf"),
+            int(row.get("line_depth") or 0),
+            _safe_str(row.get("concept_qname")),
+        )
+    )
+
+    grouped: dict[str, dict[str, Any]] = {}
+    ordered_fields: list[str] = []
+    label_counts: Counter[str] = Counter()
+
+    for row in rows:
+        doc_id = _safe_str(row.get("docID"))
+        index = doc_index.get(doc_id)
+        if index is None:
+            continue
+        context_parts = _taxonomy_statement_context_parts(row)
+        field_parts = [_safe_str(row.get("concept_qname"))]
+        field_parts.extend(context_parts)
+        field_name = "|".join(part for part in field_parts if part)
+        if not field_name:
+            continue
+
+        metric_name = _safe_str(row.get("display_label")) or _safe_str(row.get("concept_name")) or _safe_str(row.get("concept_qname"))
+        if field_name not in grouped:
+            grouped[field_name] = {
+                "metric": metric_name,
+                "field": field_name,
+                "context_parts": context_parts,
+                "values": [None] * len(records),
+            }
+            ordered_fields.append(field_name)
+            label_counts[metric_name] += 1
+
+        value = row.get("value_numeric")
+        if value is None:
+            value = row.get("raw_value_text")
+        if grouped[field_name]["values"][index] is None:
+            grouped[field_name]["values"][index] = value
+
+    out_rows: list[dict[str, Any]] = []
+    for field_name in ordered_fields:
+        entry = grouped[field_name]
+        metric_name = entry["metric"]
+        if label_counts[metric_name] > 1 and entry["context_parts"]:
+            metric_name = f"{metric_name} [{' | '.join(entry['context_parts'])}]"
+        out_rows.append(
+            {
+                "metric": metric_name,
+                "field": entry["field"],
+                "record_field": entry["field"],
+                "source": source_key,
+                "values": entry["values"],
+            }
+        )
+    return out_rows
 
 
 def _as_peer_row(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -1265,27 +1703,35 @@ def _load_latest_snapshot(conn: sqlite3.Connection, schema: SecuritySchema, edin
         select_parts.append("NULL AS SharePrice")
 
     join_clauses: list[str] = []
+    needs_taxonomy_overview_metrics = False
     if schema.income_table:
-        join_clauses.append(
-            f"LEFT JOIN {_quote_ident(schema.income_table)} i ON i.docID = fs.{_quote_ident(schema.fs_docid_col)}"
-        )
-        for col in _get_columns(conn, schema.income_table):
-            if col.lower() != "docid":
-                select_parts.append(f"i.{_quote_ident(col)} AS {_quote_ident(col)}")
+        if _is_taxonomy_statement_table(conn, schema.income_table):
+            needs_taxonomy_overview_metrics = True
+        else:
+            join_clauses.append(
+                f"LEFT JOIN {_quote_ident(schema.income_table)} i ON i.docID = fs.{_quote_ident(schema.fs_docid_col)}"
+            )
+            for col in _get_columns(conn, schema.income_table):
+                if col.lower() != "docid":
+                    select_parts.append(f"i.{_quote_ident(col)} AS {_quote_ident(col)}")
     if schema.balance_table:
-        join_clauses.append(
-            f"LEFT JOIN {_quote_ident(schema.balance_table)} b ON b.docID = fs.{_quote_ident(schema.fs_docid_col)}"
-        )
-        for col in _get_columns(conn, schema.balance_table):
-            if col.lower() != "docid":
-                select_parts.append(f"b.{_quote_ident(col)} AS {_quote_ident(col)}")
+        if _is_taxonomy_statement_table(conn, schema.balance_table):
+            needs_taxonomy_overview_metrics = True
+        else:
+            join_clauses.append(
+                f"LEFT JOIN {_quote_ident(schema.balance_table)} b ON b.docID = fs.{_quote_ident(schema.fs_docid_col)}"
+            )
+            for col in _get_columns(conn, schema.balance_table):
+                if col.lower() != "docid":
+                    select_parts.append(f"b.{_quote_ident(col)} AS {_quote_ident(col)}")
     if schema.cashflow_table:
-        join_clauses.append(
-            f"LEFT JOIN {_quote_ident(schema.cashflow_table)} cf ON cf.docID = fs.{_quote_ident(schema.fs_docid_col)}"
-        )
-        for col in _get_columns(conn, schema.cashflow_table):
-            if col.lower() != "docid":
-                select_parts.append(f"cf.{_quote_ident(col)} AS {_quote_ident(col)}")
+        if not _is_taxonomy_statement_table(conn, schema.cashflow_table):
+            join_clauses.append(
+                f"LEFT JOIN {_quote_ident(schema.cashflow_table)} cf ON cf.docID = fs.{_quote_ident(schema.fs_docid_col)}"
+            )
+            for col in _get_columns(conn, schema.cashflow_table):
+                if col.lower() != "docid":
+                    select_parts.append(f"cf.{_quote_ident(col)} AS {_quote_ident(col)}")
     if schema.per_share_table:
         join_clauses.append(
             f"LEFT JOIN {_quote_ident(schema.per_share_table)} ps ON ps.docID = fs.{_quote_ident(schema.fs_docid_col)}"
@@ -1341,6 +1787,15 @@ def _load_latest_snapshot(conn: sqlite3.Connection, schema: SecuritySchema, edin
     if df.empty:
         return None
     row = df.iloc[0].to_dict()
+    if needs_taxonomy_overview_metrics:
+        taxonomy_metrics = _load_statement_fact_metric_values(
+            conn,
+            _safe_str(row.get("docID")),
+            _OVERVIEW_TAXONOMY_METRICS,
+        )
+        for metric_name, metric_value in taxonomy_metrics.items():
+            if row.get(metric_name) is None:
+                row[metric_name] = metric_value
     row["period_end"] = _safe_date_str(row.get("period_end"))
     return row
 
@@ -1650,7 +2105,7 @@ def get_security_statements(
 
         for source_key in requested_sources:
             spec = statement_specs.get(source_key)
-            if spec is None or spec.join_clause is None:
+            if spec is None or spec.join_clause is None or not spec.metrics:
                 continue
             join_clauses.append(spec.join_clause)
             for metric in spec.metrics:
@@ -1667,6 +2122,20 @@ def get_security_statements(
             f"fs.{_quote_ident(schema.fs_docid_col)} DESC LIMIT ?"
         )
         df = pd.read_sql_query(sql, conn, params=[edinet_code, max(1, int(periods))])
+
+        taxonomy_rows_by_source: dict[str, list[dict[str, Any]]] = {}
+        if not df.empty:
+            preview_records = df.iloc[::-1].reset_index(drop=True).to_dict(orient="records")
+            for source_key in requested_sources:
+                spec = statement_specs.get(source_key)
+                if spec is None or not spec.table_name or not _is_taxonomy_statement_table(conn, spec.table_name):
+                    continue
+                taxonomy_rows_by_source[source_key] = _taxonomy_statement_rows(
+                    conn,
+                    spec.table_name,
+                    preview_records,
+                    source_key,
+                )
     finally:
         conn.close()
 
@@ -1689,6 +2158,9 @@ def get_security_statements(
     for source_key in requested_sources:
         spec = statement_specs.get(source_key)
         if spec is None:
+            continue
+        if source_key in locals().get("taxonomy_rows_by_source", {}):
+            result[source_key] = taxonomy_rows_by_source[source_key]
             continue
         result[source_key] = _statement_metric_rows(records, spec.metrics, source_key)
     return result

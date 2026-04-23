@@ -149,6 +149,123 @@ class TestValidateConfig:
         with pytest.raises(RuntimeError, match="populate_business_descriptions_en_config"):
             validate_config(config, ["populate_business_descriptions_en"])
 
+    def test_parse_taxonomy_no_longer_requires_legacy_taxonomy_table_key(self):
+        from src.orchestrator import validate_config
+
+        config = Config.from_dict({
+            "parse_taxonomy_config": {"Target_Database": "taxonomy.db"},
+        })
+        validate_config(config, ["parse_taxonomy"])
+
+
+class TestParseTaxonomyStep:
+    def setup_method(self):
+        Config.reset()
+
+    def teardown_method(self):
+        Config.reset()
+
+    def test_syncs_remote_taxonomy_when_no_local_xsd_is_supplied(self):
+        from src.orchestrator import _step_parse_taxonomy
+
+        processor = MagicMock()
+        config = Config.from_dict({
+            "parse_taxonomy_config": {
+                "Target_Database": "taxonomy.db",
+                "release_years": "[2025]",
+                "namespaces": "[\"jppfs_cor\", \"jpcrp_cor\"]",
+                "download_dir": "assets/taxonomy",
+                "force_download": "True",
+                "force_reparse": "False",
+            }
+        })
+
+        with patch("src.orchestrator.d.data", return_value=processor):
+            _step_parse_taxonomy(config, overwrite=False)
+
+        processor.sync_taxonomy_releases.assert_called_once_with(
+            target_database="taxonomy.db",
+            release_selection="all",
+            release_years=[2025],
+            namespaces=["jppfs_cor", "jpcrp_cor"],
+            download_dir="assets/taxonomy",
+            force_download=True,
+            force_reparse=False,
+        )
+
+
+class TestImportStockPricesCsvStep:
+    def setup_method(self):
+        Config.reset()
+
+    def teardown_method(self):
+        Config.reset()
+
+    def test_uses_price_column_default_matching_backup_csv_schema(self):
+        from src.orchestrator import _step_import_stock_prices_csv
+
+        config = Config.from_dict({
+            "DB_STOCK_PRICES_TABLE": "stock_prices",
+            "import_stock_prices_csv_config": {
+                "Target_Database": "prices.db",
+                "csv_file": "prices.csv",
+            },
+        })
+
+        with patch("src.orchestrator.stockprice_api.import_stock_prices_csv") as mock_import:
+            _step_import_stock_prices_csv(config, overwrite=False)
+
+        mock_import.assert_called_once_with(
+            db_name="prices.db",
+            prices_table="stock_prices",
+            csv_path="prices.csv",
+            default_ticker="",
+            default_currency="JPY",
+            date_column="Date",
+            price_column="Price",
+            ticker_column="",
+            currency_column="",
+        )
+
+
+class TestGenerateFinancialStatementsStep:
+    def setup_method(self):
+        Config.reset()
+
+    def teardown_method(self):
+        Config.reset()
+
+    def test_passes_statement_hierarchy_depth(self):
+        from src.orchestrator import _step_generate_financial_statements
+
+        processor = MagicMock()
+        config = Config.from_dict({
+            "DB_FINANCIAL_DATA_TABLE": "financialData_full",
+            "DB_COMPANY_INFO_TABLE": "companyInfo",
+            "DB_STOCK_PRICES_TABLE": "Stock_Prices",
+            "generate_financial_statements_config": {
+                "Source_Database": "base.db",
+                "Target_Database": "standardized.db",
+                "Mappings_Config": "config/reference/canonical_metrics_config.json",
+                "max_line_depth": 5,
+            },
+        })
+
+        with patch("src.orchestrator.d.data", return_value=processor):
+            _step_generate_financial_statements(config, overwrite=False)
+
+        processor.generate_financial_statements.assert_called_once_with(
+            source_database="base.db",
+            source_table="financialData_full",
+            target_database="standardized.db",
+            mappings_config="config/reference/canonical_metrics_config.json",
+            company_table="companyInfo",
+            prices_table="Stock_Prices",
+            overwrite=False,
+            batch_size=2500,
+            max_line_depth=5,
+        )
+
 
 class TestConfigFromDict:
     """Test Config.from_dict bypass of the singleton."""

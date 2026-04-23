@@ -184,11 +184,11 @@ Responsibility: ETL and transformation of EDINET raw data into normalized financ
 `class data`
 	- Purpose: Stateless namespace for data-processing operations. No Config dependency; all parameters are passed explicitly by the caller (orchestrator).
 
-	- `def generate_financial_statements(self, source_database, source_table, target_database, mappings_config, company_table=None, prices_table=None, overwrite=False, batch_size=2500) -> None`
-		- Purpose: Generate normalized financial-statement tables from raw EDINET records; resumable chunked processing by `docID`.
-		- Inputs: `source_database`, `source_table`, `target_database`, `mappings_config` (path), optional `company_table`, `prices_table`, `overwrite`, `batch_size`.
-		- Output: None (writes/updates DB tables: `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, `CashflowStatement`).
-		- Calls/Dependencies: `_load_financial_statement_mappings`, `_collect_financial_statement_filters`, `_resolve_table_name_in_schema`, `_build_source_relevance_predicate`, `_create_financial_statement_tables`, `_insert_base_financial_statements`, `_insert_statement_table_rows`, `conn.execute`, `conn.executescript`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
+	- `def generate_financial_statements(self, source_database, source_table, target_database, mappings_config, company_table=None, prices_table=None, overwrite=False, batch_size=2500, max_line_depth=3) -> None`
+		- Purpose: Generate taxonomy-backed wide financial-statement tables from raw EDINET records; resumable chunked processing by `docID`.
+		- Inputs: `source_database`, `source_table`, `target_database`, `mappings_config` (path for doc-level `FinancialStatements` fields and fallback statement seeding), optional `company_table`, `prices_table`, `overwrite`, `batch_size`, `max_line_depth`.
+		- Output: None (writes/updates DB tables: `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, `statement_line_items`).
+		- Calls/Dependencies: `_load_financial_statement_mappings`, `_load_statement_catalog`, `_refresh_statement_line_items`, `_ensure_wide_statement_tables`, `_resolve_table_name_in_schema`, `_upsert_base_financial_statements_from_source`, `_materialize_wide_statement_table_batch`, `conn.execute`, `conn.executescript`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
 
 	- `def populate_business_descriptions_en(self, target_database, providers_config, table_name="FinancialStatements", docid_column="docID", source_column="DescriptionOfBusiness", target_column="DescriptionOfBusiness_EN", source_language="ja", target_language="en", overwrite=False, batch_size=25) -> None`
 		- Purpose: Populate translated English business descriptions in the target statements table using an ordered fallback provider list.
