@@ -59,10 +59,18 @@ class TestGenerateFinancialStatementsService(unittest.TestCase):
                 ("2024-01-31", "IncomeStatement", "number", 1, "jppfs_cor:NonOperatingIncomeMED", None, "Non-operating income"),
                 ("2024-01-31", "BalanceSheet", "number", 1, "jppfs_cor:CashAndDeposits", None, "Cash and Deposits"),
                 ("2024-01-31", "CashflowStatement", "number", 1, "jppfs_cor:OperatingCashflow", None, "Operating Cashflow"),
+                ("2024-01-31", "ShareMetrics", "number", 0, "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults", None, "Total Number of Issued Shares, Summary of Business Results"),
+                ("2024-01-31", "ShareMetrics", "number", 0, "jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults", None, "Basic earnings (loss) per share"),
+                ("2024-01-31", "ShareMetrics", "number", 0, "jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults", None, "Dividend Paid Per Share, Summary of Business Results"),
+                ("2024-01-31", "ShareMetrics", "number", 0, "jpcrp_cor:TotalShareholderReturn", None, "Total Shareholder Return"),
                 ("2024-06-30", "IncomeStatement", "number", 1, "jppfs_cor:NetSales", None, "Net Sales"),
                 ("2024-06-30", "IncomeStatement", "number", 1, "jppfs_cor:OperatingIncome", None, "Operating Income"),
                 ("2024-06-30", "BalanceSheet", "number", 1, "jppfs_cor:CashAndDeposits", None, "Cash and Deposits"),
                 ("2024-06-30", "CashflowStatement", "number", 1, "jppfs_cor:OperatingCashflow", None, "Operating Cashflow"),
+                ("2024-06-30", "ShareMetrics", "number", 0, "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults", None, "Total Number of Issued Shares, Summary of Business Results"),
+                ("2024-06-30", "ShareMetrics", "number", 0, "jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults", None, "Basic earnings (loss) per share"),
+                ("2024-06-30", "ShareMetrics", "number", 0, "jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults", None, "Dividend Paid Per Share, Summary of Business Results"),
+                ("2024-06-30", "ShareMetrics", "number", 0, "jpcrp_cor:TotalShareholderReturn", None, "Total Shareholder Return"),
             ],
         )
         conn.commit()
@@ -214,6 +222,76 @@ class TestGenerateFinancialStatementsService(unittest.TestCase):
             income_rows,
             [("DOC1", 1000.0), ("DOC2", 1001.0), ("DOC3", 1002.0)],
         )
+
+    def test_processes_multiple_releases_within_single_batch(self):
+        self._insert_source_rows(
+            [
+                ("jppfs_cor:NetSales", "CurrentYearDuration", "1000", "DOC1", "E00001", "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31"),
+                ("jppfs_cor:NonOperatingIncome", "CurrentYearDuration", "10", "DOC1", "E00001", "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31"),
+                ("jppfs_cor:NetSales", "CurrentYearDuration", "1200", "DOC2", "E00002", "120", "2024-08-10T09:00:00", "2024-01-01", "2024-12-31"),
+                ("jppfs_cor:OperatingIncome", "CurrentYearDuration", "300", "DOC2", "E00002", "120", "2024-08-10T09:00:00", "2024-01-01", "2024-12-31"),
+            ]
+        )
+
+        result = financial_statement_services.generate_financial_statements(
+            source_database=self.source_db,
+            target_database=self.target_db,
+            granularity_level=1,
+            overwrite=False,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            fs_rows = conn.execute(
+                "SELECT docID, release_id FROM FinancialStatements ORDER BY docID"
+            ).fetchall()
+            income_rows = conn.execute(
+                'SELECT docID, [Net Sales], [Non-operating income], [Operating Income] FROM IncomeStatement ORDER BY docID'
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertEqual(result["documents_processed"], 2)
+        self.assertEqual(fs_rows, [("DOC1", "2024-01-31"), ("DOC2", "2024-06-30")])
+        self.assertEqual(
+            income_rows,
+            [("DOC1", 1000.0, 10.0, None), ("DOC2", 1200.0, None, 300.0)],
+        )
+
+    def test_generates_share_metrics_with_context_priority(self):
+        self._insert_source_rows(
+            [
+                ("jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults", "CurrentYearInstant_NonConsolidatedMember", "90", "DOC1", "E00001", "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31"),
+                ("jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults", "CurrentYearInstant", "100", "DOC1", "E00001", "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31"),
+                ("jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults", "CurrentYearDuration", "70.82", "DOC1", "E00001", "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31"),
+                ("jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults", "CurrentYearDuration_NonConsolidatedMember", "12", "DOC1", "E00001", "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31"),
+                ("jpcrp_cor:TotalShareholderReturn", "FilingDateInstant", "1.5", "DOC1", "E00001", "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31"),
+            ]
+        )
+
+        result = financial_statement_services.generate_financial_statements(
+            source_database=self.source_db,
+            target_database=self.target_db,
+            granularity_level=1,
+            overwrite=False,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }
+            share_metrics_row = conn.execute(
+                'SELECT docID, [Total Number of Issued Shares, Summary of Business Results], [Basic earnings (loss) per share], [Dividend Paid Per Share, Summary of Business Results], [Total Shareholder Return] FROM ShareMetrics WHERE docID = ?',
+                ("DOC1",),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(result["documents_processed"], 1)
+        self.assertIn("ShareMetrics", tables)
+        self.assertEqual(share_metrics_row, ("DOC1", 100.0, 70.82, 12.0, 1.5))
 
 
 class TestPopulateBusinessDescriptionsService(unittest.TestCase):

@@ -189,7 +189,7 @@ Responsibility: Backward-compatible facade over orchestrator-owned services and 
 	- `def generate_financial_statements(self, source_database, target_database, granularity_level, overwrite=False) -> None`
 		- Purpose: Generate taxonomy-backed wide financial-statement tables from `financialData_full`; resumable processing in internal docID batches.
 		- Inputs: `source_database`, `target_database`, `granularity_level`, optional `overwrite`.
-		- Output: None (writes/updates DB tables: `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, `CashflowStatement`).
+		- Output: None (writes/updates DB tables: `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, `ShareMetrics`).
 		- Calls/Dependencies: `_resolve_table_name_in_schema`, `_resolve_source_col_names`, pandas batch queries, bulk SQLite temp-table inserts, Taxonomy queries, `conn.execute`, `conn.executescript`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
 
 	- `def populate_business_descriptions_en(self, target_database, providers_config, table_name="FinancialStatements", docid_column="docID", source_column="DescriptionOfBusiness", target_column="DescriptionOfBusiness_EN", source_language="ja", target_language="en", overwrite=False, batch_size=25) -> None`

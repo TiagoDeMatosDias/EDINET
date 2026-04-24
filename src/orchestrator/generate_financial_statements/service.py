@@ -23,12 +23,41 @@ _FINANCIAL_STATEMENTS_COLUMNS = [
     ("periodEnd", "TEXT"),
     ("release_id", "TEXT"),
 ]
-_STATEMENT_TABLES = ("IncomeStatement", "BalanceSheet", "CashflowStatement")
-_ALLOWED_CONTEXT_IDS = (
-    "CurrentYearDuration",
-    "CurrentYearInstant",
-    "FilingDateInstant",
+_STATEMENT_TABLES = ("IncomeStatement", "BalanceSheet", "CashflowStatement", "ShareMetrics")
+_STATEMENT_CONTEXT_IDS = {
+    "IncomeStatement": (
+        "CurrentYearDuration",
+        "FilingDateInstant",
+    ),
+    "BalanceSheet": (
+        "CurrentYearInstant",
+        "FilingDateInstant",
+    ),
+    "CashflowStatement": (
+        "CurrentYearDuration",
+        "FilingDateInstant",
+    ),
+    "ShareMetrics": (
+        "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember",
+        "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember",
+        "FilingDateInstant",
+    ),
+}
+_ALLOWED_CONTEXT_IDS = tuple(
+    dict.fromkeys(
+        context_id
+        for statement_family in _STATEMENT_TABLES
+        for context_id in _STATEMENT_CONTEXT_IDS[statement_family]
+    )
 )
+_CONTEXT_PRIORITY_BY_FAMILY_AND_ID = {
+    (statement_family, context_id): index
+    for statement_family, context_ids in _STATEMENT_CONTEXT_IDS.items()
+    for index, context_id in enumerate(context_ids)
+}
+_CONTEXT_PRIORITY_FALLBACK = len(_ALLOWED_CONTEXT_IDS) + 1
 _DOCUMENT_BATCH_SIZE = 1000
 _PROGRESS_LOG_INTERVAL = 100
 
@@ -76,6 +105,7 @@ def _ensure_financial_statement_tables(helper, conn, overwrite=False):
             DROP TABLE IF EXISTS IncomeStatement;
             DROP TABLE IF EXISTS BalanceSheet;
             DROP TABLE IF EXISTS CashflowStatement;
+            DROP TABLE IF EXISTS ShareMetrics;
             """
         )
 
@@ -138,32 +168,61 @@ def _load_release_catalog(conn, taxonomy_table_name):
     ]
 
 
-def _resolve_release_id(submit_datetime, release_catalog):
+def _resolve_release_ids(metadata_batch_df, release_catalog):
+    if metadata_batch_df.empty:
+        return metadata_batch_df.assign(release_id=pd.Series(dtype="object"))
     if not release_catalog:
-        return None
+        raise ValueError("release_catalog is required to resolve taxonomy release ids.")
 
-    submit_token = _extract_date_token(submit_datetime)
-    if not submit_token:
-        return release_catalog[-1]["release_id"]
+    resolved = metadata_batch_df.copy()
+    resolved["submit_date_token"] = resolved["submitDateTime"].map(_extract_date_token)
 
-    eligible = [
-        entry
-        for entry in release_catalog
-        if entry.get("date_token") and entry["date_token"] <= submit_token
-    ]
-    if eligible:
-        return eligible[-1]["release_id"]
+    dated_release_df = pd.DataFrame(
+        [entry for entry in release_catalog if entry.get("date_token")],
+        columns=["release_id", "date_token"],
+    )
+    latest_release_id = release_catalog[-1]["release_id"]
+    fallback_release_id = dated_release_df.iloc[0]["release_id"] if not dated_release_df.empty else release_catalog[0]["release_id"]
 
-    dated = [entry for entry in release_catalog if entry.get("date_token")]
-    if dated:
-        logger.warning(
-            "No taxonomy release on or before submitDateTime=%s; falling back to earliest available release %s.",
-            submit_datetime,
-            dated[0]["release_id"],
-        )
-        return dated[0]["release_id"]
+    resolved["release_id"] = None
+    if not dated_release_df.empty:
+        dated_release_df = dated_release_df.copy()
+        dated_release_df["date_token"] = pd.to_datetime(dated_release_df["date_token"], errors="coerce")
 
-    return release_catalog[0]["release_id"]
+        resolved["submit_date_dt"] = pd.to_datetime(resolved["submit_date_token"], errors="coerce")
+        dated_metadata_df = resolved.loc[resolved["submit_date_dt"].notna(), ["docID", "submit_date_dt"]].sort_values("submit_date_dt")
+        if not dated_metadata_df.empty:
+            matched = pd.merge_asof(
+                dated_metadata_df,
+                dated_release_df.sort_values("date_token"),
+                left_on="submit_date_dt",
+                right_on="date_token",
+                direction="backward",
+            )
+            resolved = resolved.merge(
+                matched[["docID", "release_id"]],
+                on="docID",
+                how="left",
+                suffixes=("", "_matched"),
+            )
+            resolved["release_id"] = resolved["release_id_matched"]
+            resolved = resolved.drop(columns=["release_id_matched"])
+
+        no_prior_release = resolved["submit_date_token"].notna() & resolved["release_id"].isna()
+        if no_prior_release.any():
+            logger.warning(
+                "No taxonomy release on or before submitDateTime for %d docID(s); falling back to earliest available release %s.",
+                int(no_prior_release.sum()),
+                fallback_release_id,
+            )
+            resolved.loc[no_prior_release, "release_id"] = fallback_release_id
+
+    missing_submit_token = resolved["submit_date_token"].isna()
+    if missing_submit_token.any():
+        resolved.loc[missing_submit_token, "release_id"] = latest_release_id
+
+    resolved["release_id"] = resolved["release_id"].fillna(fallback_release_id)
+    return resolved.drop(columns=[column for column in ("submit_date_token", "submit_date_dt") if column in resolved.columns])
 
 
 def _fetch_pending_doc_ids(helper, conn, source_schema, source_table):
@@ -228,6 +287,7 @@ def _load_metadata_batch(helper, conn, source_schema, source_table, doc_ids):
 
 
 def _load_taxonomy_bundle(conn, helper, taxonomy_table_name, release_id, granularity_level):
+    family_placeholders = ", ".join("?" for _ in _STATEMENT_TABLES)
     rows = conn.execute(
         f"""
         SELECT
@@ -236,12 +296,12 @@ def _load_taxonomy_bundle(conn, helper, taxonomy_table_name, release_id, granula
             CAST(primary_label_en AS TEXT) AS primary_label_en
         FROM {taxonomy_table_name}
         WHERE release_id = ?
-          AND statement_family IN ('IncomeStatement', 'BalanceSheet', 'CashflowStatement')
+          AND statement_family IN ({family_placeholders})
           AND value_type = 'number'
           AND level <= ?
         ORDER BY statement_family, level, primary_label_en, concept_qname
         """,
-        (str(release_id), int(granularity_level)),
+        (str(release_id), *_STATEMENT_TABLES, int(granularity_level)),
     ).fetchall()
     if not rows:
         raise ValueError(
@@ -301,6 +361,19 @@ def _build_taxonomy_mapping_frame(taxonomy_bundle):
     return pd.DataFrame(rows, columns=["statement_family", "concept_qname", "column_name"])
 
 
+def _source_term_candidates(concept_qnames):
+    candidates = set()
+    for concept_qname in concept_qnames:
+        normalized = str(concept_qname or "").strip()
+        if not normalized:
+            continue
+        candidates.add(normalized)
+        if ":" in normalized:
+            prefix, local_name = normalized.split(":", 1)
+            candidates.add(f"{prefix}_{local_name}")
+    return sorted(candidates)
+
+
 def _synchronize_statement_tables(helper, conn, taxonomy_bundle):
     for statement_family in _STATEMENT_TABLES:
         group_columns = [
@@ -320,9 +393,9 @@ def _synchronize_statement_tables(helper, conn, taxonomy_bundle):
             )
 
 
-def _load_fact_batch(helper, conn, source_schema, source_table, doc_ids):
+def _load_fact_batch(helper, conn, source_schema, source_table, doc_ids, concept_qnames=None):
     if not doc_ids:
-        return pd.DataFrame(columns=["docID", "concept_qname", "value"])
+        return pd.DataFrame(columns=["docID", "context_id", "concept_qname", "value"])
 
     source_ref = _source_table_ref(helper, source_schema, source_table)
     col_names = helper._resolve_source_col_names(conn, source_schema, source_table)
@@ -332,23 +405,33 @@ def _load_fact_batch(helper, conn, source_schema, source_table, doc_ids):
     amount_col = col_names.get("Amount") or "Amount"
     doc_placeholders = ", ".join("?" for _ in doc_ids)
     context_placeholders = ", ".join("?" for _ in _ALLOWED_CONTEXT_IDS)
+    params = [*doc_ids, *_ALLOWED_CONTEXT_IDS]
+    concept_filter_sql = ""
+    if concept_qnames:
+        source_terms = _source_term_candidates(concept_qnames)
+        if source_terms:
+            concept_placeholders = ", ".join("?" for _ in source_terms)
+            concept_filter_sql = f"\n          AND s.{helper._sql_ident(term_col)} IN ({concept_placeholders})"
+            params.extend(source_terms)
 
     df = pd.read_sql_query(
         f"""
         SELECT
             CAST(s.{helper._sql_ident(doc_col)} AS TEXT) AS docID,
+            CAST(s.{helper._sql_ident(period_col)} AS TEXT) AS context_id,
             CAST(s.{helper._sql_ident(term_col)} AS TEXT) AS concept_qname,
             CAST(s.{helper._sql_ident(amount_col)} AS TEXT) AS raw_amount
         FROM {source_ref} s
         WHERE s.{helper._sql_ident(doc_col)} IN ({doc_placeholders})
           AND s.{helper._sql_ident(period_col)} IN ({context_placeholders})
           AND s.{helper._sql_ident(term_col)} IS NOT NULL
+                    {concept_filter_sql}
         """,
         conn,
-        params=[*doc_ids, *_ALLOWED_CONTEXT_IDS],
+                params=params,
     )
     if df.empty:
-        return pd.DataFrame(columns=["docID", "concept_qname", "value"])
+        return pd.DataFrame(columns=["docID", "context_id", "concept_qname", "value"])
 
     concept_map = {
         value: helper._normalise_taxonomy_term(value) or str(value or "")
@@ -361,20 +444,50 @@ def _load_fact_batch(helper, conn, source_schema, source_table, doc_ids):
         for value in df["raw_amount"].dropna().unique()
     }
     df["value"] = df["raw_amount"].map(amount_map)
-    return df.loc[df["value"].notna(), ["docID", "concept_qname", "value"]]
+    filtered = df.loc[df["value"].notna(), ["docID", "context_id", "concept_qname", "value"]]
+    if filtered.empty:
+        return filtered
+
+    return filtered.groupby(["docID", "context_id", "concept_qname"], as_index=False)["value"].sum()
 
 
-def _build_statement_batch_frames(metadata_batch_df, facts_batch_df, taxonomy_bundle):
+def _build_statement_batch_frames(metadata_batch_df, facts_batch_df, mapping_df):
     doc_id_frame = metadata_batch_df[["docID"]].drop_duplicates().reset_index(drop=True)
-    mapping_df = taxonomy_bundle["mapping_df"]
 
     aggregated = pd.DataFrame(columns=["statement_family", "docID", "column_name", "value"])
     if not facts_batch_df.empty and not mapping_df.empty:
-        filtered = facts_batch_df.loc[
-            facts_batch_df["concept_qname"].isin(taxonomy_bundle["concept_set"])
-        ]
-        if not filtered.empty:
-            merged = filtered.merge(mapping_df, on="concept_qname", how="inner")
+        fact_release_df = facts_batch_df.merge(
+            metadata_batch_df[["docID", "release_id"]],
+            on="docID",
+            how="inner",
+        )
+        if not fact_release_df.empty:
+            relevant_concepts = set(mapping_df["concept_qname"].tolist())
+            fact_release_df = fact_release_df.loc[
+                fact_release_df["concept_qname"].isin(relevant_concepts)
+            ]
+        if not fact_release_df.empty:
+            merged = fact_release_df.merge(
+                mapping_df,
+                on=["release_id", "concept_qname"],
+                how="inner",
+            )
+            if not merged.empty:
+                merged["context_priority"] = [
+                    _CONTEXT_PRIORITY_BY_FAMILY_AND_ID.get(
+                        (statement_family, context_id),
+                        _CONTEXT_PRIORITY_FALLBACK,
+                    )
+                    for statement_family, context_id in zip(merged["statement_family"], merged["context_id"])
+                ]
+                merged = merged.loc[merged["context_priority"] < _CONTEXT_PRIORITY_FALLBACK]
+            if not merged.empty:
+                merged = merged.sort_values(
+                    ["statement_family", "docID", "concept_qname", "context_priority"]
+                ).drop_duplicates(
+                    subset=["statement_family", "docID", "concept_qname"],
+                    keep="first",
+                )
             if not merged.empty:
                 aggregated = (
                     merged.groupby(["statement_family", "docID", "column_name"], as_index=False)["value"]
@@ -483,23 +596,14 @@ def generate_financial_statements(
             if metadata_batch_df.empty:
                 continue
 
-            metadata_batch_df["release_id"] = metadata_batch_df["submitDateTime"].map(
-                lambda value: _resolve_release_id(value, release_catalog)
-            )
+            metadata_batch_df = _resolve_release_ids(metadata_batch_df, release_catalog)
             if metadata_batch_df["release_id"].isna().any():
                 unresolved = metadata_batch_df.loc[metadata_batch_df["release_id"].isna(), "docID"].tolist()
                 raise ValueError(f"No taxonomy release could be resolved for docID(s)={unresolved!r}.")
 
-            facts_batch_df = _load_fact_batch(
-                helper,
-                conn,
-                source_schema,
-                source_actual,
-                metadata_batch_df["docID"].tolist(),
-            )
-
             financial_statement_frames = []
             statement_frames_by_family = {statement_family: [] for statement_family in _STATEMENT_TABLES}
+            batch_mapping_frames = []
 
             for release_id, release_metadata_df in metadata_batch_df.groupby("release_id", sort=False):
                 cache_key = (str(release_id), granularity)
@@ -513,16 +617,14 @@ def generate_financial_statements(
                         granularity,
                     )
                     _synchronize_statement_tables(helper, conn, taxonomy_bundle)
-                    taxonomy_bundle["mapping_df"] = _build_taxonomy_mapping_frame(taxonomy_bundle)
+                    mapping_df = _build_taxonomy_mapping_frame(taxonomy_bundle)
+                    taxonomy_bundle["mapping_df"] = mapping_df
+                    taxonomy_bundle["concept_qnames"] = tuple(mapping_df["concept_qname"].drop_duplicates().tolist())
                     taxonomy_cache[cache_key] = taxonomy_bundle
 
-                release_doc_ids = release_metadata_df["docID"].tolist()
-                if facts_batch_df.empty:
-                    release_facts_df = pd.DataFrame(columns=["docID", "concept_qname", "value"])
-                else:
-                    release_facts_df = facts_batch_df.loc[
-                        facts_batch_df["docID"].isin(release_doc_ids)
-                    ].copy()
+                release_mapping_df = taxonomy_bundle["mapping_df"].copy()
+                release_mapping_df["release_id"] = str(release_id)
+                batch_mapping_frames.append(release_mapping_df)
 
                 financial_statement_frames.append(
                     release_metadata_df[
@@ -538,10 +640,29 @@ def generate_financial_statements(
                     ].copy()
                 )
 
+            combined_mapping_df = pd.concat(batch_mapping_frames, ignore_index=True) if batch_mapping_frames else pd.DataFrame(
+                columns=["statement_family", "concept_qname", "column_name", "release_id"]
+            )
+            combined_concepts = combined_mapping_df["concept_qname"].drop_duplicates().tolist()
+
+            facts_batch_df = _load_fact_batch(
+                helper,
+                conn,
+                source_schema,
+                source_actual,
+                metadata_batch_df["docID"].tolist(),
+                concept_qnames=combined_concepts,
+            )
+
+            for release_id, release_metadata_df in metadata_batch_df.groupby("release_id", sort=False):
+                release_mapping_df = combined_mapping_df.loc[
+                    combined_mapping_df["release_id"] == str(release_id)
+                ].copy()
+
                 release_statement_frames = _build_statement_batch_frames(
                     release_metadata_df,
-                    release_facts_df,
-                    taxonomy_bundle,
+                    facts_batch_df,
+                    release_mapping_df,
                 )
                 for statement_family, frame in release_statement_frames.items():
                     statement_frames_by_family[statement_family].append(frame)

@@ -352,6 +352,104 @@ class TestTaxonomyProcessing(unittest.TestCase):
                 ]
             )
 
+    def test_ensure_taxonomy_schema_accepts_share_metrics_rows(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            taxonomy_processing._ensure_taxonomy_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO Taxonomy (
+                    release_id,
+                    statement_family,
+                    value_type,
+                    level,
+                    concept_qname,
+                    parent_concept_qname,
+                    primary_label_en
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "2024-11-01",
+                    "ShareMetrics",
+                    "number",
+                    0,
+                    "jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults",
+                    None,
+                    "Dividend Paid Per Share",
+                ),
+            )
+            inserted = conn.execute(
+                "SELECT statement_family, level, parent_concept_qname FROM Taxonomy"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertEqual(inserted, [("ShareMetrics", 0, None)])
+
+    def test_build_taxonomy_level_rows_adds_share_metrics_as_level_zero_roots(self):
+        rows = taxonomy_processing._build_taxonomy_level_rows(
+            1,
+            "jpcrp_cor",
+            {
+                "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults": {
+                    "statement_family_default": None,
+                    "primary_parent_concept_qname": None,
+                    "primary_label_en": "Total Number of Issued Shares, Summary of Business Results",
+                    "data_type": "xbrli:sharesItemType",
+                    "is_abstract": 0,
+                },
+                "jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults": {
+                    "statement_family_default": None,
+                    "primary_parent_concept_qname": None,
+                    "primary_label_en": "Dividend Paid Per Share, Summary of Business Results",
+                    "data_type": "xbrli:perShareItemType",
+                    "is_abstract": 0,
+                },
+                "jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults": {
+                    "statement_family_default": None,
+                    "primary_parent_concept_qname": None,
+                    "primary_label_en": "Basic earnings (loss) per share",
+                    "data_type": "xbrli:perShareItemType",
+                    "is_abstract": 0,
+                },
+                "jpcrp_cor:TotalShareholderReturn": {
+                    "statement_family_default": None,
+                    "primary_parent_concept_qname": None,
+                    "primary_label_en": "Total Shareholder Return",
+                    "data_type": "xbrli:percentItemType",
+                    "is_abstract": 0,
+                },
+            },
+        )
+
+        rows_by_qname = {row["concept_qname"]: row for row in rows}
+        self.assertEqual(
+            set(rows_by_qname),
+            {
+                "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+                "jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults",
+                "jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults",
+                "jpcrp_cor:TotalShareholderReturn",
+            },
+        )
+        self.assertEqual(
+            rows_by_qname["jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults"],
+            {
+                "release_id": "1",
+                "statement_family": "ShareMetrics",
+                "value_type": "number",
+                "concept_qname": "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+                "primary_label_en": "Total Number of Issued Shares, Summary of Business Results",
+                "parent_concept_qname": None,
+                "level": 0,
+            },
+        )
+        self.assertEqual(rows_by_qname["jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults"]["statement_family"], "ShareMetrics")
+        self.assertEqual(rows_by_qname["jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults"]["level"], 0)
+        self.assertEqual(rows_by_qname["jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults"]["statement_family"], "ShareMetrics")
+        self.assertEqual(rows_by_qname["jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults"]["primary_label_en"], "Basic earnings (loss) per share")
+        self.assertEqual(rows_by_qname["jpcrp_cor:TotalShareholderReturn"]["parent_concept_qname"], None)
+
     def test_build_taxonomy_level_rows_compresses_statement_root_wrappers(self):
         rows = taxonomy_processing._build_taxonomy_level_rows(
             1,

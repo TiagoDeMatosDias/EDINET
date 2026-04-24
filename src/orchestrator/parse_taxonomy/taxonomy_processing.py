@@ -331,10 +331,21 @@ _TAXONOMY_COLUMNS = (
     "parent_concept_qname",
     "primary_label_en",
 )
-_SUPPORTED_STATEMENT_FAMILIES = (
+_ROLE_DERIVED_STATEMENT_FAMILIES = (
     "BalanceSheet",
     "IncomeStatement",
     "CashflowStatement",
+)
+_SUPPORTED_STATEMENT_FAMILIES = _ROLE_DERIVED_STATEMENT_FAMILIES + ("ShareMetrics",)
+_SHARE_METRICS_CONCEPT_QNAMES = (
+    "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+    "jpcrp_cor:NumberOfIssuedSharesAsOfFiscalYearEndIssuedSharesTotalNumberOfSharesEtc",
+    "jpcrp_cor:NumberOfIssuedSharesAsOfFilingDateIssuedSharesTotalNumberOfSharesEtc",
+    "jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults",
+    "jpcrp_cor:TotalShareholderReturn",
+    "jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults",
+    "jpcrp_cor:DilutedEarningsPerShareSummaryOfBusinessResults",
+    "jpcrp_cor:NetAssetsPerShareSummaryOfBusinessResults",
 )
 _NUMERIC_DATA_TYPE_TOKENS = (
     "monetaryitemtype",
@@ -462,6 +473,7 @@ def _release_id_for_listing_entry(listing_entry: TaxonomyListingEntry) -> str:
 
 
 def _taxonomy_schema_sql() -> str:
+    supported_families = "', '".join(_SUPPORTED_STATEMENT_FAMILIES)
     return f"""
         CREATE TABLE IF NOT EXISTS \"{_TAXONOMY_TABLE_NAME}\" (
             release_id TEXT NOT NULL,
@@ -472,7 +484,7 @@ def _taxonomy_schema_sql() -> str:
             parent_concept_qname TEXT,
             primary_label_en TEXT NOT NULL,
             PRIMARY KEY (release_id, concept_qname),
-            CHECK (statement_family IN ('BalanceSheet', 'IncomeStatement', 'CashflowStatement')),
+            CHECK (statement_family IN ('{supported_families}')),
             CHECK (value_type IN ('number', 'string')),
             CHECK (level >= 0),
             CHECK (
@@ -1254,10 +1266,33 @@ def _build_taxonomy_level_rows(
         canonical_concept_cache[concept_qname] = canonical_qname
         return canonical_qname
 
+    def build_share_metrics_rows() -> list[dict]:
+        rows: list[dict] = []
+        for concept_qname in _SHARE_METRICS_CONCEPT_QNAMES:
+            concept = concepts.get(concept_qname)
+            if not concept:
+                continue
+            if _value_type_for_concept(concept) != "number":
+                continue
+
+            rows.append(
+                {
+                    "release_id": str(release_id),
+                    "statement_family": "ShareMetrics",
+                    "value_type": "number",
+                    "concept_qname": concept_qname,
+                    "primary_label_en": normalized_primary_label_en(concept_qname),
+                    "parent_concept_qname": None,
+                    "level": 0,
+                }
+            )
+
+        return rows
+
     visible_concept_qnames = {
         concept_qname
         for concept_qname, concept in concepts.items()
-        if concept.get("statement_family_default") in _SUPPORTED_STATEMENT_FAMILIES
+        if concept.get("statement_family_default") in _ROLE_DERIVED_STATEMENT_FAMILIES
         and not is_excluded_concept(concept_qname)
         and canonical_concept_qname(concept_qname) == concept_qname
     }
@@ -1409,6 +1444,12 @@ def _build_taxonomy_level_rows(
             rows_by_qname.pop(concept_qname, None)
 
     rows = list(rows_by_qname.values())
+    existing_concepts = {row["concept_qname"] for row in rows}
+    for row in build_share_metrics_rows():
+        if row["concept_qname"] in existing_concepts:
+            continue
+        rows.append(row)
+        existing_concepts.add(row["concept_qname"])
 
     rows.sort(
         key=lambda row: (

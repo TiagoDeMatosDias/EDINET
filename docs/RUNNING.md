@@ -193,15 +193,16 @@ Supports `overwrite` — when enabled, the output tables are dropped and fully r
 
 - `Source_Database` — database containing the raw EDINET financial data.
 - The source table is fixed to `financialData_full`.
-- `Target_Database` — database where `FinancialStatements` and the wide taxonomy-backed `IncomeStatement`, `BalanceSheet`, and `CashflowStatement` tables are written.
-- `Granularity_level` — maximum taxonomy level to materialize into the three main statement tables.
+- `Target_Database` — database where `FinancialStatements` and the wide taxonomy-backed `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, and `ShareMetrics` tables are written.
+- `Granularity_level` — maximum taxonomy level to materialize into the statement tables. `ShareMetrics` concepts are stored at level `0` so they are always included.
 
 Runtime notes:
 
 - `FinancialStatements` contains only filing metadata: `docID`, `edinetCode`, `docTypeCode`, `submitDateTime`, `periodStart`, `periodEnd`, and `release_id`.
-- `IncomeStatement`, `BalanceSheet`, and `CashflowStatement` now contain `docID` plus taxonomy-label columns only.
-- The step reads only `CurrentYearDuration`, `CurrentYearInstant`, and `FilingDateInstant` contexts.
-- Pending filings are processed in internal pandas-backed batches of 500 docIDs, with bulk SQLite writes per batch.
+- `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, and `ShareMetrics` contain `docID` plus taxonomy-label columns only.
+- `ShareMetrics` materializes selected share-count, dividend-per-share, and related summary concepts as flat level-`0` columns.
+- The step reads family-specific contexts and applies deterministic context priority before loading each table.
+- Pending filings are processed in internal pandas-backed batches of 1000 docIDs, with vectorized release resolution, release-aware concept filtering, and bulk SQLite writes per batch.
 
 ---
 
