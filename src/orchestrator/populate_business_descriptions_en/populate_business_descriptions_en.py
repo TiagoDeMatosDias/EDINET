@@ -1,6 +1,6 @@
 import logging
 
-from src.orchestrator.common import StepDefinition
+from src.orchestrator.common import StepDefinition, StepFieldDefinition
 
 from . import service as description_services
 
@@ -32,8 +32,20 @@ STEP_DEFINITION = StepDefinition(
     name="populate_business_descriptions_en",
     handler=run_populate_business_descriptions_en,
     aliases=("Populate Business Descriptions (EN)",),
-    required_config_fields=(
-        ("populate_business_descriptions_en_config", "Target_Database"),
-        ("populate_business_descriptions_en_config", "Providers_Config"),
+    supports_overwrite=True,
+    input_fields=(
+        StepFieldDefinition("Target_Database", "database", required=True),
+        StepFieldDefinition("Table_Name", "str", default="FinancialStatements"),
+        StepFieldDefinition("DocID_Column", "str", default="docID"),
+        StepFieldDefinition("Source_Column", "str", default="DescriptionOfBusiness"),
+        StepFieldDefinition("Target_Column", "str", default="DescriptionOfBusiness_EN"),
+        StepFieldDefinition(
+            "Providers_Config",
+            "file",
+            default="config/reference/business_description_translation_providers.example.json",
+        ),
+        StepFieldDefinition("Source_Language", "str", default="ja"),
+        StepFieldDefinition("Target_Language", "str", default="en"),
+        StepFieldDefinition("batch_size", "num", default=25),
     ),
 )

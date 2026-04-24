@@ -1,6 +1,6 @@
 import logging
 
-from src.orchestrator.common import StepDefinition
+from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common import backtesting
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,25 @@ def run_backtest(config, overwrite=False):
 STEP_DEFINITION = StepDefinition(
     name="backtest",
     handler=run_backtest,
+    config_key="backtesting_config",
     required_keys=("DB_STOCK_PRICES_TABLE", "DB_COMPANY_INFO_TABLE"),
-    required_config_fields=(("backtesting_config", "Source_Database"),),
+    input_fields=(
+        StepFieldDefinition("Source_Database", "database", required=True),
+        StepFieldDefinition("PerShare_Table", "str", default="PerShare"),
+        StepFieldDefinition(
+            "Financial_Statements_Table",
+            "str",
+            default="FinancialStatements",
+        ),
+        StepFieldDefinition("start_date", "str", default="2023-01-01"),
+        StepFieldDefinition("end_date", "str", default="2025-12-31"),
+        StepFieldDefinition("benchmark_ticker", "str"),
+        StepFieldDefinition(
+            "output_file",
+            "str",
+            default="data/backtest_results/backtest_report.txt",
+        ),
+        StepFieldDefinition("risk_free_rate", "num", default=0.0),
+        StepFieldDefinition("portfolio", "portfolio", default={}, required=True),
+    ),
 )

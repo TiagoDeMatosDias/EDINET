@@ -1,6 +1,6 @@
 import logging
 
-from src.orchestrator.common import StepDefinition
+from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common.edinet import Edinet
 
 logger = logging.getLogger(__name__)
@@ -24,5 +24,13 @@ STEP_DEFINITION = StepDefinition(
     name="populate_company_info",
     handler=run_populate_company_info,
     required_keys=("DB_COMPANY_INFO_TABLE",),
-    required_config_fields=(("populate_company_info_config", "Target_Database"),),
+    input_fields=(
+        StepFieldDefinition(
+            "csv_file",
+            "file",
+            default="",
+            label="csv_file (optional)",
+        ),
+        StepFieldDefinition("Target_Database", "database", required=True),
+    ),
 )

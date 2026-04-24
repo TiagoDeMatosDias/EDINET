@@ -1,8 +1,9 @@
+import copy
 import importlib
 import logging
 import pkgutil
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -15,13 +16,87 @@ _DISCOVERY_EXCLUDED_MODULES = frozenset({
 })
 
 
+def humanize_step_name(step_name: str) -> str:
+    parts = [part for part in step_name.replace("_", " ").split() if part]
+    if not parts:
+        return step_name
+    return " ".join(part[:1].upper() + part[1:] for part in parts)
+
+
+@dataclass(frozen=True)
+class StepFieldDefinition:
+    key: str
+    field_type: str
+    default: Any = ""
+    label: str | None = None
+    filetypes: tuple[tuple[str, str], ...] = ()
+    height: int = 3
+    required: bool = False
+
+    @property
+    def display_label(self) -> str:
+        return self.label if self.label is not None else self.key
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "field_type": self.field_type,
+            "default": copy.deepcopy(self.default),
+            "label": self.label,
+            "display_label": self.display_label,
+            "filetypes": [list(filetype) for filetype in self.filetypes],
+            "height": self.height,
+            "required": self.required,
+        }
+
+
 @dataclass(frozen=True)
 class StepDefinition:
     name: str
     handler: Callable
     aliases: tuple[str, ...] = ()
     required_keys: tuple[str, ...] = ()
-    required_config_fields: tuple[tuple[str, str], ...] = ()
+    config_key: str | None = None
+    display_name: str | None = None
+    supports_overwrite: bool = False
+    input_fields: tuple[StepFieldDefinition, ...] = ()
+
+    @property
+    def resolved_config_key(self) -> str:
+        return self.config_key if self.config_key is not None else f"{self.name}_config"
+
+    @property
+    def resolved_display_name(self) -> str:
+        return self.display_name if self.display_name is not None else humanize_step_name(self.name)
+
+    @property
+    def required_input_fields(self) -> tuple[StepFieldDefinition, ...]:
+        return tuple(
+            field
+            for field in self.input_fields
+            if field.required
+        )
+
+    def build_default_config(self) -> dict[str, Any]:
+        return {
+            field.key: copy.deepcopy(field.default)
+            for field in self.input_fields
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "display_name": self.resolved_display_name,
+            "aliases": list(self.aliases),
+            "config_key": self.resolved_config_key,
+            "required_keys": list(self.required_keys),
+            "required_config_fields": [
+                [self.resolved_config_key, field.key]
+                for field in self.required_input_fields
+            ],
+            "supports_overwrite": self.supports_overwrite,
+            "input_fields": [field.to_dict() for field in self.input_fields],
+        }
 
 
 def _read_step_definitions(module) -> list[StepDefinition]:
@@ -58,11 +133,10 @@ def iter_step_modules(package_name: str = "src.orchestrator"):
 
 
 def build_step_registry(package_name: str = "src.orchestrator"):
-    """Discover step modules and build handler and validation registries."""
+    """Discover step modules and build orchestrator registries."""
     handlers: dict[str, Callable] = {}
-    required_keys: dict[str, list[str]] = {}
-    required_config_fields: dict[str, list[tuple[str, str]]] = {}
     canonical_names: dict[str, str] = {}
+    step_definitions: dict[str, StepDefinition] = {}
     discovered_modules: list[str] = []
 
     for module_name, definitions in iter_step_modules(package_name=package_name):
@@ -82,9 +156,12 @@ def build_step_registry(package_name: str = "src.orchestrator"):
                     module_name,
                 )
                 continue
+            if definition.name in step_definitions:
+                raise RuntimeError(
+                    f"Duplicate orchestrator step registration for canonical step '{definition.name}' from module {module_name}."
+                )
 
-            required_keys[definition.name] = list(definition.required_keys)
-            required_config_fields[definition.name] = list(definition.required_config_fields)
+            step_definitions[definition.name] = definition
 
             for step_name in (definition.name, *definition.aliases):
                 if step_name in handlers:
@@ -99,4 +176,9 @@ def build_step_registry(package_name: str = "src.orchestrator"):
         if module_registered:
             discovered_modules.append(module_name)
 
-    return handlers, required_keys, required_config_fields, canonical_names, tuple(discovered_modules)
+    return (
+        handlers,
+        canonical_names,
+        step_definitions,
+        tuple(discovered_modules),
+    )

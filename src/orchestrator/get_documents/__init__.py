@@ -1,3 +1,3 @@
-from .get_documents import STEP_DEFINITION, run_get_documents
+from .get_documents import STEP_DEFINITION
 
-__all__ = ["STEP_DEFINITION", "run_get_documents"]
+__all__ = ["STEP_DEFINITION"]

@@ -1,6 +1,6 @@
 import logging
 
-from src.orchestrator.common import StepDefinition
+from src.orchestrator.common import StepDefinition, StepFieldDefinition
 
 from . import analysis
 
@@ -21,5 +21,20 @@ def run_multivariate_regression(config, overwrite=False):
 STEP_DEFINITION = StepDefinition(
     name="Multivariate_Regression",
     handler=run_multivariate_regression,
-    required_config_fields=(("Multivariate_Regression_config", "Source_Database"),),
+    display_name="Multivariate Regression",
+    input_fields=(
+        StepFieldDefinition("Source_Database", "database", required=True),
+        StepFieldDefinition(
+            "Output",
+            "file",
+            default="data/ols_results/ols_results_summary.txt",
+        ),
+        StepFieldDefinition(
+            "winsorize_thresholds",
+            "json",
+            default={"lower": 0.05, "upper": 0.95},
+            label="winsorize_thresholds (JSON)",
+        ),
+        StepFieldDefinition("SQL_Query", "text", height=6, required=True),
+    ),
 )

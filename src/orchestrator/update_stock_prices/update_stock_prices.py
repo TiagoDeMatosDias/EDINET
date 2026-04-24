@@ -1,6 +1,6 @@
 import logging
 
-from src.orchestrator.common import StepDefinition
+from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.utilities import stock_prices
 
 logger = logging.getLogger(__name__)
@@ -24,5 +24,7 @@ STEP_DEFINITION = StepDefinition(
     name="update_stock_prices",
     handler=run_update_stock_prices,
     required_keys=("DB_COMPANY_INFO_TABLE", "DB_STOCK_PRICES_TABLE", "DB_FINANCIAL_DATA_TABLE"),
-    required_config_fields=(("update_stock_prices_config", "Target_Database"),),
+    input_fields=(
+        StepFieldDefinition("Target_Database", "database", required=True),
+    ),
 )

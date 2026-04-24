@@ -1,34 +1,32 @@
 import logging
 import threading
-import importlib
-from typing import Callable
+from typing import Any, Callable
 
 from config import Config
 
 from .common import build_step_registry
+from .common import StepDefinition
+from .common.validation import apply_step_config_defaults, normalize_pipeline_steps, validate_pipeline_input
 
 logger = logging.getLogger(__name__)
 
 STEP_HANDLERS: dict[str, Callable] = {}
-STEP_REQUIRED_KEYS: dict[str, list[str]] = {}
-STEP_REQUIRED_CONFIG_FIELDS: dict[str, list[tuple[str, str]]] = {}
 STEP_CANONICAL_NAMES: dict[str, str] = {}
+STEP_DEFINITIONS: dict[str, StepDefinition] = {}
 DISCOVERED_STEP_MODULES: tuple[str, ...] = ()
 
 
 def refresh_step_registry() -> None:
     """Rebuild orchestrator step registries from discovered step modules."""
     global STEP_HANDLERS
-    global STEP_REQUIRED_KEYS
-    global STEP_REQUIRED_CONFIG_FIELDS
     global STEP_CANONICAL_NAMES
+    global STEP_DEFINITIONS
     global DISCOVERED_STEP_MODULES
 
     (
         STEP_HANDLERS,
-        STEP_REQUIRED_KEYS,
-        STEP_REQUIRED_CONFIG_FIELDS,
         STEP_CANONICAL_NAMES,
+        STEP_DEFINITIONS,
         DISCOVERED_STEP_MODULES,
     ) = build_step_registry()
 
@@ -38,9 +36,12 @@ def canonical_step_name(step_name: str) -> str:
     return STEP_CANONICAL_NAMES.get(step_name, step_name)
 
 
-def list_available_steps() -> list[str]:
-    """Return canonical step names discovered from the step modules."""
-    return sorted(set(STEP_CANONICAL_NAMES.values()))
+def list_available_steps() -> list[dict[str, Any]]:
+    """Return discovered steps with metadata from each step definition."""
+    return [
+        STEP_DEFINITIONS[step_name].to_dict()
+        for step_name in sorted(STEP_DEFINITIONS)
+    ]
 
 
 def list_discovered_step_modules() -> list[str]:
@@ -51,35 +52,70 @@ def list_discovered_step_modules() -> list[str]:
 refresh_step_registry()
 
 
+def _coerce_config(config: Config | dict[str, Any] | None) -> Config:
+    if config is None:
+        return Config()
+    if isinstance(config, Config):
+        return config
+    if isinstance(config, dict):
+        return Config.from_dict(config)
+    raise TypeError("config must be a Config instance, a dict, or None.")
+
+
+def _resolve_enabled_steps(
+    config: Config,
+    steps: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    return normalize_pipeline_steps(config, steps=steps)
+
+
 def validate_config(config, enabled_steps: list[str]) -> None:
     """Validate that all required settings exist for the enabled steps.
 
     Raises ``RuntimeError`` with a detailed message when settings are missing.
     """
-    missing_map: dict[str, list[str]] = {}
+    try:
+        normalized_steps = [
+            {"name": step_name, "overwrite": False}
+            for step_name in enabled_steps
+        ]
+        apply_step_config_defaults(
+            config,
+            normalized_steps,
+            step_definitions=STEP_DEFINITIONS,
+            canonical_names=STEP_CANONICAL_NAMES,
+        )
+        validate_pipeline_input(
+            config,
+            normalized_steps,
+            step_definitions=STEP_DEFINITIONS,
+            canonical_names=STEP_CANONICAL_NAMES,
+        )
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        raise
 
-    for raw_step_name in enabled_steps:
-        step_name = canonical_step_name(raw_step_name)
 
-        for key in STEP_REQUIRED_KEYS.get(step_name, []):
-            if not config.get(key):
-                missing_map.setdefault(key, []).append(raw_step_name)
-
-        for cfg_name, field_name in STEP_REQUIRED_CONFIG_FIELDS.get(step_name, []):
-            cfg = config.get(cfg_name, {}) or {}
-            if not cfg.get(field_name):
-                missing_key = f"{cfg_name}.{field_name}"
-                missing_map.setdefault(missing_key, []).append(raw_step_name)
-
-    if missing_map:
-        lines = ["The following required settings are missing from .env / config:"]
-        for key, steps_needing in sorted(missing_map.items()):
-            lines.append(f"  • {key}  (needed by: {', '.join(steps_needing)})")
-        lines.append("")
-        lines.append("Set them in the step configuration dialogs or add them to the config / .env files.")
-        msg = "\n".join(lines)
-        logger.error(msg)
-        raise RuntimeError(msg)
+def validate_input(
+    config: Config | dict[str, Any] | None,
+    steps: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Validate a provided pipeline config and return normalized enabled steps."""
+    config_obj = _coerce_config(config)
+    normalized_steps = _resolve_enabled_steps(config_obj, steps=steps)
+    apply_step_config_defaults(
+        config_obj,
+        normalized_steps,
+        step_definitions=STEP_DEFINITIONS,
+        canonical_names=STEP_CANONICAL_NAMES,
+    )
+    validate_pipeline_input(
+        config_obj,
+        normalized_steps,
+        step_definitions=STEP_DEFINITIONS,
+        canonical_names=STEP_CANONICAL_NAMES,
+    )
+    return normalized_steps
 
 
 def execute_step(step_name: str, config, overwrite: bool = False):
@@ -91,122 +127,47 @@ def execute_step(step_name: str, config, overwrite: bool = False):
     return handler(config, overwrite=overwrite)
 
 
-def _package_execute_step(step_name: str, config, overwrite: bool = False):
-    package_module = importlib.import_module(__package__)
-    return package_module.execute_step(step_name, config, overwrite=overwrite)
-
-
-def run() -> None:
-    """Orchestrate execution based on the run config file."""
-    logger.info("Starting Program")
-    logger.info("Loading Config")
-
-    config = Config()
-    run_steps = config.get("run_steps", {})
-
-    enabled_steps = []
-    for step_name, step_val in run_steps.items():
-        if isinstance(step_val, dict):
-            if step_val.get("enabled", False):
-                enabled_steps.append(step_name)
-        elif bool(step_val):
-            enabled_steps.append(step_name)
-
-    validate_config(config, enabled_steps)
-
-    logger.info("Steps to execute (in order): %s", list(run_steps.keys()))
-    for step_name, step_val in run_steps.items():
-        if isinstance(step_val, dict):
-            is_enabled = step_val.get("enabled", False)
-            overwrite = step_val.get("overwrite", False)
-        else:
-            is_enabled = bool(step_val)
-            overwrite = False
-
-        if is_enabled:
-            try:
-                _package_execute_step(step_name, config, overwrite=overwrite)
-            except Exception as exc:
-                logger.error("Error executing step '%s': %s", step_name, exc, exc_info=True)
-        else:
-            logger.debug("Step '%s' is disabled, skipping.", step_name)
-
-    logger.info("Program Ended")
-
-
-def run_pipeline(
-    steps: list[dict],
-    config: Config,
+def run(
+    config: Config | dict[str, Any] | None = None,
+    steps: list[dict[str, Any]] | None = None,
     on_step_start: Callable[[str], None] | None = None,
     on_step_done: Callable[[str], None] | None = None,
     on_step_error: Callable[[str, Exception], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> None:
-    """Execute a list of steps in order with per-step callbacks and cancellation."""
-    enabled_steps = [step.get("name") for step in steps if step.get("name")]
-    validate_config(config, enabled_steps)
+    """Run the provided pipeline config, or load the saved config when omitted."""
+    logger.info("Starting Program")
+    logger.info("Loading Config")
 
-    for step in steps:
+    config_obj = _coerce_config(config)
+    enabled_steps = validate_input(config_obj, steps=steps)
+
+    logger.info("Steps to execute (in order): %s", [step["name"] for step in enabled_steps])
+    for step in enabled_steps:
         if cancel_event and cancel_event.is_set():
             logger.info("Pipeline cancelled by user.")
             return
 
-        name = step["name"]
+        step_name = step["name"]
         overwrite = step.get("overwrite", False)
 
         if on_step_start:
-            on_step_start(name)
+            on_step_start(step_name)
         try:
-            _package_execute_step(name, config, overwrite=overwrite)
+            execute_step(step_name, config_obj, overwrite=overwrite)
             if on_step_done:
-                on_step_done(name)
+                on_step_done(step_name)
         except Exception as exc:
-            logger.error("Error executing step '%s': %s", name, exc, exc_info=True)
+            logger.error("Error executing step '%s': %s", step_name, exc, exc_info=True)
             if on_step_error:
-                on_step_error(name, exc)
+                on_step_error(step_name, exc)
             raise
 
-
-def _build_legacy_step_wrapper(step_name: str):
-    def _runner(config, overwrite=False):
-        return _package_execute_step(step_name, config, overwrite=overwrite)
-
-    _runner.__doc__ = f"Backward-compatible wrapper for the '{step_name}' step."
-    return _runner
-
-
-_LEGACY_STEP_WRAPPERS = {
-    "_step_get_documents": "get_documents",
-    "_step_download_documents": "download_documents",
-    "_step_populate_company_info": "populate_company_info",
-    "_step_generate_financial_statements": "generate_financial_statements",
-    "_step_populate_business_descriptions_en": "populate_business_descriptions_en",
-    "_step_generate_ratios": "generate_ratios",
-    "_step_generate_historical_ratios": "generate_historical_ratios",
-    "_step_import_stock_prices_csv": "import_stock_prices_csv",
-    "_step_update_stock_prices": "update_stock_prices",
-    "_step_parse_taxonomy": "parse_taxonomy",
-    "_step_multivariate_regression": "Multivariate_Regression",
-    "_step_backtest": "backtest",
-    "_step_backtest_set": "backtest_set",
-}
-
-for _wrapper_name, _step_name in _LEGACY_STEP_WRAPPERS.items():
-    globals()[_wrapper_name] = _build_legacy_step_wrapper(_step_name)
+    logger.info("Program Ended")
 
 
 __all__ = [
-    "DISCOVERED_STEP_MODULES",
-    "STEP_CANONICAL_NAMES",
-    "STEP_HANDLERS",
-    "STEP_REQUIRED_CONFIG_FIELDS",
-    "STEP_REQUIRED_KEYS",
-    "canonical_step_name",
-    "execute_step",
     "list_available_steps",
-    "list_discovered_step_modules",
-    "refresh_step_registry",
     "run",
-    "run_pipeline",
-    "validate_config",
+    "validate_input",
 ]

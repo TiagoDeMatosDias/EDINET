@@ -33,7 +33,7 @@ Before any step runs, the orchestrator checks that all required `.env` / config 
 
 ## Business Description Translation APIs
 
-The Security Analysis view no longer performs runtime model translation. Instead, `FinancialStatements` includes a `DescriptionOfBusiness_EN` column that is populated ahead of time by the `populate_business_descriptions_en` pipeline step.
+The Security Analysis view no longer performs runtime model translation. When a `DescriptionOfBusiness_EN` column is present in `FinancialStatements`, it is typically populated ahead of time by the `populate_business_descriptions_en` pipeline step.
 
 Translation providers are defined in `config/reference/business_description_translation_providers.example.json`. Providers are tried in the order listed, so if one API is rate-limited or unavailable the step automatically falls back to the next enabled provider.
 
@@ -186,32 +186,22 @@ Supports `overwrite` — when enabled, the output tables are dropped and fully r
 ```json
 "generate_financial_statements_config": {
   "Source_Database": "C:/path/to/base.db",
-  "Source_Table": "financialData_full",
   "Target_Database": "C:/path/to/standardized.db",
-  "Company_Info_Table": "",
-  "Stock_Prices_Table": "",
-  "Mappings_Config": "config/reference/canonical_metrics_config.json",
-  "max_line_depth": 3,
-  "batch_size": 2500
+  "Granularity_level": 3
 }
 ```
 
 - `Source_Database` — database containing the raw EDINET financial data.
-- `Source_Table` — the raw financial data table to read from (default: `financialData_full`).
-- `Target_Database` — database where `FinancialStatements`, `statement_line_items`, and the wide taxonomy-backed `IncomeStatement`, `BalanceSheet`, and `CashflowStatement` tables are written.
-- `FinancialStatements.DescriptionOfBusiness_EN` is created automatically as an empty `TEXT` column and preserved on reruns so it can be populated by the translation step.
-- `Company_Info_Table` — optional override for the company info table name.
-- `Stock_Prices_Table` — optional override for the stock prices table name.
-- `Mappings_Config` — JSON registry used for doc-level `FinancialStatements` fields such as share-count and filing-description values. When taxonomy metadata has not been loaded yet, it also provides a fallback concept list for statement generation.
-- `max_line_depth` — maximum taxonomy presentation depth to materialize into the three main statement tables. The tables always use the primary current-year contexts only: `CurrentYearInstant` for `BalanceSheet`, `CurrentYearDuration` for `IncomeStatement` and `CashflowStatement`.
-- `batch_size` — rows/documents processed per batch.
+- The source table is fixed to `financialData_full`.
+- `Target_Database` — database where `FinancialStatements` and the wide taxonomy-backed `IncomeStatement`, `BalanceSheet`, and `CashflowStatement` tables are written.
+- `Granularity_level` — maximum taxonomy level to materialize into the three main statement tables.
 
 Runtime notes:
 
+- `FinancialStatements` contains only filing metadata: `docID`, `edinetCode`, `docTypeCode`, `submitDateTime`, `periodStart`, `periodEnd`, and `release_id`.
 - `IncomeStatement`, `BalanceSheet`, and `CashflowStatement` now contain `docID` plus taxonomy-label columns only.
-- `statement_line_items` stores the hierarchy metadata for those columns: concept QName, label, parent concept, parent column, order, depth, and statement family.
-- `taxonomy_levels` is populated by `parse_taxonomy` and gives a release-scoped one-row-per-concept table with `release_id`, `statement_family`, `data_type`, `namespace_prefix`, `concept_qname`, `primary_label_en`, `parent_concept_qname`, and `level`. These rows are derived from one canonical standard EDINET role per statement family, with root wrapper concepts compressed out and a headings-first projection applied so abstract section concepts define the visible structure. `generate_financial_statements` uses this table first when it is available.
-- The legacy normalized statement-storage tables (`statement_documents`, `statement_contexts`, `statement_facts`, `statement_fact_dimensions`) are no longer part of the generated output and are dropped on rerun.
+- The step reads only `CurrentYearDuration`, `CurrentYearInstant`, and `FilingDateInstant` contexts.
+- Pending filings are processed in internal pandas-backed batches of 500 docIDs, with bulk SQLite writes per batch.
 
 ---
 

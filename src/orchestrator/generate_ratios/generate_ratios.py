@@ -1,6 +1,6 @@
 import logging
 
-from src.orchestrator.common import StepDefinition
+from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common import ratios as ratio_services
 
 logger = logging.getLogger(__name__)
@@ -26,8 +26,15 @@ STEP_DEFINITION = StepDefinition(
     name="generate_ratios",
     handler=run_generate_ratios,
     aliases=("Generate Ratios",),
-    required_config_fields=(
-        ("generate_ratios_config", "Source_Database"),
-        ("generate_ratios_config", "Target_Database"),
+    supports_overwrite=True,
+    input_fields=(
+        StepFieldDefinition("Source_Database", "database", required=True),
+        StepFieldDefinition("Target_Database", "database", required=True),
+        StepFieldDefinition(
+            "Formulas_Config",
+            "file",
+            default="config/reference/generate_ratios_formulas_config.json",
+        ),
+        StepFieldDefinition("batch_size", "num", default=5000),
     ),
 )

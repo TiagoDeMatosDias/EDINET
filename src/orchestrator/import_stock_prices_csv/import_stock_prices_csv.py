@@ -1,6 +1,6 @@
 import logging
 
-from src.orchestrator.common import StepDefinition
+from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.utilities import stock_prices
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,16 @@ def run_import_stock_prices_csv(config, overwrite=False):
 STEP_DEFINITION = StepDefinition(
     name="import_stock_prices_csv",
     handler=run_import_stock_prices_csv,
+    display_name="Import Stock Prices (CSV)",
     required_keys=("DB_STOCK_PRICES_TABLE",),
-    required_config_fields=(("import_stock_prices_csv_config", "Target_Database"),),
+    input_fields=(
+        StepFieldDefinition("Target_Database", "database", required=True),
+        StepFieldDefinition("csv_file", "file", required=True),
+        StepFieldDefinition("default_ticker", "str"),
+        StepFieldDefinition("default_currency", "str", default="JPY"),
+        StepFieldDefinition("date_column", "str", default="Date"),
+        StepFieldDefinition("price_column", "str", default="Price"),
+        StepFieldDefinition("ticker_column", "str"),
+        StepFieldDefinition("currency_column", "str"),
+    ),
 )

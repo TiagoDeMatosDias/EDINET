@@ -46,41 +46,27 @@ Suggested per-function format:
 Responsibility: public orchestration API and step dispatch. The orchestrator is a thin dispatcher with **no business logic**. Step execution is discovered dynamically from step packages directly under `src/orchestrator`, so new step packages can be added without modifying the orchestrator runtime.
 
 Architecture:
-- **`src/orchestrator/orchestrator.py`**: runtime entry point that owns the step registries, validation, execution, and legacy `_step_*` wrappers.
-- **`src/orchestrator/common.py`**: shared `StepDefinition` type plus discovery helpers that scan immediate child step packages under `src/orchestrator`.
-- **Discovered step packages**: each step lives in its own package such as `src/orchestrator/generate_financial_statements/` and exports step definitions with handlers and validation requirements.
+- **`src/orchestrator/orchestrator.py`**: runtime entry point that owns step registries, public API validation, and execution.
+- **`src/orchestrator/common/__init__.py`**: shared `StepDefinition` type plus discovery helpers that scan immediate child step packages under `src/orchestrator`.
+- **`src/orchestrator/common/__init__.py`**: Step contracts and discovery helpers, including `StepDefinition`, `StepFieldDefinition`, and registry construction.
+- **Discovered step packages**: each step lives in its own package such as `src/orchestrator/generate_financial_statements/` and exports `STEP_DEFINITION` only.
 - **`STEP_HANDLERS`**: generated registry mapping step names and aliases to discovered handlers.
-- **`validate_config()`**: pre-flight validation built from the discovered step metadata.
-- **Backward-compatible wrappers**: legacy `_step_*` functions still exist for tests and any direct imports, but they forward through the discovered registry.
 
-- `def execute_step(step_name: str, config, overwrite: bool = False) -> None`
-	- Purpose: Dispatch to the registered handler for `step_name` via `STEP_HANDLERS`.
-	- Inputs: `step_name`, `config`, `overwrite`.
+- `def run(config=None, steps=None, on_step_start=None, on_step_done=None, on_step_error=None, cancel_event=None) -> None`
+	- Purpose: Run the provided pipeline config. If `config` is omitted, it loads the saved runtime config.
+	- Inputs: optional `Config` or config dict, optional ordered `steps`, optional callbacks, optional `cancel_event`.
 	- Output: None.
-	- Calls/Dependencies: `STEP_HANDLERS[step_name]`.
+	- Calls/Dependencies: `Config`, `validate_input`, `STEP_HANDLERS`.
 
-- `def validate_config(config, enabled_steps: list[str]) -> None`
-	- Purpose: Validate required top-level keys and step-config fields for enabled steps. Raises `RuntimeError` with details on missing settings.
-	- Inputs: `config`, `enabled_steps`.
-	- Output: None (raises on failure).
-
-- `def run() -> None`
-	- Purpose: Load Config, determine enabled steps, validate, then execute in order.
+- `def list_available_steps() -> list[dict]`
+	- Purpose: Return the discovered step catalog for the UI, including step names, config keys, overwrite support, aliases, and input field definitions.
 	- Inputs: none.
-	- Output: None.
-	- Calls/Dependencies: `Config`, `validate_config`, `execute_step`.
+	- Output: list of step metadata dicts.
 
-- `def run_pipeline(steps: list[dict], config: Config, on_step_start=None, on_step_done=None, on_step_error=None, cancel_event=None) -> None`
-	- Purpose: Execute a list of steps in order with per-step callbacks and cancellation support. Used by the Tk UI for background pipeline execution.
-	- Inputs: `steps` (list of dicts with `name` and optional `overwrite`), `config`, optional callbacks, optional `cancel_event`.
-	- Output: None.
-	- Calls/Dependencies: `execute_step`, `threading.Event`.
-
-- `def refresh_step_registry() -> None`
-	- Purpose: Rebuild the discovered step registry after scanning the immediate child step packages under `src/orchestrator`.
-	- Inputs: none.
-	- Output: None.
-	- Calls/Dependencies: discovery helpers in `src/orchestrator/common.py`.
+- `def validate_input(config, steps=None) -> list[dict]`
+	- Purpose: Validate pipeline shape plus required top-level keys, required step-config fields, and typed field values. Returns normalized enabled steps.
+	- Inputs: `Config` or config dict, optional ordered `steps`.
+	- Output: normalized list of step dicts (raises `RuntimeError` on invalid input).
 
 ---
 
@@ -200,11 +186,11 @@ Responsibility: Backward-compatible facade over orchestrator-owned services and 
 `class data`
 	- Purpose: Compatibility subclass of `OrchestratorDataProcessor` that keeps the legacy public API stable while delegating orchestrator-facing workflows into `src/orchestrator/services/*`.
 
-	- `def generate_financial_statements(self, source_database, source_table, target_database, mappings_config, company_table=None, prices_table=None, overwrite=False, batch_size=2500, max_line_depth=3) -> None`
-		- Purpose: Generate taxonomy-backed wide financial-statement tables from raw EDINET records; resumable chunked processing by `docID`.
-		- Inputs: `source_database`, `source_table`, `target_database`, `mappings_config` (path for doc-level `FinancialStatements` fields and fallback statement seeding), optional `company_table`, `prices_table`, `overwrite`, `batch_size`, `max_line_depth`.
-		- Output: None (writes/updates DB tables: `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, `statement_line_items`).
-		- Calls/Dependencies: `_load_financial_statement_mappings`, `_load_statement_catalog`, `_refresh_statement_line_items`, `_ensure_wide_statement_tables`, `_resolve_table_name_in_schema`, `_upsert_base_financial_statements_from_source`, `_materialize_wide_statement_table_batch`, `conn.execute`, `conn.executescript`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
+	- `def generate_financial_statements(self, source_database, target_database, granularity_level, overwrite=False) -> None`
+		- Purpose: Generate taxonomy-backed wide financial-statement tables from `financialData_full`; resumable processing in internal docID batches.
+		- Inputs: `source_database`, `target_database`, `granularity_level`, optional `overwrite`.
+		- Output: None (writes/updates DB tables: `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, `CashflowStatement`).
+		- Calls/Dependencies: `_resolve_table_name_in_schema`, `_resolve_source_col_names`, pandas batch queries, bulk SQLite temp-table inserts, Taxonomy queries, `conn.execute`, `conn.executescript`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
 
 	- `def populate_business_descriptions_en(self, target_database, providers_config, table_name="FinancialStatements", docid_column="docID", source_column="DescriptionOfBusiness", target_column="DescriptionOfBusiness_EN", source_language="ja", target_language="en", overwrite=False, batch_size=25) -> None`
 		- Purpose: Populate translated English business descriptions in the target statements table using an ordered fallback provider list.
@@ -509,11 +495,11 @@ Responsibility: Background worker utilities — thread pool, event queue, log ha
 
 Responsibility: Thin adapter layer between the Tk UI and backend modules. Provides pipeline execution, setup persistence, and step configuration helpers.
 
-- Constants: `STEP_CONFIG_KEY`, `STEP_DISPLAY`, `ALL_STEP_NAMES`, `STEPS_WITH_OVERWRITE`, path constants (`BASE_DIR`, `ENV_PATH`, `STATE_DIR`, `RUN_CONFIG_PATH`, `SAVED_SETUPS_DIR`, `APP_STATE_PATH`).
+- Constants: step metadata derived from `orchestrator.list_available_steps()`, plus path constants (`BASE_DIR`, `ENV_PATH`, `STATE_DIR`, `RUN_CONFIG_PATH`, `SAVED_SETUPS_DIR`, `APP_STATE_PATH`).
 
 #### Step Field Registry
 
-The step field registry (`STEP_FIELD_DEFINITIONS`) is the single source of truth for which configuration fields each pipeline step requires. Both the UI config panel and `DEFAULT_STEP_CONFIGS` are derived from it.
+The orchestrator step definitions are the single source of truth for which configuration fields each pipeline step requires. The controller derives `STEP_CONFIG_KEY`, `STEP_DISPLAY`, `ALL_STEP_NAMES`, `STEP_FIELD_DEFINITIONS`, and `DEFAULT_STEP_CONFIGS` from `orchestrator.list_available_steps()`.
 
 - `@dataclass StepField` — Metadata for a single step-config field.
 	- `key: str` — config dict key (e.g. `"Source_Database"`).
@@ -523,15 +509,15 @@ The step field registry (`STEP_FIELD_DEFINITIONS`) is the single source of truth
 	- `filetypes: list[tuple[str, str]] | None` — file-dialog filters (for `"file"` type).
 	- `height: int` — text-area rows (for `"text"` / `"json"` types, default 3).
 
-- `STEP_FIELD_DEFINITIONS: dict[str, list[StepField]]` — Maps each step name to an ordered list of `StepField` entries. The UI reads this to render only the relevant inputs per step.
+- `STEP_FIELD_DEFINITIONS: dict[str, list[StepField]]` — Controller-local projection of the orchestrator step definitions. The UI reads this to render only the relevant inputs per step.
 
-- `DEFAULT_STEP_CONFIGS: dict[str, dict]` — Derived automatically from `STEP_FIELD_DEFINITIONS` via `_build_defaults_from_fields()`. Do **not** edit this dict directly — add/change fields in `STEP_FIELD_DEFINITIONS` instead.
+- `DEFAULT_STEP_CONFIGS: dict[str, dict]` — Derived automatically from `STEP_FIELD_DEFINITIONS` via `_build_defaults_from_fields()`. Do **not** edit this dict directly — add/change fields in the underlying orchestrator step definition instead.
 
 #### Functions
 
 - `def run_pipeline(steps, config_dict, on_step_start=None, on_step_done=None, on_step_error=None, cancel_event=None) -> None`
-	- Purpose: Build `Config.from_dict` and delegate to `orchestrator.run_pipeline`.
-	- Calls/Dependencies: `Config.from_dict`, `orchestrator.run_pipeline`.
+	- Purpose: Build `Config.from_dict` and delegate to `orchestrator.run` with explicit step order.
+	- Calls/Dependencies: `Config.from_dict`, `orchestrator.run`.
 
 - `def list_setups() -> list[str]` — Return sorted list of saved setup names.
 - `def load_setup(name: str) -> dict` — Load named setup JSON from `saved_setups/`.

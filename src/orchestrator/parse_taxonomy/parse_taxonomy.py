@@ -1,7 +1,7 @@
 import json
 import logging
 
-from src.orchestrator.common import StepDefinition
+from src.orchestrator.common import StepDefinition, StepFieldDefinition
 
 from . import taxonomy_processing
 
@@ -60,5 +60,54 @@ def run_parse_taxonomy(config, overwrite=False):
 STEP_DEFINITION = StepDefinition(
     name="parse_taxonomy",
     handler=run_parse_taxonomy,
-    required_config_fields=(("parse_taxonomy_config", "Target_Database"),),
+    input_fields=(
+        StepFieldDefinition(
+            "xsd_file",
+            "file",
+            default="",
+            label="xsd_file (optional local import)",
+            filetypes=(("XSD files", "*.xsd"), ("All files", "*.*")),
+        ),
+        StepFieldDefinition(
+            "namespace_prefix",
+            "str",
+            default="jppfs_cor",
+            label="namespace_prefix (local import only)",
+        ),
+        StepFieldDefinition(
+            "release_label",
+            "str",
+            default="",
+            label="release_label (local import only)",
+        ),
+        StepFieldDefinition(
+            "release_year",
+            "str",
+            default="",
+            label="release_year (local import only)",
+        ),
+        StepFieldDefinition(
+            "taxonomy_date",
+            "str",
+            default="",
+            label="taxonomy_date (YYYY-MM-DD, local import only)",
+        ),
+        StepFieldDefinition("release_selection", "str", default="all"),
+        StepFieldDefinition(
+            "release_years",
+            "json",
+            default=[],
+            label="release_years (JSON, optional)",
+        ),
+        StepFieldDefinition(
+            "namespaces",
+            "json",
+            default=["jppfs_cor", "jpcrp_cor"],
+            label="namespaces (JSON)",
+        ),
+        StepFieldDefinition("download_dir", "str", default="assets/taxonomy"),
+        StepFieldDefinition("force_download", "str", default="False"),
+        StepFieldDefinition("force_reparse", "str", default="False"),
+        StepFieldDefinition("Target_Database", "database", required=True),
+    ),
 )

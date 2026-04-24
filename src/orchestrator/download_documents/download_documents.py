@@ -1,6 +1,6 @@
 import logging
 
-from src.orchestrator.common import StepDefinition
+from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common.edinet import Edinet
 
 logger = logging.getLogger(__name__)
@@ -38,5 +38,10 @@ STEP_DEFINITION = StepDefinition(
         "baseURL",
         "API_KEY",
     ),
-    required_config_fields=(("download_documents_config", "Target_Database"),),
+    input_fields=(
+        StepFieldDefinition("docTypeCode", "str", default="120"),
+        StepFieldDefinition("csvFlag", "str", default="1"),
+        StepFieldDefinition("Downloaded", "str", default="False"),
+        StepFieldDefinition("Target_Database", "database", required=True),
+    ),
 )

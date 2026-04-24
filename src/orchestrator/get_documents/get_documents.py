@@ -1,6 +1,6 @@
 import logging
 
-from src.orchestrator.common import StepDefinition
+from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common.edinet import Edinet
 
 logger = logging.getLogger(__name__)
@@ -27,5 +27,9 @@ STEP_DEFINITION = StepDefinition(
     name="get_documents",
     handler=run_get_documents,
     required_keys=("baseURL", "API_KEY"),
-    required_config_fields=(("get_documents_config", "Target_Database"),),
+    input_fields=(
+        StepFieldDefinition("startDate", "str"),
+        StepFieldDefinition("endDate", "str"),
+        StepFieldDefinition("Target_Database", "database", required=True),
+    ),
 )

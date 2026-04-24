@@ -30,7 +30,7 @@ Each pipeline step is configured independently, including its source or target d
 4. **Import stock prices (CSV)** – imports historical prices from a user-supplied CSV file with configurable column mapping.
 5. **Update stock prices** – fetches historical share prices via the Stooq API by default, with a Yahoo Finance chart fallback if Stooq is unavailable.
 6. **Parse taxonomy** – parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
-7. **Generate financial statements** – extracts tagged values from raw XBRL data into structured per-company financial tables and creates an empty `DescriptionOfBusiness_EN` column for later translation.
+7. **Generate financial statements** – extracts tagged values from raw XBRL data into structured per-company financial tables.
 8. **Populate business descriptions (EN)** – fills `DescriptionOfBusiness_EN` via an ordered fallback list of free translation APIs defined in JSON.
 9. **Generate ratios** – calculates per-share values, valuation ratios, and derived metrics for every company.
 10. **Generate historical ratios** – computes rolling averages, growth rates, and z-scores over time.

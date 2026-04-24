@@ -35,54 +35,40 @@ APP_STATE_PATH = STATE_DIR / "app_state.json"
 EXAMPLES_DIR = CONFIG_DIR / "examples"
 
 
-# ── Step catalogue (mirrors orchestrator + persistence.py) ──────────────
+# ── Step metadata (loaded from orchestrator step definitions) ───────────
 
+
+def _load_step_library() -> list[dict]:
+    from src import orchestrator
+
+    return orchestrator.list_available_steps()
+
+
+STEP_LIBRARY: list[dict] = _load_step_library()
+STEP_LIBRARY_BY_NAME: dict[str, dict] = {
+    step["name"]: step
+    for step in STEP_LIBRARY
+}
 STEP_CONFIG_KEY: dict[str, str] = {
-    "get_documents": "get_documents_config",
-    "download_documents": "download_documents_config",
-    "populate_company_info": "populate_company_info_config",
-    "import_stock_prices_csv": "import_stock_prices_csv_config",
-    "update_stock_prices": "update_stock_prices_config",
-    "parse_taxonomy": "parse_taxonomy_config",
-    "generate_financial_statements": "generate_financial_statements_config",
-    "populate_business_descriptions_en": "populate_business_descriptions_en_config",
-    "generate_ratios": "generate_ratios_config",
-    "generate_historical_ratios": "generate_historical_ratios_config",
-    "Multivariate_Regression": "Multivariate_Regression_config",
-    "backtest": "backtesting_config",
-    "backtest_set": "backtest_set_config",
+    step["name"]: step["config_key"]
+    for step in STEP_LIBRARY
 }
-
 STEP_DISPLAY: dict[str, str] = {
-    "get_documents": "Get Documents",
-    "download_documents": "Download Documents",
-    "populate_company_info": "Populate Company Info",
-    "import_stock_prices_csv": "Import Stock Prices (CSV)",
-    "update_stock_prices": "Update Stock Prices",
-    "parse_taxonomy": "Parse Taxonomy",
-    "generate_financial_statements": "Generate Financial Statements",
-    "populate_business_descriptions_en": "Populate Business Descriptions (EN)",
-    "generate_ratios": "Generate Ratios",
-    "generate_historical_ratios": "Generate Historical Ratios",
-    "Multivariate_Regression": "Multivariate Regression",
-    "backtest": "Backtest Portfolio",
-    "backtest_set": "Backtest Set (CSV)",
+    step["name"]: step["display_name"]
+    for step in STEP_LIBRARY
 }
-
-ALL_STEP_NAMES: list[str] = list(STEP_DISPLAY.keys())
-
+ALL_STEP_NAMES: list[str] = [step["name"] for step in STEP_LIBRARY]
 STEPS_WITH_OVERWRITE: set[str] = {
-    "generate_financial_statements",
-    "populate_business_descriptions_en",
-    "generate_ratios",
-    "generate_historical_ratios",
+    step["name"]
+    for step in STEP_LIBRARY
+    if step.get("supports_overwrite")
 }
 
 
 # ── Step field registry ─────────────────────────────────────────────────
 #
-# Each step declares exactly which fields it needs.  The UI reads this
-# registry to render only the relevant inputs.
+# Each step definition declares exactly which fields it needs. The UI reads
+# this orchestrator-provided metadata to render only the relevant inputs.
 #
 # field_type values:
 #   "str"       – single-line text entry
@@ -108,131 +94,24 @@ class StepField:
         return self.label if self.label is not None else self.key
 
 
-STEP_FIELD_DEFINITIONS: dict[str, list[StepField]] = {
-    "get_documents": [
-        StepField("startDate", "str"),
-        StepField("endDate", "str"),
-        StepField("Target_Database", "database"),
-    ],
-    "download_documents": [
-        StepField("docTypeCode", "str", default="120"),
-        StepField("csvFlag", "str", default="1"),
-        StepField("Downloaded", "str", default="False"),
-        StepField("Target_Database", "database"),
-    ],
-    "populate_company_info": [
-        StepField("csv_file", "file",
-                  default="",
-                  label="csv_file (optional)"),
-        StepField("Target_Database", "database"),
-    ],
-    "import_stock_prices_csv": [
-        StepField("Target_Database", "database"),
-        StepField("csv_file", "file"),
-        StepField("default_ticker", "str"),
-        StepField("default_currency", "str", default="JPY"),
-        StepField("date_column", "str", default="Date"),
-        StepField("price_column", "str", default="Price"),
-        StepField("ticker_column", "str"),
-        StepField("currency_column", "str"),
-    ],
-    "update_stock_prices": [
-        StepField("Target_Database", "database"),
-    ],
-    "parse_taxonomy": [
-        StepField("xsd_file", "file",
-                  default="",
-                  label="xsd_file (optional local import)",
-                  filetypes=[("XSD files", "*.xsd"), ("All files", "*.*")]),
-        StepField("namespace_prefix", "str", default="jppfs_cor",
-                  label="namespace_prefix (local import only)"),
-        StepField("release_label", "str", default="",
-                  label="release_label (local import only)"),
-        StepField("release_year", "str", default="",
-                  label="release_year (local import only)"),
-        StepField("taxonomy_date", "str", default="",
-                  label="taxonomy_date (YYYY-MM-DD, local import only)"),
-        StepField("release_selection", "str", default="all"),
-        StepField("release_years", "json", default=[],
-                  label="release_years (JSON, optional)"),
-        StepField("namespaces", "json", default=["jppfs_cor", "jpcrp_cor"],
-                  label="namespaces (JSON)"),
-        StepField("download_dir", "str", default="assets/taxonomy"),
-        StepField("force_download", "str", default="False"),
-        StepField("force_reparse", "str", default="False"),
-        StepField("Target_Database", "database"),
-    ],
-    "generate_financial_statements": [
-        StepField("Source_Database", "database"),
-        StepField("Source_Table", "str", default="financialData_full"),
-        StepField("Target_Database", "database"),
-        StepField("Company_Info_Table", "str"),
-        StepField("Stock_Prices_Table", "str"),
-        StepField("Mappings_Config", "file",
-                  default="config/reference/canonical_metrics_config.json"),
-        StepField("max_line_depth", "num", default=3),
-        StepField("batch_size", "num", default=2500),
-    ],
-    "populate_business_descriptions_en": [
-        StepField("Target_Database", "database"),
-        StepField("Table_Name", "str", default="FinancialStatements"),
-        StepField("DocID_Column", "str", default="docID"),
-        StepField("Source_Column", "str", default="DescriptionOfBusiness"),
-        StepField("Target_Column", "str", default="DescriptionOfBusiness_EN"),
-        StepField("Providers_Config", "file",
-                  default="config/reference/business_description_translation_providers.example.json"),
-        StepField("Source_Language", "str", default="ja"),
-        StepField("Target_Language", "str", default="en"),
-        StepField("batch_size", "num", default=25),
-    ],
-    "generate_ratios": [
-        StepField("Source_Database", "database"),
-        StepField("Target_Database", "database"),
-        StepField("Formulas_Config", "file",
-                  default="config/reference/generate_ratios_formulas_config.json"),
-        StepField("batch_size", "num", default=5000),
-    ],
-    "generate_historical_ratios": [
-        StepField("Source_Database", "database"),
-        StepField("Target_Database", "database"),
-        StepField("company_batch_size", "num", default=200),
-    ],
-    "Multivariate_Regression": [
-        StepField("Source_Database", "database"),
-        StepField("Output", "file",
-                  default="data/ols_results/ols_results_summary.txt"),
-        StepField("winsorize_thresholds", "json",
-                  default={"lower": 0.05, "upper": 0.95},
-                  label="winsorize_thresholds (JSON)"),
-        StepField("SQL_Query", "text", height=6),
-    ],
-    "backtest": [
-        StepField("Source_Database", "database"),
-        StepField("PerShare_Table", "str", default="PerShare"),
-        StepField("Financial_Statements_Table", "str",
-                  default="FinancialStatements"),
-        StepField("start_date", "str", default="2023-01-01"),
-        StepField("end_date", "str", default="2025-12-31"),
-        StepField("benchmark_ticker", "str"),
-        StepField("output_file", "str",
-                  default="data/backtest_results/backtest_report.txt"),
-        StepField("risk_free_rate", "num", default=0.0),
-        StepField("portfolio", "portfolio", default={}),
-    ],
-    "backtest_set": [
-        StepField("Source_Database", "database"),
-        StepField("PerShare_Table", "str", default="PerShare"),
-        StepField("Financial_Statements_Table", "str",
-                  default="FinancialStatements"),
-        StepField("csv_file", "file",
-                  filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]),
-        StepField("benchmark_ticker", "str"),
-        StepField("output_dir", "str",
-                  default="data/backtest_set_results"),
-        StepField("risk_free_rate", "num", default=0.0),
-        StepField("initial_capital", "num", default=0.0),
-    ],
-}
+def _build_field_definitions() -> dict[str, list[StepField]]:
+    field_definitions: dict[str, list[StepField]] = {}
+    for step in STEP_LIBRARY:
+        field_definitions[step["name"]] = [
+            StepField(
+                key=field["key"],
+                field_type=field["field_type"],
+                default=copy.deepcopy(field.get("default", "")),
+                label=field.get("label"),
+                filetypes=[tuple(item) for item in field.get("filetypes", [])] or None,
+                height=int(field.get("height", 3)),
+            )
+            for field in step.get("input_fields", [])
+        ]
+    return field_definitions
+
+
+STEP_FIELD_DEFINITIONS: dict[str, list[StepField]] = _build_field_definitions()
 
 
 def _build_defaults_from_fields() -> dict[str, dict]:
@@ -302,7 +181,7 @@ def run_pipeline(
     from src import orchestrator
 
     config = Config.from_dict(config_dict)
-    orchestrator.run_pipeline(
+    orchestrator.run(
         steps=steps,
         config=config,
         on_step_start=on_step_start,
