@@ -370,7 +370,7 @@ class TestImportStockPricesCsvStep:
         })
 
         with patch(
-            "src.orchestrator.import_stock_prices_csv.import_stock_prices_csv.stockprice_api.import_stock_prices_csv"
+            "src.orchestrator.import_stock_prices_csv.import_stock_prices_csv.import_stock_prices_csv"
         ) as mock_import:
             run_import_stock_prices_csv(config, overwrite=False)
 
