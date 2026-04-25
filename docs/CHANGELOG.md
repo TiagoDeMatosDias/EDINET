@@ -28,7 +28,7 @@ All notable changes to this project will be documented in this file.
 - **Config singleton dependency** removed from `src/edinet_api.py` and `src/data_processing.py`. Only the orchestrator reads Config.
 - **`standardize_data` step** — legacy data normalisation step removed; the pipeline now reads directly from the raw `financialData_full` table.
 - **`generate_financial_ratios` step** — replaced by the `generate_ratios` and `generate_historical_ratios` steps.
-- **`find_significant_predictors` step** — univariate OLS sweep removed; use `Multivariate_Regression` with a custom SQL query instead.
+- **`find_significant_predictors` step** — univariate OLS sweep removed.
 - **Legacy Flet UI (`ui/`)** — retired in favor of the Tk desktop UI (`ui_tk/`).
 - **`--flet` startup flag** — removed from `main.py`; GUI mode now always starts Tk.
 - **`tests/test_ui.py`** — removed with the legacy Flet UI modules.

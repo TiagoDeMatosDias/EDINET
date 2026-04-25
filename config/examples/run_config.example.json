@@ -17,9 +17,7 @@
     "update_stock_prices": {"enabled": false, "overwrite": false},
     "parse_taxonomy": {"enabled": false, "overwrite": false},
     "generate_financial_statements": {"enabled": false, "overwrite": false},
-    "populate_business_descriptions_en": {"enabled": false, "overwrite": false},
     "generate_ratios": {"enabled": false, "overwrite": false},
-    "Multivariate_Regression": {"enabled": false, "overwrite": false},
     "backtest": {"enabled": false, "overwrite": false},
     "backtest_set": {"enabled": false, "overwrite": false}
   },
@@ -67,33 +65,13 @@
     "max_line_depth": 3,
     "batch_size": 2500
   },
-  "populate_business_descriptions_en_config": {
-    "Target_Database": "",
-    "Table_Name": "FinancialStatements",
-    "DocID_Column": "docID",
-    "Source_Column": "DescriptionOfBusiness",
-    "Target_Column": "DescriptionOfBusiness_EN",
-    "Providers_Config": "config/reference/business_description_translation_providers.example.json",
-    "Source_Language": "ja",
-    "Target_Language": "en",
-    "batch_size": 25
-  },
   "generate_ratios_config": {
     "Database": "",
     "batch_size": 5000
   },
-  "Multivariate_Regression_config": {
-    "Source_Database": "",
-    "Output": "data/ols_results/ols_results_summary.txt",
-    "winsorize_thresholds": {
-      "lower": 0.05,
-      "upper": 0.95
-    },
-    "SQL_Query": "SELECT ph.SharePrice_3Year_Growth, vh.PriceToBook_ZScore_IntraCompany, vh.PERatio_ZScore_IntraCompany, qh.ReturnOnAssets_3Year_Average FROM Quality_Historical qh LEFT JOIN Pershare_Historical ph ON qh.docID = ph.docID LEFT JOIN Valuation_Historical vh ON qh.docID = vh.docID LEFT JOIN FinancialStatements fs ON qh.docID = fs.docID AND qh.edinetCode = fs.edinetCode"
-  },
   "backtesting_config": {
     "Source_Database": "",
-    "PerShare_Table": "PerShare",
+    "PerShare_Table": "ShareMetrics",
     "Financial_Statements_Table": "FinancialStatements",
     "start_date": "2023-01-01",
     "end_date": "2025-12-31",
@@ -106,7 +84,7 @@
   },
   "backtest_set_config": {
     "Source_Database": "",
-    "PerShare_Table": "PerShare",
+    "PerShare_Table": "ShareMetrics",
     "Financial_Statements_Table": "FinancialStatements",
     "csv_file": "",
     "benchmark_ticker": "",

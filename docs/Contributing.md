@@ -52,7 +52,7 @@ When contributing code, please keep the following in mind:
 
 ### Comment Standards
 
-All Python code in this project follows a consistent commenting style. The standards below are derived from `src/regression_analysis.py`, which serves as the reference implementation.
+All Python code in this project follows a consistent commenting style. The standards below are derived from `src/orchestrator/generate_ratios/generate_ratios.py`, which serves as the reference implementation.
 
 #### Docstrings (Google Style)
 

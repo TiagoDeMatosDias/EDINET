@@ -259,13 +259,6 @@ class TestValidateInput:
         })
         validate_input(config, steps=[{"name": "get_documents"}])  # should not raise
 
-    def test_populate_business_descriptions_en_requires_config_fields(self):
-        from src.orchestrator import validate_input
-
-        config = Config.from_dict({})
-        with pytest.raises(RuntimeError, match="populate_business_descriptions_en_config"):
-            validate_input(config, steps=[{"name": "populate_business_descriptions_en"}])
-
     def test_validate_input_applies_step_defined_defaults(self):
         from src.orchestrator import validate_input
 

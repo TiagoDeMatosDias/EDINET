@@ -192,12 +192,6 @@ Responsibility: Backward-compatible facade over orchestrator-owned services and 
 		- Output: None (writes/updates DB tables: `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, `ShareMetrics`).
 		- Calls/Dependencies: `_resolve_table_name_in_schema`, `_resolve_source_col_names`, pandas batch queries, bulk SQLite temp-table inserts, Taxonomy queries, `conn.execute`, `conn.executescript`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
 
-	- `def populate_business_descriptions_en(self, target_database, providers_config, table_name="FinancialStatements", docid_column="docID", source_column="DescriptionOfBusiness", target_column="DescriptionOfBusiness_EN", source_language="ja", target_language="en", overwrite=False, batch_size=25) -> None`
-		- Purpose: Populate translated English business descriptions in the target statements table using an ordered fallback provider list.
-		- Inputs: `target_database`, `providers_config`, optional table/column names, source/target languages, `overwrite`, `batch_size`.
-		- Output: None (updates `target_column` in place, creating it when missing).
-		- Calls/Dependencies: `src.description_translation.load_translation_providers`, `src.description_translation.translate_text_with_providers`, `_resolve_table_name_in_schema`, `_resolve_column_name`, `_ensure_typed_table_columns`, `conn.execute`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
-
 	- `def generate_ratios(database, overwrite=False, batch_size=5000, helper=None) -> dict`
 		- Purpose: Build configured ratio tables keyed by `FinancialStatements.docID`, using the hardcoded definition file in `src/orchestrator/generate_ratios/ratios_definitions.json`.
 		- Inputs: `database`, optional `overwrite`, optional `batch_size`, optional DB helper.
@@ -215,32 +209,6 @@ Responsibility: Backward-compatible facade over orchestrator-owned services and 
 		- Inputs: `xsd_file` (path to XSD), `table_name`, optional `connection`, optional `db_path` (required when `connection` is not provided).
 		- Output: None (writes taxonomy rows to DB table).
 		- Calls/Dependencies: `ET.parse`, `_create_table`, `_insert_data`, `_adjust_string`, `conn.commit`, `conn.close`.
-
----
-
-### [src/description_translation.py](src/description_translation.py)
-
-Responsibility: Ordered-fallback translation provider loading, text chunking, and provider execution used by `populate_business_descriptions_en`.
-
-- Provider types: `LibreTranslateProvider`, `MyMemoryProvider`, and `ArgosTranslateProvider`.
-- `class TranslationProviderConfig`
-	- Purpose: Immutable runtime configuration for a translation provider instance.
-
-- `def split_text_chunks(text: Any, chunk_char_limit: int = 700) -> list[list[str]]`
-	- Purpose: Normalize and split source text into paragraph-aware translation chunks that preserve sentence boundaries where possible.
-	- Inputs: raw `text`, optional `chunk_char_limit`.
-	- Output: Nested list of text chunks grouped by paragraph.
-
-- `def load_translation_providers(config_path: str) -> tuple[list[TranslationProvider], dict[str, Any]]`
-	- Purpose: Load enabled providers and shared translation settings from JSON.
-	- Inputs: `config_path` to the provider configuration file.
-	- Output: `(providers, settings)` where `settings` currently includes values such as `chunk_char_limit` and `row_delay_seconds`.
-
-- `def translate_text_with_providers(text: Any, providers: list[TranslationProvider], *, source_language: str = "ja", target_language: str = "en", chunk_char_limit: int = _DEFAULT_CHUNK_CHAR_LIMIT, session: requests.Session | None = None, retire_failed_providers: bool = False, log_context: str | None = None, log_provider_activity: bool = False, slow_request_warning_seconds: float | None = 10.0) -> tuple[str, str]`
-	- Purpose: Translate text using ordered provider fallback and return the translated text plus the provider name that succeeded.
-	- Inputs: source `text`, active `providers`, language options, chunk size, optional shared HTTP session, and logging/runtime controls.
-	- Output: `(translated_text, provider_name)`.
-	- Calls/Dependencies: `_clean_text_block`, `split_text_chunks`, provider `translate()`, `_retire_provider`, `requests.Session`, `logger.info`, `logger.warning`.
 
 ---
 
@@ -316,24 +284,6 @@ Responsibility: Step-owned workflow for importing user-supplied stock price CSV 
 - `def import_stock_prices_csv(db_name, prices_table, csv_path, ...) -> int`
 	- Purpose: Normalize a user-supplied price CSV, fill configured defaults, skip already-imported `Date` + `Ticker` pairs, and append new rows.
 	- Calls/Dependencies: `pd.read_csv`, `pd.to_datetime`, `pd.to_numeric`, `pd.read_sql_query`, `stock_prices._create_prices_table`, `to_sql`, `conn.commit`.
-
----
-
-### [src/regression_analysis.py](src/regression_analysis.py)
-
-Responsibility: OLS regression tooling, model fitting, scoring query generation and result persistence.
-
-- `def Run_Model(query, conn, dependent_variable_df_name, independent_variables_df_names, winsorize_limits=(0.01,0.99)) -> RegressionResultsWrapper`
-	- Purpose: Run SQL query, prepare data, fit OLS via `statsmodels`, return fitted results.
-	- Calls/Dependencies: `pd.read_sql_query`, `pd.to_numeric`, `sm.add_constant`, `sm.OLS`, `fit`.
-
-- `def build_scoring_query(results, query, company_table='companyInfo') -> str`
-	- Purpose: Convert coefficients into a SQL scoring expression.
-	- Calls/Dependencies: `_infer_primary_source_ref`.
-
-- `def multivariate_regression(config, db_path, company_table='companyInfo') -> None`
-	- Purpose: High-level runner used by orchestration to execute regression and write results.
-	- Calls/Dependencies: `pd.read_sql_query`, `Run_Model`, `write_results_to_file`.
 
 ---
 
@@ -743,9 +693,7 @@ Responsibility: Unit tests covering core logic and UI helpers. Each test file ta
 
 - `[tests/test_backtesting.py](tests/test_backtesting.py)` — tests backtest data retrieval, calculations, report and chart generation, and end-to-end `run_backtest` flows.
 - `[tests/test_data_processing.py](tests/test_data_processing.py)` — tests `data` ETL methods, formula compilation, historical ratio generation, and XSD parsing helpers.
-- `[tests/test_description_translation.py](tests/test_description_translation.py)` — tests translation chunking, provider loading, provider fallback behaviour, and error handling.
 - `[tests/test_edinet_api.py](tests/test_edinet_api.py)` — tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
-- `[tests/test_regression_analysis.py](tests/test_regression_analysis.py)` — tests OLS runner, scoring query builder, and results writer.
 - `[tests/test_security_analysis.py](tests/test_security_analysis.py)` — tests schema normalization, search ranking, overview payloads, price history, peer selection, and single-ticker price updates.
 - `[tests/test_stockprice_api.py](tests/test_stockprice_api.py)` — tests CSV import and stock price ingestion logic.
 - `[tests/test_ui_screenshots.py](tests/test_ui_screenshots.py)` — launches the real Tk application, navigates the maintained views, and saves screenshots to `data/mockups/screenshots/` for visual review.

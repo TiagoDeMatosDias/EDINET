@@ -60,33 +60,13 @@
     "max_line_depth": 3,
     "batch_size": 2500
   },
-  "populate_business_descriptions_en_config": {
-    "Target_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
-    "Table_Name": "FinancialStatements",
-    "DocID_Column": "docID",
-    "Source_Column": "DescriptionOfBusiness",
-    "Target_Column": "DescriptionOfBusiness_EN",
-    "Providers_Config": "config/reference/business_description_translation_providers.example.json",
-    "Source_Language": "ja",
-    "Target_Language": "en",
-    "batch_size": 25
-  },
   "generate_ratios_config": {
     "Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
     "batch_size": 5000
   },
-  "Multivariate_Regression_config": {
-    "Source_Database": "",
-    "Output": "data/ols_results/ols_results_summary.txt",
-    "winsorize_thresholds": {
-      "lower": 0.05,
-      "upper": 0.95
-    },
-    "SQL_Query": "Select PerShare_SharePrice, PerShare_BookValue * Ratio_PriceBook as Bv_Check , PerShare_Earnings / Ratio_EarningsYield as Earnings_Check, PerShare_Sales * Ratio_PriceSales as Sales_Check from Standard_Data_Ratios"
-  },
   "backtesting_config": {
     "Source_Database": "",
-    "PerShare_Table": "PerShare",
+    "PerShare_Table": "ShareMetrics",
     "Financial_Statements_Table": "FinancialStatements",
     "start_date": "2023-01-01",
     "end_date": "2025-12-31",
@@ -97,7 +77,7 @@
   },
   "backtest_set_config": {
     "Source_Database": "",
-    "PerShare_Table": "PerShare",
+    "PerShare_Table": "ShareMetrics",
     "Financial_Statements_Table": "FinancialStatements",
     "csv_file": "",
     "benchmark_ticker": "",

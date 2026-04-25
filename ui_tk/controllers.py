@@ -127,12 +127,7 @@ def _build_defaults_from_fields() -> dict[str, dict]:
 DEFAULT_STEP_CONFIGS: dict[str, dict] = _build_defaults_from_fields()
 
 
-STEP_CONFIG_INHERITANCE: dict[tuple[str, str], list[tuple[str, str]]] = {
-    ("populate_business_descriptions_en", "Target_Database"): [
-        ("generate_financial_statements", "Target_Database"),
-        ("generate_ratios", "Target_Database"),
-    ],
-}
+STEP_CONFIG_INHERITANCE: dict[tuple[str, str], list[tuple[str, str]]] = {}
 
 
 def _has_config_value(value) -> bool:

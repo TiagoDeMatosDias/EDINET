@@ -83,12 +83,28 @@ def _seed_company_info(conn: sqlite3.Connection, table: str = "companyInfo") -> 
     df.to_sql(table, conn, if_exists="replace", index=False)
 
 
-def _seed_ratios(conn: sqlite3.Connection, table: str = "PerShare") -> None:
+def _seed_financial_statements(
+    conn: sqlite3.Connection,
+    table: str = "FinancialStatements",
+) -> None:
     df = pd.DataFrame(
         {
+            "docID": ["D1", "D2"],
             "edinetCode": ["E00001", "E00002"],
             "periodEnd": ["2024-01-03", "2024-01-04"],
-            "PerShare_Dividends": [5.0, 3.0],
+        }
+    )
+    df.to_sql(table, conn, if_exists="replace", index=False)
+
+
+def _seed_share_metrics(
+    conn: sqlite3.Connection,
+    table: str = "ShareMetrics",
+) -> None:
+    df = pd.DataFrame(
+        {
+            "docID": ["D1", "D2"],
+            "Dividend paid per share": [5.0, 3.0],
         }
     )
     df.to_sql(table, conn, if_exists="replace", index=False)
@@ -154,14 +170,15 @@ class TestGetDividendData(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:")
         _seed_company_info(self.conn)
-        _seed_ratios(self.conn)
+        _seed_financial_statements(self.conn)
+        _seed_share_metrics(self.conn)
 
     def tearDown(self):
         self.conn.close()
 
     def test_returns_dividends_for_tickers(self):
         df = get_dividend_data(
-            ":memory:", "PerShare", "companyInfo",
+            ":memory:", "ShareMetrics", "companyInfo",
             ["1001"], "2024-01-01", "2024-01-05", conn=self.conn,
         )
         self.assertEqual(len(df), 1)
@@ -169,14 +186,14 @@ class TestGetDividendData(unittest.TestCase):
 
     def test_returns_both_tickers(self):
         df = get_dividend_data(
-            ":memory:", "PerShare", "companyInfo",
+            ":memory:", "ShareMetrics", "companyInfo",
             ["1001", "2002"], "2024-01-01", "2024-01-05", conn=self.conn,
         )
         self.assertEqual(len(df), 2)
 
     def test_returns_empty_outside_date_range(self):
         df = get_dividend_data(
-            ":memory:", "PerShare", "companyInfo",
+            ":memory:", "ShareMetrics", "companyInfo",
             ["1001"], "2025-01-01", "2025-12-31", conn=self.conn,
         )
         self.assertTrue(df.empty)
@@ -894,7 +911,8 @@ class TestRunBacktest(unittest.TestCase):
         conn = sqlite3.connect(self.db_path)
         _seed_prices(conn)
         _seed_company_info(conn)
-        _seed_ratios(conn)
+        _seed_financial_statements(conn)
+        _seed_share_metrics(conn)
         conn.commit()
         conn.close()
 
@@ -912,7 +930,7 @@ class TestRunBacktest(unittest.TestCase):
         metrics = run_backtest(
             config, self.db_path,
             prices_table="stock_prices",
-            ratios_table="PerShare",
+            ratios_table="ShareMetrics",
             company_table="companyInfo",
         )
         self.assertIn("total_return", metrics)
@@ -1148,7 +1166,8 @@ class TestResolvePortfolioAllocations(unittest.TestCase):
         conn = sqlite3.connect(db_path)
         _seed_prices(conn)
         _seed_company_info(conn)
-        _seed_ratios(conn)
+        _seed_financial_statements(conn)
+        _seed_share_metrics(conn)
         conn.commit()
         conn.close()
         try:
@@ -1174,7 +1193,8 @@ class TestResolvePortfolioAllocations(unittest.TestCase):
         conn = sqlite3.connect(db_path)
         _seed_prices(conn)
         _seed_company_info(conn)
-        _seed_ratios(conn)
+        _seed_financial_statements(conn)
+        _seed_share_metrics(conn)
         conn.commit()
         conn.close()
         try:

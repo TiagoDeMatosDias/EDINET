@@ -264,7 +264,6 @@ def test_orchestrator_long_step_cards_keep_action_buttons_visible(root, monkeypa
         "populate_company_info",
         "generate_financial_statements",
         "generate_ratios",
-        "Multivariate_Regression",
         "backtest_set",
     ]
     for step_name in steps:
@@ -316,66 +315,6 @@ def test_controllers_build_config_dict():
     result = build_config_dict(steps, configs)
     assert result["run_steps"]["get_documents"]["enabled"] is True
     assert "get_documents_config" in result
-
-
-def test_controllers_build_config_dict_infers_populate_business_descriptions_database():
-    from ui_tk.controllers import build_config_dict
-
-    steps = [
-        ["generate_financial_statements", True],
-        ["populate_business_descriptions_en", False],
-    ]
-    configs = {
-        "generate_financial_statements": {
-            "Source_Database": "base.db",
-            "Target_Database": "standardized.db",
-        },
-        "populate_business_descriptions_en": {
-            "Target_Database": "",
-            "Providers_Config": "config/reference/business_description_translation_providers.example.json",
-        },
-    }
-
-    result = build_config_dict(steps, configs)
-
-    assert result["populate_business_descriptions_en_config"]["Target_Database"] == "standardized.db"
-
-
-def test_controllers_build_step_configs_infers_populate_business_descriptions_database():
-    from ui_tk.controllers import build_step_configs_from_config
-
-    run_cfg = {
-        "generate_financial_statements_config": {
-            "Source_Database": "base.db",
-            "Target_Database": "standardized.db",
-        },
-        "populate_business_descriptions_en_config": {
-            "Target_Database": "",
-            "Providers_Config": "config/reference/business_description_translation_providers.example.json",
-        },
-    }
-
-    result = build_step_configs_from_config(run_cfg)
-
-    assert result["populate_business_descriptions_en"]["Target_Database"] == "standardized.db"
-
-
-def test_orchestrator_add_step_infers_populate_business_descriptions_database(root, monkeypatch):
-    from ui_tk.pages import orchestrator as orchestrator_page
-
-    monkeypatch.setattr(orchestrator_page.ctrl, "load_ui_pipeline", lambda: {"run_steps": {}})
-    monkeypatch.setattr(orchestrator_page.ctrl, "save_ui_pipeline", lambda _cfg: None)
-
-    page = orchestrator_page.OrchestratorPage(root, app=None)
-    page.new_setup("Test Setup")
-    page._step_configs["generate_financial_statements"] = {
-        "Source_Database": "base.db",
-        "Target_Database": "standardized.db",
-    }
-
-    page._do_add_step("populate_business_descriptions_en")
-
-    assert page._step_configs["populate_business_descriptions_en"]["Target_Database"] == "standardized.db"
 
 
 def test_queue_log_handler():

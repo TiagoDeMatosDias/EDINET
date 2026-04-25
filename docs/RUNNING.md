@@ -17,34 +17,18 @@ All execution is controlled by `config/state/run_config.json`. Each step is an o
 "run_steps": {
   "get_documents": { "enabled": true, "overwrite": false },
   "generate_financial_statements": { "enabled": true, "overwrite": false },
-  "populate_business_descriptions_en": { "enabled": true, "overwrite": false },
   ...
 }
 ```
 
 - `enabled` — set to `true` to run the step, `false` to skip it.
-- `overwrite` — when `true`, the step rebuilds or refreshes the step output. Supported by: `generate_financial_statements`, `populate_business_descriptions_en`, `generate_ratios`, `generate_historical_ratios`.
+- `overwrite` — when `true`, the step rebuilds or refreshes the step output. Supported by: `generate_financial_statements`, `generate_ratios`.
 
 Steps execute in the order they appear in the `run_steps` object. In the GUI, you can reorder steps by dragging them.
 
 ## Pre-flight Validation
 
 Before any step runs, the orchestrator checks that all required `.env` / config keys are set for every enabled step. If anything is missing, execution halts with a clear error listing the missing keys and which steps need them.
-
-## Business Description Translation APIs
-
-The Security Analysis view no longer performs runtime model translation. When a `DescriptionOfBusiness_EN` column is present in `FinancialStatements`, it is typically populated ahead of time by the `populate_business_descriptions_en` pipeline step.
-
-Translation providers are defined in `config/reference/business_description_translation_providers.example.json`. Providers are tried in the order listed, so if one API is rate-limited or unavailable the step automatically falls back to the next enabled provider.
-
-The bundled example config includes:
-
-- a LibreTranslate-compatible endpoint
-- the free MyMemory API
-
-You can reorder providers, disable them, or add new ones later by editing that JSON file.
-
----
 
 ## Steps
 
@@ -206,39 +190,6 @@ Runtime notes:
 
 ---
 
-### `populate_business_descriptions_en`
-Populates `FinancialStatements.DescriptionOfBusiness_EN` by translating `DescriptionOfBusiness` through an ordered list of HTTP providers.
-
-Supports `overwrite`.
-
-```json
-"populate_business_descriptions_en_config": {
-  "Target_Database": "C:/path/to/standardized.db",
-  "Table_Name": "FinancialStatements",
-  "DocID_Column": "docID",
-  "Source_Column": "DescriptionOfBusiness",
-  "Target_Column": "DescriptionOfBusiness_EN",
-  "Providers_Config": "config/reference/business_description_translation_providers.example.json",
-  "Source_Language": "ja",
-  "Target_Language": "en",
-  "batch_size": 25
-}
-```
-
-- `Target_Database` — database containing the `FinancialStatements` table to update.
-- `Table_Name` — target table containing the description columns (default: `FinancialStatements`).
-- `DocID_Column` — unique identifier column used for updates (default: `docID`).
-- `Source_Column` — source description column to translate (default: `DescriptionOfBusiness`).
-- `Target_Column` — destination English column to populate (default: `DescriptionOfBusiness_EN`).
-- `Providers_Config` — JSON file defining enabled providers and their fallback order.
-- `Source_Language` — source language passed to the providers (default: `ja`).
-- `Target_Language` — target language passed to the providers (default: `en`).
-- `batch_size` — number of rows to process per batch.
-
-The provider config supports a top-level `chunk_char_limit` for long descriptions and `row_delay_seconds` if you want to slow requests to stay under free-tier limits.
-
----
-
 ### `generate_ratios`
 Calculates JSON-defined ratio tables for every filing. Definitions are hardcoded to `src/orchestrator/generate_ratios/ratios_definitions.json`.
 
@@ -273,24 +224,6 @@ Supports `overwrite`.
 - `Source_Database` — database containing the current ratio tables.
 - `Target_Database` — database where the historical ratio tables are written.
 - `company_batch_size` — number of companies processed per batch.
-
----
-
-### `Multivariate_Regression`
-Runs a multivariate OLS regression defined entirely by a SQL query. The **first column** in the query is the dependent variable; all remaining columns are the independent variables.
-
-```json
-"Multivariate_Regression_config": {
-  "Source_Database": "C:/path/to/standardized.db",
-  "Output": "data/ols_results/ols_results_summary.txt",
-  "winsorize_thresholds": { "lower": 0.05, "upper": 0.95 },
-  "SQL_Query": "SELECT dep_var, ind_var_1, ind_var_2 FROM Quality_Historical"
-}
-```
-
-- `Source_Database` — database queried by the regression SQL.
-- `winsorize_thresholds` — optional; omit the key entirely to skip winsorisation.
-- `SQL_Query` — any valid SQLite `SELECT`. Change this to adjust the model without touching any code.
 
 ---
 

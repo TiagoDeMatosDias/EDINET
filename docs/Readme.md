@@ -149,7 +149,6 @@ EDINET.exe                                   <- built by PyInstaller (from dist/
 .env                                         <- your API keys and DB paths
 config/
     reference/
-        business_description_translation_providers.example.json
         companyinfo.csv
         jppfs_cor_2013-08-31.xsd
     state/
@@ -166,7 +165,7 @@ data/
 Double-click `EDINET.exe` or launch it from a terminal.
 It will look for `config/` and `.env` in the same folder as the exe.
 
-> **Note:** Large dependencies (pandas, statsmodels, scipy) make the final exe around 200-300 MB.
+> **Note:** Large dependencies (pandas, scipy) make the final exe around 200-300 MB.
 > Build time is a few minutes on the first run.
 
 ## Configuration files
@@ -176,7 +175,6 @@ It will look for `config/` and `.env` in the same folder as the exe.
 | `config/state/run_config.json` | Controls which steps run, their order, and step-specific parameters |
 | `config/reference/companyinfo.csv` | Optional local company info CSV override for `populate_company_info` |
 | `config/reference/canonical_metrics_config.json` | Metric registry used for doc-level `FinancialStatements` fields and downstream ratio derivation during the current transition away from legacy canonical statement wiring |
-| `config/reference/business_description_translation_providers.example.json` | Ordered fallback translation-provider config used by `populate_business_descriptions_en` |
 | `config/reference/financial_statements_mappings_config.json` | Legacy mapping file retained for compatibility and migration reference |
 | `src/orchestrator/generate_ratios/ratios_definitions.json` | Ratio-table definitions used by `generate_ratios` |
 | `assets/taxonomy/` | Cached official EDINET taxonomy ZIP archives downloaded by `parse_taxonomy` |

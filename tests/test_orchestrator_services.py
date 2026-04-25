@@ -9,7 +9,6 @@ from src.orchestrator.common import ratios as ratio_services
 from src.orchestrator.generate_ratios.generate_ratios import generate_ratios
 from src.orchestrator.generate_financial_statements import service as financial_statement_services
 from src.orchestrator.generate_rolling_metrics import service as rolling_metrics_services
-from src.orchestrator.populate_business_descriptions_en import service as description_services
 
 
 class TestGenerateFinancialStatementsService(unittest.TestCase):
@@ -294,60 +293,6 @@ class TestGenerateFinancialStatementsService(unittest.TestCase):
         self.assertEqual(result["documents_processed"], 1)
         self.assertIn("ShareMetrics", tables)
         self.assertEqual(share_metrics_row, ("DOC1", 100.0, 70.82, 12.0, 1.5))
-
-
-class TestPopulateBusinessDescriptionsService(unittest.TestCase):
-    def setUp(self):
-        self.tmpdir = tempfile.TemporaryDirectory()
-        self.target_db = os.path.join(self.tmpdir.name, "target.db")
-        conn = sqlite3.connect(self.target_db)
-        conn.execute(
-            """
-            CREATE TABLE FinancialStatements (
-                docID TEXT PRIMARY KEY,
-                edinetCode TEXT,
-                periodEnd TEXT,
-                DescriptionOfBusiness TEXT,
-                DescriptionOfBusiness_EN TEXT
-            )
-            """
-        )
-        conn.execute(
-            "INSERT INTO FinancialStatements (docID, edinetCode, periodEnd, DescriptionOfBusiness, DescriptionOfBusiness_EN) VALUES (?, ?, ?, ?, ?)",
-            ("DOC1", "E00001", "2024-12-31", "Makes parts", None),
-        )
-        conn.commit()
-        conn.close()
-
-    def tearDown(self):
-        self.tmpdir.cleanup()
-
-    def test_translation_updates_seeded_placeholder_table(self):
-        with patch(
-            "src.orchestrator.populate_business_descriptions_en.description_translation.load_translation_providers",
-            return_value=([object()], {"chunk_char_limit": 120, "row_delay_seconds": 0.0}),
-        ), patch(
-            "src.orchestrator.populate_business_descriptions_en.description_translation.translate_text_with_providers",
-            return_value=("Makes parts in English.", "StubProvider"),
-        ):
-            result = description_services.populate_business_descriptions_en(
-                target_database=self.target_db,
-                providers_config="ignored.json",
-                batch_size=10,
-            )
-
-        conn = sqlite3.connect(self.target_db)
-        try:
-            translated_value = conn.execute(
-                "SELECT DescriptionOfBusiness_EN FROM FinancialStatements WHERE docID = ?",
-                ("DOC1",),
-            ).fetchone()[0]
-        finally:
-            conn.close()
-
-        self.assertEqual(translated_value, "Makes parts in English.")
-        self.assertEqual(result["translated_rows"], 1)
-        self.assertEqual(result["provider_usage"], {"StubProvider": 1})
 
 
 class TestGenerateRollingMetricsService(unittest.TestCase):

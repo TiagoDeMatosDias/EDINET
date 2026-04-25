@@ -487,8 +487,8 @@ def get_api_key() -> str:
 - Export button saves current log buffer to a text file.
 
 ### Step List & Pipeline Building
-- The available step types are the 12 defined in the orchestrator: `get_documents`, `download_documents`, `populate_company_info`, `parse_taxonomy`, `update_stock_prices`, `import_stock_prices_csv`, `generate_financial_statements`, `generate_ratios`, `generate_historical_ratios`, `Multivariate_Regression`, `backtest`, `backtest_set`.
-- `[+ Add Step]` shows a menu/dropdown of these 12 types. Selecting one appends it to the current pipeline with default config.
+- The available step types are the orchestrator-defined steps: `get_documents`, `download_documents`, `populate_company_info`, `parse_taxonomy`, `update_stock_prices`, `import_stock_prices_csv`, `generate_financial_statements`, `generate_ratios`, `generate_historical_ratios`, `backtest`, `backtest_set`.
+- `[+ Add Step]` shows a menu/dropdown of these step types. Selecting one appends it to the current pipeline with default config.
 - Steps can be added multiple times (e.g., two `get_documents` steps with different date ranges) if desired.
 - Remove a step via right-click context menu or a delete key.
 - Reorder via drag-and-drop on the `≡` handle.
