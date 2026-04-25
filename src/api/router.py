@@ -31,9 +31,8 @@ class PipelineConfig(BaseModel):
         default=None,
         description="List of step configurations to execute",
     )
-    config: dict[str, Any] | None = Field(
-        default=None,
-        description="Additional configuration parameters",
+    config: dict[str, Any] = Field(
+        description="Configuration parameters for the pipeline run",
     )
 
 

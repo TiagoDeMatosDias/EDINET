@@ -54,12 +54,15 @@ refresh_step_registry()
 
 def _coerce_config(config: Config | dict[str, Any] | None) -> Config:
     if config is None:
-        return Config()
+        raise ValueError(
+            "No configuration provided. All pipeline configuration must be "
+            "supplied via the API or programmatically via Config.from_dict()."
+        )
     if isinstance(config, Config):
         return config
     if isinstance(config, dict):
         return Config.from_dict(config)
-    raise TypeError("config must be a Config instance, a dict, or None.")
+    raise TypeError("config must be a Config instance or a dict.")
 
 
 def _resolve_enabled_steps(

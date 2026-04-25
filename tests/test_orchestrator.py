@@ -501,19 +501,14 @@ class TestGenerateRollingMetricsStep:
 
 
 class TestConfigFromDict:
-    """Test Config.from_dict bypass of the singleton."""
+    """Test Config.from_dict."""
 
-    def setup_method(self):
-        Config.reset()
-
-    def teardown_method(self):
-        Config.reset()
-
-    def test_from_dict_creates_independent_instance(self):
+    def test_from_dict_creates_instance(self):
         cfg = Config.from_dict({"key": "value"})
         assert cfg.get("key") == "value"
-        assert cfg.run_config_path is None
 
-    def test_from_dict_does_not_set_singleton(self):
-        Config.from_dict({"key": "value"})
-        assert Config._instance is None
+    def test_from_dict_independent_instances(self):
+        cfg1 = Config.from_dict({"key": "a"})
+        cfg2 = Config.from_dict({"key": "b"})
+        assert cfg1.get("key") == "a"
+        assert cfg2.get("key") == "b"

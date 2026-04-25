@@ -11,7 +11,6 @@ Each pipeline step is configured independently, including its source or target d
 - **Primary UI** – the Tk desktop application is the default experience and the actively maintained GUI surface.
 - **Research surfaces** – Screening and Security Analysis are now first-class views for candidate discovery and single-company research.
 - **Operational workspace** – the Data view is no longer a placeholder; it summarizes project resources, reference assets, and output locations.
-- **Headless runs** – the CLI path remains supported through `python main.py --cli`.
 - **Documentation screenshots** – the README gallery is mirrored from the live screenshot capture flow used by `tests/test_ui_screenshots.py`.
 
 ## Quick Start
@@ -31,14 +30,12 @@ Each pipeline step is configured independently, including its source or target d
 5. **Update stock prices** – fetches historical share prices via the Stooq API by default, with a Yahoo Finance chart fallback if Stooq is unavailable.
 6. **Parse taxonomy** – parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
 7. **Generate financial statements** – extracts tagged values from raw XBRL data into structured per-company financial tables.
-8. **Populate business descriptions (EN)** – fills `DescriptionOfBusiness_EN` via an ordered fallback list of free translation APIs defined in JSON.
-9. **Generate ratios** – calculates per-share values, valuation ratios, and derived metrics for every company.
-10. **Generate historical ratios** – computes rolling averages, growth rates, and z-scores over time.
-11. **Multivariate regression** – user-defined multivariate OLS regression specified as a SQL query.
-12. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
-13. **Backtest set** – batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
-14. **Screening** – filter companies by financial criteria (valuation, quality, per-share metrics), apply weighted ranking rules, review sortable results, toggle raw or formatted value display, save/load criteria, inspect screening history, export CSVs, or generate backtest-set CSV inputs.
-15. **Security analysis** – inspect a single company with typeahead search, overview cards, translated/original business description display, statement history, charts, price refresh, and peer comparison. When available, the view prefers the translated `DescriptionOfBusiness_EN` text from `FinancialStatements`.
+8. **Generate ratios** – calculates per-share values, valuation ratios, and derived metrics for every company.
+9. **Generate rolling metrics** – computes rolling averages and CAGR-style growth rates for configurable metrics across selected statement tables, producing `<Table>_Rolling` output tables.
+10. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
+11. **Backtest set** – batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
+12. **Screening** – filter companies by financial criteria (valuation, quality, per-share metrics), apply weighted ranking rules, review sortable results, toggle raw or formatted value display, save/load criteria, inspect screening history, export CSVs, or generate backtest-set CSV inputs.
+13. **Security analysis** – inspect a single company with typeahead search, overview cards, statement history, charts, price refresh, and peer comparison.
 
 ## Screenshots
 
@@ -58,12 +55,15 @@ Current captures from the live Tk desktop application. The gallery below shows t
 - **Screening** – criteria and ranking builder, saved/history/export actions, and drill-in to single-company analysis.
 - **Security Analysis** – overview, statements, charts, peer comparison, and price-refresh workflows.
 
-## GUI & CLI Modes
+## Running the Application
 
-The application can run in two modes:
+The application runs as a Tk desktop GUI:
 
-- **GUI mode** (default) — Launch the Tk desktop application with `python main.py`. The GUI provides five workspace views, keyboard navigation (`Ctrl+1..5`), per-step configuration panels, setup save/load, a theme toggle, and a live log output panel.
-- **CLI mode** — Run headless from the terminal with `python main.py --cli`. This reads `config/state/run_config.json` directly and executes the enabled steps in order.
+```bash
+python main.py          # launches the GUI
+```
+
+The GUI provides five workspace views, keyboard navigation (`Ctrl+1..5`), per-step configuration panels, setup save/load, a theme toggle, and a live log output panel.
 
 ## Setup
 
@@ -91,7 +91,6 @@ DB_DOC_LIST_TABLE=DocumentList
 DB_FINANCIAL_DATA_TABLE=financialData_full
 DB_COMPANY_INFO_TABLE=CompanyInfo
 DB_STOCK_PRICES_TABLE=Stock_Prices
-DB_TAXONOMY_TABLE=TAXONOMY_JPFS_COR
 ```
 
 #### 3. Configure and run
@@ -99,8 +98,7 @@ DB_TAXONOMY_TABLE=TAXONOMY_JPFS_COR
 Edit `config/state/run_config.json` to enable the steps you want, then:
 
 ```
-python main.py          # launches the GUI
-python main.py --cli    # headless / terminal mode
+python main.py
 ```
 
 ### From Release
@@ -194,7 +192,7 @@ The Tk-based GUI provides:
 - **Step ordering controls** – reorder pipeline steps with keyboard shortcuts (`Alt+Up` / `Alt+Down`) and contextual actions.
 - **Per-step enable/disable** – check or uncheck each step.
 - **Per-step configuration panel** – configure each step (including database paths and advanced options) in the side panel.
-- **Overwrite toggle** – steps that support it (Generate Financial Statements, Populate Business Descriptions (EN), Generate Ratios, Generate Historical Ratios) show an "Overwrite" checkbox.
+- **Overwrite toggle** – steps that support it (Generate Financial Statements, Generate Ratios, Generate Rolling Metrics) show an "Overwrite" checkbox.
 - **Data workspace** – review the current default database, reference assets, stable config/state paths, and common output folders before moving into another workflow.
 - **Screening workspace** – build filter and ranking rules, sort results, toggle raw/formatted values, save/load criteria, inspect run history, export CSVs, export backtest-set company lists, and open Security Analysis directly from a result row.
 - **Save / Load setups** – persist and recall named configurations from `config/state/saved_setups/`.

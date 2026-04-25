@@ -98,12 +98,6 @@ _STATEMENT_TOKEN_OVERRIDES = {
 }
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CANONICAL_METRICS_CONFIG_PATH = os.path.join(
-    _REPO_ROOT,
-    "config",
-    "reference",
-    "canonical_metrics_config.json",
-)
 _OVERVIEW_TAXONOMY_METRICS = {
     "IncomeStatement": ("netSales", "operatingIncome", "netIncome"),
     "BalanceSheet": ("totalAssets", "shareholdersEquity"),
@@ -1049,98 +1043,6 @@ def _is_taxonomy_statement_table(conn: sqlite3.Connection, table_name: str | Non
     return any(_safe_str(row.get("column_name")) for row in _load_statement_line_items(conn, table_name))
 
 
-@lru_cache(maxsize=1)
-def _load_canonical_metric_mappings() -> dict[str, dict[str, dict[str, Any]]]:
-    normalized: dict[str, dict[str, dict[str, Any]]] = {
-        "FinancialStatements": {},
-        "IncomeStatement": {},
-        "BalanceSheet": {},
-        "CashflowStatement": {},
-    }
-    if not os.path.exists(_CANONICAL_METRICS_CONFIG_PATH):
-        return normalized
-
-    with open(_CANONICAL_METRICS_CONFIG_PATH, "r", encoding="utf-8") as handle:
-        raw = json.load(handle)
-
-    if isinstance(raw, dict) and isinstance(raw.get("Metrics"), list):
-        for entry in raw.get("Metrics", []):
-            if not isinstance(entry, dict):
-                continue
-            table_name = entry.get("OutputTable") or entry.get("Table")
-            metric_name = entry.get("Key") or entry.get("Name")
-            if table_name not in normalized or not metric_name:
-                continue
-
-            selectors = entry.get("Selectors", []) or []
-            terms: list[str] = []
-            periods: list[str] = []
-            statement_family = None
-            for selector in selectors:
-                if not isinstance(selector, dict):
-                    continue
-                selector_terms = selector.get("concepts") or selector.get("Terms") or []
-                selector_periods = selector.get("periods") or []
-                if selector.get("statement_family") and not statement_family:
-                    statement_family = selector.get("statement_family")
-                terms.extend(term for term in selector_terms if term)
-                periods.extend(period for period in selector_periods if period)
-
-            if not terms:
-                terms = entry.get("Terms", []) or []
-            if not periods:
-                periods = entry.get("periods", []) or []
-
-            normalized[table_name][metric_name] = {
-                "Terms": list(dict.fromkeys(terms)),
-                "periods": list(dict.fromkeys(periods)),
-                "statement_family": statement_family,
-                "ValueType": entry.get("ValueType"),
-            }
-        return normalized
-
-    mappings = raw.get("Mappings", []) if isinstance(raw, dict) else []
-    for entry in mappings:
-        if not isinstance(entry, dict):
-            continue
-        table_name = entry.get("Table")
-        metric_name = entry.get("Name")
-        if table_name not in normalized or not metric_name:
-            continue
-        normalized[table_name][metric_name] = {
-            "Terms": entry.get("Terms", []) or [],
-            "periods": entry.get("periods", []) or [],
-            "statement_family": entry.get("statement_family"),
-            "ValueType": entry.get("ValueType"),
-        }
-
-    return normalized
-
-
-def _canonical_metric_expr(mapping: dict[str, Any] | None, facts_alias: str = "sf") -> str:
-    if not mapping:
-        return "NULL"
-
-    terms = [_normalise_taxonomy_term(term) or term for term in (mapping.get("Terms", []) or []) if term]
-    periods = [_safe_str(period) for period in (mapping.get("periods", []) or []) if _safe_str(period)]
-    statement_family = _safe_str(mapping.get("statement_family"))
-    if not terms:
-        return "NULL"
-
-    value_column = "raw_value_text" if _safe_str(mapping.get("ValueType")).upper() == "TEXT" else "value_numeric"
-    term_list = ", ".join(_sql_literal(term) for term in terms)
-    conditions = [f"{facts_alias}.[concept_qname] IN ({term_list})"]
-    if periods:
-        period_list = ", ".join(_sql_literal(period) for period in periods)
-        conditions.append(f"{facts_alias}.[source_period] IN ({period_list})")
-    if statement_family:
-        conditions.append(f"{facts_alias}.[statement_family] = {_sql_literal(statement_family)}")
-
-    return (
-        f"MAX(CASE WHEN {' AND '.join(conditions)} "
-        f"THEN {facts_alias}.[{value_column}] END)"
-    )
-
 
 def _load_statement_fact_metric_values(
     conn: sqlite3.Connection,
@@ -1174,34 +1076,6 @@ def _load_statement_fact_metric_values(
             if row:
                 values.update(dict(row))
 
-    table_map = _load_canonical_metric_mappings()
-    missing_request: dict[str, tuple[str, ...]] = {}
-    for table_name, metric_names in metric_request.items():
-        missing = [metric for metric in metric_names if values.get(metric) is None]
-        if missing:
-            missing_request[table_name] = tuple(missing)
-
-    if not missing_request or _resolve_table_name(_list_table_map(conn), ["statement_facts"], required=False) is None:
-        return values
-
-    select_parts: list[str] = []
-    for table_name, metric_names in missing_request.items():
-        for metric_name in metric_names:
-            select_parts.append(
-                f"{_canonical_metric_expr(table_map.get(table_name, {}).get(metric_name))} AS {_quote_ident(metric_name)}"
-            )
-
-    if not select_parts:
-        return values
-
-    row = conn.execute(
-        f"SELECT {', '.join(select_parts)} FROM [statement_facts] sf WHERE sf.[docID] = ?",
-        (doc_id,),
-    ).fetchone()
-    if row:
-        for key, value in dict(row).items():
-            if values.get(key) is None:
-                values[key] = value
     return values
 
 

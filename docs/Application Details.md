@@ -31,7 +31,7 @@ Suggested per-function format:
 
 - Default interface: the Tk desktop shell launched by `python main.py` is the primary maintained UI.
 - Maintained top-level views: `Home`, `Orchestrator`, `Data`, `Screening`, and `Security Analysis`.
-- CLI mode remains supported through `python main.py --cli` for headless pipeline execution.
+
 - Architecture status: `src.orchestrator` is a thin dispatcher; backend modules remain largely decoupled from `Config` and are called with explicit parameters.
 - Mature user-facing workflows: ingestion, ETL, translation, ratio generation, backtesting, screening, and security analysis all have dedicated test coverage.
 - Partial surface: the Data Workspace is operational for navigation/resource inspection, but it is not yet a full analytical data browser.
@@ -373,17 +373,11 @@ Responsibility: Singleton configuration loader. Reads `.env` and `run_config.jso
 
 ### [main.py](../main.py)
 
-Responsibility: CLI / GUI entry point dispatcher.
-
-- `def _run_cli() -> None`
-	- Purpose: Headless CLI execution path — sets up logging and calls `orchestrator.run()`.
-	- Calls/Dependencies: `setup_logging`, `orchestrator.run`.
+Responsibility: GUI entry point launcher.
 
 - `def _run_gui() -> None`
-	- Purpose: Launch the default Tk desktop GUI.
-	- Calls/Dependencies: `ui_tk.run_tk_app`.
-
-- Dispatch: `--cli` → `_run_cli()`, default → `_run_gui()`.
+	- Purpose: Launch the Tk desktop GUI with optional HTTP API server in background.
+	- Calls/Dependencies: `setup_logging`, `ui_tk.run_tk_app`, `_start_api_server`.
 
 ---
 

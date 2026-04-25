@@ -28,7 +28,6 @@ BASE_DIR = _base_dir()
 ENV_PATH = BASE_DIR / ".env"
 CONFIG_DIR = BASE_DIR / "config"
 STATE_DIR = CONFIG_DIR / "state"
-RUN_CONFIG_PATH = STATE_DIR / "run_config.json"
 UI_PIPELINE_PATH = STATE_DIR / "ui_pipeline.json"
 SAVED_SETUPS_DIR = STATE_DIR / "saved_setups"
 APP_STATE_PATH = STATE_DIR / "app_state.json"
@@ -208,31 +207,7 @@ def save_setup(name: str, setup_data: dict) -> Path:
     return path
 
 
-def save_run_config(cfg: dict):
-    """Write the CLI run config to ``config/state/run_config.json``.
-
-    This file is consumed by the CLI / headless execution path
-    (``src.orchestrator.run``).  The UI does **not** read it at startup;
-    use :func:`save_ui_pipeline` / :func:`load_ui_pipeline` for that.
-    """
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(RUN_CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
-
-
-def load_run_config() -> dict:
-    """Load the CLI run config, or return defaults."""
-    try:
-        if RUN_CONFIG_PATH.exists():
-            with open(RUN_CONFIG_PATH) as f:
-                return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        pass
-    return {"run_steps": {s: {"enabled": False, "overwrite": False}
-                          for s in ALL_STEP_NAMES}}
-
-
-# ── UI pipeline persistence (separate from CLI run_config) ──────────────
+# ── UI pipeline persistence ────────────────────────────────────────────
 
 def save_ui_pipeline(cfg: dict):
     """Persist the current UI pipeline state to ``config/state/ui_pipeline.json``."""

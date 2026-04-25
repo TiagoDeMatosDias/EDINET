@@ -1,11 +1,12 @@
 ﻿# Running the Application
 
-## Execution Modes
+Launch the application with:
 
-The application supports two execution modes:
+```
+python main.py
+```
 
-- **GUI mode** (default): `python main.py` — launches the Tk desktop UI where you can configure steps and run the pipeline visually.
-- **CLI mode**: `python main.py --cli` — reads `config/state/run_config.json` and executes enabled steps headlessly.
+This opens the Tk desktop GUI where you can configure steps and run the pipeline visually.
 
 Most steps now require an explicit source or target database path in their step configuration. The GUI exposes those paths directly in each step's config dialog.
 
@@ -22,7 +23,7 @@ All execution is controlled by `config/state/run_config.json`. Each step is an o
 ```
 
 - `enabled` — set to `true` to run the step, `false` to skip it.
-- `overwrite` — when `true`, the step rebuilds or refreshes the step output. Supported by: `generate_financial_statements`, `generate_ratios`.
+- `overwrite` — when `true`, the step rebuilds or refreshes the step output. Supported by: `generate_financial_statements`, `generate_ratios`, `generate_rolling_metrics`.
 
 Steps execute in the order they appear in the `run_steps` object. In the GUI, you can reorder steps by dragging them.
 
@@ -208,22 +209,20 @@ Supports `overwrite`.
 
 ---
 
-### `generate_historical_ratios`
-Computes rolling averages, growth rates, and z-scores over the ratio tables produced by `generate_ratios`.
+### `generate_rolling_metrics`
+Computes rolling averages and CAGR-style growth rates for configurable metrics across selected statement tables. The columns and tables to process are declared in `src/orchestrator/generate_rolling_metrics/rolling_metrics.json`. Output tables are named `<SourceTable>_Rolling` and contain `_Average_3_Year`, `_Average_5_Year`, `_Average_10_Year`, `_Growth_3_Year`, `_Growth_5_Year`, and `_Growth_10_Year` columns for each configured metric.
 
 Supports `overwrite`.
 
 ```json
-"generate_historical_ratios_config": {
+"generate_rolling_metrics_config": {
   "Source_Database": "C:/path/to/standardized.db",
-  "Target_Database": "C:/path/to/standardized.db",
-  "company_batch_size": 200
+  "Target_Database": "C:/path/to/standardized.db"
 }
 ```
 
-- `Source_Database` — database containing the current ratio tables.
-- `Target_Database` — database where the historical ratio tables are written.
-- `company_batch_size` — number of companies processed per batch.
+- `Source_Database` — database containing the source statement and ratio tables.
+- `Target_Database` — database where the rolling metric tables are written.
 
 ---
 

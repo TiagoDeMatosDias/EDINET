@@ -102,7 +102,6 @@ class Edinet:
         self.defaultLocation = raw_docs_path
         self.Database = db_path
         self.DB_COMPANY_INFO_TABLE = company_info_table
-        self.DB_TAXONOMY_TABLE = taxonomy_table
         self.DB_DOC_LIST_TABLE = doc_list_table
 
     def get_All_documents_withMetadata(self, start_date="2015-01-01", end_date=None):
