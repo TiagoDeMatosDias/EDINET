@@ -58,57 +58,6 @@ def _seed_placeholder_ratio_docids(helper, conn, source_schema):
     return conn.execute(f"SELECT COUNT(*) FROM {fs_ref}").fetchone()[0]
 
 
-def generate_ratios(
-    source_database,
-    target_database,
-    formulas_config,
-    overwrite=False,
-    batch_size=5000,
-    helper=None,
-):
-    """Scaffold placeholder ratio tables pending a full rework."""
-    helper = helper or _DB_HELPER
-    source_db = source_database
-    target_db = target_database
-    if not source_db:
-        raise ValueError("source_database is required for generate_ratios.")
-    if not target_db:
-        raise ValueError("target_database is required for generate_ratios.")
-    formulas_path = formulas_config
-    if not formulas_path:
-        raise ValueError("Formulas_Config is required for generate_ratios.")
-
-    same_db = os.path.abspath(source_db) == os.path.abspath(target_db)
-
-    conn = sqlite3.connect(target_db)
-    try:
-        conn.execute("PRAGMA busy_timeout = 30000")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-
-        source_schema = "main"
-        if not same_db:
-            conn.execute("ATTACH DATABASE ? AS src", (source_db,))
-            source_schema = "src"
-
-        _ensure_placeholder_ratio_tables(conn, overwrite=overwrite)
-        seeded_documents = _seed_placeholder_ratio_docids(helper, conn, source_schema)
-        conn.commit()
-        logger.warning(
-            "generate_ratios is currently a placeholder scaffold. Seeded %d docID row(s) into empty ratio tables only.",
-            seeded_documents,
-        )
-        return {
-            "status": "placeholder",
-            "documents_seeded": seeded_documents,
-            "tables": list(_PLACEHOLDER_RATIO_TABLES),
-            "formulas_config": formulas_path,
-            "batch_size": max(int(batch_size or 5000), 1),
-        }
-    finally:
-        conn.close()
-
-
 def collect_historical_output_columns(metric_columns):
     """Build ordered output-column list for historical-ratio tables."""
     windows = [1, 2, 3, 5, 10]

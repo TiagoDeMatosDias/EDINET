@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from src.utilities.stock_prices import _create_prices_table, import_stock_prices_csv, load_ticker_data
+from src.orchestrator.import_stock_prices_csv.import_stock_prices_csv import import_stock_prices_csv
+from src.utilities.stock_prices import _create_prices_table, load_ticker_data
 
 
 class TestImportStockPricesCsv(unittest.TestCase):

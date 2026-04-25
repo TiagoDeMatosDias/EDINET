@@ -304,14 +304,42 @@ class TestValidateInput:
 
         config = Config.from_dict({
             "generate_ratios_config": {
-                "Source_Database": "source.db",
-                "Target_Database": "target.db",
+                "Database": "ratios.db",
                 "batch_size": "not-a-number",
             }
         })
 
         with pytest.raises(RuntimeError, match="must be numeric"):
             validate_input(config, steps=[{"name": "generate_ratios"}])
+
+
+class TestGenerateRatiosStep:
+    def setup_method(self):
+        Config.reset()
+
+    def teardown_method(self):
+        Config.reset()
+
+    def test_uses_local_generate_ratios_function(self):
+        from src.orchestrator.generate_ratios.generate_ratios import run_generate_ratios
+
+        config = Config.from_dict({
+            "generate_ratios_config": {
+                "Database": "ratios.db",
+                "batch_size": 123,
+            }
+        })
+
+        with patch(
+            "src.orchestrator.generate_ratios.generate_ratios.generate_ratios"
+        ) as mock_generate:
+            run_generate_ratios(config, overwrite=True)
+
+        mock_generate.assert_called_once_with(
+            database="ratios.db",
+            overwrite=True,
+            batch_size=123,
+        )
 
 
 class TestParseTaxonomyStep:
@@ -384,6 +412,38 @@ class TestImportStockPricesCsvStep:
             price_column="Price",
             ticker_column="",
             currency_column="",
+        )
+
+
+class TestUpdateStockPricesStep:
+    def setup_method(self):
+        Config.reset()
+
+    def teardown_method(self):
+        Config.reset()
+
+    def test_uses_local_update_all_stock_prices_function(self):
+        from src.orchestrator.update_stock_prices.update_stock_prices import run_update_stock_prices
+
+        config = Config.from_dict({
+            "DB_COMPANY_INFO_TABLE": "company_info",
+            "DB_STOCK_PRICES_TABLE": "stock_prices",
+            "DB_FINANCIAL_DATA_TABLE": "financial_data",
+            "update_stock_prices_config": {
+                "Target_Database": "prices.db",
+            },
+        })
+
+        with patch(
+            "src.orchestrator.update_stock_prices.update_stock_prices.update_all_stock_prices"
+        ) as mock_update:
+            run_update_stock_prices(config, overwrite=False)
+
+        mock_update.assert_called_once_with(
+            db_name="prices.db",
+            Company_Table="company_info",
+            prices_table="stock_prices",
+            standardized_table="financial_data",
         )
 
 

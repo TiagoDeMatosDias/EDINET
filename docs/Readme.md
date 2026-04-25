@@ -178,7 +178,7 @@ It will look for `config/` and `.env` in the same folder as the exe.
 | `config/reference/canonical_metrics_config.json` | Metric registry used for doc-level `FinancialStatements` fields and downstream ratio derivation during the current transition away from legacy canonical statement wiring |
 | `config/reference/business_description_translation_providers.example.json` | Ordered fallback translation-provider config used by `populate_business_descriptions_en` |
 | `config/reference/financial_statements_mappings_config.json` | Legacy mapping file retained for compatibility and migration reference |
-| `config/reference/generate_ratios_formulas_config.json` | Formula definitions used by `generate_ratios` |
+| `src/orchestrator/generate_ratios/ratios_definitions.json` | Ratio-table definitions used by `generate_ratios` |
 | `assets/taxonomy/` | Cached official EDINET taxonomy ZIP archives downloaded by `parse_taxonomy` |
 | `config/examples/run_config.example.json` | Example run configuration for new users |
 | `config/state/saved_setups/` | Named setup files saved from the GUI |

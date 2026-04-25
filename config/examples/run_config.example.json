@@ -80,9 +80,7 @@
     "batch_size": 25
   },
   "generate_ratios_config": {
-    "Source_Database": "",
-    "Target_Database": "",
-    "Formulas_Config": "config/reference/generate_ratios_formulas_config.json",
+    "Database": "",
     "batch_size": 5000
   },
   "generate_historical_ratios_config": {

@@ -240,23 +240,20 @@ The provider config supports a top-level `chunk_char_limit` for long description
 ---
 
 ### `generate_ratios`
-Calculates per-share values and valuation ratios for every company. Formula definitions are controlled by `config/reference/generate_ratios_formulas_config.json`.
+Calculates JSON-defined ratio tables for every filing. Definitions are hardcoded to `src/orchestrator/generate_ratios/ratios_definitions.json`.
 
-Supports `overwrite`. In incremental mode (the default), documents already processed are skipped.
+Supports `overwrite`.
 
 ```json
 "generate_ratios_config": {
-  "Source_Database": "C:/path/to/standardized.db",
-  "Target_Database": "C:/path/to/standardized.db",
-  "Formulas_Config": "config/reference/generate_ratios_formulas_config.json",
+  "Database": "C:/path/to/standardized.db",
   "batch_size": 5000
 }
 ```
 
-- `Source_Database` — database containing the financial statement tables.
-- `Target_Database` — database where the `PerShare`, `Valuation`, and `Quality` tables are written.
-- `Formulas_Config` — JSON formula file used to derive ratio fields.
-- `batch_size` — rows/documents processed per batch.
+- `Database` — single database containing the source financial statement tables and the generated ratio tables.
+- Ratio definitions are always loaded from `src/orchestrator/generate_ratios/ratios_definitions.json`.
+- `batch_size` — accepted for compatibility; ratio generation currently runs set-based SQL against the full filing set.
 
 ---
 

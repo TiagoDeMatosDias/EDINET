@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from src.orchestrator.common import ratios as ratio_services
+from src.orchestrator.generate_ratios.generate_ratios import generate_ratios
 from src.orchestrator.generate_financial_statements import service as financial_statement_services
 from src.orchestrator.populate_business_descriptions_en import service as description_services
 
@@ -348,36 +349,153 @@ class TestPopulateBusinessDescriptionsService(unittest.TestCase):
         self.assertEqual(result["provider_usage"], {"StubProvider": 1})
 
 
-class TestGenerateRatiosPlaceholder(unittest.TestCase):
+class TestGenerateRatios(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.tmpdir.name, "ratios.db")
         self.formulas_file = os.path.join(self.tmpdir.name, "ratios_formulas.json")
 
+        with open(self.formulas_file, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "ratios": {
+                        "Financial_Ratios": [
+                            {
+                                "Return on Assets": {
+                                    "inputs": [
+                                        {
+                                            "name": "Assets",
+                                            "Table": "BalanceSheet",
+                                            "Columns": ["Assets"],
+                                            "Aggregation": "sum",
+                                        },
+                                        {
+                                            "name": "NetIncome",
+                                            "Table": "IncomeStatement",
+                                            "Columns": ["Net income (loss)", "Profit (loss)"],
+                                            "Aggregation": "sum",
+                                        },
+                                    ],
+                                    "formula": "NetIncome / Assets",
+                                    "skip_nulls": True,
+                                }
+                            },
+                            {
+                                "Net Margin": {
+                                    "inputs": [
+                                        {
+                                            "name": "Revenue",
+                                            "Table": "IncomeStatement",
+                                            "Columns": ["Net sales"],
+                                            "Aggregation": "sum",
+                                        },
+                                        {
+                                            "name": "NetIncome",
+                                            "Table": "IncomeStatement",
+                                            "Columns": ["Net income (loss)", "Profit (loss)"],
+                                            "Aggregation": "sum",
+                                        },
+                                    ],
+                                    "formula": "NetIncome / Revenue",
+                                    "skip_nulls": True,
+                                }
+                            },
+                        ],
+                        "PerShare_Metrics": [
+                            {
+                                "Sales Per Share": {
+                                    "inputs": [
+                                        {
+                                            "name": "Revenue",
+                                            "Table": "IncomeStatement",
+                                            "Columns": ["Net sales"],
+                                            "Aggregation": "sum",
+                                        },
+                                        {
+                                            "name": "SharesOutstanding",
+                                            "Table": "ShareMetrics",
+                                            "Columns": [
+                                                "Total number of issued shares",
+                                                "Number of issued shares as of filing date",
+                                                "Number of issued shares as of fiscal year end",
+                                            ],
+                                            "Aggregation": "FirstNonNull",
+                                        },
+                                    ],
+                                    "formula": "Revenue / SharesOutstanding",
+                                    "skip_nulls": True,
+                                }
+                            }
+                        ],
+                    }
+                },
+                handle,
+            )
+
         conn = sqlite3.connect(self.db_path)
-        conn.execute(
-            "CREATE TABLE FinancialStatements (docID TEXT PRIMARY KEY, SharePrice REAL)"
+        conn.executescript(
+            """
+            CREATE TABLE FinancialStatements (
+                docID TEXT PRIMARY KEY,
+                SharePrice REAL
+            );
+            CREATE TABLE IncomeStatement (
+                docID TEXT PRIMARY KEY,
+                "Net sales" REAL,
+                "Net income (loss)" REAL,
+                "Profit (loss)" REAL
+            );
+            CREATE TABLE BalanceSheet (
+                docID TEXT PRIMARY KEY,
+                "Assets" REAL
+            );
+            CREATE TABLE ShareMetrics (
+                docID TEXT PRIMARY KEY,
+                "Total number of issued shares" REAL,
+                "Number of issued shares as of filing date" REAL,
+                "Number of issued shares as of fiscal year end" REAL
+            );
+            """
         )
         conn.executemany(
             "INSERT INTO FinancialStatements (docID, SharePrice) VALUES (?, ?)",
-            [("DOC1", 100.0), ("DOC2", 110.0)],
+            [("DOC1", 100.0), ("DOC2", 110.0), ("DOC3", 120.0)],
+        )
+        conn.executemany(
+            "INSERT INTO IncomeStatement (docID, \"Net sales\", \"Net income (loss)\", \"Profit (loss)\") VALUES (?, ?, ?, ?)",
+            [
+                ("DOC1", 50.0, 10.0, None),
+                ("DOC2", 40.0, None, 8.0),
+                ("DOC3", None, 6.0, None),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO BalanceSheet (docID, \"Assets\") VALUES (?, ?)",
+            [("DOC1", 100.0), ("DOC2", 80.0), ("DOC3", 60.0)],
+        )
+        conn.executemany(
+            "INSERT INTO ShareMetrics (docID, \"Total number of issued shares\", \"Number of issued shares as of filing date\", \"Number of issued shares as of fiscal year end\") VALUES (?, ?, ?, ?)",
+            [
+                ("DOC1", 5.0, 7.0, 9.0),
+                ("DOC2", None, 4.0, 6.0),
+                ("DOC3", None, None, 3.0),
+            ],
         )
         conn.commit()
         conn.close()
 
-        with open(self.formulas_file, "w", encoding="utf-8") as handle:
-            json.dump({"PerShare": [{"Column": "EPS", "Formula": "1"}]}, handle)
-
     def tearDown(self):
         self.tmpdir.cleanup()
 
-    def test_scaffolds_ratio_tables_without_formula_execution(self):
-        result = ratio_services.generate_ratios(
-            source_database=self.db_path,
-            target_database=self.db_path,
-            formulas_config=self.formulas_file,
-            overwrite=False,
-        )
+    def test_creates_dynamic_ratio_tables_and_computes_values(self):
+        with patch(
+            "src.orchestrator.generate_ratios.generate_ratios.RATIO_DEFINITIONS_PATH",
+            self.formulas_file,
+        ):
+            result = generate_ratios(
+                database=self.db_path,
+                overwrite=False,
+            )
 
         conn = sqlite3.connect(self.db_path)
         try:
@@ -385,16 +503,50 @@ class TestGenerateRatiosPlaceholder(unittest.TestCase):
                 row[0]
                 for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
             }
-            per_share_rows = conn.execute("SELECT docID FROM PerShare ORDER BY docID").fetchall()
-            per_share_cols = [row[1] for row in conn.execute("PRAGMA table_info(PerShare)").fetchall()]
+            financial_ratio_rows = conn.execute(
+                "SELECT docID, \"Return on Assets\", \"Net Margin\" FROM Financial_Ratios ORDER BY docID"
+            ).fetchall()
+            financial_ratio_cols = [
+                row[1] for row in conn.execute("PRAGMA table_info(Financial_Ratios)").fetchall()
+            ]
+            per_share_rows = conn.execute(
+                "SELECT docID, \"Sales Per Share\" FROM PerShare_Metrics ORDER BY docID"
+            ).fetchall()
+            per_share_cols = [
+                row[1] for row in conn.execute("PRAGMA table_info(PerShare_Metrics)").fetchall()
+            ]
         finally:
             conn.close()
 
-        self.assertEqual(result["status"], "placeholder")
-        self.assertEqual(result["documents_seeded"], 2)
-        self.assertTrue({"PerShare", "Valuation", "Quality"}.issubset(tables))
-        self.assertEqual(per_share_rows, [("DOC1",), ("DOC2",)])
-        self.assertEqual(per_share_cols, ["docID"])
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["documents_seeded"], 3)
+        self.assertEqual(result["ratio_count"], 3)
+        self.assertEqual(result["tables"], ["Financial_Ratios", "PerShare_Metrics"])
+        self.assertTrue({"Financial_Ratios", "PerShare_Metrics"}.issubset(tables))
+        self.assertEqual(
+            financial_ratio_cols,
+            ["docID", "Return on Assets", "Net Margin"],
+        )
+        self.assertEqual(
+            per_share_cols,
+            ["docID", "Sales Per Share"],
+        )
+        self.assertEqual(
+            financial_ratio_rows,
+            [
+                ("DOC1", 0.1, 0.2),
+                ("DOC2", 0.1, 0.2),
+                ("DOC3", 0.1, None),
+            ],
+        )
+        self.assertEqual(
+            per_share_rows,
+            [
+                ("DOC1", 10.0),
+                ("DOC2", 10.0),
+                ("DOC3", None),
+            ],
+        )
 
 
 class TestGenerateHistoricalRatios(unittest.TestCase):

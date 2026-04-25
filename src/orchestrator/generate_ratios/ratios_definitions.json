@@ -1,0 +1,85 @@
+{
+    "ratios": {
+        "Financial_Ratios": [
+            {
+                "Return on Assets": {
+                    "inputs": [
+                        {
+                            "name": "Assets",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Assets"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "NetIncome",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net income (loss)",
+                                "Profit (loss)"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "NetIncome / Assets",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Net Margin": {
+                    "inputs": [
+                        {
+                            "name": "Revenue",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net sales"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "NetIncome",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net income (loss)",
+                                "Profit (loss)"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "NetIncome / Revenue",
+                    "skip_nulls": true
+                }
+            }
+        ],
+        "PerShare_Metrics": [
+            {
+                "Sales Per Share": {
+                    "inputs": [
+                        {
+                            "name": "Revenue",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net sales"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "SharesOutstanding",
+                            "Table": "ShareMetrics",
+                            "Columns": [
+                                "Total number of issued shares",
+                                "Number of issued shares as of filing date",
+                                "Number of issued shares as of fiscal year end"
+                            ],
+                            "Aggregation": "FirstNonNull"
+                        }
+                    ],
+                    "formula": "Revenue / SharesOutstanding",
+                    "skip_nulls": true
+                }
+            }
+        ]
+
+    }
+}

@@ -76,9 +76,7 @@
     "batch_size": 25
   },
   "generate_ratios_config": {
-    "Source_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
-    "Target_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
-    "Formulas_Config": "config/reference/generate_ratios_formulas_config.json",
+    "Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
     "batch_size": 5000
   },
   "generate_historical_ratios_config": {

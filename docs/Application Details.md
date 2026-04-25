@@ -198,11 +198,11 @@ Responsibility: Backward-compatible facade over orchestrator-owned services and 
 		- Output: None (updates `target_column` in place, creating it when missing).
 		- Calls/Dependencies: `src.description_translation.load_translation_providers`, `src.description_translation.translate_text_with_providers`, `_resolve_table_name_in_schema`, `_resolve_column_name`, `_ensure_typed_table_columns`, `conn.execute`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
 
-	- `def generate_ratios(self, source_database, target_database, formulas_config, overwrite=False, batch_size=5000) -> None`
-		- Purpose: Compile configured formulas into `PerShare`/`Valuation`/`Quality` tables, resolving formula dependencies and executing updates in batches.
-		- Inputs: `source_database`, `target_database`, `formulas_config` (path), optional `overwrite`, `batch_size`.
-		- Output: None (writes/updates `PerShare`, `Valuation`, `Quality` tables).
-		- Calls/Dependencies: `_load_generate_ratios_definitions`, `_build_generate_ratios_execution_plan`, `_ensure_generate_ratios_tables`, `_ensure_table_columns`, `conn.execute`, `conn.executescript`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
+	- `def generate_ratios(database, overwrite=False, batch_size=5000, helper=None) -> dict`
+		- Purpose: Build configured ratio tables keyed by `FinancialStatements.docID`, using the hardcoded definition file in `src/orchestrator/generate_ratios/ratios_definitions.json`.
+		- Inputs: `database`, optional `overwrite`, optional `batch_size`, optional DB helper.
+		- Output: status dict summarizing generated tables, ratio count, and processed documents.
+		- Calls/Dependencies: `_load_ratio_definitions`, `_ensure_ratio_table_schema`, `_seed_ratio_docids`, `_populate_ratio_table`, `sqlite3.connect`, `conn.commit`, `conn.close`, `logger.info`.
 
 	- `def generate_historical_ratios(self, source_database, target_database, overwrite=False, company_batch_size=200) -> None`
 		- Purpose: Produce per-company historical metric tables (e.g. `Pershare_Historical`) by computing rolling/aggregate statistics and inserting in batches.
@@ -282,23 +282,40 @@ Responsibility: EDINET API wrapper, document listing, download/unzip, CSV ingest
 		- Output: None (writes to DB).
 		- Calls/Dependencies: `pd.read_csv`, `sqlite3.connect`, `df.to_sql`, `conn.commit`, `conn.close`.
 
+
 ---
 
-### [src/stockprice_api.py](src/stockprice_api.py)
+### [src/utilities/stock_prices.py](src/utilities/stock_prices.py)
 
-Responsibility: Importing and updating historical stock prices and persisting them to the prices table.
-
-- `def update_all_stock_prices(db_name, Company_Table, prices_table, standardized_table=None) -> None`
-	- Purpose: Iterate tickers and ensure price coverage.
-	- Calls/Dependencies: `_create_prices_table`, `cursor.execute`, `load_ticker_data`, `conn.close`.
+Responsibility: Shared stock price provider access and persistence helpers used by stock price steps.
 
 - `def load_ticker_data(ticker: str, prices_table: str, conn) -> bool`
-	- Purpose: Fetch price CSV for `ticker`, append new rows, return False on provider rate-limit.
-	- Calls/Dependencies: `pd.read_sql_query`, `pd.read_csv`, `to_sql`, `logger`.
+	- Purpose: Fetch normalized history for `ticker`, append new rows, return `False` when the upstream provider flow fails.
+	- Calls/Dependencies: `_load_provider_history`, `pd.read_sql_query`, `to_sql`, `logger`.
 
-- `def import_stock_prices_csv(db_name, prices_table, csv_path, ...) -> None`
-	- Purpose: Import user-supplied price CSV, normalize columns and append.
-	- Calls/Dependencies: `pd.read_csv`, `pd.to_datetime`, `pd.to_numeric`, `pd.read_sql_query`, `to_sql`, `conn.commit`.
+- `def _load_provider_history(ticker: str, start_date: str | None = None) -> tuple[str, pd.DataFrame]`
+	- Purpose: Try Stooq first and Yahoo Finance chart as a fallback, then normalize the returned price history.
+	- Calls/Dependencies: `_fetch_stooq_history`, `_fetch_yahoo_history`, `_normalise_price_history`.
+
+- `def _create_prices_table(conn, table_name) -> None`
+	- Purpose: Ensure the destination stock-prices table exists with the expected schema.
+	- Calls/Dependencies: `pd.DataFrame`, `to_sql`, `logger`.
+
+### [src/orchestrator/update_stock_prices/update_stock_prices.py](src/orchestrator/update_stock_prices/update_stock_prices.py)
+
+Responsibility: Step-owned workflow that decides which company tickers should be refreshed before delegating actual provider queries to the shared stock price utilities.
+
+- `def update_all_stock_prices(db_name, Company_Table, prices_table, standardized_table=None) -> None`
+	- Purpose: Select eligible tickers from the configured company and financial-data tables, then call `load_ticker_data` for each one.
+	- Calls/Dependencies: `sqlite3.connect`, `stock_prices._create_prices_table`, `cursor.execute`, `stock_prices.load_ticker_data`, `conn.close`.
+
+### [src/orchestrator/import_stock_prices_csv/import_stock_prices_csv.py](src/orchestrator/import_stock_prices_csv/import_stock_prices_csv.py)
+
+Responsibility: Step-owned workflow for importing user-supplied stock price CSV files into the stock prices table.
+
+- `def import_stock_prices_csv(db_name, prices_table, csv_path, ...) -> int`
+	- Purpose: Normalize a user-supplied price CSV, fill configured defaults, skip already-imported `Date` + `Ticker` pairs, and append new rows.
+	- Calls/Dependencies: `pd.read_csv`, `pd.to_datetime`, `pd.to_numeric`, `pd.read_sql_query`, `stock_prices._create_prices_table`, `to_sql`, `conn.commit`.
 
 ---
 
