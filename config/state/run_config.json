@@ -3,10 +3,6 @@
     "generate_ratios": {
       "enabled": true,
       "overwrite": true
-    },
-    "generate_historical_ratios": {
-      "enabled": true,
-      "overwrite": true
     }
   },
   "get_documents_config": {
@@ -78,11 +74,6 @@
   "generate_ratios_config": {
     "Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
     "batch_size": 5000
-  },
-  "generate_historical_ratios_config": {
-    "Source_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
-    "Target_Database": "C:/programming/Finance/EDINET/Databases/Standardized.db",
-    "company_batch_size": 200
   },
   "Multivariate_Regression_config": {
     "Source_Database": "",

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from src.orchestrator.common import ratios as ratio_services
 from src.orchestrator.generate_ratios.generate_ratios import generate_ratios
 from src.orchestrator.generate_financial_statements import service as financial_statement_services
+from src.orchestrator.generate_rolling_metrics import service as rolling_metrics_services
 from src.orchestrator.populate_business_descriptions_en import service as description_services
 
 
@@ -349,6 +350,277 @@ class TestPopulateBusinessDescriptionsService(unittest.TestCase):
         self.assertEqual(result["provider_usage"], {"StubProvider": 1})
 
 
+class TestGenerateRollingMetricsService(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.database = os.path.join(self.tmpdir.name, "rolling.db")
+        self.rolling_metrics_config = os.path.join(self.tmpdir.name, "rolling_metrics.json")
+
+        with open(self.rolling_metrics_config, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "IncomeStatement": ["Revenue"],
+                },
+                handle,
+            )
+
+        conn = sqlite3.connect(self.database)
+        conn.executescript(
+            """
+            CREATE TABLE FinancialStatements (
+                docID TEXT PRIMARY KEY,
+                edinetCode TEXT,
+                periodEnd TEXT
+            );
+
+            CREATE TABLE IncomeStatement (
+                docID TEXT PRIMARY KEY,
+                Revenue REAL
+            );
+
+            CREATE TABLE CompanyInfo (
+                edinetCode TEXT PRIMARY KEY,
+                CompanyName TEXT
+            );
+            """
+        )
+        conn.executemany(
+            "INSERT INTO FinancialStatements (docID, edinetCode, periodEnd) VALUES (?, ?, ?)",
+            [
+                ("A1", "E00001", "2020-03-31"),
+                ("A2", "E00001", "2021-03-31"),
+                ("A3", "E00001", "2022-03-31"),
+                ("A4", "E00001", "2023-03-31"),
+                ("B1", "E00002", "2020-03-31"),
+                ("B2", "E00002", "2021-03-31"),
+                ("B3", "E00002", "2022-03-31"),
+                ("B4", "E00002", "2023-03-31"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO IncomeStatement (docID, Revenue) VALUES (?, ?)",
+            [
+                ("A1", 100.0),
+                ("A2", 110.0),
+                ("A3", 121.0),
+                ("A4", 133.1),
+                ("B1", 200.0),
+                ("B2", 220.0),
+                ("B3", 242.0),
+                ("B4", 266.2),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _run_generate(self, overwrite=True):
+        with patch.object(
+            rolling_metrics_services,
+            "ROLLING_METRICS_CONFIG_PATH",
+            self.rolling_metrics_config,
+        ):
+            return rolling_metrics_services.generate_rolling_metrics(
+                source_database=self.database,
+                target_database=self.database,
+                overwrite=overwrite,
+            )
+
+    def test_discovers_only_docid_primary_key_tables(self):
+        conn = sqlite3.connect(self.database)
+        try:
+            tables = rolling_metrics_services.list_docid_primary_key_tables(
+                conn,
+                schema_name="main",
+                excluded_tables=["FinancialStatements"],
+            )
+        finally:
+            conn.close()
+
+        self.assertEqual(tables, ["IncomeStatement"])
+
+    def test_generates_rolling_table_with_expected_columns_and_values(self):
+        result = self._run_generate(overwrite=True)
+
+        conn = sqlite3.connect(self.database)
+        try:
+            table_names = {
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            columns = [
+                row[1]
+                for row in conn.execute("PRAGMA table_info(IncomeStatement_Rolling)").fetchall()
+            ]
+            row_a4 = conn.execute(
+                """
+                SELECT
+                    docID,
+                    Revenue_Average_3_Year,
+                    Revenue_Growth_3_Year
+                FROM IncomeStatement_Rolling
+                WHERE docID = ?
+                """,
+                ("A4",),
+            ).fetchone()
+            row_b4 = conn.execute(
+                """
+                SELECT
+                    docID,
+                    Revenue_Average_3_Year,
+                    Revenue_Growth_3_Year
+                FROM IncomeStatement_Rolling
+                WHERE docID = ?
+                """,
+                ("B4",),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("IncomeStatement_Rolling", result["tables_processed"])
+        self.assertIn("IncomeStatement_Rolling", table_names)
+        self.assertIn("docID", columns)
+        self.assertIn("Revenue_Average_3_Year", columns)
+        self.assertIn("Revenue_Average_5_Year", columns)
+        self.assertIn("Revenue_Average_10_Year", columns)
+        self.assertIn("Revenue_Growth_3_Year", columns)
+        self.assertIn("Revenue_Growth_5_Year", columns)
+        self.assertIn("Revenue_Growth_10_Year", columns)
+
+        self.assertEqual(row_a4[0], "A4")
+        self.assertAlmostEqual(row_a4[1], (110.0 + 121.0 + 133.1) / 3.0, places=6)
+        self.assertAlmostEqual(row_a4[2], 0.1, places=6)
+
+        self.assertEqual(row_b4[0], "B4")
+        self.assertAlmostEqual(row_b4[1], (220.0 + 242.0 + 266.2) / 3.0, places=6)
+        self.assertAlmostEqual(row_b4[2], 0.1, places=6)
+
+    def test_incremental_mode_recomputes_only_impacted_company(self):
+        self._run_generate(overwrite=True)
+
+        conn = sqlite3.connect(self.database)
+        try:
+            before_a4 = conn.execute(
+                "SELECT Revenue_Average_3_Year FROM IncomeStatement_Rolling WHERE docID = ?",
+                ("A4",),
+            ).fetchone()[0]
+            before_b4 = conn.execute(
+                "SELECT Revenue_Average_3_Year FROM IncomeStatement_Rolling WHERE docID = ?",
+                ("B4",),
+            ).fetchone()[0]
+
+            conn.execute(
+                "UPDATE IncomeStatement SET Revenue = ? WHERE docID = ?",
+                (111.0, "A2"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self._run_generate(overwrite=False)
+
+        conn = sqlite3.connect(self.database)
+        try:
+            after_a4 = conn.execute(
+                "SELECT Revenue_Average_3_Year FROM IncomeStatement_Rolling WHERE docID = ?",
+                ("A4",),
+            ).fetchone()[0]
+            after_b4 = conn.execute(
+                "SELECT Revenue_Average_3_Year FROM IncomeStatement_Rolling WHERE docID = ?",
+                ("B4",),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        self.assertNotEqual(before_a4, after_a4)
+        self.assertAlmostEqual(after_a4, (111.0 + 121.0 + 133.1) / 3.0, places=6)
+        self.assertEqual(before_b4, after_b4)
+
+    def test_sql_prefilter_skips_rows_with_all_numeric_metrics_null(self):
+        conn = sqlite3.connect(self.database)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE MixedMetrics (
+                    docID TEXT PRIMARY KEY,
+                    MetricA REAL,
+                    MetricB REAL,
+                    Comment TEXT
+                );
+                """
+            )
+            conn.executemany(
+                "INSERT INTO MixedMetrics (docID, MetricA, MetricB, Comment) VALUES (?, ?, ?, ?)",
+                [
+                    ("A1", None, None, "all null metrics"),
+                    ("A2", 5.0, None, "has numeric data"),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with open(self.rolling_metrics_config, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "MixedMetrics": ["MetricA", "MetricB"],
+                },
+                handle,
+            )
+
+        self._run_generate(overwrite=True)
+
+        conn = sqlite3.connect(self.database)
+        try:
+            rows = conn.execute(
+                "SELECT docID FROM MixedMetrics_Rolling ORDER BY docID"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertEqual(rows, [("A2",)])
+
+    def test_unlisted_tables_are_not_processed(self):
+        conn = sqlite3.connect(self.database)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE ExtraTable (
+                    docID TEXT PRIMARY KEY,
+                    Value REAL
+                );
+                """
+            )
+            conn.executemany(
+                "INSERT INTO ExtraTable (docID, Value) VALUES (?, ?)",
+                [
+                    ("A1", 1.0),
+                    ("A2", 2.0),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = self._run_generate(overwrite=True)
+
+        conn = sqlite3.connect(self.database)
+        try:
+            table_names = {
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+        finally:
+            conn.close()
+
+        self.assertIn("IncomeStatement_Rolling", table_names)
+        self.assertNotIn("ExtraTable_Rolling", table_names)
+        self.assertNotIn("ExtraTable_Rolling", result["tables_processed"])
+
+
 class TestGenerateRatios(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -547,136 +819,3 @@ class TestGenerateRatios(unittest.TestCase):
                 ("DOC3", None),
             ],
         )
-
-
-class TestGenerateHistoricalRatios(unittest.TestCase):
-    def setUp(self):
-        self.tmpdir = tempfile.TemporaryDirectory()
-        self.db_path = os.path.join(self.tmpdir.name, "historical.db")
-        conn = sqlite3.connect(self.db_path)
-        conn.executescript(
-            """
-            CREATE TABLE FinancialStatements (
-                docID TEXT PRIMARY KEY,
-                edinetCode TEXT,
-                periodEnd TEXT,
-                SharePrice REAL
-            );
-            CREATE TABLE PerShare (
-                docID TEXT PRIMARY KEY,
-                EPS REAL
-            );
-            CREATE TABLE Quality (
-                docID TEXT PRIMARY KEY,
-                CurrentRatio REAL
-            );
-            CREATE TABLE Valuation (
-                docID TEXT PRIMARY KEY,
-                PERatio REAL
-            );
-            """
-        )
-
-        conn.executemany(
-            "INSERT INTO FinancialStatements (docID, edinetCode, periodEnd, SharePrice) VALUES (?, ?, ?, ?)",
-            [
-                ("D1", "E1", "2022-12-31", 10.0),
-                ("D2", "E1", "2023-12-31", 12.0),
-                ("D3", "E2", "2023-12-31", 11.0),
-            ],
-        )
-        conn.executemany(
-            "INSERT INTO PerShare (docID, EPS) VALUES (?, ?)",
-            [("D1", 1.0), ("D2", 3.0), ("D3", 2.0)],
-        )
-        conn.executemany(
-            "INSERT INTO Quality (docID, CurrentRatio) VALUES (?, ?)",
-            [("D1", 1.5), ("D2", 2.0), ("D3", 1.8)],
-        )
-        conn.executemany(
-            "INSERT INTO Valuation (docID, PERatio) VALUES (?, ?)",
-            [("D1", 10.0), ("D2", 12.0), ("D3", 11.0)],
-        )
-        conn.commit()
-        conn.close()
-
-    def tearDown(self):
-        self.tmpdir.cleanup()
-
-    def test_generate_historical_ratios_creates_tables_and_metrics(self):
-        ratio_services.generate_historical_ratios(
-            source_database=self.db_path,
-            target_database=self.db_path,
-            overwrite=False,
-        )
-
-        conn = sqlite3.connect(self.db_path)
-        try:
-            cols = [row[1] for row in conn.execute("PRAGMA table_info(Pershare_Historical)").fetchall()]
-            self.assertIn("docID", cols)
-            self.assertIn("EPS_1Year_Average", cols)
-            self.assertIn("EPS_2Year_Average", cols)
-            self.assertIn("EPS_StdDev", cols)
-            self.assertIn("EPS_ZScore_IntraCompany", cols)
-            self.assertIn("EPS_ZScore_AllCompanies", cols)
-            self.assertIn("EPS_1Year_Growth", cols)
-            self.assertIn("EPS_2Year_Growth", cols)
-            self.assertIn("EPS_3Year_Growth", cols)
-            self.assertIn("SharePrice_1Year_Average", cols)
-            self.assertIn("SharePrice_1Year_Growth", cols)
-
-            rows = conn.execute(
-                "SELECT docID, EPS_1Year_Average, EPS_2Year_Average, EPS_1Year_Growth, EPS_2Year_Growth FROM Pershare_Historical ORDER BY docID"
-            ).fetchall()
-            self.assertEqual(len(rows), 3)
-
-            d2 = [row for row in rows if row[0] == "D2"][0]
-            self.assertEqual(d2[1], 3.0)
-            self.assertEqual(d2[2], 2.0)
-            self.assertAlmostEqual(d2[3], 2.0, places=6)
-            self.assertIsNone(d2[4])
-
-            d1 = [row for row in rows if row[0] == "D1"][0]
-            self.assertIsNone(d1[3])
-
-            d3 = [row for row in rows if row[0] == "D3"][0]
-            self.assertIsNone(d3[3])
-
-            price_rows = conn.execute(
-                "SELECT docID, SharePrice, SharePrice_1Year_Average, SharePrice_1Year_Growth FROM Pershare_Historical ORDER BY docID"
-            ).fetchall()
-            price_map = {doc_id: (price, price_avg, price_growth) for doc_id, price, price_avg, price_growth in price_rows}
-            self.assertEqual(price_map["D2"][0], 12.0)
-            self.assertEqual(price_map["D2"][1], 12.0)
-            self.assertAlmostEqual(price_map["D2"][2], 0.2, places=6)
-            self.assertIsNone(price_map["D1"][2])
-            self.assertIsNone(price_map["D3"][2])
-
-            z_rows = conn.execute(
-                "SELECT docID, EPS_ZScore_AllCompanies FROM Pershare_Historical ORDER BY docID"
-            ).fetchall()
-            z_map = {doc_id: z_value for doc_id, z_value in z_rows}
-            self.assertAlmostEqual(z_map["D2"], 0.70710678, places=5)
-            self.assertAlmostEqual(z_map["D3"], -0.70710678, places=5)
-        finally:
-            conn.close()
-
-    def test_generate_historical_ratios_overwrite_rebuilds(self):
-        ratio_services.generate_historical_ratios(
-            source_database=self.db_path,
-            target_database=self.db_path,
-            overwrite=False,
-        )
-        ratio_services.generate_historical_ratios(
-            source_database=self.db_path,
-            target_database=self.db_path,
-            overwrite=True,
-        )
-
-        conn = sqlite3.connect(self.db_path)
-        try:
-            count = conn.execute("SELECT COUNT(*) FROM Quality_Historical").fetchone()[0]
-        finally:
-            conn.close()
-
-        self.assertEqual(count, 3)

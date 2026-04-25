@@ -19,7 +19,6 @@
     "generate_financial_statements": {"enabled": false, "overwrite": false},
     "populate_business_descriptions_en": {"enabled": false, "overwrite": false},
     "generate_ratios": {"enabled": false, "overwrite": false},
-    "generate_historical_ratios": {"enabled": false, "overwrite": false},
     "Multivariate_Regression": {"enabled": false, "overwrite": false},
     "backtest": {"enabled": false, "overwrite": false},
     "backtest_set": {"enabled": false, "overwrite": false}
@@ -82,11 +81,6 @@
   "generate_ratios_config": {
     "Database": "",
     "batch_size": 5000
-  },
-  "generate_historical_ratios_config": {
-    "Source_Database": "",
-    "Target_Database": "",
-    "company_batch_size": 200
   },
   "Multivariate_Regression_config": {
     "Source_Database": "",

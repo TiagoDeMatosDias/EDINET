@@ -1,0 +1,56 @@
+{
+    "BalanceSheet": [
+        "Assets",
+        "Liabilities",
+        "Net assets",
+        "Current assets",
+        "Current liabilities",
+        "Intangible assets",
+        "Property, plant and equipment",
+        "Securities",
+        "Accounts receivable"
+    ],
+    "IncomeStatement": [
+        "Net sales",
+        "Cost of sales",
+        "Gross profit (loss)",
+        "Income taxes",
+        "Income (loss) before income taxes",
+        "Non-operating expenses",
+        "Operating expenses",
+        "Operating income",
+        "Interest expenses",
+        "Depreciation",
+        "Profit (loss)"
+    ],
+    "CashFlowStatement": [
+        "Net cash provided by (used in) financing activities",
+        "Net cash provided by (used in) investing activities",
+        "Net cash provided by (used in) operating activities",
+        "Cash and cash equivalents",
+        "Net increase (decrease) in cash and cash equivalents",
+        "Cash dividends paid",
+        "Decrease (increase) in accounts receivable",
+        "Decrease (increase) in inventories",
+        "Depreciation",
+        "Interest expenses",
+        "Proceeds from issuance of common shares",
+        "Purchase of treasury shares",
+        "Purchase of property, plant and equipment"
+    ],
+    "Financial_Ratios": [
+        "Return on Assets",
+        "Net Margin"
+    ],
+    "PerShare_Metrics": [
+        "Sales Per Share"
+    ],
+    "ShareMetrics": [
+        "Dividend paid per share",
+        "Total shareholder return",
+        "Basic earnings (loss) per share",
+        "Total number of issued shares",
+        "Number of issued shares as of filing date",
+        "Number of issued shares as of fiscal year end"
+    ]
+}

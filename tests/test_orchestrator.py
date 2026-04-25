@@ -478,6 +478,35 @@ class TestGenerateFinancialStatementsStep:
         )
 
 
+class TestGenerateRollingMetricsStep:
+    def setup_method(self):
+        Config.reset()
+
+    def teardown_method(self):
+        Config.reset()
+
+    def test_passes_source_and_target_databases(self):
+        from src.orchestrator.generate_rolling_metrics.generate_rolling_metrics import run_generate_rolling_metrics
+
+        config = Config.from_dict({
+            "generate_rolling_metrics_config": {
+                "Source_Database": "base.db",
+                "Target_Database": "standardized.db",
+            },
+        })
+
+        with patch(
+            "src.orchestrator.generate_rolling_metrics.generate_rolling_metrics.rolling_metrics_services.generate_rolling_metrics"
+        ) as mock_generate:
+            run_generate_rolling_metrics(config, overwrite=True)
+
+        mock_generate.assert_called_once_with(
+            source_database="base.db",
+            target_database="standardized.db",
+            overwrite=True,
+        )
+
+
 class TestConfigFromDict:
     """Test Config.from_dict bypass of the singleton."""
 

@@ -264,7 +264,6 @@ def test_orchestrator_long_step_cards_keep_action_buttons_visible(root, monkeypa
         "populate_company_info",
         "generate_financial_statements",
         "generate_ratios",
-        "generate_historical_ratios",
         "Multivariate_Regression",
         "backtest_set",
     ]

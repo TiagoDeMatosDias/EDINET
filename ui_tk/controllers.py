@@ -131,7 +131,6 @@ STEP_CONFIG_INHERITANCE: dict[tuple[str, str], list[tuple[str, str]]] = {
     ("populate_business_descriptions_en", "Target_Database"): [
         ("generate_financial_statements", "Target_Database"),
         ("generate_ratios", "Target_Database"),
-        ("generate_historical_ratios", "Target_Database"),
     ],
 }
 
