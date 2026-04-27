@@ -15,7 +15,7 @@ def run_populate_company_info(config, overwrite=False):
         base_url=config.get("baseURL", ""),
         api_key=config.get("API_KEY", ""),
         db_path=target_database,
-        company_info_table=config.get("DB_COMPANY_INFO_TABLE"),
+        company_info_table="CompanyInfo",
     )
     edinet.store_edinetCodes(step_cfg.get("csv_file"), target_database=target_database)
 
@@ -23,7 +23,7 @@ def run_populate_company_info(config, overwrite=False):
 STEP_DEFINITION = StepDefinition(
     name="populate_company_info",
     handler=run_populate_company_info,
-    required_keys=("DB_COMPANY_INFO_TABLE",),
+    required_keys=(),
     input_fields=(
         StepFieldDefinition(
             "csv_file",

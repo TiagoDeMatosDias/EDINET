@@ -13,9 +13,9 @@ def run_backtest(config, overwrite=False):
     return backtesting.run_backtest(
         step_cfg,
         db_path=step_cfg.get("Source_Database"),
-        prices_table=config.get("DB_STOCK_PRICES_TABLE"),
+        prices_table="Stock_Prices",
         ratios_table=step_cfg.get("PerShare_Table") or "ShareMetrics",
-        company_table=config.get("DB_COMPANY_INFO_TABLE"),
+        company_table="CompanyInfo",
         financial_statements_table=step_cfg.get("Financial_Statements_Table") or "FinancialStatements",
     )
 
@@ -24,7 +24,7 @@ STEP_DEFINITION = StepDefinition(
     name="backtest",
     handler=run_backtest,
     config_key="backtesting_config",
-    required_keys=("DB_STOCK_PRICES_TABLE", "DB_COMPANY_INFO_TABLE"),
+    required_keys=(),
     input_fields=(
         StepFieldDefinition("Source_Database", "database", required=True),
         StepFieldDefinition("PerShare_Table", "str", default="ShareMetrics"),

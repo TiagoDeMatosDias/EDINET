@@ -165,7 +165,7 @@ def run_import_stock_prices_csv(config, overwrite=False):
 
     return import_stock_prices_csv(
         db_name=step_cfg.get("Target_Database"),
-        prices_table=config.get("DB_STOCK_PRICES_TABLE"),
+        prices_table="Stock_Prices",
         csv_path=step_cfg.get("csv_file", ""),
         default_ticker=step_cfg.get("default_ticker", step_cfg.get("ticker", "")),
         default_currency=step_cfg.get("default_currency", step_cfg.get("currency", "JPY")),
@@ -180,7 +180,7 @@ STEP_DEFINITION = StepDefinition(
     name="import_stock_prices_csv",
     handler=run_import_stock_prices_csv,
     display_name="Import Stock Prices (CSV)",
-    required_keys=("DB_STOCK_PRICES_TABLE",),
+    required_keys=(),
     input_fields=(
         StepFieldDefinition("Target_Database", "database", required=True),
         StepFieldDefinition("csv_file", "file", required=True),

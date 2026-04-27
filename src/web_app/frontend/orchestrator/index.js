@@ -340,8 +340,15 @@ export async function runPipeline() {
       signal: controller.signal,
     });
     const elapsed = ((performance.now() - started) / 1000).toFixed(1);
-    const success = result.steps_executed?.filter(step => step.success).length || 0;
-    const failed = result.steps_executed?.filter(step => !step.success).length || 0;
+    // Surface server-side pipeline-level errors that are returned in the
+    // response (e.g. configuration missing). The server currently returns
+    // a 200 with an error_message in some failure cases, so log that here
+    // so it appears in the browser console panel.
+    if (result?.status === 'failed' || result?.error_message) {
+      log('error', `Pipeline failed: ${result.error_message || 'Unknown error'}`);
+    }
+    const success = (result.steps_executed || []).filter(step => step.success).length || 0;
+    const failed = (result.steps_executed || []).filter(step => !step.success).length || 0;
     log('info', `Pipeline completed in ${elapsed}s • ${success} succeeded • ${failed} failed`);
     result.steps_executed?.forEach((stepResult, idx) => {
       const pipelineStep = enabled[idx];

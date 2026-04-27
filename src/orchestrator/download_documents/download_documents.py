@@ -10,8 +10,9 @@ def run_download_documents(config, overwrite=False):
     logger.info("Downloading documents...")
     step_cfg = config.get("download_documents_config", {})
     target_database = step_cfg.get("Target_Database")
-    doc_list_table = config.get("DB_DOC_LIST_TABLE")
-    financial_data_table = config.get("DB_FINANCIAL_DATA_TABLE")
+    # Hardcoded table names (moved out of .env)
+    doc_list_table = "DocumentList"
+    financial_data_table = "financialData_full"
 
     edinet = Edinet(
         base_url=config.get("baseURL"),
@@ -32,8 +33,6 @@ STEP_DEFINITION = StepDefinition(
     name="download_documents",
     handler=run_download_documents,
     required_keys=(
-        "DB_DOC_LIST_TABLE",
-        "DB_FINANCIAL_DATA_TABLE",
         "RAW_DOCUMENTS_PATH",
         "baseURL",
         "API_KEY",

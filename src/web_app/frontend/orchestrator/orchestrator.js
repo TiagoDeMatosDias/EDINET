@@ -139,6 +139,9 @@ async function bootstrap() {
   }
   if (els.consoleClear) els.consoleClear.addEventListener('click', () => { STATE.logs = []; renderConsole(); });
   if (els.consoleExport) els.consoleExport.addEventListener('click', exportConsole);
+  if (els.toggleConsoleBtn) els.toggleConsoleBtn.addEventListener('click', () => {
+    setConsoleHidden(!document.body.classList.contains('console-collapsed'));
+  });
   if (els.consoleAutoscroll) els.consoleAutoscroll.addEventListener('change', () => {
     STATE.consoleAutoscroll = els.consoleAutoscroll.checked;
   });

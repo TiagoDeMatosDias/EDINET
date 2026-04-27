@@ -15,7 +15,7 @@ def run_get_documents(config, overwrite=False):
         base_url=config.get("baseURL"),
         api_key=config.get("API_KEY"),
         db_path=target_database,
-        doc_list_table=config.get("DB_DOC_LIST_TABLE"),
+        doc_list_table="DocumentList",
     )
     edinet.get_All_documents_withMetadata(
         step_cfg.get("startDate"),
