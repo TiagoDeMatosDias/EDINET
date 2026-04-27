@@ -22,7 +22,6 @@ def run_generate_financial_statements(config, overwrite=False):
 STEP_DEFINITION = StepDefinition(
     name="generate_financial_statements",
     handler=run_generate_financial_statements,
-    aliases=("Generate Financial Statements",),
     supports_overwrite=True,
     input_fields=(
         StepFieldDefinition("Source_Database", "database", required=True),

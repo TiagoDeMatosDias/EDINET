@@ -58,12 +58,10 @@ def apply_step_config_defaults(
     normalized_steps: list[dict[str, Any]],
     *,
     step_definitions: dict[str, StepDefinition],
-    canonical_names: dict[str, str],
 ) -> None:
     for step in normalized_steps:
         raw_step_name = step["name"]
-        canonical_step = canonical_names.get(raw_step_name, raw_step_name)
-        definition = step_definitions.get(canonical_step)
+        definition = step_definitions.get(raw_step_name)
         if definition is None:
             continue
 
@@ -105,7 +103,6 @@ def validate_pipeline_input(
     normalized_steps: list[dict[str, Any]],
     *,
     step_definitions: dict[str, StepDefinition],
-    canonical_names: dict[str, str],
 ) -> None:
     missing_map: dict[str, list[str]] = {}
     invalid_map: dict[str, list[str]] = {}
@@ -115,15 +112,14 @@ def validate_pipeline_input(
 
     for step in normalized_steps:
         raw_step_name = step["name"]
-        canonical_step = canonical_names.get(raw_step_name, raw_step_name)
-        definition = step_definitions.get(canonical_step)
+        definition = step_definitions.get(raw_step_name)
         if definition is None:
             unknown_steps.append(raw_step_name)
             continue
-        if canonical_step in seen_steps:
+        if raw_step_name in seen_steps:
             duplicate_steps.append(raw_step_name)
             continue
-        seen_steps.add(canonical_step)
+        seen_steps.add(raw_step_name)
 
         for key in definition.required_keys:
             if not has_config_value(config.get(key)):

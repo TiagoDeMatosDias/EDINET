@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shade Research Workstation</title>
+    <link rel="stylesheet" href="/assets/common/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-logo" src="/brand-assets/icon_hexagon.svg" alt="Shade Research logo" />
+          <div>
+            <div class="brand-title">Shade Research</div>
+            <div class="brand-subtitle">terminal-style research console</div>
+          </div>
+        </div>
+
+        <nav class="tabs" aria-label="Primary navigation">
+          <button class="tab is-active" data-view="main">Main</button>
+          <button class="tab" data-view="orchestrator">Orchestrator</button>
+          <button class="tab" data-view="screening">Screening</button>
+          <button class="tab" data-view="security">Security Analysis</button>
+        </nav>
+
+        <div class="topbar-actions">
+          <div class="status-pill" id="backend-status">Connecting…</div>
+          <button class="ghost-btn" id="toggle-console-btn">Hide Console</button>
+          <button class="ghost-btn" id="refresh-btn">Refresh</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+
+        <!-- ================================================================
+             Main dashboard
+        ================================================================= -->
+        <section class="view view-main is-active" data-view-panel="main">
+          <div class="hero-strip">
+            <div>
+              <div class="kicker">Main screen</div>
+              <h1>Pipeline dashboard and setup launcher</h1>
+              <p>
+                Review recent runs, jump into the orchestrator, and keep the workspace compact and fast.
+              </p>
+            </div>
+            <div class="hero-metrics" id="main-metrics"></div>
+          </div>
+
+          <div class="main-grid">
+            <section class="panel panel-large">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">Recent Jobs</div>
+                  <div class="panel-subtitle">Latest pipeline executions returned by the API.</div>
+                </div>
+                <button class="tiny-btn" id="reload-jobs">Reload</button>
+              </div>
+              <div class="table-wrap">
+                <table class="dense-table" id="jobs-table">
+                  <thead>
+                    <tr>
+                      <th>Job ID</th>
+                      <th>Status</th>
+                      <th>Current Step</th>
+                      <th>Progress</th>
+                      <th>Created</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </section>
+
+            <aside class="side-stack">
+              <section class="panel">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">Local Setups</div>
+                    <div class="panel-subtitle">Saved in this browser.</div>
+                  </div>
+                </div>
+                <div id="setup-list" class="list compact-list"></div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">Step Catalog</div>
+                    <div class="panel-subtitle">Discovered from /api/steps.</div>
+                  </div>
+                </div>
+                <div id="step-catalog-preview" class="catalog-preview"></div>
+              </section>
+            </aside>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             Orchestrator
+        ================================================================= -->
+        <section class="view view-orchestrator" data-view-panel="orchestrator">
+          <div class="workspace-grid">
+            <aside class="panel panel-sidebar">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">Pipeline Builder</div>
+                  <div class="panel-subtitle">Search, add, reorder, and inspect steps.</div>
+                </div>
+              </div>
+
+              <div class="form-row tight">
+                <label>Setup</label>
+                <input id="setup-name" type="text" placeholder="Untitled setup" />
+              </div>
+              <div class="button-row">
+                <button class="ghost-btn" id="new-setup-btn">New</button>
+                <button class="ghost-btn" id="load-setup-btn">Load</button>
+                <button class="ghost-btn" id="save-setup-btn">Save</button>
+                <button class="accent-btn" id="run-btn">Run</button>
+                <button class="danger-btn" id="stop-btn" disabled>Stop</button>
+              </div>
+
+              <details class="global-config-panel" id="global-config-panel">
+                <summary>Workspace Config</summary>
+                <div id="global-config-form" class="global-config-form"></div>
+              </details>
+
+              <div class="form-row tight">
+                <label>Step search</label>
+                <input id="step-search" type="search" placeholder="Filter steps…" autocomplete="off" />
+              </div>
+              <div id="step-library" class="step-library"></div>
+            </aside>
+
+            <section class="panel panel-main">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">Pipeline Sequence</div>
+                  <div class="panel-subtitle">Selected steps in execution order.</div>
+                </div>
+                <div class="panel-head-meta" id="pipeline-summary"></div>
+              </div>
+              <div id="pipeline-list" class="pipeline-list"></div>
+            </section>
+
+            <div class="panel-resizer" id="inspector-resizer" role="separator" aria-orientation="vertical" aria-label="Resize inspector"></div>
+
+            <aside class="panel panel-inspector">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title" id="inspector-title">Inspector</div>
+                  <div class="panel-subtitle" id="inspector-subtitle">Select a step to edit its configuration.</div>
+                </div>
+              </div>
+              <div id="inspector-body" class="inspector-body"></div>
+            </aside>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             Screening
+        ================================================================= -->
+        <section class="view view-stub" data-view-panel="screening">
+          <div class="stub-card">
+            <div class="kicker">Stub</div>
+            <h2>Screening</h2>
+            <p>This surface is reserved for the future screening workflow.</p>
+          </div>
+        </section>
+
+        <!-- ================================================================
+             Security Analysis
+        ================================================================= -->
+        <section class="view view-stub" data-view-panel="security">
+          <div class="stub-card">
+            <div class="kicker">Stub</div>
+            <h2>Security Analysis</h2>
+            <p>This surface is reserved for the future company analysis workflow.</p>
+          </div>
+        </section>
+
+      </main>
+
+      <footer class="console panel">
+        <div class="panel-head console-head">
+          <div>
+            <div class="panel-title">Console</div>
+            <div class="panel-subtitle">Dense, terminal-style event stream.</div>
+          </div>
+          <div class="console-actions">
+            <button class="tiny-btn" id="console-toggle">Hide</button>
+            <button class="tiny-btn" id="console-clear">Clear</button>
+            <button class="tiny-btn" id="console-export">Export</button>
+            <label class="toggle"><input id="console-autoscroll" type="checkbox" checked /> Auto-scroll</label>
+            <select id="console-filter">
+              <option value="all">All</option>
+              <option value="info">Info</option>
+              <option value="warn">Warn</option>
+              <option value="error">Error</option>
+              <option value="debug">Debug</option>
+            </select>
+          </div>
+        </div>
+        <div id="console-log" class="console-log" aria-live="polite"></div>
+      </footer>
+    </div>
+
+    <script type="module" src="/assets/main.js"></script>
+  </body>
+</html>

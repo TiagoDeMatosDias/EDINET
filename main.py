@@ -1,7 +1,7 @@
 import sys
 import threading
 import logging
-from typing import Optional
+import argparse
 
 
 def _run_gui(
@@ -78,35 +78,68 @@ def _start_api_server(host: str, port: int) -> None:
         logging.getLogger(__name__).error(f"API server error: {e}")
 
 
-def _parse_args() -> tuple[bool, str, int]:
-    """Parse command-line arguments for API server configuration.
+def _run_web(host: str = "127.0.0.1", port: int = 8000, reload: bool = True) -> None:
+    """Launch the web workstation server.
+
+    Args:
+        host: Host interface for the web server.
+        port: Port for the web server.
+        reload: Enable auto-reload for development.
+    """
+    from src.utilities.logger import setup_logging
+    import uvicorn
+
+    setup_logging()
+    logger = logging.getLogger(__name__)
+    logger.info("Starting web workstation on http://%s:%s", host, port)
+
+    uvicorn.run("src.web_app.server:app", host=host, port=port, reload=reload)
+
+
+def _parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for UI/server mode selection.
 
     Returns:
-        Tuple of (start_api_server, host, port)
+        Parsed argparse namespace.
     """
-    start_api = '--no-api' not in sys.argv
-    api_host = '127.0.0.1'
-    api_port = 8000
-    
-    for arg in sys.argv:
-        if arg.startswith('--api-host='):
-            api_host = arg.split('=', 1)[1]
-        elif arg.startswith('--api-port='):
-            try:
-                api_port = int(arg.split('=', 1)[1])
-            except ValueError:
-                pass
-    
-    return start_api, api_host, api_port
+    parser = argparse.ArgumentParser(description="EDINET launcher")
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Run the web workstation instead of the Tk desktop UI.",
+    )
+    parser.add_argument(
+        "--no-api",
+        action="store_true",
+        help="Tk mode only: do not start the API server in the background.",
+    )
+    parser.add_argument(
+        "--api-host",
+        default="127.0.0.1",
+        help="Host for the API server (Tk mode) or web server (--web mode).",
+    )
+    parser.add_argument(
+        "--api-port",
+        type=int,
+        default=8000,
+        help="Port for the API server (Tk mode) or web server (--web mode).",
+    )
+    parser.add_argument(
+        "--no-reload",
+        action="store_true",
+        help="Web mode only: disable auto-reload.",
+    )
+    return parser.parse_args()
 
 
 if __name__ == '__main__':
-    # Parse API server arguments
-    start_api, api_host, api_port = _parse_args()
-    
-    # Launch the GUI (CLI mode is no longer supported)
-    _run_gui(
-        start_api_server=start_api,
-        api_host=api_host,
-        api_port=api_port
-    )
+    args = _parse_args()
+
+    if args.web:
+        _run_web(host=args.api_host, port=args.api_port, reload=not args.no_reload)
+    else:
+        _run_gui(
+            start_api_server=not args.no_api,
+            api_host=args.api_host,
+            api_port=args.api_port,
+        )

@@ -21,7 +21,6 @@ def run_generate_rolling_metrics(config, overwrite=False):
 STEP_DEFINITION = StepDefinition(
     name="generate_rolling_metrics",
     handler=run_generate_rolling_metrics,
-    aliases=("Generate Rolling Metrics",),
     supports_overwrite=True,
     input_fields=(
         StepFieldDefinition("Source_Database", "database", required=True),

@@ -287,7 +287,7 @@ def run_pipeline(config: PipelineConfig = Body(...)) -> PipelineRunResponse:
                     step_name=step_name,
                     success=True,
                     result=result,
-                    duration_ms=(datetime.now() - total_start_time).total_seconds() * 1000
+                    duration_ms=int((datetime.now() - total_start_time).total_seconds() * 1000)
                 )
                 results.append(step_result)
                 logger.info("Step completed: %s", step_name)
@@ -298,7 +298,7 @@ def run_pipeline(config: PipelineConfig = Body(...)) -> PipelineRunResponse:
                     step_name=step_name,
                     success=False,
                     error_message=str(e),
-                    duration_ms=(datetime.now() - total_start_time).total_seconds() * 1000
+                    duration_ms=int((datetime.now() - total_start_time).total_seconds() * 1000)
                 )
                 results.append(step_result)
                 job.error_message = f"Step '{step_name}' failed: {str(e)}"
@@ -306,7 +306,7 @@ def run_pipeline(config: PipelineConfig = Body(...)) -> PipelineRunResponse:
         # Mark as completed
         job.status = "completed"
         job.completed_at = datetime.now()
-        total_duration_ms = (datetime.now() - job.started_at).total_seconds() * 1000 if job.started_at else None
+        total_duration_ms = int((datetime.now() - job.started_at).total_seconds() * 1000) if job.started_at else None
         
         logger.info("Pipeline run completed for job %s",
                    job_id)

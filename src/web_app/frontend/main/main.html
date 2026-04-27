@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shade Research — Main</title>
+    <link rel="stylesheet" href="/assets/common/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-logo" src="/brand-assets/icon_hexagon.svg" alt="Shade Research" />
+          <div>
+            <div class="brand-title">Shade Research</div>
+            <div class="brand-subtitle">terminal-style research console</div>
+          </div>
+        </div>
+
+        <nav class="tabs" aria-label="Primary navigation">
+          <button class="tab is-active" data-view="main">Main</button>
+          <button class="tab" data-view="orchestrator">Orchestrator</button>
+          <button class="tab" data-view="screening">Screening</button>
+          <button class="tab" data-view="security">Security Analysis</button>
+        </nav>
+
+        <div class="topbar-actions">
+          <div class="status-pill" id="backend-status">Connecting…</div>
+          <button class="ghost-btn" id="toggle-console-btn">Hide Console</button>
+          <button class="ghost-btn" id="refresh-btn">Refresh</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+
+        <!-- ================================================================
+             Main dashboard
+        ================================================================= -->
+        <section class="view view-main is-active" data-view-panel="main">
+          <div class="hero-strip">
+            <div>
+              <div class="kicker">Main screen</div>
+              <h1>Pipeline dashboard and setup launcher</h1>
+              <p>
+                Review recent runs, jump into the orchestrator, and keep the workspace compact and fast.
+              </p>
+            </div>
+            <div class="hero-metrics" id="main-metrics"></div>
+          </div>
+
+          <div class="main-grid">
+            <section class="panel panel-large">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">Recent Jobs</div>
+                  <div class="panel-subtitle">Latest pipeline executions returned by the API.</div>
+                </div>
+                <button class="tiny-btn" id="reload-jobs">Reload</button>
+              </div>
+              <div class="table-wrap">
+                <table class="dense-table" id="jobs-table">
+                  <thead>
+                    <tr>
+                      <th>Job ID</th>
+                      <th>Status</th>
+                      <th>Current Step</th>
+                      <th>Progress</th>
+                      <th>Created</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </section>
+
+            <aside class="side-stack">
+              <section class="panel">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">Local Setups</div>
+                    <div class="panel-subtitle">Saved in this browser.</div>
+                  </div>
+                </div>
+                <div id="setup-list" class="list compact-list"></div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">Step Catalog</div>
+                    <div class="panel-subtitle">Discovered from /api/steps.</div>
+                  </div>
+                </div>
+                <div id="step-catalog-preview" class="catalog-preview"></div>
+              </section>
+            </aside>
+          </div>
+        </section>
+
+      </main>
+
+      <footer class="console panel">
+        <div class="panel-head console-head">
+          <div>
+            <div class="panel-title">Console</div>
+            <div class="panel-subtitle">Dense, terminal-style event stream.</div>
+          </div>
+          <div class="console-actions">
+            <button class="tiny-btn" id="console-toggle">Hide</button>
+            <button class="tiny-btn" id="console-clear">Clear</button>
+            <button class="tiny-btn" id="console-export">Export</button>
+            <label class="toggle"><input id="console-autoscroll" type="checkbox" checked /> Auto-scroll</label>
+            <select id="console-filter">
+              <option value="all">All</option>
+              <option value="info">Info</option>
+              <option value="warn">Warn</option>
+              <option value="error">Error</option>
+              <option value="debug">Debug</option>
+            </select>
+          </div>
+        </div>
+        <div id="console-log" class="console-log" aria-live="polite"></div>
+      </footer>
+    </div>
+
+    <script type="module" src="/assets/main/main.js"></script>
+  </body>
+</html>

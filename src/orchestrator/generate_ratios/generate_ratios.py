@@ -454,7 +454,6 @@ def run_generate_ratios(config, overwrite=False):
 STEP_DEFINITION = StepDefinition(
     name="generate_ratios",
     handler=run_generate_ratios,
-    aliases=("Generate Ratios",),
     supports_overwrite=True,
     input_fields=(
         StepFieldDefinition("Database", "database", required=True),

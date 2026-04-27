@@ -54,7 +54,6 @@ class StepFieldDefinition:
 class StepDefinition:
     name: str
     handler: Callable
-    aliases: tuple[str, ...] = ()
     required_keys: tuple[str, ...] = ()
     config_key: str | None = None
     display_name: str | None = None
@@ -87,7 +86,6 @@ class StepDefinition:
         return {
             "name": self.name,
             "display_name": self.resolved_display_name,
-            "aliases": list(self.aliases),
             "config_key": self.resolved_config_key,
             "required_keys": list(self.required_keys),
             "required_config_fields": [
@@ -135,7 +133,6 @@ def iter_step_modules(package_name: str = "src.orchestrator"):
 def build_step_registry(package_name: str = "src.orchestrator"):
     """Discover step modules and build orchestrator registries."""
     handlers: dict[str, Callable] = {}
-    canonical_names: dict[str, str] = {}
     step_definitions: dict[str, StepDefinition] = {}
     discovered_modules: list[str] = []
 
@@ -163,13 +160,11 @@ def build_step_registry(package_name: str = "src.orchestrator"):
 
             step_definitions[definition.name] = definition
 
-            for step_name in (definition.name, *definition.aliases):
-                if step_name in handlers:
-                    raise RuntimeError(
-                        f"Duplicate orchestrator step registration for '{step_name}' from module {module_name}."
-                    )
-                handlers[step_name] = definition.handler
-                canonical_names[step_name] = definition.name
+            if definition.name in handlers:
+                raise RuntimeError(
+                    f"Duplicate orchestrator step registration for '{definition.name}' from module {module_name}."
+                )
+            handlers[definition.name] = definition.handler
 
             module_registered = True
 
@@ -178,7 +173,6 @@ def build_step_registry(package_name: str = "src.orchestrator"):
 
     return (
         handlers,
-        canonical_names,
         step_definitions,
         tuple(discovered_modules),
     )

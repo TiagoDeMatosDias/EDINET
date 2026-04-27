@@ -11,7 +11,6 @@ from .common.validation import apply_step_config_defaults, normalize_pipeline_st
 logger = logging.getLogger(__name__)
 
 STEP_HANDLERS: dict[str, Callable] = {}
-STEP_CANONICAL_NAMES: dict[str, str] = {}
 STEP_DEFINITIONS: dict[str, StepDefinition] = {}
 DISCOVERED_STEP_MODULES: tuple[str, ...] = ()
 
@@ -19,21 +18,14 @@ DISCOVERED_STEP_MODULES: tuple[str, ...] = ()
 def refresh_step_registry() -> None:
     """Rebuild orchestrator step registries from discovered step modules."""
     global STEP_HANDLERS
-    global STEP_CANONICAL_NAMES
     global STEP_DEFINITIONS
     global DISCOVERED_STEP_MODULES
 
     (
         STEP_HANDLERS,
-        STEP_CANONICAL_NAMES,
         STEP_DEFINITIONS,
         DISCOVERED_STEP_MODULES,
     ) = build_step_registry()
-
-
-def canonical_step_name(step_name: str) -> str:
-    """Return the canonical name for *step_name*, resolving any aliases."""
-    return STEP_CANONICAL_NAMES.get(step_name, step_name)
 
 
 def list_available_steps() -> list[dict[str, Any]]:
@@ -86,13 +78,11 @@ def validate_config(config, enabled_steps: list[str]) -> None:
             config,
             normalized_steps,
             step_definitions=STEP_DEFINITIONS,
-            canonical_names=STEP_CANONICAL_NAMES,
         )
         validate_pipeline_input(
             config,
             normalized_steps,
             step_definitions=STEP_DEFINITIONS,
-            canonical_names=STEP_CANONICAL_NAMES,
         )
     except RuntimeError as exc:
         logger.error(str(exc))
@@ -110,13 +100,11 @@ def validate_input(
         config_obj,
         normalized_steps,
         step_definitions=STEP_DEFINITIONS,
-        canonical_names=STEP_CANONICAL_NAMES,
     )
     validate_pipeline_input(
         config_obj,
         normalized_steps,
         step_definitions=STEP_DEFINITIONS,
-        canonical_names=STEP_CANONICAL_NAMES,
     )
     return normalized_steps
 

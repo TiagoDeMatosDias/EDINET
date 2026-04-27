@@ -47,7 +47,6 @@ def _write_step_package(
             STEP_DEFINITION = StepDefinition(
                 name="{step_name}",
                 handler=run_{step_name},
-                aliases=("{alias}",),
                 required_keys=("API_KEY",),
                 input_fields=(
                     StepFieldDefinition("Target_Database", "database", required=True),
@@ -175,7 +174,6 @@ class TestExecuteStep:
         available_step_names = {step["name"] for step in available_steps}
 
         assert "generate_financial_statements" in STEP_HANDLERS
-        assert "Generate Financial Statements" in STEP_HANDLERS
         assert "generate_financial_statements" in available_step_names
         assert any(
             step["name"] == "generate_financial_statements"
@@ -193,13 +191,11 @@ def test_build_step_registry_discovers_custom_step_package(tmp_path, monkeypatch
 
     importlib.invalidate_caches()
     _purge_package_modules(package_name)
-    handlers, canonical_names, step_definitions, discovered_modules = build_step_registry(
+    handlers, step_definitions, discovered_modules = build_step_registry(
         package_name=package_name,
     )
 
     assert "alpha_step" in handlers
-    assert "Alpha Step" in handlers
-    assert canonical_names["Alpha Step"] == "alpha_step"
     assert step_definitions["alpha_step"].name == "alpha_step"
     assert step_definitions["alpha_step"].required_keys == ("API_KEY",)
     assert step_definitions["alpha_step"].resolved_config_key == "alpha_step_config"
@@ -216,7 +212,7 @@ def test_build_step_registry_picks_up_new_step_folder_on_refresh(tmp_path, monke
 
     importlib.invalidate_caches()
     _purge_package_modules(package_name)
-    handlers, _, _, discovered_modules = build_step_registry(package_name=package_name)
+    handlers, _, discovered_modules = build_step_registry(package_name=package_name)
     assert "alpha_step" in handlers
     assert "beta_step" not in handlers
     assert f"{package_name}.alpha_step" in discovered_modules
@@ -225,11 +221,9 @@ def test_build_step_registry_picks_up_new_step_folder_on_refresh(tmp_path, monke
 
     importlib.invalidate_caches()
     _purge_package_modules(package_name)
-    handlers, canonical_names, _, discovered_modules = build_step_registry(package_name=package_name)
+    handlers, _, discovered_modules = build_step_registry(package_name=package_name)
 
     assert "beta_step" in handlers
-    assert "Beta Step" in handlers
-    assert canonical_names["Beta Step"] == "beta_step"
     assert f"{package_name}.beta_step" in discovered_modules
 
 
