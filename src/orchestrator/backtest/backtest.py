@@ -9,10 +9,12 @@ logger = logging.getLogger(__name__)
 def run_backtest(config, overwrite=False):
     logger.info("Running backtesting...")
     step_cfg = config.get("backtesting_config", {})
+    raw_db = step_cfg.get("Source_Database")
+    db_path = config.resolve_db_path(raw_db) if hasattr(config, 'resolve_db_path') else raw_db
 
     return backtesting.run_backtest(
         step_cfg,
-        db_path=step_cfg.get("Source_Database"),
+        db_path=db_path,
         prices_table="Stock_Prices",
         ratios_table=step_cfg.get("PerShare_Table") or "ShareMetrics",
         company_table="CompanyInfo",

@@ -81,6 +81,59 @@ export async function fetchJson(url, options = {}) {
 }
 
 // --------------------------------------------------------------------------
+// Path resolution utilities
+// --------------------------------------------------------------------------
+
+let _cachedRepoRoot = null;
+
+/**
+ * Resolve a user-provided database identifier into a filesystem path using
+ * the server-provided `repo_root` when available.
+ *
+ * Behaviour (best-effort in the browser):
+ * - Falsy values are returned unchanged.
+ * - Absolute paths (Windows drive letter, UNC, or POSIX starting `/`) are
+ *   returned unchanged.
+ * - Relative paths (contain `/` or `\\`) or bare filenames will be
+ *   prefixed with the server `repo_root` if the server exposes it via
+ *   `/api/config`. The function caches the repo_root after the first call.
+ */
+export async function resolveDbPath(dbValue) {
+  if (!dbValue) return dbValue;
+  const raw = String(dbValue).trim().replace(/^['"]|['"]$/g, '');
+
+  // Detect absolute paths (Windows drive, UNC, or POSIX)
+  const isAbsWin = /^[A-Za-z]:[\\/]/.test(raw);
+  const isAbsUnix = raw.startsWith('/') || raw.startsWith('\\\\');
+  if (isAbsWin || isAbsUnix) return raw;
+
+  // Try to fetch repo root from server (cached)
+  if (_cachedRepoRoot === null) {
+    try {
+      const resp = await fetch('/api/config');
+      if (resp.ok) {
+        const js = await resp.json();
+        _cachedRepoRoot = js?.repo_root || null;
+      } else {
+        _cachedRepoRoot = null;
+      }
+    } catch (e) {
+      _cachedRepoRoot = null;
+    }
+  }
+
+  if (_cachedRepoRoot) {
+    let base = String(_cachedRepoRoot);
+    if (base.endsWith('/') || base.endsWith('\\')) base = base.slice(0, -1);
+    if (raw.startsWith('/') || raw.startsWith('\\')) return base + raw;
+    return base + '/' + raw;
+  }
+
+  // Fallback: return the original value unchanged
+  return raw;
+}
+
+// --------------------------------------------------------------------------
 // Small reusable DOM builders used by multiple screens
 // --------------------------------------------------------------------------
 

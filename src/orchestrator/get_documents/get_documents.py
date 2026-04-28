@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 def run_get_documents(config, overwrite=False):
     logger.info("Getting all documents with metadata...")
     step_cfg = config.get("get_documents_config", {})
-    target_database = step_cfg.get("Target_Database")
+    raw_target = step_cfg.get("Target_Database")
+    target_database = config.resolve_db_path(raw_target) if hasattr(config, 'resolve_db_path') else raw_target
 
     edinet = Edinet(
         base_url=config.get("baseURL"),

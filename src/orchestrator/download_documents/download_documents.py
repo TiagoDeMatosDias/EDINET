@@ -9,7 +9,9 @@ logger = logging.getLogger(__name__)
 def run_download_documents(config, overwrite=False):
     logger.info("Downloading documents...")
     step_cfg = config.get("download_documents_config", {})
-    target_database = step_cfg.get("Target_Database")
+    # Resolve Target_Database to an absolute path when possible
+    raw_target = step_cfg.get("Target_Database")
+    target_database = config.resolve_db_path(raw_target) if hasattr(config, 'resolve_db_path') else raw_target
     # Hardcoded table names (moved out of .env)
     doc_list_table = "DocumentList"
     financial_data_table = "financialData_full"

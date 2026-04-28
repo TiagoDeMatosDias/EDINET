@@ -7,7 +7,7 @@
  */
 
 import { STATE, els, callbacks, saveLastSetupName, persistLocalSetups, loadLocalSetups, LAST_SETUP_KEY } from '../common/state.js';
-import { el, $, $all, deepClone, formatDate, metric, kvLine, section, fetchJson } from '../common/utils.js';
+import { el, $, $all, deepClone, formatDate, metric, kvLine, section, fetchJson, resolveDbPath } from '../common/utils.js';
 import { log } from '../common/console.js';
 
 // =============================================================================
@@ -319,8 +319,28 @@ export async function runPipeline() {
   STATE.pipeline.forEach(step => { if (step.enabled) step.status = 'idle'; step.error = null; });
   renderPipelineList();
 
+  // Resolve Source_Database / Target_Database entries to absolute paths
+  const configForSubmit = deepClone(STATE.config);
+  for (const [cfgKey, cfg] of Object.entries(configForSubmit || {})) {
+    if (!cfg || typeof cfg !== 'object') continue;
+    if (typeof cfg.Target_Database === 'string' && cfg.Target_Database.trim() !== '') {
+      try {
+        cfg.Target_Database = await resolveDbPath(cfg.Target_Database);
+      } catch (e) {
+        log('warn', `Failed to resolve Target_Database for ${cfgKey}: ${e?.message || e}`);
+      }
+    }
+    if (typeof cfg.Source_Database === 'string' && cfg.Source_Database.trim() !== '') {
+      try {
+        cfg.Source_Database = await resolveDbPath(cfg.Source_Database);
+      } catch (e) {
+        log('warn', `Failed to resolve Source_Database for ${cfgKey}: ${e?.message || e}`);
+      }
+    }
+  }
+
   const payload = {
-    config: deepClone(STATE.config),
+    config: configForSubmit,
     steps: enabled.map(step => ({ name: step.name, overwrite: !!step.overwrite })),
   };
   STATE.running = true;

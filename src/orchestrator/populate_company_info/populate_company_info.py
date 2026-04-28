@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 def run_populate_company_info(config, overwrite=False):
     logger.info("Populating company info table...")
     step_cfg = config.get("populate_company_info_config", {})
-    target_database = step_cfg.get("Target_Database")
+    raw_target = step_cfg.get("Target_Database")
+    target_database = config.resolve_db_path(raw_target) if hasattr(config, 'resolve_db_path') else raw_target
 
     edinet = Edinet(
         base_url=config.get("baseURL", ""),

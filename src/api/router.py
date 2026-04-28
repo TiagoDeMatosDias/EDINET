@@ -6,6 +6,7 @@ The underlying pipeline logic is unchanged and remains fully backward compatible
 """
 
 import logging
+from pathlib import Path
 from typing import Any, Optional
 from uuid import UUID, uuid4
 from datetime import datetime
@@ -193,6 +194,20 @@ def list_steps() -> AvailableStepsResponse:
         return AvailableStepsResponse(steps=steps)
     except Exception as e:
         logger.error("Failed to list steps: %s", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/api/config",
+    summary="Server configuration",
+    description="Return minimal server configuration (repo root) for front-end helpers",
+)
+def get_server_config() -> dict:
+    try:
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        return {"repo_root": str(repo_root)}
+    except Exception as e:
+        logger.error("Failed to get server config: %s", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 

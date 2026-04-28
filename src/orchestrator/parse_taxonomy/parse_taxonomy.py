@@ -17,7 +17,8 @@ def _as_bool(value) -> bool:
 def run_parse_taxonomy(config, overwrite=False):
     logger.info("Parsing EDINET taxonomy...")
     step_cfg = config.get("parse_taxonomy_config", {})
-    target_database = step_cfg.get("Target_Database")
+    raw_target = step_cfg.get("Target_Database")
+    target_database = config.resolve_db_path(raw_target) if hasattr(config, 'resolve_db_path') else raw_target
 
     xsd_file = step_cfg.get("xsd_file")
     if xsd_file:

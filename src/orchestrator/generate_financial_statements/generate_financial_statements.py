@@ -10,10 +10,14 @@ logger = logging.getLogger(__name__)
 def run_generate_financial_statements(config, overwrite=False):
     logger.info("Generating financial statements...")
     step_cfg = config.get("generate_financial_statements_config", {})
+    raw_source = step_cfg.get("Source_Database")
+    raw_target = step_cfg.get("Target_Database")
+    source_db = config.resolve_db_path(raw_source) if hasattr(config, 'resolve_db_path') else raw_source
+    target_db = config.resolve_db_path(raw_target) if hasattr(config, 'resolve_db_path') else raw_target
 
     return financial_statement_services.generate_financial_statements(
-        source_database=step_cfg.get("Source_Database"),
-        target_database=step_cfg.get("Target_Database"),
+        source_database=source_db,
+        target_database=target_db,
         granularity_level=step_cfg.get("Granularity_level", 3),
         overwrite=overwrite,
     )

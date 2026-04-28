@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 stockprice_api = stock_prices
 
 
-def get_tickers_from_prices(conn, prices_table="Stock_Prices"):
+def get_tickers_from_prices(conn):
     """Return a list of distinct, non-null, non-empty Company_Ticker values from `prices_table`.
 
     This helper uses the provided SQLite connection and will return an empty list if the
@@ -19,13 +19,13 @@ def get_tickers_from_prices(conn, prices_table="Stock_Prices"):
     # Check table exists to avoid OperationalError when the table is missing
     cursor.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-        (prices_table,),
+        ("CompanyInfo",),
     )
     if not cursor.fetchone():
         return []
 
     cursor.execute(
-        f"SELECT DISTINCT Company_Ticker FROM {prices_table} "
+        f"SELECT DISTINCT Company_Ticker FROM CompanyInfo "
         "WHERE Company_Ticker IS NOT NULL AND TRIM(Company_Ticker) != ''"
     )
     rows = cursor.fetchall()
@@ -43,7 +43,7 @@ def update_all_stock_prices(db_name):
         prices_table = "Stock_Prices"
 
         # First, try to get tickers already listed in the prices table (if it exists).
-        tickers = get_tickers_from_prices(conn, prices_table)
+        tickers = get_tickers_from_prices(conn)
 
         # Ensure the prices table exists before attempting updates.
         stockprice_api._create_prices_table(conn, prices_table)
@@ -51,7 +51,7 @@ def update_all_stock_prices(db_name):
 
         # If the table was created above and we found no tickers earlier, try again.
         if not tickers:
-            tickers = get_tickers_from_prices(conn, prices_table)
+            tickers = get_tickers_from_prices(conn)
 
         logger.info("Found %s tickers to update stock prices for", len(tickers))
 
@@ -72,24 +72,13 @@ def update_all_stock_prices(db_name):
             conn.close()
 
 
-def run_update_stock_prices(db_location, overwrite=False):
-    """Handler that accepts a single database location (preferred).
-
-    For backward compatibility, if a non-string (e.g. config dict) is passed, the
-    function will attempt to extract `Target_Database` from
-    `update_stock_prices_config`.
-    """
+def run_update_stock_prices(config, overwrite=False):
+    """Handler that resolves the target database path and runs the updater."""
     logger.info("Updating stock prices...")
-    if isinstance(db_location, str):
-        db_name = db_location
-    else:
-        step_cfg = {}
-        try:
-            step_cfg = db_location.get("update_stock_prices_config", {})
-        except Exception:
-            # Not a mapping, leave step_cfg empty
-            step_cfg = {}
-        db_name = step_cfg.get("Target_Database")
+    # Expect a Config-like object here; fall back to dict-like access.
+    step_cfg = config.get("update_stock_prices_config", {}) if hasattr(config, 'get') else (config or {}).get("update_stock_prices_config", {})
+    raw_target = step_cfg.get("Target_Database")
+    db_name = config.resolve_db_path(raw_target) if hasattr(config, 'resolve_db_path') else raw_target
 
     return update_all_stock_prices(db_name)
 

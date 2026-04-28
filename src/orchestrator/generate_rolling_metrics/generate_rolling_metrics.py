@@ -11,9 +11,14 @@ def run_generate_rolling_metrics(config, overwrite=False):
     logger.info("Generating rolling metrics tables...")
     step_cfg = config.get("generate_rolling_metrics_config", {})
 
+    raw_source = step_cfg.get("Source_Database")
+    raw_target = step_cfg.get("Target_Database")
+    source_db = config.resolve_db_path(raw_source) if hasattr(config, 'resolve_db_path') else raw_source
+    target_db = config.resolve_db_path(raw_target) if hasattr(config, 'resolve_db_path') else raw_target
+
     return rolling_metrics_services.generate_rolling_metrics(
-        source_database=step_cfg.get("Source_Database"),
-        target_database=step_cfg.get("Target_Database"),
+        source_database=source_db,
+        target_database=target_db,
         overwrite=overwrite,
     )
 
