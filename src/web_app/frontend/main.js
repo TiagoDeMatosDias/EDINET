@@ -98,6 +98,10 @@ function setView(view) {
   } else if (view === 'security') {
     renderSecurityAnalysis();
   }
+  // Ensure console state is preserved when switching views
+  const label = STATE.consoleHidden ? 'Show Console' : 'Hide Console';
+  if (els.toggleConsoleBtn) els.toggleConsoleBtn.textContent = label;
+  if (els.consoleToggle) els.consoleToggle.textContent = STATE.consoleHidden ? 'Show' : 'Hide';
 }
 
 // =============================================================================
