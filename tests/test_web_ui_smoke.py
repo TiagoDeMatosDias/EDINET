@@ -20,7 +20,7 @@ def test_main_page_has_topbar_with_all_tabs() -> None:
     assert soup.select_one("header.topbar") is not None
     tab_labels = [btn.get_text(strip=True) for btn in soup.select("nav.tabs button.tab")]
     assert tab_labels == ["Main", "Orchestrator", "Screening", "Security Analysis"]
-    assert soup.select_one("script[src*='pages/main.js']") is not None
+    assert soup.select_one("script[src*='assets/main/main.js']") is not None
 
 
 def test_main_page_contains_jobs_region() -> None:
@@ -52,10 +52,10 @@ def test_security_page_exists_with_correct_panel() -> None:
 
 def test_each_page_loads_correct_js_module() -> None:
     cases = [
-        ("/",             "pages/main.js"),
-        ("/orchestrator", "pages/orchestrator.js"),
-        ("/screening",    "pages/screening.js"),
-        ("/security",     "pages/security.js"),
+        ("/",             "/assets/main/main.js"),
+        ("/orchestrator", "/assets/orchestrator/orchestrator.js"),
+        ("/screening",    "/assets/screening/screening.js"),
+        ("/security",     "/assets/security_analysis/security.js"),
     ]
     for path, expected_script in cases:
         soup = _soup_for(path)
@@ -64,9 +64,24 @@ def test_each_page_loads_correct_js_module() -> None:
             f"{path} does not load {expected_script}. Scripts found: {scripts}"
 
 
-def test_each_page_has_console_log() -> None:
+def test_console_only_on_orchestrator_page() -> None:
+    """Console log element should only exist on the orchestrator page."""
+    # Orchestrator must have the console
+    soup_orch = _soup_for("/orchestrator")
+    assert soup_orch.find(id="console-log") is not None, "orchestrator missing #console-log"
+    assert soup_orch.find(id="console-toggle") is not None, "orchestrator missing #console-toggle"
+
+    # Other pages must NOT have the console
+    for path in ("/", "/screening", "/security"):
+        soup = _soup_for(path)
+        assert soup.find(id="console-log") is None, f"{path} should not have #console-log"
+        assert soup.find(id="console-toggle") is None, f"{path} should not have #console-toggle"
+
+
+def test_no_toggle_console_btn_in_topbar() -> None:
+    """No page should have a toggle-console-btn in the topbar."""
     for path in ("/", "/orchestrator", "/screening", "/security"):
         soup = _soup_for(path)
-        assert soup.find(id="console-log") is not None, \
-            f"{path} missing #console-log"
+        assert soup.find(id="toggle-console-btn") is None, \
+            f"{path} should not have #toggle-console-btn in topbar"
 

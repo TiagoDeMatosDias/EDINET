@@ -19,3 +19,7 @@ dist/
 *.spec
 scripts/*
 debug.log
+__pycache__/config.cpython-313.pyc
+nul
+*.db
+*.log

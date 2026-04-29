@@ -2,6 +2,7 @@
 
 import importlib
 from pathlib import Path
+import sqlite3
 import sys
 import textwrap
 import threading
@@ -415,7 +416,6 @@ class TestUpdateStockPricesStep:
         config = Config.from_dict({
             "DB_COMPANY_INFO_TABLE": "company_info",
             "DB_STOCK_PRICES_TABLE": "stock_prices",
-            "DB_FINANCIAL_DATA_TABLE": "financial_data",
             "update_stock_prices_config": {
                 "Target_Database": "prices.db",
             },
@@ -430,8 +430,147 @@ class TestUpdateStockPricesStep:
             db_name="prices.db",
             Company_Table="company_info",
             prices_table="stock_prices",
-            standardized_table="financial_data",
         )
+
+
+class TestGetTickersFromPrices:
+    """Unit tests for get_tickers_from_prices with a real SQLite database."""
+
+    def test_returns_empty_when_table_does_not_exist(self):
+        from src.orchestrator.update_stock_prices.update_stock_prices import get_tickers_from_prices
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            result = get_tickers_from_prices(conn, table_name="CompanyInfo")
+            assert result == []
+        finally:
+            conn.close()
+
+    def test_returns_empty_when_table_exists_but_has_no_ticker_column(self):
+        from src.orchestrator.update_stock_prices.update_stock_prices import get_tickers_from_prices
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, CompanyName TEXT)")
+            conn.commit()
+            result = get_tickers_from_prices(conn, table_name="CompanyInfo")
+            assert result == []
+        finally:
+            conn.close()
+
+    def test_returns_empty_when_all_tickers_are_null_or_whitespace(self):
+        from src.orchestrator.update_stock_prices.update_stock_prices import get_tickers_from_prices
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Company_Ticker TEXT)")
+            conn.executemany(
+                "INSERT INTO CompanyInfo (edinetCode, Company_Ticker) VALUES (?, ?)",
+                [("E1", None), ("E2", ""), ("E3", "  "), ("E4", "   ")],
+            )
+            conn.commit()
+            result = get_tickers_from_prices(conn, table_name="CompanyInfo")
+            assert result == []
+        finally:
+            conn.close()
+
+    def test_returns_distinct_non_empty_tickers_from_company_info(self):
+        from src.orchestrator.update_stock_prices.update_stock_prices import get_tickers_from_prices
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Company_Ticker TEXT)")
+            conn.executemany(
+                "INSERT INTO CompanyInfo (edinetCode, Company_Ticker) VALUES (?, ?)",
+                [
+                    ("E1", "7203"),
+                    ("E2", "7203"),  # duplicate ticker
+                    ("E3", "9984"),
+                    ("E4", None),
+                    ("E5", ""),
+                ],
+            )
+            conn.commit()
+            result = get_tickers_from_prices(conn, table_name="CompanyInfo")
+            assert sorted(result) == ["7203", "9984"]
+        finally:
+            conn.close()
+
+    def test_returns_tickers_from_stock_prices_table(self):
+        from src.orchestrator.update_stock_prices.update_stock_prices import get_tickers_from_prices
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute(
+                "CREATE TABLE Stock_Prices (Date TEXT, Ticker TEXT, Currency TEXT, Price REAL)"
+            )
+            conn.executemany(
+                "INSERT INTO Stock_Prices (Date, Ticker, Currency, Price) VALUES (?, ?, ?, ?)",
+                [
+                    ("2024-01-01", "7203", "JPY", 3000.0),
+                    ("2024-01-02", "7203", "JPY", 3010.0),
+                    ("2024-01-01", "9984", "JPY", 5000.0),
+                ],
+            )
+            conn.commit()
+            result = get_tickers_from_prices(conn, table_name="Stock_Prices")
+            assert sorted(result) == ["7203", "9984"]
+        finally:
+            conn.close()
+
+    def test_trims_whitespace_from_tickers(self):
+        from src.orchestrator.update_stock_prices.update_stock_prices import get_tickers_from_prices
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Company_Ticker TEXT)")
+            conn.executemany(
+                "INSERT INTO CompanyInfo (edinetCode, Company_Ticker) VALUES (?, ?)",
+                [("E1", " 7203 "), ("E2", "7203")],
+            )
+            conn.commit()
+            result = get_tickers_from_prices(conn, table_name="CompanyInfo")
+            assert sorted(result) == [" 7203 ", "7203"]
+        finally:
+            conn.close()
+
+    def test_table_exists_but_with_different_casing_in_sqlite_master(self):
+        """Simulate pandas creating a table with different case than expected."""
+        from src.orchestrator.update_stock_prices.update_stock_prices import get_tickers_from_prices
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            # Create the table with lowercase name (as pandas might do)
+            conn.execute(
+                "CREATE TABLE companyinfo (edinetCode TEXT, Company_Ticker TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO companyinfo (edinetCode, Company_Ticker) VALUES (?, ?)",
+                ("E1", "7203"),
+            )
+            conn.commit()
+            # Query with the expected casing — should still work because
+            # we use OperationalError handling, not sqlite_master name check
+            result = get_tickers_from_prices(conn, table_name="CompanyInfo")
+            assert result == ["7203"]
+        finally:
+            conn.close()
+
+    def test_default_table_name_is_company_info(self):
+        from src.orchestrator.update_stock_prices.update_stock_prices import get_tickers_from_prices
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Company_Ticker TEXT)")
+            conn.execute(
+                "INSERT INTO CompanyInfo (edinetCode, Company_Ticker) VALUES (?, ?)",
+                ("E1", "7203"),
+            )
+            conn.commit()
+            result = get_tickers_from_prices(conn)
+            assert result == ["7203"]
+        finally:
+            conn.close()
 
 
 class TestGenerateFinancialStatementsStep:

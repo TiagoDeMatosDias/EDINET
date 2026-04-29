@@ -9,49 +9,50 @@ logger = logging.getLogger(__name__)
 stockprice_api = stock_prices
 
 
-def get_tickers_from_prices(conn):
-    """Return a list of distinct, non-null, non-empty Company_Ticker values from `prices_table`.
+def get_tickers_from_prices(conn, table_name="CompanyInfo"):
+    """Return a list of distinct, non-null, non-empty ticker values from *table_name*.
 
-    This helper uses the provided SQLite connection and will return an empty list if the
-    table does not exist.
+    Looks for a column named ``Company_Ticker`` (when *table_name* is ``CompanyInfo``)
+    or ``Ticker`` (when *table_name* is ``Stock_Prices``) and returns every distinct
+    non-null / non-whitespace value.
+
+    Returns an empty list when the table does not exist or contains no matching rows.
     """
     cursor = conn.cursor()
-    # Check table exists to avoid OperationalError when the table is missing
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-        ("CompanyInfo",),
-    )
-    if not cursor.fetchone():
+    column = "Company_Ticker" if table_name == "CompanyInfo" else "Ticker"
+    try:
+        cursor.execute(
+            f"SELECT DISTINCT {column} FROM [{table_name}] "
+            f"WHERE {column} IS NOT NULL AND TRIM({column}) != ''"
+        )
+        rows = cursor.fetchall()
+        return [r[0] for r in rows]
+    except sqlite3.OperationalError:
         return []
 
-    cursor.execute(
-        f"SELECT DISTINCT Company_Ticker FROM CompanyInfo "
-        "WHERE Company_Ticker IS NOT NULL AND TRIM(Company_Ticker) != ''"
-    )
-    rows = cursor.fetchall()
-    return [r[0] for r in rows]
 
+def update_all_stock_prices(db_name, Company_Table="CompanyInfo", prices_table="Stock_Prices"):
+    """Fetch and store the latest stock prices for tickers present in the database.
 
-def update_all_stock_prices(db_name):
-    """Fetch and store the latest stock prices for tickers present in `Stock_Prices`.
-
-    This function takes only a database path as its input.
+    Args:
+        db_name: Path to the SQLite database.
+        Company_Table: Name of the company-info table (default ``CompanyInfo``).
+        prices_table: Name of the stock-prices table (default ``Stock_Prices``).
     """
     conn = None
     try:
         conn = sqlite3.connect(db_name)
-        prices_table = "Stock_Prices"
 
-        # First, try to get tickers already listed in the prices table (if it exists).
-        tickers = get_tickers_from_prices(conn)
+        # Try the prices table first (tickers that already have some price history).
+        tickers = get_tickers_from_prices(conn, table_name=prices_table)
 
         # Ensure the prices table exists before attempting updates.
         stockprice_api._create_prices_table(conn, prices_table)
         conn.commit()
 
-        # If the table was created above and we found no tickers earlier, try again.
+        # If the prices table was empty (or just created), fall back to CompanyInfo.
         if not tickers:
-            tickers = get_tickers_from_prices(conn)
+            tickers = get_tickers_from_prices(conn, table_name=Company_Table)
 
         logger.info("Found %s tickers to update stock prices for", len(tickers))
 
@@ -80,7 +81,14 @@ def run_update_stock_prices(config, overwrite=False):
     raw_target = step_cfg.get("Target_Database")
     db_name = config.resolve_db_path(raw_target) if hasattr(config, 'resolve_db_path') else raw_target
 
-    return update_all_stock_prices(db_name)
+    Company_Table = config.get("DB_COMPANY_INFO_TABLE", "CompanyInfo")
+    prices_table = config.get("DB_STOCK_PRICES_TABLE", "Stock_Prices")
+
+    return update_all_stock_prices(
+        db_name,
+        Company_Table=Company_Table,
+        prices_table=prices_table,
+    )
 
 
 STEP_DEFINITION = StepDefinition(

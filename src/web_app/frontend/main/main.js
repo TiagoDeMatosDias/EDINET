@@ -4,8 +4,8 @@
 
 import { STATE, els, callbacks } from '../common/state.js';
 import { $, fetchJson } from '../common/utils.js';
-import { log, renderConsole, exportConsole } from '../common/console.js';
-import { mountTopbar, mountConsoleFooter, refreshHealth, setConsoleHidden, wireTopbarEvents } from '../common/topbar.js';
+import { log } from '../common/console.js';
+import { mountTopbar, mountConsoleFooter, refreshHealth, wireTopbarEvents } from '../common/topbar.js';
 import {
   renderMain,
   renderRecentJobs,
@@ -49,42 +49,21 @@ async function bootstrap() {
   // DOM element cache
   els.backendStatus    = document.getElementById('backend-status');
   els.refreshBtn       = document.getElementById('refresh-btn');
-  els.toggleConsoleBtn = document.getElementById('toggle-console-btn');
   els.reloadJobs       = document.getElementById('reload-jobs');
   els.mainMetrics      = document.getElementById('main-metrics');
   els.jobsTable        = document.getElementById('jobs-table');
   els.setupList        = document.getElementById('setup-list');
   els.catalogPreview   = document.getElementById('step-catalog-preview');
-  els.consoleLog       = document.getElementById('console-log');
-  els.consoleToggle    = document.getElementById('console-toggle');
-  els.consoleClear     = document.getElementById('console-clear');
-  els.consoleExport    = document.getElementById('console-export');
-  els.consoleAutoscroll = document.getElementById('console-autoscroll');
-  els.consoleFilter    = document.getElementById('console-filter');
-
   callbacks.refreshJobs = refreshJobs;
 
   // Events
   if (els.reloadJobs) els.reloadJobs.addEventListener('click', refreshJobs);
-  if (els.consoleClear) els.consoleClear.addEventListener('click', () => { STATE.logs = []; renderConsole(); });
-  if (els.consoleExport) els.consoleExport.addEventListener('click', exportConsole);
-  if (els.consoleAutoscroll) els.consoleAutoscroll.addEventListener('change', () => {
-    STATE.consoleAutoscroll = els.consoleAutoscroll.checked;
-  });
-  if (els.consoleToggle) els.consoleToggle.addEventListener('click', () => {
-    setConsoleHidden(!document.body.classList.contains('console-collapsed'));
-  });
-  if (els.consoleFilter) els.consoleFilter.addEventListener('change', () => {
-    STATE.consoleFilter = els.consoleFilter.value;
-    renderConsole();
-  });
 
   window._pageRefresh = async () => {
     await Promise.all([refreshHealth(), refreshJobs()]);
   };
 
   initializeSetup();
-  setConsoleHidden(false);
 
   log('info', 'Main dashboard initialized');
   await Promise.all([refreshHealth(), refreshSteps(), refreshJobs()]);

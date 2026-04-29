@@ -91,7 +91,6 @@ async function bootstrap() {
   // DOM element cache
   els.backendStatus     = document.getElementById('backend-status');
   els.refreshBtn        = document.getElementById('refresh-btn');
-  els.toggleConsoleBtn  = document.getElementById('toggle-console-btn');
   els.setupNameInput    = document.getElementById('setup-name');
   els.newSetupBtn       = document.getElementById('new-setup-btn');
   els.loadSetupBtn      = document.getElementById('load-setup-btn');
@@ -137,16 +136,13 @@ async function bootstrap() {
       }
     });
   }
-  if (els.consoleClear) els.consoleClear.addEventListener('click', () => { STATE.logs = []; renderConsole(); });
-  if (els.consoleExport) els.consoleExport.addEventListener('click', exportConsole);
-  if (els.toggleConsoleBtn) els.toggleConsoleBtn.addEventListener('click', () => {
-    setConsoleHidden(!document.body.classList.contains('console-collapsed'));
-  });
-  if (els.consoleAutoscroll) els.consoleAutoscroll.addEventListener('change', () => {
-    STATE.consoleAutoscroll = els.consoleAutoscroll.checked;
-  });
   if (els.consoleToggle) els.consoleToggle.addEventListener('click', () => {
     setConsoleHidden(!document.body.classList.contains('console-collapsed'));
+  });
+  if (els.consoleClear) els.consoleClear.addEventListener('click', () => { STATE.logs = []; renderConsole(); });
+  if (els.consoleExport) els.consoleExport.addEventListener('click', exportConsole);
+  if (els.consoleAutoscroll) els.consoleAutoscroll.addEventListener('change', () => {
+    STATE.consoleAutoscroll = els.consoleAutoscroll.checked;
   });
   if (els.consoleFilter) els.consoleFilter.addEventListener('change', () => {
     STATE.consoleFilter = els.consoleFilter.value;

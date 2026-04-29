@@ -15,6 +15,7 @@ export function log(level, message) {
 }
 
 export function renderConsole() {
+  if (!els.consoleLog) return;
   const lines = STATE.logs.filter(
     line => STATE.consoleFilter === 'all' || line.level === STATE.consoleFilter,
   );

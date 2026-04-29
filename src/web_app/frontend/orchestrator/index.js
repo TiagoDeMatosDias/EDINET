@@ -276,7 +276,6 @@ export function showLoadMenu(anchor) {
     );
     item.addEventListener('click', () => {
       hydrateSetup(entry);
-      callbacks.setView?.('orchestrator');
       closeLoadMenu();
       log('info', `Loaded setup ${entry.name}`);
     });
@@ -968,7 +967,26 @@ export function initializeSetup() {
   const last = localStorage.getItem(LAST_SETUP_KEY) || 'Untitled setup';
   STATE.setupName = last || 'Untitled setup';
   if (els.setupNameInput) els.setupNameInput.value = STATE.setupName;
-  STATE.config = setupDefaultConfig();
-  STATE.pipeline = [];
-  STATE.selectedStepId = null;
+
+  // Try to restore the last saved setup from localStorage
+  const savedSetup = STATE.localSetups[STATE.setupName];
+  if (savedSetup && savedSetup.config) {
+    STATE.config = deepClone(savedSetup.config);
+    STATE.pipeline = Array.isArray(savedSetup.pipeline)
+      ? savedSetup.pipeline.map(item => ({
+          id: item.id || crypto.randomUUID(),
+          name: item.name,
+          enabled: !!item.enabled,
+          overwrite: !!item.overwrite,
+          status: item.status || 'idle',
+          result: item.result || null,
+          error: item.error || null,
+        }))
+      : [];
+    STATE.selectedStepId = savedSetup.selectedStepId || STATE.pipeline[0]?.id || null;
+  } else {
+    STATE.config = setupDefaultConfig();
+    STATE.pipeline = [];
+    STATE.selectedStepId = null;
+  }
 }
