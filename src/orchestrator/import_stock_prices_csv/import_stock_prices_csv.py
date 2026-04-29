@@ -4,6 +4,7 @@ import sqlite3
 import pandas as pd
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
+from src.orchestrator.common.db_config import get_db2
 from src.utilities import stock_prices
 
 logger = logging.getLogger(__name__)
@@ -162,11 +163,9 @@ def import_stock_prices_csv(
 def run_import_stock_prices_csv(config, overwrite=False):
     logger.info("Importing stock prices from CSV...")
     step_cfg = config.get("import_stock_prices_csv_config", {})
-    raw_target = step_cfg.get("Target_Database")
-    db_name = config.resolve_db_path(raw_target) if hasattr(config, 'resolve_db_path') else raw_target
 
     return import_stock_prices_csv(
-        db_name=db_name,
+        db_name=get_db2(),
         prices_table="Stock_Prices",
         csv_path=step_cfg.get("csv_file", ""),
         default_ticker=step_cfg.get("default_ticker", step_cfg.get("ticker", "")),
@@ -184,7 +183,6 @@ STEP_DEFINITION = StepDefinition(
     display_name="Import Stock Prices (CSV)",
     required_keys=(),
     input_fields=(
-        StepFieldDefinition("Target_Database", "database", required=True),
         StepFieldDefinition("csv_file", "file", required=True),
         StepFieldDefinition("default_ticker", "str"),
         StepFieldDefinition("default_currency", "str", default="JPY"),

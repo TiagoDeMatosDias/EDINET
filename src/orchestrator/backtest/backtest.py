@@ -2,6 +2,7 @@ import logging
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common import backtesting
+from src.orchestrator.common.db_config import get_db2
 
 logger = logging.getLogger(__name__)
 
@@ -9,12 +10,10 @@ logger = logging.getLogger(__name__)
 def run_backtest(config, overwrite=False):
     logger.info("Running backtesting...")
     step_cfg = config.get("backtesting_config", {})
-    raw_db = step_cfg.get("Source_Database")
-    db_path = config.resolve_db_path(raw_db) if hasattr(config, 'resolve_db_path') else raw_db
 
     return backtesting.run_backtest(
         step_cfg,
-        db_path=db_path,
+        db_path=get_db2(),
         prices_table="Stock_Prices",
         ratios_table=step_cfg.get("PerShare_Table") or "ShareMetrics",
         company_table="CompanyInfo",
@@ -28,7 +27,6 @@ STEP_DEFINITION = StepDefinition(
     config_key="backtesting_config",
     required_keys=(),
     input_fields=(
-        StepFieldDefinition("Source_Database", "database", required=True),
         StepFieldDefinition("PerShare_Table", "str", default="ShareMetrics"),
         StepFieldDefinition(
             "Financial_Statements_Table",

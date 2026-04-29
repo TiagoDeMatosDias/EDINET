@@ -73,8 +73,6 @@ class TestRunPipeline:
         return Config.from_dict({
             "baseURL": "http://example.com",
             "API_KEY": "key123",
-            "get_documents_config": {"Target_Database": "test.db"},
-            "download_documents_config": {"Target_Database": "test.db"},
         })
 
     @patch("src.orchestrator.orchestrator.execute_step")
@@ -241,8 +239,9 @@ class TestValidateInput:
         from src.orchestrator import validate_input
 
         config = Config.from_dict({})
+        # import_stock_prices_csv requires csv_file in its step config
         with pytest.raises(RuntimeError, match="missing"):
-            validate_input(config, steps=[{"name": "get_documents"}])
+            validate_input(config, steps=[{"name": "import_stock_prices_csv"}])
 
     def test_all_keys_present_passes(self):
         from src.orchestrator import validate_input
@@ -250,7 +249,6 @@ class TestValidateInput:
         config = Config.from_dict({
             "baseURL": "http://example.com",
             "API_KEY": "key123",
-            "get_documents_config": {"Target_Database": "test.db"},
         })
         validate_input(config, steps=[{"name": "get_documents"}])  # should not raise
 
@@ -258,9 +256,7 @@ class TestValidateInput:
         from src.orchestrator import validate_input
 
         config = Config.from_dict({
-            "DB_STOCK_PRICES_TABLE": "stock_prices",
             "import_stock_prices_csv_config": {
-                "Target_Database": "prices.db",
                 "csv_file": "prices.csv",
             },
         })
@@ -276,7 +272,7 @@ class TestValidateInput:
         from src.orchestrator import validate_input
 
         config = Config.from_dict({
-            "parse_taxonomy_config": {"Target_Database": "taxonomy.db"},
+            "parse_taxonomy_config": {},
         })
         validate_input(config, steps=[{"name": "parse_taxonomy"}])
 
@@ -292,7 +288,6 @@ class TestValidateInput:
 
         config = Config.from_dict({
             "generate_ratios_config": {
-                "Database": "ratios.db",
                 "batch_size": "not-a-number",
             }
         })
@@ -313,14 +308,19 @@ class TestGenerateRatiosStep:
 
         config = Config.from_dict({
             "generate_ratios_config": {
-                "Database": "ratios.db",
                 "batch_size": 123,
             }
         })
 
-        with patch(
-            "src.orchestrator.generate_ratios.generate_ratios.generate_ratios"
-        ) as mock_generate:
+        with (
+            patch(
+                "src.orchestrator.generate_ratios.generate_ratios.get_db2",
+                return_value="ratios.db",
+            ),
+            patch(
+                "src.orchestrator.generate_ratios.generate_ratios.generate_ratios"
+            ) as mock_generate,
+        ):
             run_generate_ratios(config, overwrite=True)
 
         mock_generate.assert_called_once_with(
@@ -342,7 +342,6 @@ class TestParseTaxonomyStep:
 
         config = Config.from_dict({
             "parse_taxonomy_config": {
-                "Target_Database": "taxonomy.db",
                 "release_years": "[2025]",
                 "namespaces": "[\"jppfs_cor\", \"jpcrp_cor\"]",
                 "download_dir": "assets/taxonomy",
@@ -351,9 +350,15 @@ class TestParseTaxonomyStep:
             }
         })
 
-        with patch(
-            "src.orchestrator.parse_taxonomy.parse_taxonomy.taxonomy_processing.sync_taxonomy_releases"
-        ) as mock_sync:
+        with (
+            patch(
+                "src.orchestrator.parse_taxonomy.parse_taxonomy.get_db2",
+                return_value="taxonomy.db",
+            ),
+            patch(
+                "src.orchestrator.parse_taxonomy.parse_taxonomy.taxonomy_processing.sync_taxonomy_releases"
+            ) as mock_sync,
+        ):
             run_parse_taxonomy(config, overwrite=False)
 
         mock_sync.assert_called_once_with(
@@ -378,21 +383,25 @@ class TestImportStockPricesCsvStep:
         from src.orchestrator.import_stock_prices_csv.import_stock_prices_csv import run_import_stock_prices_csv
 
         config = Config.from_dict({
-            "DB_STOCK_PRICES_TABLE": "stock_prices",
             "import_stock_prices_csv_config": {
-                "Target_Database": "prices.db",
                 "csv_file": "prices.csv",
             },
         })
 
-        with patch(
-            "src.orchestrator.import_stock_prices_csv.import_stock_prices_csv.import_stock_prices_csv"
-        ) as mock_import:
+        with (
+            patch(
+                "src.orchestrator.import_stock_prices_csv.import_stock_prices_csv.get_db2",
+                return_value="prices.db",
+            ),
+            patch(
+                "src.orchestrator.import_stock_prices_csv.import_stock_prices_csv.import_stock_prices_csv"
+            ) as mock_import,
+        ):
             run_import_stock_prices_csv(config, overwrite=False)
 
         mock_import.assert_called_once_with(
             db_name="prices.db",
-            prices_table="stock_prices",
+            prices_table="Stock_Prices",
             csv_path="prices.csv",
             default_ticker="",
             default_currency="JPY",
@@ -416,18 +425,21 @@ class TestUpdateStockPricesStep:
         config = Config.from_dict({
             "DB_COMPANY_INFO_TABLE": "company_info",
             "DB_STOCK_PRICES_TABLE": "stock_prices",
-            "update_stock_prices_config": {
-                "Target_Database": "prices.db",
-            },
         })
 
-        with patch(
-            "src.orchestrator.update_stock_prices.update_stock_prices.update_all_stock_prices"
-        ) as mock_update:
+        with (
+            patch(
+                "src.orchestrator.update_stock_prices.update_stock_prices.get_db2",
+                return_value="prices.db",
+            ),
+            patch(
+                "src.orchestrator.update_stock_prices.update_stock_prices.update_all_stock_prices"
+            ) as mock_update,
+        ):
             run_update_stock_prices(config, overwrite=False)
 
         mock_update.assert_called_once_with(
-            db_name="prices.db",
+            "prices.db",
             Company_Table="company_info",
             prices_table="stock_prices",
         )
@@ -585,15 +597,23 @@ class TestGenerateFinancialStatementsStep:
 
         config = Config.from_dict({
             "generate_financial_statements_config": {
-                "Source_Database": "base.db",
-                "Target_Database": "standardized.db",
                 "Granularity_level": 5,
             },
         })
 
-        with patch(
-            "src.orchestrator.generate_financial_statements.generate_financial_statements.financial_statement_services.generate_financial_statements"
-        ) as mock_generate:
+        with (
+            patch(
+                "src.orchestrator.generate_financial_statements.generate_financial_statements.get_db1",
+                return_value="base.db",
+            ),
+            patch(
+                "src.orchestrator.generate_financial_statements.generate_financial_statements.get_db2",
+                return_value="standardized.db",
+            ),
+            patch(
+                "src.orchestrator.generate_financial_statements.generate_financial_statements.financial_statement_services.generate_financial_statements"
+            ) as mock_generate,
+        ):
             run_generate_financial_statements(config, overwrite=False)
 
         mock_generate.assert_called_once_with(
@@ -615,19 +635,22 @@ class TestGenerateRollingMetricsStep:
         from src.orchestrator.generate_rolling_metrics.generate_rolling_metrics import run_generate_rolling_metrics
 
         config = Config.from_dict({
-            "generate_rolling_metrics_config": {
-                "Source_Database": "base.db",
-                "Target_Database": "standardized.db",
-            },
+            "generate_rolling_metrics_config": {},
         })
 
-        with patch(
-            "src.orchestrator.generate_rolling_metrics.generate_rolling_metrics.rolling_metrics_services.generate_rolling_metrics"
-        ) as mock_generate:
+        with (
+            patch(
+                "src.orchestrator.generate_rolling_metrics.generate_rolling_metrics.get_db2",
+                return_value="standardized.db",
+            ),
+            patch(
+                "src.orchestrator.generate_rolling_metrics.generate_rolling_metrics.rolling_metrics_services.generate_rolling_metrics"
+            ) as mock_generate,
+        ):
             run_generate_rolling_metrics(config, overwrite=True)
 
         mock_generate.assert_called_once_with(
-            source_database="base.db",
+            source_database="standardized.db",
             target_database="standardized.db",
             overwrite=True,
         )

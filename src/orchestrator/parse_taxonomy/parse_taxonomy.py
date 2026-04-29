@@ -2,6 +2,7 @@ import json
 import logging
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
+from src.orchestrator.common.db_config import get_db2
 
 from . import taxonomy_processing
 
@@ -17,14 +18,12 @@ def _as_bool(value) -> bool:
 def run_parse_taxonomy(config, overwrite=False):
     logger.info("Parsing EDINET taxonomy...")
     step_cfg = config.get("parse_taxonomy_config", {})
-    raw_target = step_cfg.get("Target_Database")
-    target_database = config.resolve_db_path(raw_target) if hasattr(config, 'resolve_db_path') else raw_target
 
     xsd_file = step_cfg.get("xsd_file")
     if xsd_file:
         release_year = step_cfg.get("release_year")
         return taxonomy_processing.import_local_taxonomy_xsd(
-            target_database=target_database,
+            target_database=get_db2(),
             xsd_file=xsd_file,
             namespace_prefix=step_cfg.get("namespace_prefix"),
             release_label=step_cfg.get("release_label"),
@@ -48,7 +47,7 @@ def run_parse_taxonomy(config, overwrite=False):
             raw_namespaces = [raw_namespaces]
 
     return taxonomy_processing.sync_taxonomy_releases(
-        target_database=target_database,
+        target_database=get_db2(),
         release_selection=step_cfg.get("release_selection", "all"),
         release_years=release_years,
         namespaces=raw_namespaces,
@@ -109,6 +108,5 @@ STEP_DEFINITION = StepDefinition(
         StepFieldDefinition("download_dir", "str", default="assets/taxonomy"),
         StepFieldDefinition("force_download", "str", default="False"),
         StepFieldDefinition("force_reparse", "str", default="False"),
-        StepFieldDefinition("Target_Database", "database", required=True),
     ),
 )

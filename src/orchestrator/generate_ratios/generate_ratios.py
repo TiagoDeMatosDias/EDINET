@@ -6,6 +6,7 @@ import sqlite3
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common import ratios as ratio_services
+from src.orchestrator.common.db_config import get_db2
 
 logger = logging.getLogger(__name__)
 
@@ -445,7 +446,7 @@ def run_generate_ratios(config, overwrite=False):
     step_cfg = config.get("generate_ratios_config", {})
 
     return generate_ratios(
-        database=step_cfg.get("Database"),
+        database=get_db2(),
         overwrite=overwrite,
         batch_size=step_cfg.get("batch_size", 5000),
     )
@@ -456,7 +457,6 @@ STEP_DEFINITION = StepDefinition(
     handler=run_generate_ratios,
     supports_overwrite=True,
     input_fields=(
-        StepFieldDefinition("Database", "database", required=True),
         StepFieldDefinition("batch_size", "num", default=5000),
     ),
 )

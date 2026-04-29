@@ -2,6 +2,7 @@ import logging
 import sqlite3
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
+from src.orchestrator.common.db_config import get_db2
 from src.utilities import stock_prices
 
 logger = logging.getLogger(__name__)
@@ -76,16 +77,12 @@ def update_all_stock_prices(db_name, Company_Table="CompanyInfo", prices_table="
 def run_update_stock_prices(config, overwrite=False):
     """Handler that resolves the target database path and runs the updater."""
     logger.info("Updating stock prices...")
-    # Expect a Config-like object here; fall back to dict-like access.
-    step_cfg = config.get("update_stock_prices_config", {}) if hasattr(config, 'get') else (config or {}).get("update_stock_prices_config", {})
-    raw_target = step_cfg.get("Target_Database")
-    db_name = config.resolve_db_path(raw_target) if hasattr(config, 'resolve_db_path') else raw_target
 
     Company_Table = config.get("DB_COMPANY_INFO_TABLE", "CompanyInfo")
     prices_table = config.get("DB_STOCK_PRICES_TABLE", "Stock_Prices")
 
     return update_all_stock_prices(
-        db_name,
+        get_db2(),
         Company_Table=Company_Table,
         prices_table=prices_table,
     )
@@ -95,7 +92,5 @@ STEP_DEFINITION = StepDefinition(
     name="update_stock_prices",
     handler=run_update_stock_prices,
     required_keys=(),
-    input_fields=(
-        StepFieldDefinition("Target_Database", "database", required=True),
-    ),
+    input_fields=(),
 )
