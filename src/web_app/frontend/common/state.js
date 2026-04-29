@@ -30,11 +30,11 @@ export const STATE = {
   dragIndex: null,
 };
 
-/** Cached DOM element references — populated during bootstrap in main.js. */
+/** Cached DOM element references — populated during bootstrap by each page's script. */
 export const els = {};
 
 /**
- * Cross-module callbacks registered by main.js during bootstrap.
+ * Cross-module callbacks registered by each page's script during bootstrap.
  * Modules that need to trigger navigation or a jobs refresh import this object
  * and call the appropriate function, avoiding circular imports.
  */

@@ -2,7 +2,7 @@
  * Orchestrator screen — pipeline builder, inspector, step library, and the
  * main-dashboard panels that summarise pipeline/job state.
  *
- * Exports both public render entry-points used by main.js and the mutation
+ * Exports both public render entry-points used by page scripts and the mutation
  * helpers (addStep, moveStep, …) that are wired to UI events there.
  */
 
