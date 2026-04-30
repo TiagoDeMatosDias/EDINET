@@ -45,6 +45,12 @@ def test_screening_page_exists_with_correct_panel() -> None:
     assert soup.select_one("section[data-view-panel='screening']") is not None
 
 
+def test_screening_page_has_config_and_results_sections() -> None:
+    """Screening page should have root container (JS builds the rest)."""
+    soup = _soup_for("/screening")
+    assert soup.find(id="screening-root") is not None, "Missing screening-root container"
+
+
 def test_security_page_exists_with_correct_panel() -> None:
     soup = _soup_for("/security")
     assert soup.select_one("section[data-view-panel='security']") is not None

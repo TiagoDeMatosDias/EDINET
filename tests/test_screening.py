@@ -254,21 +254,26 @@ def sample_db_companyinfo_variant(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_get_available_metrics(sample_db):
-    """Known tables should return their column lists."""
+    """All user tables should be returned with their columns."""
     metrics = get_available_metrics(sample_db)
     assert "CompanyInfo" in metrics
     assert "PerShare" in metrics
     assert "Valuation" in metrics
     assert "Quality" in metrics
+    assert "FinancialStatements" in metrics
+    assert "Stock_Prices" in metrics
     assert "CompanyName" in metrics["CompanyInfo"]
     assert "Industry" in metrics["CompanyInfo"]
     assert "BookValue" in metrics["PerShare"]
     assert "EPS" in metrics["PerShare"]
     assert "PERatio" in metrics["Valuation"]
     assert "ReturnOnEquity" in metrics["Quality"]
-    # docID should be excluded
-    for table_cols in metrics.values():
-        assert "docID" not in table_cols
+    # docID excluded from metric tables, kept in FinancialStatements/CompanyInfo
+    for table in ("PerShare", "Valuation", "Quality"):
+        assert "docID" not in metrics.get(table, [])
+    assert "docID" in metrics.get("FinancialStatements", [])
+    # Must return more than 1 table
+    assert len(metrics) > 4
 
 
 # ---------------------------------------------------------------------------
@@ -393,13 +398,33 @@ def test_build_screening_query_validates_operator():
         build_screening_query(criteria, columns)
 
 
-def test_build_screening_query_validates_identifier():
-    """SQL injection via column names should be blocked."""
+def test_build_screening_query_safe_from_injection():
+    """SQL injection via column names is blocked by bracket quoting + schema validation."""
+    # Column names with special chars are now allowed (bracket-quoted),
+    # but the column must exist in the schema — non-existent cols are rejected
     criteria = [{"table": "Valuation", "column": "PERatio; DROP TABLE", "operator": ">", "value": 5}]
     columns = ["CompanyInfo.edinetCode"]
 
-    with pytest.raises(ValueError, match="Invalid SQL identifier"):
-        build_screening_query(criteria, columns)
+    # Should not raise at identifier validation stage (bracket quoting handles it)
+    # But should raise at schema validation if available_metrics is provided
+    with pytest.raises(ValueError):
+        build_screening_query(criteria, columns, available_metrics={"Valuation": ["PERatio"]})
+
+
+def test_build_screening_query_allows_special_chars():
+    """Column names with parentheses should be accepted (bracket-quoted)."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "CustomTable",
+            "column": "Net cash provided by (used in) operating activities_Growth_10_Year",
+            "operator": ">",
+            "value": 0.05,
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    # The column name should appear bracket-quoted
+    assert "Net cash provided by (used in) operating activities_Growth_10_Year" in sql
+    assert "0.05" in str(params)
 
 
 # ---------------------------------------------------------------------------
@@ -802,3 +827,751 @@ def test_load_history_empty(tmp_path):
     """Loading from nonexistent file should return empty list."""
     history = load_screening_history(str(tmp_path / "nope.jsonl"))
     assert history == []
+
+
+# ---------------------------------------------------------------------------
+# Tests — screening_date (point-in-time screening)
+# ---------------------------------------------------------------------------
+
+
+def test_build_query_with_screening_date():
+    """screening_date should select latest filing per company before date."""
+    sql, params = build_screening_query(
+        criteria=[],
+        columns=["CompanyInfo.edinetCode"],
+        screening_date="2020-01-01",
+    )
+    assert "WHERE date(periodEnd) <= ?" in sql
+    assert "MAX(periodEnd) AS max_period" in sql
+    assert params[0] == "2020-01-01"
+    # Stock prices should also be capped
+    assert "WHERE date([Date]) <= ?" in sql
+    assert params[1] == "2020-01-01"
+
+
+def test_build_query_with_screening_date_and_period():
+    """screening_date + period should both apply."""
+    sql, params = build_screening_query(
+        criteria=[],
+        columns=["CompanyInfo.edinetCode"],
+        period="2020",
+        screening_date="2020-01-01",
+    )
+    assert "SUBSTR(f.periodEnd, 1, 4) = ?" in sql
+    assert params[-1] == "2020"  # period param is last
+
+
+def test_run_screening_with_screening_date(sample_db):
+    """Point-in-time screening should return correct results."""
+    # sample_db has 2023 and 2024 periods. With date 2023-06-01,
+    # only company E00001 (2023 period) should match, E00002 (2024) should not.
+    df = run_screening(
+        sample_db,
+        criteria=[],
+        columns=["CompanyInfo.edinetCode"],
+        screening_date="2023-06-01",
+    )
+    # Both companies are in CompanyInfo, but only E00001 has financials <= date
+    assert len(df) >= 1
+    assert "E00001" in df["edinetCode"].values
+
+
+def test_run_screening_date_without_results(sample_db):
+    """screening_date before all data should return empty."""
+    df = run_screening(
+        sample_db,
+        criteria=[],
+        columns=["CompanyInfo.edinetCode"],
+        screening_date="2010-01-01",
+    )
+    assert len(df) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests — column comparison with offset
+# ---------------------------------------------------------------------------
+
+
+def test_column_comparison_with_offset():
+    """Column compare with offset should generate (right + offset) SQL."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "Valuation_Historical",
+            "column": "Growth5Y",
+            "operator": ">",
+            "comparison_mode": "column",
+            "compare_table": "Valuation_Historical",
+            "compare_column": "Growth10Y",
+            "offset": 0.02,
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    # Should contain (right_col + offset_param)
+    assert "(vh.[Growth10Y] + ?)" in sql
+    assert 0.02 in params
+
+
+def test_column_comparison_without_offset():
+    """Column compare without offset should NOT add + ?."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "Valuation_Historical",
+            "column": "Growth5Y",
+            "operator": ">",
+            "comparison_mode": "column",
+            "compare_table": "Valuation_Historical",
+            "compare_column": "Growth10Y",
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "vh.[Growth5Y] > vh.[Growth10Y]" in sql
+    # No offset param: " + ?" should NOT be in the column comparison part
+    assert "Growth10Y] + ?" not in sql
+
+
+def test_column_comparison_with_negative_offset():
+    """Negative offset should work (e.g. A > B - 0.05)."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "PerShare",
+            "column": "EPS",
+            "operator": "<",
+            "comparison_mode": "column",
+            "compare_table": "PerShare",
+            "compare_column": "BookValue",
+            "offset": -0.5,
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "-0.5" in str(params) or any(p == -0.5 for p in params)
+
+
+def test_column_comparison_between_rejected():
+    """BETWEEN should not be allowed with column comparison mode."""
+    with pytest.raises(ValueError, match="BETWEEN"):
+        build_screening_query(
+            criteria=[{
+                "table": "PerShare",
+                "column": "EPS",
+                "operator": "BETWEEN",
+                "comparison_mode": "column",
+                "compare_table": "PerShare",
+                "compare_column": "BookValue",
+            }],
+            columns=["CompanyInfo.edinetCode"],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests — computed columns
+# ---------------------------------------------------------------------------
+
+
+def test_computed_price_ratio_column():
+    """Price ratio formula should generate CASE WHEN division."""
+    sql, params = build_screening_query(
+        criteria=[],
+        columns=["CompanyInfo.edinetCode"],
+        computed_columns=[{
+            "name": "P/E Ratio",
+            "formula_type": "price_ratio",
+            "numerator_table": "Stock_Prices",
+            "numerator_column": "Price",
+            "denominator_table": "PerShare",
+            "denominator_column": "EPS",
+        }],
+    )
+    assert "P/E Ratio" in sql
+    assert "s_p.[Price]" in sql
+    assert "ps.[EPS]" in sql
+    assert "CASE WHEN" in sql
+
+
+def test_computed_custom_formula():
+    """Custom formula should be injected directly."""
+    sql, params = build_screening_query(
+        criteria=[],
+        columns=["CompanyInfo.edinetCode"],
+        computed_columns=[{
+            "name": "CustomScore",
+            "formula_type": "custom",
+            "formula": "ps.[EPS] * 2.0 + ps.[BookValue]",
+        }],
+    )
+    assert "CustomScore" in sql
+    assert "ps.[EPS] * 2.0 + ps.[BookValue]" in sql
+
+
+def test_computed_column_appears_in_results(sample_db):
+    """Computed P/E column should appear in run_screening output."""
+    df = run_screening(
+        sample_db,
+        criteria=[],
+        columns=["CompanyInfo.edinetCode"],
+        period="2024",
+        computed_columns=[{
+            "name": "PE_Ratio",
+            "formula_type": "price_ratio",
+            "numerator_table": "Stock_Prices",
+            "numerator_column": "Price",
+            "denominator_table": "PerShare",
+            "denominator_column": "EPS",
+        }],
+    )
+    assert "PE_Ratio" in df.columns
+
+
+def test_computed_column_visible_in_output(sample_db):
+    """Computed column should be retained in visible columns."""
+    df = run_screening(
+        sample_db,
+        criteria=[],
+        columns=["CompanyInfo.edinetCode"],
+        computed_columns=[{
+            "name": "TestFormula",
+            "formula_type": "custom",
+            "formula": "1.0",
+        }],
+    )
+    assert "TestFormula" in df.columns
+    # Should evaluate to 1.0 for all rows
+    assert (df["TestFormula"] == 1.0).all()
+
+
+# ---------------------------------------------------------------------------
+# Tests — combined features
+# ---------------------------------------------------------------------------
+
+
+def test_screening_date_with_criteria_and_computed(sample_db):
+    """All features together: date, column-compare with offset, computed."""
+    df = run_screening(
+        sample_db,
+        criteria=[{
+            "table": "PerShare",
+            "column": "BookValue",
+            "operator": ">",
+            "comparison_mode": "column",
+            "compare_table": "PerShare",
+            "compare_column": "EPS",
+            "offset": -100,
+        }],
+        columns=["CompanyInfo.edinetCode", "PerShare.BookValue", "PerShare.EPS"],
+        screening_date="2024-06-01",
+        computed_columns=[{
+            "name": "P/B",
+            "formula_type": "price_ratio",
+            "numerator_table": "Stock_Prices",
+            "numerator_column": "Price",
+            "denominator_table": "PerShare",
+            "denominator_column": "BookValue",
+        }],
+    )
+    # Just verify it doesn't crash
+    assert isinstance(df, pd.DataFrame)
+    if len(df) > 0:
+        assert "P/B" in df.columns
+
+
+# ---------------------------------------------------------------------------
+# Tests — IN operator
+# ---------------------------------------------------------------------------
+
+
+def test_in_operator_with_values(sample_db):
+    """IN operator should work with a list of values."""
+    df = run_screening(
+        sample_db,
+        criteria=[{
+            "table": "CompanyInfo",
+            "column": "Industry",
+            "operator": "IN",
+            "comparison_mode": "in",
+            "values": ["Industrial", "Technology"],
+        }],
+        columns=["CompanyInfo.edinetCode", "CompanyInfo.Industry"],
+    )
+    assert len(df) >= 1
+    for _, row in df.iterrows():
+        assert row["Industry"] in ("Industrial", "Technology")
+
+
+def test_in_operator_query_building():
+    """IN operator should generate proper SQL."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "CompanyInfo",
+            "column": "Industry",
+            "operator": "IN",
+            "comparison_mode": "in",
+            "values": ["Tech", "Finance"],
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "IN (?, ?)" in sql
+    assert params == ["Tech", "Finance"]
+
+
+def test_in_operator_falls_back_to_single_value():
+    """IN with no values list should use single value."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "CompanyInfo",
+            "column": "Industry",
+            "operator": "IN",
+            "value": "Tech",
+            "comparison_mode": "in",
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "IN (?)" in sql
+    assert params == ["Tech"]
+
+
+def test_in_operator_empty_values_raises():
+    """IN with no values should raise ValueError."""
+    with pytest.raises(ValueError):
+        build_screening_query(
+            criteria=[{
+                "table": "CompanyInfo",
+                "column": "Industry",
+                "operator": "IN",
+                "comparison_mode": "in",
+            }],
+            columns=["CompanyInfo.edinetCode"],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests — LIKE operator
+# ---------------------------------------------------------------------------
+
+
+def test_like_operator():
+    """LIKE operator should generate proper SQL."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "CompanyInfo",
+            "column": "CompanyName",
+            "operator": "LIKE",
+            "value": "%Alpha%",
+            "comparison_mode": "like",
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "LIKE ?" in sql
+    assert params == ["%Alpha%"]
+
+
+def test_full_expression_matches_user_scenario(sample_db):
+    """Exact user scenario: Stock_Prices.Price < ShareMetrics_Rolling.EPS * 8."""
+    # The sample DB doesn't have ShareMetrics_Rolling, but it has PerShare with EPS.
+    # We use PerShare to validate the full_expression pipeline works end-to-end.
+    df = run_screening(
+        sample_db,
+        criteria=[{
+            "comparison_mode": "full_expression",
+            "operator": "<",
+            "left_side": [
+                {"type": "column", "table": "Stock_Prices", "column": "Price"},
+            ],
+            "right_side": [
+                {"type": "column", "table": "PerShare", "column": "EPS"},
+                {"type": "op", "op": "*"},
+                {"type": "value", "value": 8},
+            ],
+        }],
+        columns=[
+            "CompanyInfo.CompanyName",
+            "Stock_Prices.Price",
+            "PerShare.EPS",
+        ],
+        period="2024",
+    )
+    # Alpha: Price=1600, EPS*8=150*8=1200 → 1600 < 1200 is FALSE
+    # Beta: Price=850, EPS*8=80*8=640 → 850 < 640 is FALSE
+    # Gamma: Price=3100, EPS*8=300*8=2400 → 3100 < 2400 is FALSE
+    # All three should be excluded (Price is NOT less than EPS*8)
+    assert len(df) == 0
+
+    # Now try with a value that should match: Price*0.5 < EPS*8
+    df2 = run_screening(
+        sample_db,
+        criteria=[{
+            "comparison_mode": "full_expression",
+            "operator": "<",
+            "left_side": [
+                {"type": "column", "table": "Stock_Prices", "column": "Price"},
+                {"type": "op", "op": "*"},
+                {"type": "value", "value": 0.5},
+            ],
+            "right_side": [
+                {"type": "column", "table": "PerShare", "column": "EPS"},
+                {"type": "op", "op": "*"},
+                {"type": "value", "value": 8},
+            ],
+        }],
+        columns=["CompanyInfo.CompanyName", "Stock_Prices.Price", "PerShare.EPS"],
+        period="2024",
+    )
+    # Alpha: 1600*0.5=800 < 1200 ✓
+    # Beta: 850*0.5=425 < 640 ✓
+    # Gamma: 3100*0.5=1550 < 2400 ✓
+    assert len(df2) == 3
+    assert set(df2["CompanyName"]) == {"Alpha Corp", "Beta Co", "Gamma Ltd"}
+
+
+def test_full_expression_simple():
+    """full_expression should build SQL from left and right token arrays."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "comparison_mode": "full_expression",
+            "operator": ">",
+            "left_side": [
+                {"type": "column", "table": "PerShare", "column": "EPS"},
+                {"type": "op", "op": "*"},
+                {"type": "value", "value": 8},
+            ],
+            "right_side": [
+                {"type": "column", "table": "Valuation", "column": "PERatio"},
+            ],
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "(ps.[EPS] * ?) > (v.[PERatio])" in sql
+    assert params == [8]
+
+
+def test_full_expression_both_sides_complex():
+    """Both sides with multiple tokens should work."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "comparison_mode": "full_expression",
+            "operator": "<=",
+            "left_side": [
+                {"type": "column", "table": "PerShare", "column": "Sales"},
+                {"type": "op", "op": "/"},
+                {"type": "value", "value": 2},
+            ],
+            "right_side": [
+                {"type": "column", "table": "Stock_Prices", "column": "Price"},
+                {"type": "op", "op": "*"},
+                {"type": "value", "value": 0.5},
+            ],
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "(ps.[Sales] / ?) <= (s_p.[Price] * ?)" in sql
+    assert params == [2, 0.5]
+
+
+def test_full_expression_rejects_invalid_operators():
+    """full_expression should reject BETWEEN, IN, LIKE."""
+    for op in ("BETWEEN", "IN", "LIKE"):
+        with pytest.raises(ValueError):
+            build_screening_query(
+                criteria=[{
+                    "comparison_mode": "full_expression",
+                    "operator": op,
+                    "left_side": [{"type": "value", "value": 1}],
+                    "right_side": [{"type": "value", "value": 2}],
+                }],
+                columns=["CompanyInfo.edinetCode"],
+            )
+
+
+def test_full_expression_requires_both_sides():
+    """full_expression should raise if missing left_side or right_side."""
+    with pytest.raises(ValueError, match="full_expression requires"):
+        build_screening_query(
+            criteria=[{
+                "comparison_mode": "full_expression",
+                "operator": ">",
+                "left_side": [{"type": "value", "value": 1}],
+            }],
+            columns=["CompanyInfo.edinetCode"],
+        )
+
+
+def test_full_expression_end_to_end(sample_db):
+    """End-to-end: full_expression with stock price comparison."""
+    # Sales / 2 > Price (Alpha: 5000/2=2500 > 1600 ✓, Beta: 3000/2=1500 > 850 ✓, Gamma: 12000/2=6000 > 3100 ✓)
+    df = run_screening(
+        sample_db,
+        criteria=[{
+            "comparison_mode": "full_expression",
+            "operator": ">",
+            "left_side": [
+                {"type": "column", "table": "PerShare", "column": "Sales"},
+                {"type": "op", "op": "/"},
+                {"type": "value", "value": 2},
+            ],
+            "right_side": [
+                {"type": "column", "table": "Stock_Prices", "column": "Price"},
+            ],
+        }],
+        columns=["CompanyInfo.CompanyName"],
+        period="2024",
+    )
+    assert len(df) == 3
+    assert set(df["CompanyName"]) == {"Alpha Corp", "Beta Co", "Gamma Ltd"}
+
+
+def test_full_expression_with_stock_price_multiply(sample_db):
+    """End-to-end: EPS * 8 > Price * 0.5."""
+    # Alpha: 150*8=1200 > 1600*0.5=800 ✓
+    # Beta: 80*8=640 > 850*0.5=425 ✓
+    # Gamma: 300*8=2400 > 3100*0.5=1550 ✓
+    df = run_screening(
+        sample_db,
+        criteria=[{
+            "comparison_mode": "full_expression",
+            "operator": ">",
+            "left_side": [
+                {"type": "column", "table": "PerShare", "column": "EPS"},
+                {"type": "op", "op": "*"},
+                {"type": "value", "value": 8},
+            ],
+            "right_side": [
+                {"type": "column", "table": "Stock_Prices", "column": "Price"},
+                {"type": "op", "op": "*"},
+                {"type": "value", "value": 0.5},
+            ],
+        }],
+        columns=["CompanyInfo.CompanyName"],
+        period="2024",
+    )
+    assert len(df) == 3
+
+
+def test_stock_price_mode_simple():
+    """stock_price mode should compare a column against s_p.[Price]."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "PerShare",
+            "column": "BookValue",
+            "operator": "<",
+            "comparison_mode": "stock_price",
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "ps.[BookValue] < s_p.[Price]" in sql
+    assert params == []
+
+
+def test_stock_price_mode_with_left_expression():
+    """stock_price mode with left_expression should apply arithmetic."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "PerShare",
+            "column": "Sales",
+            "operator": "<=",
+            "comparison_mode": "stock_price",
+            "left_expression": "/ 2",
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "(ps.[Sales] / 2) <= s_p.[Price]" in sql
+    assert params == []
+
+
+def test_stock_price_mode_with_complex_expression():
+    """stock_price mode should accept parentheses and decimals."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "PerShare",
+            "column": "EPS",
+            "operator": ">",
+            "comparison_mode": "stock_price",
+            "left_expression": "* 15.5 + 100",
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "(ps.[EPS] * 15.5 + 100) > s_p.[Price]" in sql
+
+
+def test_stock_price_rejects_injection():
+    """stock_price left_expression should reject non-arithmetic characters."""
+    with pytest.raises(ValueError, match="Invalid stock_price expression"):
+        build_screening_query(
+            criteria=[{
+                "table": "PerShare",
+                "column": "BookValue",
+                "operator": ">",
+                "comparison_mode": "stock_price",
+                "left_expression": "; DROP TABLE x--",
+            }],
+            columns=["CompanyInfo.edinetCode"],
+        )
+
+
+def test_stock_price_rejects_between():
+    """stock_price mode should not support BETWEEN."""
+    with pytest.raises(ValueError, match="stock_price"):
+        build_screening_query(
+            criteria=[{
+                "table": "PerShare",
+                "column": "BookValue",
+                "operator": "BETWEEN",
+                "comparison_mode": "stock_price",
+            }],
+            columns=["CompanyInfo.edinetCode"],
+        )
+
+
+def test_stock_price_mode_end_to_end(sample_db):
+    """End-to-end: stock_price mode should filter results correctly."""
+    # BookValue for Alpha Corp (DOC001) = 1200, stock price = 1600
+    # BookValue < Price (1200 < 1600) → Alpha should match
+    # BookValue for Beta Co (DOC002) = 800, stock price = 850
+    # BookValue < Price (800 < 850) → Beta should match
+    # BookValue for Gamma Ltd (DOC003) = 2500, stock price = 3100
+    # BookValue < Price (2500 < 3100) → Gamma should match (all three match)
+    df = run_screening(
+        sample_db,
+        criteria=[{
+            "table": "PerShare",
+            "column": "BookValue",
+            "operator": "<",
+            "comparison_mode": "stock_price",
+        }],
+        columns=["CompanyInfo.edinetCode", "CompanyInfo.CompanyName"],
+        period="2024",
+    )
+    assert len(df) >= 1
+    # All three companies have BookValue < their current stock price
+    assert set(df["CompanyName"]) == {"Alpha Corp", "Beta Co", "Gamma Ltd"}
+
+
+def test_stock_price_mode_with_expression_end_to_end(sample_db):
+    """End-to-end: stock_price with left_expression should filter correctly."""
+    # Sales for Alpha Corp (DOC001) = 5000
+    # Sales / 2 = 2500 > Current Price 1600 → matches
+    # Sales for Beta Co (DOC002) = 3000
+    # Sales / 2 = 1500 > Current Price 850 → matches
+    # Sales for Gamma Ltd (DOC003) = 12000
+    # Sales / 2 = 6000 > Current Price 3100 → matches
+    df = run_screening(
+        sample_db,
+        criteria=[{
+            "table": "PerShare",
+            "column": "Sales",
+            "operator": ">",
+            "comparison_mode": "stock_price",
+            "left_expression": "/ 2",
+        }],
+        columns=["CompanyInfo.CompanyName"],
+        period="2024",
+    )
+    assert len(df) == 3
+    assert set(df["CompanyName"]) == {"Alpha Corp", "Beta Co", "Gamma Ltd"}
+
+
+def test_like_operator_results(sample_db):
+    """LIKE should match patterns in text columns."""
+    df = run_screening(
+        sample_db,
+        criteria=[{
+            "table": "CompanyInfo",
+            "column": "CompanyName",
+            "operator": "LIKE",
+            "value": "%Alpha%",
+            "comparison_mode": "like",
+        }],
+        columns=["CompanyInfo.edinetCode", "CompanyInfo.CompanyName"],
+    )
+    assert len(df) >= 1
+    found = False
+    for _, row in df.iterrows():
+        if "Alpha" in str(row.get("CompanyName", "")):
+            found = True
+    assert found
+
+
+# ---------------------------------------------------------------------------
+# Tests — expression mode
+# ---------------------------------------------------------------------------
+
+
+def test_expression_mode_simple():
+    """Expression mode: Column > 0.75 * OtherColumn."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "PerShare",
+            "column": "BookValue",
+            "operator": ">",
+            "comparison_mode": "expression",
+            "right_side": [
+                {"type": "value", "value": 0.75},
+                {"type": "op", "op": "*"},
+                {"type": "column", "table": "PerShare", "column": "EPS"},
+            ],
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "0.75" in str(params) or any(p == 0.75 for p in params)
+    assert "ps.[EPS]" in sql
+    assert "*" in sql
+
+
+def test_expression_mode_with_addition():
+    """Expression mode: Column > OtherColumn + value."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "PerShare",
+            "column": "BookValue",
+            "operator": "<=",
+            "comparison_mode": "expression",
+            "right_side": [
+                {"type": "column", "table": "PerShare", "column": "Sales"},
+                {"type": "op", "op": "+"},
+                {"type": "value", "value": 1000},
+            ],
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "ps.[Sales]" in sql
+    assert "+" in sql
+    assert 1000 in params
+
+
+# ---------------------------------------------------------------------------
+# Tests — arbitrary / custom tables (not in hardcoded list)
+# ---------------------------------------------------------------------------
+
+
+def test_get_metrics_includes_arbitrary_table(tmp_path):
+    """Tables with any name should appear in available metrics."""
+    db_path = str(tmp_path / "custom.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Ticker TEXT)")
+    conn.execute("CREATE TABLE FinancialStatements (edinetCode TEXT, docID TEXT, periodEnd TEXT)")
+    conn.execute("CREATE TABLE Stock_Prices (Date TEXT, Ticker TEXT, Price REAL)")
+    conn.execute("CREATE TABLE Financial_Ratios_Rolling (docID TEXT, Net_Margin_3Y REAL, ROA_10Y REAL)")
+    conn.commit()
+    conn.close()
+
+    metrics = get_available_metrics(db_path)
+    assert "Financial_Ratios_Rolling" in metrics
+    assert "Net_Margin_3Y" in metrics["Financial_Ratios_Rolling"]
+    assert "ROA_10Y" in metrics["Financial_Ratios_Rolling"]
+    # docID excluded from arbitrary tables
+    assert "docID" not in metrics["Financial_Ratios_Rolling"]
+    # More than 1 table
+    assert len(metrics) > 3
+
+
+def test_build_query_with_arbitrary_table(tmp_path):
+    """Query building should work with arbitrary table names."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "Financial_Ratios_Rolling",
+            "column": "Net_Margin_3Y",
+            "operator": ">",
+            "value": 0.05,
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    # Should use table name as alias
+    assert "[Financial_Ratios_Rolling]" in sql
+    assert "Net_Margin_3Y" in sql

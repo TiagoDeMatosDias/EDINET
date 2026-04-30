@@ -656,6 +656,103 @@ class TestGenerateRollingMetricsStep:
         )
 
 
+class TestResolveFileUploads:
+    """Test resolve_file_uploads central file-upload handling."""
+
+    def test_plain_string_passed_through(self):
+        from src.orchestrator.orchestrator import resolve_file_uploads
+
+        config = {
+            "import_stock_prices_csv_config": {
+                "csv_file": "/path/to/prices.csv",
+            }
+        }
+        steps = [{"name": "import_stock_prices_csv"}]
+        result = resolve_file_uploads(config, steps)
+        assert result["import_stock_prices_csv_config"]["csv_file"] == "/path/to/prices.csv"
+
+    def test_empty_string_passed_through(self):
+        from src.orchestrator.orchestrator import resolve_file_uploads
+
+        config = {
+            "import_stock_prices_csv_config": {
+                "csv_file": "",
+            }
+        }
+        steps = [{"name": "import_stock_prices_csv"}]
+        result = resolve_file_uploads(config, steps)
+        assert result["import_stock_prices_csv_config"]["csv_file"] == ""
+
+    def test_upload_dict_resolved_to_temp_file(self):
+        import base64
+        import os
+
+        from src.orchestrator.orchestrator import resolve_file_uploads
+
+        csv_content = "Date,Price\n2024-01-01,100\n"
+        encoded = base64.b64encode(csv_content.encode()).decode()
+
+        config = {
+            "import_stock_prices_csv_config": {
+                "csv_file": {"filename": "test.csv", "content": encoded},
+            }
+        }
+        steps = [{"name": "import_stock_prices_csv"}]
+        result = resolve_file_uploads(config, steps)
+
+        resolved_path = result["import_stock_prices_csv_config"]["csv_file"]
+        assert isinstance(resolved_path, str)
+        assert os.path.exists(resolved_path)
+        assert "test.csv" in resolved_path
+
+        # Verify file content was written correctly
+        with open(resolved_path, "r") as f:
+            assert f.read() == csv_content
+
+        # Clean up
+        os.remove(resolved_path)
+        os.rmdir(os.path.dirname(resolved_path))
+
+    def test_non_file_fields_untouched(self):
+        from src.orchestrator.orchestrator import resolve_file_uploads
+
+        config = {
+            "import_stock_prices_csv_config": {
+                "csv_file": {"filename": "test.csv", "content": "dGVzdA=="},
+                "default_ticker": "1234",
+                "date_column": "Date",
+            }
+        }
+        steps = [{"name": "import_stock_prices_csv"}]
+        result = resolve_file_uploads(config, steps)
+        step_cfg = result["import_stock_prices_csv_config"]
+        # csv_file should be resolved to a path string
+        assert isinstance(step_cfg["csv_file"], str)
+        # Non-file fields should be unchanged
+        assert step_cfg["default_ticker"] == "1234"
+        assert step_cfg["date_column"] == "Date"
+
+    def test_unknown_step_skipped_gracefully(self):
+        from src.orchestrator.orchestrator import resolve_file_uploads
+
+        config = {"nonexistent_config": {"file_field": {"filename": "x", "content": "eA=="}}}
+        steps = [{"name": "nonexistent_step"}]
+        result = resolve_file_uploads(config, steps)
+        # Should pass through unchanged since step is unknown
+        assert result["nonexistent_config"]["file_field"] == {"filename": "x", "content": "eA=="}
+
+    def test_returned_dict_is_independent(self):
+        from src.orchestrator.orchestrator import resolve_file_uploads
+
+        config = {"import_stock_prices_csv_config": {"csv_file": "orig.csv"}}
+        steps = [{"name": "import_stock_prices_csv"}]
+        result = resolve_file_uploads(config, steps)
+        # Should be a different dict object
+        assert result is not config
+        # Original should be unmodified
+        assert config["import_stock_prices_csv_config"]["csv_file"] == "orig.csv"
+
+
 class TestConfigFromDict:
     """Test Config.from_dict."""
 

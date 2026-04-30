@@ -766,28 +766,58 @@ function createFieldInput(field, current, commit) {
 function createFilesystemInput(field, currentValue, commit) {
   const wrap = el('div', { class: 'field-with-picker' });
   const input = el('input', { type: 'text' });
-  input.value = currentValue === undefined || currentValue === null ? '' : String(currentValue);
+  const isFileUpload = String(field.field_type || '').toLowerCase() === 'file';
+
+  // Display: for file upload objects show filename, for strings show as-is
+  const displayValue = (currentValue && typeof currentValue === 'object')
+    ? (currentValue.filename || '')
+    : (currentValue === undefined || currentValue === null ? '' : String(currentValue));
+  input.value = displayValue;
   input.placeholder = field.display_label || field.key;
   input.addEventListener('change', () => {
-    commit(input.value);
+    if (isFileUpload && currentValue && typeof currentValue === 'object') {
+      currentValue.filename = input.value;
+      commit(currentValue);
+    } else {
+      commit(input.value);
+    }
   });
 
   const button = el('button', { class: 'tiny-btn', type: 'button', text: 'Browse' });
   button.addEventListener('click', async () => {
     const picked = await pickPathLikeValue(field);
     if (!picked) return;
-    input.value = picked;
-    commit(picked);
+    if (isFileUpload && typeof picked === 'object') {
+      input.value = picked.filename;
+      commit({ filename: picked.filename, content: picked.content });
+    } else {
+      input.value = typeof picked === 'string' ? picked : (picked.filename || '');
+      commit(typeof picked === 'string' ? picked : (picked.filename || ''));
+    }
   });
 
   wrap.append(input, button);
   return wrap;
 }
 
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      // Strip the data:...;base64, prefix to get raw base64
+      const base64 = String(reader.result).split(',')[1] || '';
+      resolve(base64);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
 async function pickPathLikeValue(field) {
   const fieldType = String(field.field_type || '').toLowerCase();
   const key = String(field.key || '').toLowerCase();
   const wantsDirectory = key.includes('dir') || key.includes('folder');
+  const wantsFileContent = fieldType === 'file';
 
   if (wantsDirectory && typeof window.showDirectoryPicker === 'function') {
     try {
@@ -806,12 +836,23 @@ async function pickPathLikeValue(field) {
           description: 'SQLite DB',
           accept: { 'application/x-sqlite3': ['.db', '.sqlite', '.sqlite3'] },
         });
+      } else if (wantsFileContent) {
+        pickerTypes.push({
+          description: 'CSV files',
+          accept: { 'text/csv': ['.csv'] },
+        });
       }
-      const handles = await window.showOpenFilePicker({
+      const [handle] = await window.showOpenFilePicker({
         multiple: false,
         types: pickerTypes.length ? pickerTypes : undefined,
       });
-      return handles?.[0]?.name || '';
+      if (!handle) return '';
+      if (wantsFileContent) {
+        const file = await handle.getFile();
+        const content = await readFileAsBase64(file);
+        return { filename: file.name, content };
+      }
+      return handle.name || '';
     } catch {
       return '';
     }
@@ -822,11 +863,13 @@ async function pickPathLikeValue(field) {
     fileInput.type = 'file';
     if (fieldType === 'database') {
       fileInput.accept = '.db,.sqlite,.sqlite3';
+    } else if (wantsFileContent) {
+      fileInput.accept = '.csv';
     }
     if (wantsDirectory) {
       fileInput.setAttribute('webkitdirectory', '');
     }
-    fileInput.addEventListener('change', () => {
+    fileInput.addEventListener('change', async () => {
       const [file] = fileInput.files || [];
       if (!file) {
         resolve('');
@@ -834,6 +877,15 @@ async function pickPathLikeValue(field) {
       }
       if (wantsDirectory && file.webkitRelativePath) {
         resolve(file.webkitRelativePath.split('/')[0] || '');
+        return;
+      }
+      if (wantsFileContent) {
+        try {
+          const content = await readFileAsBase64(file);
+          resolve({ filename: file.name, content });
+        } catch {
+          resolve('');
+        }
         return;
       }
       resolve(file.name || '');

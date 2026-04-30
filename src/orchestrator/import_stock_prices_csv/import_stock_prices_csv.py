@@ -1,5 +1,8 @@
+import base64
 import logging
+import os
 import sqlite3
+import tempfile
 
 import pandas as pd
 
@@ -164,17 +167,47 @@ def run_import_stock_prices_csv(config, overwrite=False):
     logger.info("Importing stock prices from CSV...")
     step_cfg = config.get("import_stock_prices_csv_config", {})
 
-    return import_stock_prices_csv(
-        db_name=get_db2(),
-        prices_table="Stock_Prices",
-        csv_path=step_cfg.get("csv_file", ""),
-        default_ticker=step_cfg.get("default_ticker", step_cfg.get("ticker", "")),
-        default_currency=step_cfg.get("default_currency", step_cfg.get("currency", "JPY")),
-        date_column=step_cfg.get("date_column", "Date"),
-        price_column=step_cfg.get("price_column", "Price"),
-        ticker_column=step_cfg.get("ticker_column", ""),
-        currency_column=step_cfg.get("currency_column", ""),
-    )
+    csv_file_value = step_cfg.get("csv_file", "")
+    temp_file = None
+
+    # If csv_file is a dict with uploaded file content, write to temp file
+    if isinstance(csv_file_value, dict) and csv_file_value.get("content"):
+        filename = csv_file_value.get("filename", "upload.csv")
+        content = csv_file_value["content"]
+        temp_dir = tempfile.mkdtemp(prefix="edinet_upload_")
+        temp_file = os.path.join(temp_dir, os.path.basename(filename) or "upload.csv")
+        try:
+            file_bytes = base64.b64decode(content)
+            with open(temp_file, "wb") as f:
+                f.write(file_bytes)
+            logger.info("Saved uploaded file '%s' to temp path: %s", filename, temp_file)
+        except Exception as exc:
+            logger.error("Failed to decode uploaded file: %s", exc)
+            raise ValueError(f"Failed to process uploaded file '{filename}': {exc}") from exc
+        csv_path = temp_file
+    else:
+        csv_path = str(csv_file_value)
+
+    try:
+        return import_stock_prices_csv(
+            db_name=get_db2(),
+            prices_table="Stock_Prices",
+            csv_path=csv_path,
+            default_ticker=step_cfg.get("default_ticker", step_cfg.get("ticker", "")),
+            default_currency=step_cfg.get("default_currency", step_cfg.get("currency", "JPY")),
+            date_column=step_cfg.get("date_column", "Date"),
+            price_column=step_cfg.get("price_column", "Price"),
+            ticker_column=step_cfg.get("ticker_column", ""),
+            currency_column=step_cfg.get("currency_column", ""),
+        )
+    finally:
+        # Clean up the temp file
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+                os.rmdir(os.path.dirname(temp_file))
+            except OSError:
+                pass
 
 
 STEP_DEFINITION = StepDefinition(

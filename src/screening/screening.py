@@ -69,6 +69,8 @@ OPERATOR_MAP: dict[str, str] = {
     "=": "=",
     "!=": "!=",
     "BETWEEN": "BETWEEN",
+    "IN": "IN",
+    "LIKE": "LIKE",
 }
 
 DEFAULT_COLUMNS: list[str] = [
@@ -124,6 +126,11 @@ _TABLE_ALIAS: dict[str, str] = {
 }
 
 
+def _get_table_alias(table: str) -> str:
+    """Return the SQL alias for a table, falling back to the table name."""
+    return _TABLE_ALIAS.get(table, table)
+
+
 # ---------------------------------------------------------------------------
 # SQL display helper
 # ---------------------------------------------------------------------------
@@ -168,6 +175,31 @@ def _resolve_matching_column(
     return None
 
 
+def _resolve_company_columns(db_path: str) -> tuple[str, str]:
+    """Return the actual edinetCode and ticker column names from CompanyInfo.
+
+    Introspects the database to find the real column names instead of
+    relying on hardcoded assumptions.
+
+    Returns:
+        (edinet_col, ticker_col) — the resolved column names.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA table_info([CompanyInfo])")
+            cols = [row[1] for row in cursor.fetchall()]
+        except sqlite3.OperationalError:
+            return "edinetCode", "Company_Ticker"
+
+        edinet_col = _resolve_matching_column(cols, COMPANYINFO_EDINET_CANDIDATES) or "edinetCode"
+        ticker_col = _resolve_matching_column(cols, COMPANYINFO_TICKER_CANDIDATES) or "Company_Ticker"
+        return edinet_col, ticker_col
+    finally:
+        conn.close()
+
+
 def get_default_columns(
     available_metrics: dict[str, list[str]] | None = None,
 ) -> list[str]:
@@ -208,8 +240,10 @@ def get_default_columns(
 def get_available_metrics(db_path: str) -> dict[str, list[str]]:
     """Return a dict of ``{table_name: [column_names]}`` for screening.
 
-    Includes the screening metric tables plus ``CompanyInfo``. The ``docID``
-    column is excluded from derived metric tables.
+    Introspects **all** user tables in the database, not just a hardcoded
+    list. Columns named ``docID``, ``edinetCode``, or ``periodEnd`` are
+    excluded from known metric tables (PerShare, Valuation, etc.) but
+    kept for CompanyInfo, FinancialStatements, and Stock_Prices.
 
     Args:
         db_path: Path to the SQLite database.
@@ -217,30 +251,35 @@ def get_available_metrics(db_path: str) -> dict[str, list[str]]:
     Returns:
         Dict mapping table names to their column lists.
     """
+    # Columns to strip from per-document metric tables
+    _METADATA_COLS = {"docID", "edinetCode", "periodEnd"}
+    # Tables that should keep all columns (metadata cols are meaningful here)
+    _KEEP_ALL_COLS = {"CompanyInfo", "FinancialStatements", "Stock_Prices"}
+    # Internal/sqlite tables to skip
+    _SKIP_TABLES = {"sqlite_sequence"}
+
     result: dict[str, list[str]] = {}
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.cursor()
+        # Get all user table names
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        all_tables = [row[0] for row in cursor.fetchall()]
 
-        try:
-            cursor.execute("PRAGMA table_info([CompanyInfo])")
-            company_cols = [row[1] for row in cursor.fetchall()]
-            if company_cols:
-                result["CompanyInfo"] = company_cols
-        except sqlite3.OperationalError:
-            pass
-
-        for table in SCREENING_TABLES:
+        for table in all_tables:
+            if table in _SKIP_TABLES:
+                continue
             try:
                 cursor.execute(f"PRAGMA table_info([{table}])")
-                cols = [
-                    row[1] for row in cursor.fetchall()
-                    if row[1] not in ("docID", "edinetCode", "periodEnd")
-                ]
+                cols = [row[1] for row in cursor.fetchall()]
+                if not cols:
+                    continue
+                # For metric tables, strip metadata columns
+                if table.lower() not in {t.lower() for t in _KEEP_ALL_COLS}:
+                    cols = [c for c in cols if c not in _METADATA_COLS]
                 if cols:
                     result[table] = cols
             except sqlite3.OperationalError:
-                # Table does not exist in this database
                 continue
     finally:
         conn.close()
@@ -307,18 +346,19 @@ def _validate_column_ref(col: str, available: dict[str, list[str]]) -> bool:
     return table in available and column in available[table]
 
 
-_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_ ]*$")
-
-
 def _safe_identifier(name: str) -> str:
     """Validate and return a safe SQL identifier.
 
+    Allows any character since the identifier will be wrapped in
+    ``[...]`` brackets by ``_quote_identifier``, which properly
+    escapes ``]`` characters.
+
     Raises:
-        ValueError: If the name contains unsafe characters.
+        ValueError: If the name is empty.
     """
-    if not _SAFE_IDENTIFIER_RE.match(name):
-        raise ValueError(f"Invalid SQL identifier: {name!r}")
-    return name
+    if not name or not name.strip():
+        raise ValueError(f"Empty SQL identifier")
+    return str(name)
 
 
 def _quote_identifier(name: str) -> str:
@@ -383,24 +423,97 @@ def _build_query_column_plan(
     return query_columns, column_aliases, visible_columns
 
 
+def _build_expression_sql(tokens: list[dict]) -> tuple[str, list]:
+    """Build a SQL expression from a token array for arithmetic right sides.
+
+    Each token is a dict with:
+        type: "value" | "column" | "op"
+        value: literal value (for "value" tokens)
+        table, column: (for "column" tokens)
+        op: "+" | "-" | "*" | "/" (for "op" tokens)
+
+    Returns (sql_fragment, params_list).
+    """
+    parts: list[str] = []
+    params: list = []
+    for token in tokens:
+        t = token.get("type", "")
+        if t == "value":
+            parts.append("?")
+            params.append(token.get("value"))
+        elif t == "column":
+            table = token.get("table", "")
+            column = token.get("column", "")
+            if not table or not column:
+                raise ValueError(f"Invalid column token: {token}")
+            alias = _get_table_alias(table)
+            safe_col = _safe_identifier(column)
+            parts.append(f"{alias}.[{safe_col}]")
+        elif t == "op":
+            op_val = str(token.get("op", "")).strip()
+            if op_val not in ("+", "-", "*", "/"):
+                raise ValueError(f"Invalid arithmetic operator: {op_val!r}")
+            parts.append(op_val)
+        else:
+            raise ValueError(f"Unknown expression token type: {t!r}")
+    if not parts:
+        raise ValueError("Expression must have at least one token")
+    return " ".join(parts), params
+
+
+# Allowed characters for stock_price left_expression (prevents SQL injection)
+_STOCK_PRICE_EXPR_RE = re.compile(r'^[\d\+\-\*\/\.,\(\)\s]+$')
+
+
+def _validate_stock_price_expr(expr: str) -> str:
+    """Validate and normalise a stock-price left-side expression string.
+
+    Only digits, basic arithmetic operators, decimals, parentheses, and
+    whitespace are permitted.
+    """
+    stripped = (expr or "").strip()
+    if not stripped:
+        return ""
+    if not _STOCK_PRICE_EXPR_RE.match(stripped):
+        raise ValueError(
+            f"Invalid stock_price expression: {expr!r}. "
+            "Only numbers and + - * / . ( ) are allowed."
+        )
+    return stripped
+
+
 def build_screening_query(
     criteria: list[dict],
     columns: list[str],
     period: str | None = None,
+    screening_date: str | None = None,
     available_metrics: dict[str, list[str]] | None = None,
     column_aliases: dict[str, str] | None = None,
+    computed_columns: list[dict] | None = None,
 ) -> tuple[str, list]:
     """Build a parameterised SQL query for screening.
 
     Args:
         criteria: List of filter dicts, each with keys ``table``, ``column``,
             ``operator``, ``value`` (and optionally ``value2`` for BETWEEN).
+            For column-comparison mode, ``comparison_mode`` = ``"column"``,
+            ``compare_table``, ``compare_column``, and optional ``offset``.
+            For stock_price mode, ``comparison_mode`` = ``"stock_price"``,
+            and optional ``left_expression`` to apply arithmetic on the
+            column before comparing with the latest stock price.
         columns: List of ``"Table.Column"`` strings to SELECT.
         period: Optional year string to filter ``periodEnd``.
+        screening_date: Optional point-in-time date (YYYY-MM-DD). When set,
+            only the most recent filing per company with ``periodEnd <= date``
+            is selected, and stock prices are capped at that date.
         available_metrics: Output of ``get_available_metrics`` for validation.
             If ``None``, validation of screening-table columns is skipped.
         column_aliases: Optional ``{Table.Column: Alias}`` overrides for the
             SELECT projection.
+        computed_columns: Optional list of computed column specs. Each dict
+            has keys: ``name``, ``formula_type``, ``numerator_table``,
+            ``numerator_column``, ``denominator_table``, ``denominator_column``,
+            and optional ``formula`` for custom SQL.
 
     Returns:
         ``(sql_string, params_list)`` tuple for parameterised execution.
@@ -417,11 +530,26 @@ def build_screening_query(
         if len(parts) == 2:
             needed_tables.add(parts[0])
     for crit in criteria:
-        needed_tables.add(crit["table"])
-        if crit.get("comparison_mode") == "column":
-            compare_table = crit.get("compare_table")
-            if compare_table:
-                needed_tables.add(compare_table)
+        if crit.get("comparison_mode") == "full_expression":
+            for token_list in (crit.get("left_side", []), crit.get("right_side", [])):
+                for token in token_list:
+                    if token.get("type") == "column" and token.get("table"):
+                        needed_tables.add(token["table"])
+        else:
+            needed_tables.add(crit["table"])
+            if crit.get("comparison_mode") == "column":
+                compare_table = crit.get("compare_table")
+                if compare_table:
+                    needed_tables.add(compare_table)
+
+    # --- Resolve actual CompanyInfo column names ---
+    if available_metrics and "CompanyInfo" in available_metrics:
+        company_cols = available_metrics["CompanyInfo"]
+        _edinet_col = _resolve_matching_column(company_cols, COMPANYINFO_EDINET_CANDIDATES) or "edinetCode"
+        _ticker_col = _resolve_matching_column(company_cols, COMPANYINFO_TICKER_CANDIDATES) or "Company_Ticker"
+    else:
+        _edinet_col = "edinetCode"
+        _ticker_col = "Company_Ticker"
 
     # Validate columns against available metrics
     if available_metrics is not None:
@@ -429,27 +557,37 @@ def build_screening_query(
             if not _validate_column_ref(col, available_metrics):
                 raise ValueError(f"Invalid column reference: {col!r}")
         for crit in criteria:
-            table = crit["table"]
-            column = crit["column"]
-            if not _validate_column_ref(
-                f"{table}.{column}", available_metrics
-            ):
-                raise ValueError(
-                    f"Column {column!r} not in table {table!r}"
-                )
-            if crit.get("comparison_mode") == "column":
-                compare_table = crit.get("compare_table")
-                compare_column = crit.get("compare_column")
-                if not compare_table or not compare_column:
-                    raise ValueError(
-                        "Dynamic criteria require compare_table and compare_column"
-                    )
+            if crit.get("comparison_mode") == "full_expression":
+                # Validate all column tokens in left_side and right_side
+                for side_key in ("left_side", "right_side"):
+                    for token in crit.get(side_key, []):
+                        if token.get("type") == "column":
+                            t, c = token.get("table"), token.get("column")
+                            if t and c:
+                                if not _validate_column_ref(f"{t}.{c}", available_metrics):
+                                    raise ValueError(f"Column {c!r} not in table {t!r}")
+            else:
+                table = crit["table"]
+                column = crit["column"]
                 if not _validate_column_ref(
-                    f"{compare_table}.{compare_column}", available_metrics
+                    f"{table}.{column}", available_metrics
                 ):
                     raise ValueError(
-                        f"Column {compare_column!r} not in table {compare_table!r}"
+                        f"Column {column!r} not in table {table!r}"
                     )
+                if crit.get("comparison_mode") == "column":
+                    compare_table = crit.get("compare_table")
+                    compare_column = crit.get("compare_column")
+                    if not compare_table or not compare_column:
+                        raise ValueError(
+                            "Dynamic criteria require compare_table and compare_column"
+                        )
+                    if not _validate_column_ref(
+                        f"{compare_table}.{compare_column}", available_metrics
+                    ):
+                        raise ValueError(
+                            f"Column {compare_column!r} not in table {compare_table!r}"
+                        )
 
     # Validate operators
     for crit in criteria:
@@ -464,12 +602,54 @@ def build_screening_query(
         result_aliases.update(column_aliases)
     for col in columns:
         table, column = col.split(".", 1)
-        alias = _TABLE_ALIAS.get(table, table)
+        alias = _get_table_alias(table)
         safe_col = _safe_identifier(column)
         result_alias = result_aliases[col]
         select_parts.append(
             f"{alias}.[{safe_col}] AS {_quote_identifier(result_alias)}"
         )
+
+    # Computed / formula columns
+    computed_col_count = 0
+    if computed_columns:
+        for cc in computed_columns:
+            cc_name = str(cc.get("name", f"Computed{computed_col_count + 1}"))
+            ft = str(cc.get("formula_type", "")).lower()
+            custom_formula = cc.get("formula")
+            computed_col_count += 1
+
+            if custom_formula:
+                # Custom SQL expression — must use table aliases
+                select_parts.append(
+                    f"({custom_formula}) AS {_quote_identifier(cc_name)}"
+                )
+            elif ft == "price_ratio":
+                num_table = str(cc.get("numerator_table", "Stock_Prices"))
+                num_col = _safe_identifier(str(cc.get("numerator_column", "Price")))
+                den_table = str(cc.get("denominator_table", ""))
+                den_col = _safe_identifier(str(cc.get("denominator_column", "")))
+
+                num_alias = "s_p" if num_table == "Stock_Prices" else _get_table_alias(num_table)
+                if num_table not in ("FinancialStatements", "CompanyInfo", "Stock_Prices"):
+                    needed_tables.add(num_table)
+
+                den_alias = "s_p" if den_table == "Stock_Prices" else _get_table_alias(den_table)
+                if den_table and den_table not in ("FinancialStatements", "CompanyInfo", "Stock_Prices"):
+                    needed_tables.add(den_table)
+
+                select_parts.append(
+                    f"CASE WHEN COALESCE({den_alias}.[{den_col}], 0) != 0 "
+                    f"THEN {num_alias}.[{num_col}] * 1.0 / {den_alias}.[{den_col}] "
+                    f"ELSE NULL END AS {_quote_identifier(cc_name)}"
+                )
+            else:
+                logger.warning("Unknown formula_type %r for computed column %r", ft, cc_name)
+
+        # Update result aliases for these computed columns
+        for cc in computed_columns:
+            cc_name = str(cc.get("name", ""))
+            if cc_name:
+                result_aliases[f"__computed__{cc_name}"] = cc_name
 
     # Always include latest stock price
     if "Stock_Prices" in needed_tables or True:
@@ -481,18 +661,51 @@ def build_screening_query(
     select_clause = ", ".join(select_parts) if select_parts else "*"
 
     # --- Build FROM / JOIN ---
-    join_clauses: list[str] = ["FROM FinancialStatements f"]
+    if screening_date:
+        # Point-in-time: select latest filing per company <= screening_date
+        join_clauses: list[str] = [
+            "FROM ("
+            "SELECT f.* FROM FinancialStatements f "
+            "INNER JOIN ("
+            "SELECT edinetCode, MAX(periodEnd) AS max_period "
+            "FROM FinancialStatements "
+            "WHERE date(periodEnd) <= ? "
+            "GROUP BY edinetCode"
+            ") latest ON f.edinetCode = latest.edinetCode "
+            "AND f.periodEnd = latest.max_period"
+            ") f"
+        ]
+        params.append(screening_date)
+    else:
+        join_clauses: list[str] = ["FROM FinancialStatements f"]
+
     join_clauses.append(
-        "LEFT JOIN CompanyInfo c ON c.edinetCode = f.edinetCode"
+        f"LEFT JOIN CompanyInfo c ON c.[{_safe_identifier(_edinet_col)}] = f.edinetCode"
     )
 
     # Stock prices — latest price per company (via pre-aggregated subquery)
-    join_clauses.append(
-        "LEFT JOIN ("
-        "SELECT Ticker, MAX([Date]) AS MaxDate "
-        "FROM Stock_Prices GROUP BY Ticker"
-        ") sp_max ON sp_max.Ticker = c.Company_Ticker"
-    )
+    # Use date([Date]) to compare only the date part, avoiding timestamp mismatch
+    _ticker_safe = _safe_identifier(_ticker_col)
+    if screening_date:
+        join_clauses.append(
+            "LEFT JOIN ("
+            "SELECT Ticker, MAX([Date]) AS MaxDate "
+            "FROM Stock_Prices WHERE date([Date]) <= ? "
+            "GROUP BY Ticker"
+            f") sp_max ON (sp_max.Ticker = c.[{_ticker_safe}] "
+            f"OR sp_max.Ticker = c.[{_ticker_safe}] || '.T' "
+            f"OR REPLACE(sp_max.Ticker, '.T', '') = c.[{_ticker_safe}])"
+        )
+        params.append(screening_date)
+    else:
+        join_clauses.append(
+            "LEFT JOIN ("
+            "SELECT Ticker, MAX([Date]) AS MaxDate "
+            "FROM Stock_Prices GROUP BY Ticker"
+            f") sp_max ON (sp_max.Ticker = c.[{_ticker_safe}] "
+            f"OR sp_max.Ticker = c.[{_ticker_safe}] || '.T' "
+            f"OR REPLACE(sp_max.Ticker, '.T', '') = c.[{_ticker_safe}])"
+        )
     join_clauses.append(
         "LEFT JOIN Stock_Prices s_p "
         "ON s_p.Ticker = sp_max.Ticker AND s_p.[Date] = sp_max.MaxDate"
@@ -502,12 +715,10 @@ def build_screening_query(
     for table in sorted(needed_tables):
         if table in ("FinancialStatements", "CompanyInfo", "Stock_Prices"):
             continue
-        alias = _TABLE_ALIAS.get(table)
-        if alias is None:
-            raise ValueError(f"Unknown table: {table!r}")
+        alias = _get_table_alias(table)
         safe_table = _safe_identifier(table)
         join_clauses.append(
-            f"LEFT JOIN [{safe_table}] {alias} ON f.docID = {alias}.docID"
+            f"LEFT JOIN [{safe_table}] [{alias}] ON f.docID = [{alias}].docID"
         )
 
     # --- Build WHERE ---
@@ -518,13 +729,15 @@ def build_screening_query(
         params.append(period)
 
     for crit in criteria:
-        table = crit["table"]
-        column = crit["column"]
-        op = OPERATOR_MAP[crit["operator"]]
-        alias = _TABLE_ALIAS.get(table, table)
-        safe_col = _safe_identifier(column)
-        col_ref = f"{alias}.[{safe_col}]"
         comparison_mode = crit.get("comparison_mode", "fixed")
+        op = OPERATOR_MAP[crit["operator"]]
+
+        if comparison_mode != "full_expression":
+            table = crit["table"]
+            column = crit["column"]
+            alias = _get_table_alias(table)
+            safe_col = _safe_identifier(column)
+            col_ref = f"{alias}.[{safe_col}]"
 
         if comparison_mode == "column":
             if op == "BETWEEN":
@@ -535,10 +748,61 @@ def build_screening_query(
                 raise ValueError(
                     "Dynamic criteria require compare_table and compare_column"
                 )
-            compare_alias = _TABLE_ALIAS.get(compare_table, compare_table)
+            compare_alias = _get_table_alias(compare_table)
             safe_compare_col = _safe_identifier(compare_column)
             compare_ref = f"{compare_alias}.[{safe_compare_col}]"
-            where_parts.append(f"{col_ref} {op} {compare_ref}")
+            offset = crit.get("offset")
+            if offset is not None:
+                # left OP (right + offset)  e.g.  a.col > b.col2 + 0.02
+                where_parts.append(f"{col_ref} {op} ({compare_ref} + ?)")
+                params.append(float(offset))
+            else:
+                where_parts.append(f"{col_ref} {op} {compare_ref}")
+        elif comparison_mode == "expression":
+            # Arithmetic expression on right side: e.g. 0.75 * OtherColumn
+            expr_tokens = crit.get("right_side", [])
+            if not expr_tokens:
+                raise ValueError("expression mode requires right_side tokens")
+            expr_sql, expr_params = _build_expression_sql(expr_tokens)
+            where_parts.append(f"{col_ref} {op} ({expr_sql})")
+            params.extend(expr_params)
+        elif comparison_mode == "stock_price":
+            # Compare a column (with optional arithmetic expression)
+            # against the latest stock price:  ps.[Sales] / 2 <= s_p.[Price]
+            if op == "BETWEEN":
+                raise ValueError("stock_price mode does not support BETWEEN")
+            left_expr = _validate_stock_price_expr(crit.get("left_expression", ""))
+            if left_expr:
+                left_ref = f"({col_ref} {left_expr})"
+            else:
+                left_ref = col_ref
+            where_parts.append(f"{left_ref} {op} s_p.[Price]")
+        elif comparison_mode == "full_expression":
+            # Both sides are free-form expression token arrays.
+            # e.g. ps.[EPS] * 8 > s_p.[Price] * 0.5
+            if op in ("BETWEEN", "IN", "LIKE"):
+                raise ValueError(f"full_expression mode does not support {op}")
+            left_tokens = crit.get("left_side", [])
+            right_tokens = crit.get("right_side", [])
+            if not left_tokens or not right_tokens:
+                raise ValueError("full_expression requires left_side and right_side token arrays")
+            left_sql, left_params = _build_expression_sql(left_tokens)
+            right_sql, right_params = _build_expression_sql(right_tokens)
+            where_parts.append(f"({left_sql}) {op} ({right_sql})")
+            params.extend(left_params)
+            params.extend(right_params)
+        elif op == "IN":
+            values = crit.get("values")
+            if not values or not isinstance(values, list):
+                values = [crit.get("value")] if crit.get("value") is not None else []
+            if not values:
+                raise ValueError("IN operator requires a list of values")
+            placeholders = ", ".join(["?" for _ in values])
+            where_parts.append(f"{col_ref} IN ({placeholders})")
+            params.extend(values)
+        elif op == "LIKE":
+            where_parts.append(f"{col_ref} LIKE ?")
+            params.append(str(crit.get("value", "")))
         elif op == "BETWEEN":
             where_parts.append(f"{col_ref} BETWEEN ? AND ?")
             params.append(crit["value"])
@@ -568,10 +832,12 @@ def run_screening(
     criteria: list[dict],
     columns: list[str],
     period: str | None = None,
+    screening_date: str | None = None,
     sort_by: str | None = None,
     sort_order: str = "ASC",
     ranking_algorithm: str = "none",
     ranking_rules: list[dict] | None = None,
+    computed_columns: list[dict] | None = None,
 ) -> pd.DataFrame:
     """Execute a screening query and return formatted results.
 
@@ -580,11 +846,13 @@ def run_screening(
         criteria: List of filter criteria dicts.
         columns: List of ``"Table.Column"`` strings to include.
         period: Optional year string to filter by.
+        screening_date: Optional point-in-time date (YYYY-MM-DD).
         sort_by: Optional column name to sort results by.
         sort_order: ``"ASC"`` or ``"DESC"``.
         ranking_algorithm: Ranking method to apply after filtering.
         ranking_rules: Ranking rule dicts with table, column, weight,
             and direction.
+        computed_columns: Optional list of computed column specs.
 
     Returns:
         DataFrame with screening results.
@@ -599,8 +867,10 @@ def run_screening(
         criteria,
         query_columns,
         period,
+        screening_date=screening_date,
         available_metrics=available,
         column_aliases=column_aliases,
+        computed_columns=computed_columns,
     )
 
     logger.info("Running screening query with %d criteria", len(criteria))
@@ -634,6 +904,12 @@ def run_screening(
         df = df.reset_index(drop=True)
 
     visible_result_columns = [col for col in visible_columns if col in df.columns]
+    # Include computed column names in visible result
+    if computed_columns:
+        for cc in computed_columns:
+            cc_name = str(cc.get("name", ""))
+            if cc_name and cc_name in df.columns and cc_name not in visible_result_columns:
+                visible_result_columns.append(cc_name)
     if "ScreeningRank" in df.columns and "ScreeningRank" not in visible_result_columns:
         visible_result_columns.append("ScreeningRank")
     if visible_result_columns:

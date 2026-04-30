@@ -6,8 +6,11 @@ Screens that need new API endpoints should add route modules to this package.
 """
 
 from src.api.router import app as _api_app, cleanup_completed_jobs  # noqa: F401
+from src.web_app.api.screening import router as _screening_router
 
 # The FastAPI sub-application that carries all /api/* and /health routes.
+# Screening routes are mounted from the dedicated screening module.
 router_app = _api_app
+router_app.router.routes.extend(_screening_router.routes)
 
 __all__ = ["router_app", "cleanup_completed_jobs"]

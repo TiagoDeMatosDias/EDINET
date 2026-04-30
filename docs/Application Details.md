@@ -667,7 +667,11 @@ Core implementation in `src/screening/screening.py`:
 
 - `def get_available_metrics(db_path: str) -> dict[str, list[str]]` — Introspect DB for screening table columns.
 - `def get_available_periods(db_path: str) -> list[str]` — Return distinct periodEnd years.
-- `def build_screening_query(criteria: list[dict], columns: list[str], period: str | None = None, available_metrics: dict[str, list[str]] | None = None, column_aliases: dict[str, str] | None = None) -> tuple[str, list]` — Build parameterised SQL with validation.
+- ``screening_date`` (YYYY-MM-DD) selects the most recent filing per company with ``periodEnd <= date``, and caps stock prices at that date.
+- ``computed_columns`` accepts formula specs for runtime valuation columns (P/E, P/B, etc.).
+- Column comparisons now support an optional ``offset`` parameter for relative thresholds.
+
+- `def build_screening_query(criteria, columns, period=None, screening_date=None, available_metrics=None, column_aliases=None, computed_columns=None) -> tuple[str, list]` — Build parameterised SQL with validation.
 - `def run_screening(db_path: str, criteria: list[dict], columns: list[str], period: str | None = None, sort_by: str | None = None, sort_order: str = "ASC", ranking_algorithm: str = "none", ranking_rules: list[dict] | None = None) -> pd.DataFrame` — Execute screening, apply optional ranking, and return results.
 - `def export_screening_to_backtest_csv(db_path: str, criteria: list[dict], columns: list[str], output_path: str, period: str | None = None, max_companies: int = 25, ranking_algorithm: str = "none", ranking_rules: list[dict] | None = None, historical: bool = False) -> str` — Export screening results in the CSV format used by `run_backtest_set`.
 - `def export_screening_to_csv(df, output_path) -> str` — Export DataFrame to CSV.

@@ -1,4 +1,7 @@
+import base64
 import logging
+import os
+import tempfile
 import threading
 from typing import Any, Callable
 
@@ -94,6 +97,10 @@ def validate_input(
     steps: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Validate a provided pipeline config and return normalized enabled steps."""
+    # Resolve uploaded files to temp paths before validation
+    if isinstance(config, dict) and steps:
+        config = resolve_file_uploads(config, steps)
+
     config_obj = _coerce_config(config)
     normalized_steps = _resolve_enabled_steps(config_obj, steps=steps)
     apply_step_config_defaults(
@@ -118,6 +125,58 @@ def execute_step(step_name: str, config, overwrite: bool = False):
     return handler(config, overwrite=overwrite)
 
 
+def resolve_file_uploads(config: dict[str, Any], enabled_steps: list[dict[str, Any]]) -> dict[str, Any]:
+    """Resolve any uploaded file content in config to temp file paths.
+
+    For each enabled step, looks up its field definitions and checks if any
+    ``field_type == "file"`` fields contain a dict with ``content`` (a base64
+    file payload from the web UI).  When found the content is decoded and
+    written to a temp file, and the config value is replaced with the temp
+    file path so backend step handlers can read it via ``pd.read_csv`` etc.
+
+    Returns a (possibly modified) shallow copy of the config dict.
+    """
+    resolved = dict(config)
+    for step_info in enabled_steps:
+        step_name = step_info["name"]
+        step_def = STEP_DEFINITIONS.get(step_name)
+        if not step_def:
+            continue
+        config_key = step_def.resolved_config_key
+        step_cfg = dict(resolved.get(config_key, {}))
+        modified = False
+        for field in step_def.input_fields:
+            if field.field_type == "file":
+                value = step_cfg.get(field.key)
+                if isinstance(value, dict) and value.get("content"):
+                    filename = value.get("filename", "upload.bin")
+                    content = value["content"]
+                    try:
+                        file_bytes = base64.b64decode(content)
+                        tmp_dir = tempfile.mkdtemp(prefix="edinet_upload_")
+                        safe_name = os.path.basename(filename) or "upload.bin"
+                        tmp_path = os.path.join(tmp_dir, safe_name)
+                        with open(tmp_path, "wb") as fh:
+                            fh.write(file_bytes)
+                        step_cfg[field.key] = tmp_path
+                        modified = True
+                        logger.info(
+                            "Resolved uploaded file '%s' for step '%s' -> %s",
+                            filename, step_name, tmp_path,
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "Failed to resolve uploaded file '%s' for step '%s': %s",
+                            filename, step_name, exc,
+                        )
+                        raise ValueError(
+                            f"Failed to process uploaded file '{filename}': {exc}"
+                        ) from exc
+        if modified:
+            resolved[config_key] = step_cfg
+    return resolved
+
+
 def run(
     config: Config | dict[str, Any] | None = None,
     steps: list[dict[str, Any]] | None = None,
@@ -129,6 +188,10 @@ def run(
     """Run the provided pipeline config, or load the saved config when omitted."""
     logger.info("Starting Program")
     logger.info("Loading Config")
+
+    # Resolve uploaded files to temp paths before coercing to Config
+    if isinstance(config, dict) and steps:
+        config = resolve_file_uploads(config, steps)
 
     config_obj = _coerce_config(config)
     enabled_steps = validate_input(config_obj, steps=steps)
