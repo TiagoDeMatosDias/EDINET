@@ -971,18 +971,55 @@ async function save() {
 }
 
 async function load() {
+  // Show a dropdown popup anchored to the Load button
+  const anchor = $('#scr-btn-load');
+  const ex = document.querySelector('.scr-pop'); if (ex) ex.remove();
+
+  const pop = el('div', { class: 'scr-pop scr-pop-menu' });
+  const hdr = el('div', { class: 'scr-pop-hdr', text: 'Load Screening' });
+  pop.append(hdr);
+
   const names = await apiSavedList();
-  if (!names.length) { alert('No saved screenings'); return; }
-  const name = prompt(`Saved:\n${names.join('\n')}\n\nLoad:`);
-  if (!name?.trim()) return;
-  try {
-    const d = await fetchJson(`/api/screening/saved/${encodeURIComponent(name.trim())}`);
-    ST.criteria = (d.criteria || []).map(c => ({ id: uid(), ...c }));
-    ST.columns = (d.columns || []).map(ref => ({ id: uid(), ref }));
-    ST.screeningDate = d.screening_date || '';
-    renderAll();
-    log('info', `Loaded "${name}"`);
-  } catch (e) { log('error', `Load: ${e.message}`); }
+  if (!names.length) {
+    pop.append(el('div', { class: 'scr-pop-empty', text: 'No saved screenings' }));
+  } else {
+    for (const name of names) {
+      const row = el('div', { class: 'scr-pop-row' });
+      const btn = el('button', { class: 'scr-pop-item', text: name });
+      btn.addEventListener('click', async () => {
+        pop.remove();
+        try {
+          const d = await fetchJson(`/api/screening/saved/${encodeURIComponent(name)}`);
+          ST.criteria = (d.criteria || []).map(c => ({ id: uid(), ...c }));
+          ST.columns = (d.columns || []).map(ref => ({ id: uid(), ref }));
+          ST.screeningDate = d.screening_date || '';
+          if ($('#scr-date')) $('#scr-date').value = d.screening_date || '';
+          renderAll();
+          log('info', `Loaded "${name}"`);
+        } catch (e) { log('error', `Load: ${e.message}`); }
+      });
+      row.append(btn);
+
+      const del = el('button', { class: 'scr-pop-del', text: '✕', title: `Delete "${name}"` });
+      del.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete "${name}"?`)) return;
+        try {
+          await fetchJson(`/api/screening/saved/${encodeURIComponent(name)}`, { method: 'DELETE' });
+          log('info', `Deleted "${name}"`);
+          pop.remove();
+          load(); // reopen with updated list
+        } catch (e) { log('error', `Delete: ${e.message}`); }
+      });
+      row.append(del);
+      pop.append(row);
+    }
+  }
+
+  document.body.append(pop);
+  const r = anchor.getBoundingClientRect();
+  pop.style.position = 'fixed'; pop.style.left = r.left + 'px'; pop.style.top = (r.bottom + 4) + 'px'; pop.style.zIndex = '1000';
+  autoClose(pop);
 }
 
 async function exportCSV() {

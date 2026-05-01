@@ -683,6 +683,56 @@ body.console-collapsed .console {
 .scr-pop-op:hover { background: var(--accent-soft); color: var(--accent); }
 .scr-pop-op.is-sel { color: var(--accent); font-weight: 600; }
 
+/* ── Load / delete saved screenings popup ── */
+.scr-pop-menu {
+  min-width: 280px;
+  max-width: 400px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 12px 32px var(--shadow);
+  max-height: 340px;
+  overflow-y: auto;
+}
+.scr-pop-hdr {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+.scr-pop-empty {
+  padding: 14px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.scr-pop-row {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+}
+.scr-pop-item {
+  flex: 1;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  padding: 9px 10px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+}
+.scr-pop-item:hover { background: rgba(255,255,255,0.04); }
+.scr-pop-del {
+  border: none;
+  background: transparent;
+  color: var(--danger);
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 14px;
+  opacity: 0.5;
+}
+.scr-pop-del:hover { opacity: 1; background: rgba(255,107,107,0.1); }
+
 /* ── Criteria builder ── */
 
 #scr-crit-builder { padding: 8px; }
