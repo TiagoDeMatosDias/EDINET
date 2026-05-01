@@ -558,6 +558,7 @@ body.console-collapsed .console {
   padding: 4px 12px; cursor: pointer; font-size: 11px; font-family: var(--font); margin: 4px 0 0 6px;
 }
 .scr-btn-add:hover { border-color: var(--accent); color: var(--accent); }
+.scr-add-row { display: inline-flex; gap: 6px; }
 
 .scr-toggle { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
 .scr-toggle input { width: 13px; height: 13px; }
@@ -828,6 +829,8 @@ body.console-collapsed .console {
   border-bottom: 1px solid var(--line); cursor: pointer; white-space: nowrap; z-index: 2;
 }
 .scr-table th:hover { color: var(--accent); }
+.scr-table th.is-dragging { opacity: 0.4; }
+.scr-table th.is-over { color: var(--accent); background: var(--accent-soft); }
 .scr-table td {
   padding: 6px 10px; border-bottom: 1px solid rgba(48,63,82,0.5); white-space: nowrap;
 }

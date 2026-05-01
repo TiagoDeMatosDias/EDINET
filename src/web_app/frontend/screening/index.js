@@ -22,8 +22,7 @@ const ST = {
   availableMetrics: {},
   screeningDate: '',
   criteria: [],
-  columns: [],
-  computedColumns: [],
+  columns: [],        // unified: {id, kind:'col'|'comp', ref?, name?, ...}
   prebuiltFormulas: [],
   sortBy: '',
   sortOrder: 'DESC',
@@ -35,6 +34,58 @@ const ST = {
 };
 
 function uid() { return String(ST._nextId++); }
+
+// Helpers to extract col refs / computed specs from the unified columns array
+function colRefs() { return ST.columns.filter(c => c.kind === 'col').map(c => c.ref); }
+
+// Table alias mapping — must match _TABLE_ALIAS in screening.py
+const _ALIAS = {
+  FinancialStatements: 'f', CompanyInfo: 'c', Stock_Prices: 's_p',
+  PerShare: 'ps', Valuation: 'v', Quality: 'q',
+  IncomeStatement: 'i', BalanceSheet: 'b', CashflowStatement: 'cf',
+  Pershare_Historical: 'psh', Valuation_Historical: 'vh', Quality_Historical: 'qh',
+};
+
+function compileTokensToSQL(tokens) {
+  if (!tokens || !tokens.length) return '';
+  const parts = [];
+  for (const t of tokens) {
+    if (t.type === 'column') {
+      const alias = _ALIAS[t.table] || t.table;
+      parts.push(`${alias}.[${(t.column || '').replace(/]/g, ']]')}]`);
+    } else if (t.type === 'value') {
+      parts.push(String(t.value ?? 0));
+    } else if (t.type === 'op') {
+      parts.push(t.op);
+    }
+  }
+  return parts.join(' ');
+}
+
+function computedColSpecs() {
+  return ST.columns.filter(c => c.kind === 'comp').map(cc => {
+    // If the column has expression tokens, compile them to SQL
+    if (cc._tokens && cc._tokens.length) {
+      const sql = compileTokensToSQL(cc._tokens);
+      return {
+        name: cc.name,
+        formula_type: 'custom',
+        numerator_table: '', numerator_column: '',
+        denominator_table: '', denominator_column: '',
+        formula: sql || null,
+      };
+    }
+    return {
+      name: cc.name,
+      formula_type: cc.formula_type || 'price_ratio',
+      numerator_table: cc.numerator_table || '',
+      numerator_column: cc.numerator_column || '',
+      denominator_table: cc.denominator_table || '',
+      denominator_column: cc.denominator_column || '',
+      formula: cc.formula || null,
+    };
+  });
+}
 
 // ---------------------------------------------------------------------------
 // API
@@ -91,17 +142,14 @@ function buildShell() {
         el('div', { id: 'scr-crit-builder' }),
         el('button', { id: 'scr-add-crit', class: 'scr-btn-add', text: '+ Add Criteria' }),
       ),
-      // Computed Columns
-      el('div', { class: 'scr-section' },
-        el('div', { class: 'scr-section-head' }, el('span', { text: 'Computed Columns:' })),
-        el('div', { id: 'scr-computed-cols' }),
-        el('button', { id: 'scr-add-comp', class: 'scr-btn-add', text: '+ Add Computed Column' }),
-      ),
-      // Columns
+      // Columns (unified: regular + computed)
       el('div', { class: 'scr-section' },
         el('div', { class: 'scr-section-head' }, el('span', { text: 'Columns:' })),
         el('div', { id: 'scr-columns' }),
-        el('button', { id: 'scr-add-col', class: 'scr-btn-add', text: '+ Add Column' }),
+        el('span', { class: 'scr-add-row' },
+          el('button', { id: 'scr-add-col', class: 'scr-btn-add', text: '+ Add Column' }),
+          el('button', { id: 'scr-add-comp', class: 'scr-btn-add', text: '+ Add Computed' }),
+        ),
       ),
     ),
   );
@@ -178,13 +226,12 @@ function cacheState() {
       availableMetrics: ST.availableMetrics,
       screeningDate: ST.screeningDate,
       criteria: JSON.parse(JSON.stringify(ST.criteria)),
-      columns: ST.columns.map(c => ({ id: c.id, ref: c.ref })),
-      computedColumns: ST.computedColumns.map(cc => ({
-        id: cc.id, name: cc.name, formula_type: cc.formula_type,
-        numerator_table: cc.numerator_table, numerator_column: cc.numerator_column,
-        denominator_table: cc.denominator_table, denominator_column: cc.denominator_column,
-        formula: cc.formula, _hint: cc._hint,
-      })),
+      columns: ST.columns.map(c => c.kind === 'comp' ? {
+        id: c.id, kind: 'comp', name: c.name, formula_type: c.formula_type,
+        numerator_table: c.numerator_table, numerator_column: c.numerator_column,
+        denominator_table: c.denominator_table, denominator_column: c.denominator_column,
+        formula: c.formula, _hint: c._hint, _tokens: c._tokens,
+      } : { id: c.id, kind: 'col', ref: c.ref }),
       sortBy: ST.sortBy,
       sortOrder: ST.sortOrder,
       formattedValues: ST.formattedValues,
@@ -212,18 +259,21 @@ function restoreCachedState() {
     ST.availableMetrics = data.availableMetrics || {};
     ST.screeningDate = data.screeningDate || '';
     ST.criteria = (data.criteria || []).map(c => ({ id: uid(), ...c }));
-    ST.columns = (data.columns || []).map(c => ({ id: c.id || uid(), ref: c.ref }));
-    ST.computedColumns = (data.computedColumns || []).map(cc => ({
-      id: cc.id || uid(),
-      name: cc.name,
-      formula_type: cc.formula_type || 'price_ratio',
-      numerator_table: cc.numerator_table || '',
-      numerator_column: cc.numerator_column || '',
-      denominator_table: cc.denominator_table || '',
-      denominator_column: cc.denominator_column || '',
-      formula: cc.formula || null,
-      _hint: cc._hint || '',
-    }));
+    // Restore unified columns (handles both old format {id,ref} and new format {id,kind,...})
+    ST.columns = (data.columns || []).map(c => {
+      if (c.kind === 'comp') {
+        return {
+          id: c.id || uid(), kind: 'comp', name: c.name,
+          formula_type: c.formula_type || 'price_ratio',
+          numerator_table: c.numerator_table || '',
+          numerator_column: c.numerator_column || '',
+          denominator_table: c.denominator_table || '',
+          denominator_column: c.denominator_column || '',
+          formula: c.formula || null, _hint: c._hint || '',
+        };
+      }
+      return { id: c.id || uid(), kind: 'col', ref: c.ref || '' };
+    });
     ST.sortBy = data.sortBy || '';
     ST.sortOrder = data.sortOrder || 'DESC';
     ST.formattedValues = data.formattedValues !== false;
@@ -303,7 +353,7 @@ function setDefaultColumns() {
   if (nc) refs.push(`CompanyInfo.${nc}`);
   const ic = ci.find(c => /industry|sector/i.test(c));
   if (ic) refs.push(`CompanyInfo.${ic}`);
-  ST.columns = refs.map(r => ({ id: uid(), ref: r }));
+  ST.columns = refs.map(r => ({ id: uid(), kind: 'col', ref: r }));
 }
 
 function status(msg) {
@@ -316,7 +366,6 @@ function status(msg) {
 
 function renderAll() {
   renderCriteria();
-  renderComputedColumns();
   renderColumns();
   renderResults();
 }
@@ -606,7 +655,7 @@ function positionPop(pop) {
 
 function autoClose(pop) {
   setTimeout(() => document.addEventListener('click', function f(e) {
-    if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('click', f); }
+    if (!e.composedPath().includes(pop)) { pop.remove(); document.removeEventListener('click', f); }
   }), 0);
 }
 
@@ -857,7 +906,7 @@ function showColPicker() {
   function render(q) {
     list.innerHTML = '';
     const ql = (q || '').toLowerCase();
-    const sel = new Set(ST.columns.map(c => c.ref));
+    const sel = new Set(colRefs());
     const groups = {};
 
     for (const [table, cols] of Object.entries(ST.availableMetrics)) {
@@ -882,8 +931,8 @@ function showColPicker() {
           el('span', { text: it.col }),
         );
         row.querySelector('input').addEventListener('change', (e) => {
-          if (e.target.checked) { if (!ST.columns.find(c => c.ref === it.ref)) ST.columns.push({ id: uid(), ref: it.ref }); }
-          else { ST.columns = ST.columns.filter(c => c.ref !== it.ref); }
+          if (e.target.checked) { if (!ST.columns.some(c => c.kind === 'col' && c.ref === it.ref)) ST.columns.push({ id: uid(), kind: 'col', ref: it.ref }); }
+          else { ST.columns = ST.columns.filter(c => !(c.kind === 'col' && c.ref === it.ref)); }
           renderColumns();
         });
         list.append(row);
@@ -905,33 +954,8 @@ function showColPicker() {
 }
 
 // ---------------------------------------------------------------------------
-// Computed Columns
+// Computed Column builder
 // ---------------------------------------------------------------------------
-
-function renderComputedColumns() {
-  const ctr = $('#scr-computed-cols'); if (!ctr) return;
-  ctr.innerHTML = '';
-  ST.computedColumns.forEach((cc, i) => {
-    const bar = el('div', { class: 'scr-col scr-col-comp' },
-      el('span', { class: 'scr-col-grip', text: '⠿' }),
-      el('span', { class: 'scr-tok-comp', text: `[ ${cc.name} ]` }),
-      el('span', { class: 'scr-hint', text: cc._hint || '' }),
-      el('button', { class: 'scr-rm', text: '✕' }),
-    );
-    bar.querySelector('.scr-rm').addEventListener('click', () => {
-      ST.computedColumns = ST.computedColumns.filter(c => c.id !== cc.id);
-      renderComputedColumns();
-      reorderResults();
-    });
-    _makeDraggable(bar, 'comp', i, (from, to) => {
-      const item = ST.computedColumns.splice(from, 1)[0];
-      ST.computedColumns.splice(to, 0, item);
-      renderComputedColumns();
-      reorderResults();
-    });
-    ctr.append(bar);
-  });
-}
 
 function showComputedColBuilder() {
   const ex = document.querySelector('.scr-pop'); if (ex) ex.remove();
@@ -968,8 +992,8 @@ function showComputedColBuilder() {
         const row = el('div', { class: 'scr-comp-row' });
         const btn = el('button', { class: 'scr-comp-btn', text: f.name });
         btn.addEventListener('click', () => {
-          ST.computedColumns.push({
-            id: uid(),
+          ST.columns.push({
+            id: uid(), kind: 'comp',
             name: f.name,
             formula_type: f.formula_type,
             numerator_table: f.numerator_table,
@@ -980,7 +1004,8 @@ function showComputedColBuilder() {
             _hint: `${f.numerator_table}.${f.numerator_column} / ${f.denominator_table}.${f.denominator_column}`,
           });
           pop.remove();
-          renderComputedColumns();
+          renderColumns();
+          reorderResults();
         });
         row.append(btn);
         const hint = el('span', { class: 'scr-comp-hint', text: `${f.numerator_table}.${f.numerator_column} ÷ ${f.denominator_table}.${f.denominator_column}` });
@@ -988,68 +1013,169 @@ function showComputedColBuilder() {
         body.append(row);
       }
     } else {
-      // Custom computed column form
+      // Custom expression builder (token-based, like the criteria builder)
+      const exprTokens = [];
+
+      // Name
       const nameInp = el('input', { class: 'scr-inp scr-comp-inp', type: 'text', placeholder: 'Column name (e.g. My Ratio)' });
       body.append(el('div', { class: 'scr-comp-fld' }, el('label', { class: 'scr-comp-lbl', text: 'Name' }), nameInp));
 
-      const typeSel = el('select', { class: 'scr-pop-sel scr-comp-inp' });
-      typeSel.append(el('option', { value: 'price_ratio', selected: '' }, 'Price Ratio (num / den)'));
-      typeSel.append(el('option', { value: 'custom' }, 'Custom SQL'));
-      body.append(el('div', { class: 'scr-comp-fld' }, el('label', { class: 'scr-comp-lbl', text: 'Formula Type' }), typeSel));
+      // Expression
+      body.append(el('div', { class: 'scr-comp-fld' },
+        el('label', { class: 'scr-comp-lbl', text: 'Expression' })));
 
-      // Numerator
-      const numTable = el('select', { class: 'scr-pop-sel scr-comp-inp' });
-      const numCol = el('select', { class: 'scr-pop-sel scr-comp-inp' });
-      fillTableSelect(numTable);
-      numTable.addEventListener('change', () => fillColSelect(numCol, numTable.value));
+      const tokenRow = el('div', { class: 'scr-bld-tokens' });
+      const addTokBtn = el('button', { class: 'scr-chp scr-chp-add', text: '+' });
+      const preview = el('div', { class: 'scr-bld-preview', text: '(empty expression)' });
 
-      // Denominator
-      const denTable = el('select', { class: 'scr-pop-sel scr-comp-inp' });
-      const denCol = el('select', { class: 'scr-pop-sel scr-comp-inp' });
-      fillTableSelect(denTable);
-      denTable.addEventListener('change', () => fillColSelect(denCol, denTable.value));
+      body.append(tokenRow, addTokBtn, preview);
 
-      const numGrp = el('div', { class: 'scr-comp-fld' }, el('label', { class: 'scr-comp-lbl', text: 'Numerator' }),
-        el('div', { class: 'scr-comp-inline' }, numTable, numCol));
-      const denGrp = el('div', { class: 'scr-comp-fld' }, el('label', { class: 'scr-comp-lbl', text: 'Denominator' }),
-        el('div', { class: 'scr-comp-inline' }, denTable, denCol));
+      function refreshTokens() {
+        tokenRow.innerHTML = '';
+        for (let i = 0; i < exprTokens.length; i++) {
+          const t = exprTokens[i];
+          let chip;
+          if (t.type === 'column') {
+            chip = el('span', { class: 'scr-chp scr-chp-col', text: `${t.table}.${t.column}` });
+          } else if (t.type === 'value') {
+            chip = el('span', { class: 'scr-chp scr-chp-val', text: String(t.value ?? '?') });
+          } else if (t.type === 'op') {
+            chip = el('span', { class: 'scr-chp scr-chp-op', text: t.op });
+          }
+          chip.addEventListener('click', () => editExprToken(i));
+          tokenRow.append(chip);
+        }
+        tokenRow.append(addTokBtn);
+        preview.textContent = exprTokens.length
+          ? compileTokensToSQL(exprTokens)
+          : '(empty expression)';
+      }
 
-      // Custom SQL textarea
-      const customSQL = el('textarea', { class: 'scr-comp-sql', placeholder: 'Custom SQL expression using table aliases (e.g. ps.[EPS] * 2)' });
-      customSQL.style.display = 'none';
-      const customGrp = el('div', { class: 'scr-comp-fld' }, el('label', { class: 'scr-comp-lbl', text: 'SQL Expression' }), customSQL);
+      function editExprToken(idx) {
+        const t = exprTokens[idx];
+        const exEl = pop.querySelector('.scr-pop'); if (exEl) exEl.remove();
+        const epop = el('div', { class: 'scr-pop scr-pop-ops' });
 
-      typeSel.addEventListener('change', () => {
-        const isCustom = typeSel.value === 'custom';
-        numGrp.style.display = isCustom ? 'none' : '';
-        denGrp.style.display = isCustom ? 'none' : '';
-        customGrp.style.display = isCustom ? '' : 'none';
+        if (t.type === 'column') {
+          const chg = el('button', { class: 'scr-pop-op', text: 'Change Column…' });
+          chg.addEventListener('click', () => { epop.remove(); pickExprColumn(idx); });
+          epop.append(chg);
+        } else if (t.type === 'value') {
+          const chg = el('button', { class: 'scr-pop-op', text: 'Edit Value…' });
+          chg.addEventListener('click', () => { epop.remove(); pickExprValue(idx); });
+          epop.append(chg);
+        } else if (t.type === 'op') {
+          for (const o of ['+', '-', '*', '/']) {
+            const ob = el('button', { class: 'scr-pop-op' + (t.op === o ? ' is-sel' : ''), text: o });
+            ob.addEventListener('click', () => { t.op = o; epop.remove(); refreshTokens(); });
+            epop.append(ob);
+          }
+        }
+
+        const rm = el('button', { class: 'scr-pop-op scr-pop-rm', text: '✕ Remove' });
+        rm.addEventListener('click', () => { exprTokens.splice(idx, 1); epop.remove(); refreshTokens(); });
+        epop.append(rm);
+
+        pop.append(epop);
+        epop.style.position = 'fixed'; epop.style.left = '240px'; epop.style.top = '200px'; epop.style.zIndex = '1001';
+        autoClose(epop);
+      }
+
+      function pickExprColumn(idx) {
+        const exEl = pop.querySelector('.scr-pop'); if (exEl) exEl.remove();
+        const cpop = el('div', { class: 'scr-pop' });
+        const tables = Object.keys(ST.availableMetrics);
+        const tSel = el('select', { class: 'scr-pop-sel' });
+        tSel.append(el('option', { value: '' }, '— table —'));
+        for (const tb of tables) tSel.append(el('option', { value: tb }, tb));
+
+        const cSel = el('select', { class: 'scr-pop-sel' });
+        cSel.append(el('option', { value: '' }, '— column —'));
+        tSel.addEventListener('change', () => {
+          cSel.innerHTML = '<option value="">— column —</option>';
+          for (const col of (ST.availableMetrics[tSel.value] || [])) cSel.append(el('option', { value: col }, col));
+        });
+
+        const ok = el('button', { class: 'scr-bld-add', text: 'OK' });
+        ok.addEventListener('click', () => {
+          if (!tSel.value || !cSel.value) return;
+          const token = { type: 'column', table: tSel.value, column: cSel.value };
+          if (idx < exprTokens.length) exprTokens[idx] = token; else exprTokens.push(token);
+          cpop.remove(); refreshTokens();
+        });
+
+        cpop.append(tSel, cSel, ok);
+        pop.append(cpop);
+        cpop.style.position = 'fixed'; cpop.style.left = '240px'; cpop.style.top = '200px'; cpop.style.zIndex = '1001';
+        autoClose(cpop);
+      }
+
+      function pickExprValue(idx) {
+        const exEl = pop.querySelector('.scr-pop'); if (exEl) exEl.remove();
+        const vpop = el('div', { class: 'scr-pop' });
+        const inp = el('input', { class: 'scr-inp', type: 'text', placeholder: 'Number value…' });
+        if (idx < exprTokens.length && exprTokens[idx].type === 'value') inp.value = String(exprTokens[idx].value ?? '');
+
+        const ok = el('button', { class: 'scr-bld-add', text: 'OK' });
+        ok.addEventListener('click', () => {
+          const v = inp.value.trim();
+          if (v === '') return;
+          const num = isNaN(Number(v)) ? v : Number(v);
+          const token = { type: 'value', value: num };
+          if (idx < exprTokens.length) exprTokens[idx] = token; else exprTokens.push(token);
+          vpop.remove(); refreshTokens();
+        });
+
+        vpop.append(inp, ok);
+        pop.append(vpop);
+        vpop.style.position = 'fixed'; vpop.style.left = '240px'; vpop.style.top = '200px'; vpop.style.zIndex = '1001';
+        autoClose(vpop);
+        setTimeout(() => inp.focus(), 50);
+      }
+
+      // + button popup
+      addTokBtn.addEventListener('click', (e) => {
+        const exEl = pop.querySelector('.scr-pop'); if (exEl) exEl.remove();
+        const apop = el('div', { class: 'scr-pop scr-pop-ops' });
+        for (const item of [
+          { label: 'Add Column…', action: () => pickExprColumn(exprTokens.length) },
+          { label: 'Add Value…', action: () => pickExprValue(exprTokens.length) },
+          { label: '+', action: () => { exprTokens.push({ type: 'op', op: '+' }); refreshTokens(); } },
+          { label: '-', action: () => { exprTokens.push({ type: 'op', op: '-' }); refreshTokens(); } },
+          { label: '*', action: () => { exprTokens.push({ type: 'op', op: '*' }); refreshTokens(); } },
+          { label: '/', action: () => { exprTokens.push({ type: 'op', op: '/' }); refreshTokens(); } },
+        ]) {
+          const btn2 = el('button', { class: 'scr-pop-op', text: item.label });
+          btn2.addEventListener('click', () => { item.action(); queueMicrotask(() => apop.remove()); });
+          apop.append(btn2);
+        }
+        pop.append(apop);
+        const r = addTokBtn.getBoundingClientRect();
+        apop.style.position = 'fixed'; apop.style.left = r.left + 'px'; apop.style.top = (r.bottom + 4) + 'px'; apop.style.zIndex = '1001';
+        autoClose(apop);
       });
-
-      body.append(numGrp, denGrp, customGrp);
 
       // Add button
       const addBtn = el('button', { class: 'scr-bld-add', text: 'Add Computed Column' });
       addBtn.addEventListener('click', () => {
         const name = nameInp.value.trim();
         if (!name) return;
-        const ftype = typeSel.value;
+        if (!exprTokens.length) return;
         const entry = {
-          id: uid(),
+          id: uid(), kind: 'comp',
           name,
-          formula_type: ftype,
-          numerator_table: numTable.value,
-          numerator_column: numCol.value,
-          denominator_table: denTable.value,
-          denominator_column: denCol.value,
-          formula: ftype === 'custom' ? customSQL.value.trim() || null : null,
-          _hint: ftype === 'custom' ? 'custom SQL' : `${numTable.value || '?'}.${numCol.value || '?'} / ${denTable.value || '?'}.${denCol.value || '?'}`,
+          formula_type: 'custom',
+          _tokens: JSON.parse(JSON.stringify(exprTokens)),
+          _hint: compileTokensToSQL(exprTokens),
         };
-        ST.computedColumns.push(entry);
+        ST.columns.push(entry);
         pop.remove();
-        renderComputedColumns();
+        renderColumns();
+        reorderResults();
       });
       body.append(el('div', { class: 'scr-comp-acts' }, addBtn));
+
+      refreshTokens();
     }
   }
 
@@ -1058,19 +1184,6 @@ function showComputedColBuilder() {
   pop.style.position = 'fixed'; pop.style.left = '200px'; pop.style.top = '150px'; pop.style.zIndex = '1000';
   renderTab();
   autoClose(pop);
-}
-
-function fillTableSelect(sel) {
-  sel.innerHTML = '<option value="">— table —</option>';
-  for (const t of Object.keys(ST.availableMetrics).sort()) {
-    sel.append(el('option', { value: t }, t));
-  }
-}
-
-function fillColSelect(sel, table) {
-  sel.innerHTML = '<option value="">— column —</option>';
-  const cols = ST.availableMetrics[table] || [];
-  for (const c of cols) sel.append(el('option', { value: c }, c));
 }
 
 // ---------------------------------------------------------------------------
@@ -1118,12 +1231,22 @@ function renderColumns() {
   const ctr = $('#scr-columns'); if (!ctr) return;
   ctr.innerHTML = '';
   ST.columns.forEach((col, i) => {
-    const [table, column] = col.ref.split('.');
-    const bar = el('div', { class: 'scr-col' },
-      el('span', { class: 'scr-col-grip', text: '⠿' }),
-      el('span', { class: 'scr-tok-col', text: `[ [${table}].[${column}] ]` }),
-      el('button', { class: 'scr-rm', text: '✕' }),
-    );
+    let bar;
+    if (col.kind === 'comp') {
+      bar = el('div', { class: 'scr-col scr-col-comp' },
+        el('span', { class: 'scr-col-grip', text: '⠿' }),
+        el('span', { class: 'scr-tok-comp', text: `[ ${col.name} ]` }),
+        el('span', { class: 'scr-hint', text: col._hint || '' }),
+        el('button', { class: 'scr-rm', text: '✕' }),
+      );
+    } else {
+      const [table, column] = (col.ref || '?.?').split('.');
+      bar = el('div', { class: 'scr-col' },
+        el('span', { class: 'scr-col-grip', text: '⠿' }),
+        el('span', { class: 'scr-tok-col', text: `[ [${table}].[${column}] ]` }),
+        el('button', { class: 'scr-rm', text: '✕' }),
+      );
+    }
     bar.querySelector('.scr-rm').addEventListener('click', () => {
       ST.columns = ST.columns.filter(c => c.id !== col.id);
       renderColumns();
@@ -1158,37 +1281,28 @@ async function run() {
   });
 
   // Auto-include columns referenced in criteria
-  const colRefs = new Set(ST.columns.map(c => c.ref));
+  const crSet = new Set(colRefs());
   for (const c of ST.criteria) {
-    if (c.table && c.column) colRefs.add(`${c.table}.${c.column}`);
+    if (c.table && c.column) crSet.add(`${c.table}.${c.column}`);
     if (c.comparison_mode === 'column' && c.compare_table && c.compare_column) {
-      colRefs.add(`${c.compare_table}.${c.compare_column}`);
+      crSet.add(`${c.compare_table}.${c.compare_column}`);
     }
     if (c.comparison_mode === 'full_expression') {
       for (const side of [c.left_side || [], c.right_side || []]) {
         for (const t of side) {
-          if (t.type === 'column' && t.table && t.column) colRefs.add(`${t.table}.${t.column}`);
+          if (t.type === 'column' && t.table && t.column) crSet.add(`${t.table}.${t.column}`);
         }
       }
     }
     if (c.comparison_mode === 'expression' && c.right_side) {
       for (const t of c.right_side) {
-        if (t.type === 'column' && t.table && t.column) colRefs.add(`${t.table}.${t.column}`);
+        if (t.type === 'column' && t.table && t.column) crSet.add(`${t.table}.${t.column}`);
       }
     }
   }
-  const columns = [...colRefs];
+  const columns = [...crSet];
 
-  // Build computed column specs for API
-  const computedCols = ST.computedColumns.map(cc => ({
-    name: cc.name,
-    formula_type: cc.formula_type || 'price_ratio',
-    numerator_table: cc.numerator_table || '',
-    numerator_column: cc.numerator_column || '',
-    denominator_table: cc.denominator_table || '',
-    denominator_column: cc.denominator_column || '',
-    formula: cc.formula || null,
-  }));
+  const computedCols = computedColSpecs();
 
   ST.resultsLoading = true;
   status('Running…');
@@ -1238,11 +1352,75 @@ function renderResults() {
 
   thead.innerHTML = '';
   const hr = el('tr');
-  for (const col of ST.results.columns) {
-    const th = el('th', { text: col });
+  ST.results.columns.forEach((col, i) => {
+    const th = el('th', { text: col, draggable: 'true' });
     th.addEventListener('click', () => sort(col));
+    // Drag to reorder result columns + sync config
+    th.addEventListener('dragstart', (e) => {
+      _drag = { kind: 'head', idx: i };
+      th.classList.add('is-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(i));
+    });
+    th.addEventListener('dragend', () => {
+      th.classList.remove('is-dragging');
+      document.querySelectorAll('.scr-table th.is-over').forEach(el => el.classList.remove('is-over'));
+      _drag = { kind: null, idx: -1 };
+    });
+    th.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (_drag.kind !== 'head' || _drag.idx === i) return;
+      th.classList.add('is-over');
+    });
+    th.addEventListener('dragleave', () => { th.classList.remove('is-over'); });
+    th.addEventListener('drop', (e) => {
+      e.preventDefault();
+      th.classList.remove('is-over');
+      if (_drag.kind !== 'head' || _drag.idx === i) return;
+      const fromIdx = _drag.idx, toIdx = i;
+      const targetCol = ST.results.columns[toIdx]; // column originally at drop position
+
+      // Move in results table
+      const col = ST.results.columns.splice(fromIdx, 1)[0];
+      ST.results.columns.splice(toIdx, 0, col);
+      for (const row of ST.results.rows) {
+        const val = row.splice(fromIdx, 1)[0];
+        row.splice(toIdx, 0, val);
+      }
+
+      // Sync config: find config indices for moved column and target column
+      const movedName = col;
+      const movedCfgIdx = ST.columns.findIndex(c => (c.kind === 'comp' ? c.name : c.ref) === movedName);
+      const targetCfgIdx = ST.columns.findIndex(c => (c.kind === 'comp' ? c.name : c.ref) === targetCol);
+
+      if (movedCfgIdx >= 0) {
+        const item = ST.columns.splice(movedCfgIdx, 1)[0];
+        if (targetCfgIdx >= 0) {
+          const insertAt = movedCfgIdx < targetCfgIdx ? targetCfgIdx : targetCfgIdx + 1;
+          ST.columns.splice(insertAt, 0, item);
+        } else {
+          // Target has no config entry — place near neighbors
+          const prevCol = toIdx > 0 ? ST.results.columns[toIdx - 1] : null;
+          const nextCol = toIdx < ST.results.columns.length - 1 ? ST.results.columns[toIdx + 1] : null;
+          let insertAt = ST.columns.length;
+          if (prevCol) {
+            const pi = ST.columns.findIndex(c => (c.kind === 'comp' ? c.name : c.ref) === prevCol);
+            if (pi >= 0) insertAt = pi + 1;
+          }
+          if (insertAt === ST.columns.length && nextCol) {
+            const ni = ST.columns.findIndex(c => (c.kind === 'comp' ? c.name : c.ref) === nextCol);
+            if (ni >= 0) insertAt = ni;
+          }
+          ST.columns.splice(insertAt, 0, item);
+        }
+      }
+      _drag = { kind: null, idx: -1 };
+      renderResults();
+      renderColumns();
+    });
     hr.append(th);
-  }
+  });
   thead.append(hr);
 
   tbody.innerHTML = '';
@@ -1259,10 +1437,8 @@ function renderResults() {
 function reorderResults() {
   if (!ST.results || !ST.results.columns.length) return;
 
-  // Build the desired column order: ST.columns refs then computed column names
-  const desired = [];
-  for (const c of ST.columns) desired.push(c.ref);
-  for (const cc of ST.computedColumns) desired.push(cc.name);
+  // Build the desired column order from the unified ST.columns
+  const desired = ST.columns.map(c => c.kind === 'comp' ? c.name : c.ref);
 
   // Map each result column to its new index
   const oldCols = ST.results.columns;
@@ -1364,19 +1540,10 @@ async function save() {
   const name = prompt('Name:');
   if (!name?.trim()) return;
   try {
-    const computedCols = ST.computedColumns.map(cc => ({
-      name: cc.name,
-      formula_type: cc.formula_type || 'price_ratio',
-      numerator_table: cc.numerator_table || '',
-      numerator_column: cc.numerator_column || '',
-      denominator_table: cc.denominator_table || '',
-      denominator_column: cc.denominator_column || '',
-      formula: cc.formula || null,
-    }));
     await fetchJson('/api/screening/save', {
       method: 'POST', body: JSON.stringify({
-        name: name.trim(), criteria: ST.criteria, columns: ST.columns.map(c => c.ref),
-        computed_columns: computedCols,
+        name: name.trim(), criteria: ST.criteria, columns: colRefs(),
+        computed_columns: computedColSpecs(),
         screening_date: ST.screeningDate || null,
       }),
     });
@@ -1405,9 +1572,10 @@ async function load() {
         try {
           const d = await fetchJson(`/api/screening/saved/${encodeURIComponent(name)}`);
           ST.criteria = (d.criteria || []).map(c => ({ id: uid(), ...c }));
-          ST.columns = (d.columns || []).map(ref => ({ id: uid(), ref }));
-          ST.computedColumns = (d.computed_columns || []).map(cc => ({
-            id: uid(),
+          // Merge regular + computed columns into unified order (regular first, then computed)
+          const regCols = (d.columns || []).map(ref => ({ id: uid(), kind: 'col', ref }));
+          const compCols = (d.computed_columns || []).map(cc => ({
+            id: uid(), kind: 'comp',
             name: cc.name,
             formula_type: cc.formula_type || 'price_ratio',
             numerator_table: cc.numerator_table || '',
@@ -1417,6 +1585,7 @@ async function load() {
             formula: cc.formula || null,
             _hint: cc.formula ? 'custom SQL' : `${cc.numerator_table || '?'}.${cc.numerator_column || '?'} / ${cc.denominator_table || '?'}.${cc.denominator_column || '?'}`,
           }));
+          ST.columns = [...regCols, ...compCols];
           ST.screeningDate = d.screening_date || '';
           if ($('#scr-date')) $('#scr-date').value = d.screening_date || '';
           renderAll();
@@ -1450,18 +1619,9 @@ async function load() {
 async function exportCSV() {
   if (!ST.results?.row_count) { log('warn', 'No results'); return; }
   try {
-    const computedCols = ST.computedColumns.map(cc => ({
-      name: cc.name,
-      formula_type: cc.formula_type || 'price_ratio',
-      numerator_table: cc.numerator_table || '',
-      numerator_column: cc.numerator_column || '',
-      denominator_table: cc.denominator_table || '',
-      denominator_column: cc.denominator_column || '',
-      formula: cc.formula || null,
-    }));
     const r = await fetch('/api/screening/export', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ db_path: ST.dbPath, criteria: ST.criteria, columns: ST.columns.map(c => c.ref), computed_columns: computedCols, screening_date: ST.screeningDate || null, format: 'csv' }),
+      body: JSON.stringify({ db_path: ST.dbPath, criteria: ST.criteria, columns: colRefs(), computed_columns: computedColSpecs(), screening_date: ST.screeningDate || null, format: 'csv' }),
     });
     const blob = await r.blob();
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'screening.csv'; a.click();
