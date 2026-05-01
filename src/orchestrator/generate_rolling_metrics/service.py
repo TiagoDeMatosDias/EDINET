@@ -61,15 +61,11 @@ def _load_rolling_metrics_table_spec(config_path):
     for table_name, columns in raw.items():
         if not isinstance(table_name, str) or not table_name.strip():
             raise RuntimeError("rolling_metrics.json contains an invalid table name.")
-        if not isinstance(columns, list) or not columns:
+        if not isinstance(columns, list):
             raise RuntimeError(
-                f"rolling_metrics.json table '{table_name}' must provide a non-empty column list."
+                f"rolling_metrics.json table '{table_name}' must provide a column list."
             )
         normalized_columns = [str(column).strip() for column in columns if str(column).strip()]
-        if not normalized_columns:
-            raise RuntimeError(
-                f"rolling_metrics.json table '{table_name}' does not contain valid column names."
-            )
         normalized[table_name] = normalized_columns
 
     return normalized
@@ -345,13 +341,27 @@ def generate_rolling_metrics(
                 skipped_tables.append(source_table)
                 continue
 
-            metric_columns = _resolve_metric_columns(
-                conn,
-                source_schema,
-                source_table,
-                configured_columns,
-                helper=helper,
-            )
+            if configured_columns:
+                metric_columns = _resolve_metric_columns(
+                    conn,
+                    source_schema,
+                    source_table,
+                    configured_columns,
+                    helper=helper,
+                )
+            else:
+                logger.info(
+                    "Generate Rolling Metrics: table '%s' has no configured columns; discovering all numeric columns.",
+                    source_table,
+                )
+                metric_columns = _collect_numeric_metric_columns(
+                    conn,
+                    source_schema,
+                    source_table,
+                    source_docid_column,
+                    metric_columns=None,
+                    helper=helper,
+                )
             if not metric_columns:
                 skipped_tables.append(source_table)
                 continue
