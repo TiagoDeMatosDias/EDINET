@@ -792,7 +792,26 @@ body.console-collapsed .console {
 
 .scr-col {
   display: flex; align-items: center; gap: 8px; padding: 3px 6px;
+  cursor: default;
+  border: 1px solid transparent;
+  transition: border-color .1s ease, background .1s ease;
 }
+.scr-col:hover { background: rgba(255,255,255,0.02); }
+.scr-col.is-dragging {
+  opacity: 0.4;
+}
+.scr-col.is-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.scr-col-grip {
+  color: var(--muted);
+  font-size: 12px;
+  cursor: grab;
+  user-select: none;
+  flex-shrink: 0;
+}
+.scr-col-grip:active { cursor: grabbing; }
 
 /* ── Results ── */
 

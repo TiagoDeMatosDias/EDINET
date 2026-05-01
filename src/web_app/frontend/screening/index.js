@@ -160,6 +160,83 @@ function wireShell() {
       if (s) s.textContent = detailsEl.open ? 'Screening Details ▾' : 'Screening Details ▸';
     });
   }
+
+  // Cache state on page unload (belt-and-suspenders)
+  window.addEventListener('beforeunload', () => cacheState());
+}
+
+// ---------------------------------------------------------------------------
+// Session cache — persists state across page navigations
+// ---------------------------------------------------------------------------
+
+const CACHE_KEY = 'screening_state';
+
+function cacheState() {
+  try {
+    const data = {
+      dbPath: ST.dbPath,
+      availableMetrics: ST.availableMetrics,
+      screeningDate: ST.screeningDate,
+      criteria: JSON.parse(JSON.stringify(ST.criteria)),
+      columns: ST.columns.map(c => ({ id: c.id, ref: c.ref })),
+      computedColumns: ST.computedColumns.map(cc => ({
+        id: cc.id, name: cc.name, formula_type: cc.formula_type,
+        numerator_table: cc.numerator_table, numerator_column: cc.numerator_column,
+        denominator_table: cc.denominator_table, denominator_column: cc.denominator_column,
+        formula: cc.formula, _hint: cc._hint,
+      })),
+      sortBy: ST.sortBy,
+      sortOrder: ST.sortOrder,
+      formattedValues: ST.formattedValues,
+      results: ST.results ? {
+        columns: ST.results.columns,
+        rows: ST.results.rows,
+        row_count: ST.results.row_count,
+      } : null,
+      sqlDisplay: ST.sqlDisplay,
+      _nextId: ST._nextId,
+      prebuiltFormulas: ST.prebuiltFormulas,
+    };
+    sessionStorage.setItem(CACHE_KEY, JSON.stringify(data));
+  } catch { /* quota exceeded — silently ignore */ }
+}
+
+function restoreCachedState() {
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!data || !data.dbPath) return false;
+
+    ST.dbPath = data.dbPath;
+    ST.availableMetrics = data.availableMetrics || {};
+    ST.screeningDate = data.screeningDate || '';
+    ST.criteria = (data.criteria || []).map(c => ({ id: uid(), ...c }));
+    ST.columns = (data.columns || []).map(c => ({ id: c.id || uid(), ref: c.ref }));
+    ST.computedColumns = (data.computedColumns || []).map(cc => ({
+      id: cc.id || uid(),
+      name: cc.name,
+      formula_type: cc.formula_type || 'price_ratio',
+      numerator_table: cc.numerator_table || '',
+      numerator_column: cc.numerator_column || '',
+      denominator_table: cc.denominator_table || '',
+      denominator_column: cc.denominator_column || '',
+      formula: cc.formula || null,
+      _hint: cc._hint || '',
+    }));
+    ST.sortBy = data.sortBy || '';
+    ST.sortOrder = data.sortOrder || 'DESC';
+    ST.formattedValues = data.formattedValues !== false;
+    ST.results = data.results || null;
+    ST.sqlDisplay = data.sqlDisplay || '';
+    ST._nextId = data._nextId || 1;
+    ST.prebuiltFormulas = data.prebuiltFormulas || [];
+
+    if (ST.screeningDate && $('#scr-date')) $('#scr-date').value = ST.screeningDate;
+    if ($('#scr-fmt')) $('#scr-fmt').checked = ST.formattedValues;
+
+    return true;
+  } catch { return false; }
 }
 
 // ---------------------------------------------------------------------------
@@ -167,8 +244,30 @@ function wireShell() {
 // ---------------------------------------------------------------------------
 
 async function init() {
+  // Try restoring cached state first (survives page navigation)
+  const cached = restoreCachedState();
+
+  if (cached && ST.results) {
+    // We have cached results — show them immediately
+    renderAll();
+    const cnt = $('#scr-count');
+    if (cnt) cnt.textContent = ST.results.row_count ? `${ST.results.row_count} companies` : 'No results';
+    status('Restored from cache');
+    log('info', `DB: ${ST.dbPath} (cached)`);
+
+    // Refresh metrics in background for column picker freshness
+    try {
+      await loadMetrics(ST.dbPath);
+      if (!ST.prebuiltFormulas.length) {
+        const f = await fetchJson('/api/screening/formulas');
+        ST.prebuiltFormulas = f.formulas || [];
+      }
+    } catch {}
+    return;
+  }
+
   status('Loading database…');
-  const path = await defaultDbPath();
+  const path = ST.dbPath || await defaultDbPath();
   if (!path) { status('No database found'); return; }
 
   ST.dbPath = path;
@@ -177,10 +276,12 @@ async function init() {
     if (ST.columns.length === 0) setDefaultColumns();
 
     // Load prebuilt formula definitions
-    try {
-      const f = await fetchJson('/api/screening/formulas');
-      ST.prebuiltFormulas = f.formulas || [];
-    } catch {} // formulas are optional — silent fail
+    if (!ST.prebuiltFormulas.length) {
+      try {
+        const f = await fetchJson('/api/screening/formulas');
+        ST.prebuiltFormulas = f.formulas || [];
+      } catch {} // formulas are optional — silent fail
+    }
 
     status(`${Object.keys(ST.availableMetrics).length} tables loaded`);
     log('info', `DB: ${path}`);
@@ -810,8 +911,9 @@ function showColPicker() {
 function renderComputedColumns() {
   const ctr = $('#scr-computed-cols'); if (!ctr) return;
   ctr.innerHTML = '';
-  for (const cc of ST.computedColumns) {
+  ST.computedColumns.forEach((cc, i) => {
     const bar = el('div', { class: 'scr-col scr-col-comp' },
+      el('span', { class: 'scr-col-grip', text: '⠿' }),
       el('span', { class: 'scr-tok-comp', text: `[ ${cc.name} ]` }),
       el('span', { class: 'scr-hint', text: cc._hint || '' }),
       el('button', { class: 'scr-rm', text: '✕' }),
@@ -819,9 +921,16 @@ function renderComputedColumns() {
     bar.querySelector('.scr-rm').addEventListener('click', () => {
       ST.computedColumns = ST.computedColumns.filter(c => c.id !== cc.id);
       renderComputedColumns();
+      reorderResults();
+    });
+    _makeDraggable(bar, 'comp', i, (from, to) => {
+      const item = ST.computedColumns.splice(from, 1)[0];
+      ST.computedColumns.splice(to, 0, item);
+      renderComputedColumns();
+      reorderResults();
     });
     ctr.append(bar);
-  }
+  });
 }
 
 function showComputedColBuilder() {
@@ -965,24 +1074,69 @@ function fillColSelect(sel, table) {
 }
 
 // ---------------------------------------------------------------------------
+// Drag-and-drop helpers
+// ---------------------------------------------------------------------------
+
+let _drag = { kind: null, idx: -1 };
+
+function _makeDraggable(bar, kind, idx, onReorder) {
+  bar.draggable = true;
+  bar.addEventListener('dragstart', (e) => {
+    _drag = { kind, idx };
+    bar.classList.add('is-dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(idx));
+  });
+  bar.addEventListener('dragend', () => {
+    bar.classList.remove('is-dragging');
+    document.querySelectorAll('.scr-col.is-over').forEach(el => el.classList.remove('is-over'));
+    _drag = { kind: null, idx: -1 };
+  });
+  bar.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (_drag.kind !== kind || _drag.idx === idx) return;
+    bar.classList.add('is-over');
+  });
+  bar.addEventListener('dragleave', () => {
+    bar.classList.remove('is-over');
+  });
+  bar.addEventListener('drop', (e) => {
+    e.preventDefault();
+    bar.classList.remove('is-over');
+    if (_drag.kind !== kind || _drag.idx === idx) return;
+    onReorder(_drag.idx, idx);
+    _drag = { kind: null, idx: -1 };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Render columns
 // ---------------------------------------------------------------------------
 
 function renderColumns() {
   const ctr = $('#scr-columns'); if (!ctr) return;
   ctr.innerHTML = '';
-  for (const col of ST.columns) {
+  ST.columns.forEach((col, i) => {
     const [table, column] = col.ref.split('.');
     const bar = el('div', { class: 'scr-col' },
+      el('span', { class: 'scr-col-grip', text: '⠿' }),
       el('span', { class: 'scr-tok-col', text: `[ [${table}].[${column}] ]` }),
       el('button', { class: 'scr-rm', text: '✕' }),
     );
     bar.querySelector('.scr-rm').addEventListener('click', () => {
       ST.columns = ST.columns.filter(c => c.id !== col.id);
       renderColumns();
+      reorderResults();
+    });
+    _makeDraggable(bar, 'col', i, (from, to) => {
+      const item = ST.columns.splice(from, 1)[0];
+      ST.columns.splice(to, 0, item);
+      renderColumns();
+      reorderResults();
     });
     ctr.append(bar);
-  }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,6 +1205,7 @@ async function run() {
     });
     ST.results = data;
     ST.sqlDisplay = data.sql_display || '';
+    cacheState();
     status('');
     const cnt = $('#scr-count'); if (cnt) cnt.textContent = data.row_count ? `${data.row_count} companies` : 'No results';
     log('info', `Screening: ${data.row_count} results`);
@@ -1099,6 +1254,57 @@ function renderResults() {
     tr.addEventListener('click', () => drill(row));
     tbody.append(tr);
   }
+}
+
+function reorderResults() {
+  if (!ST.results || !ST.results.columns.length) return;
+
+  // Build the desired column order: ST.columns refs then computed column names
+  const desired = [];
+  for (const c of ST.columns) desired.push(c.ref);
+  for (const cc of ST.computedColumns) desired.push(cc.name);
+
+  // Map each result column to its new index
+  const oldCols = ST.results.columns;
+  const indexMap = new Map();
+  const seen = new Set();
+  for (const d of desired) {
+    // Try exact match first
+    let found = -1;
+    for (let i = 0; i < oldCols.length; i++) {
+      if (oldCols[i] === d && !seen.has(i)) { found = i; break; }
+    }
+    // Try case-insensitive
+    if (found === -1) {
+      const dl = d.toLowerCase();
+      for (let i = 0; i < oldCols.length; i++) {
+        if (oldCols[i].toLowerCase() === dl && !seen.has(i)) { found = i; break; }
+      }
+    }
+    if (found >= 0) {
+      indexMap.set(found, indexMap.size);
+      seen.add(found);
+    }
+  }
+  // Append any remaining columns not in desired order
+  for (let i = 0; i < oldCols.length; i++) {
+    if (!seen.has(i)) { indexMap.set(i, indexMap.size); seen.add(i); }
+  }
+
+  // Build new column order
+  const newCols = new Array(oldCols.length);
+  for (const [oldIdx, newIdx] of indexMap) newCols[newIdx] = oldCols[oldIdx];
+
+  // Reorder rows
+  const newRows = ST.results.rows.map(row => {
+    const newRow = new Array(oldCols.length);
+    for (const [oldIdx, newIdx] of indexMap) newRow[newIdx] = row[oldIdx];
+    return newRow;
+  });
+
+  ST.results.columns = newCols;
+  ST.results.rows = newRows;
+  renderResults();
 }
 
 function fmtVal(val, col) {
