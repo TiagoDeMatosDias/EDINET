@@ -71,6 +71,8 @@ OPERATOR_MAP: dict[str, str] = {
     "BETWEEN": "BETWEEN",
     "IN": "IN",
     "LIKE": "LIKE",
+    "IS": "IS",
+    "IS NOT": "IS NOT",
 }
 
 DEFAULT_COLUMNS: list[str] = [
@@ -259,7 +261,8 @@ def get_available_metrics(db_path: str) -> dict[str, list[str]]:
     _SKIP_TABLES = {"sqlite_sequence"}
 
     result: dict[str, list[str]] = {}
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=10)
+    conn.execute("PRAGMA busy_timeout = 10000")
     try:
         cursor = conn.cursor()
         # Get all user table names
@@ -661,23 +664,35 @@ def build_screening_query(
     select_clause = ", ".join(select_parts) if select_parts else "*"
 
     # --- Build FROM / JOIN ---
+    # Always restrict FinancialStatements to the latest filing per company.
+    # When screening_date is set, also cap periodEnd for point-in-time
+    # screening.  When period is set, restrict to latest filing within that
+    # year (used by historical backtest export).  Only the three join columns
+    # are projected — the wide taxonomy columns stay in the base table.
+    _sub_cols = "f.edinetCode, f.docID, f.periodEnd"
     if screening_date:
-        # Point-in-time: select latest filing per company <= screening_date
-        join_clauses: list[str] = [
-            "FROM ("
-            "SELECT f.* FROM FinancialStatements f "
-            "INNER JOIN ("
-            "SELECT edinetCode, MAX(periodEnd) AS max_period "
-            "FROM FinancialStatements "
-            "WHERE date(periodEnd) <= ? "
-            "GROUP BY edinetCode"
-            ") latest ON f.edinetCode = latest.edinetCode "
-            "AND f.periodEnd = latest.max_period"
-            ") f"
-        ]
-        params.append(screening_date)
+        _where = "WHERE date(periodEnd) <= ?"
+        _extra_params = [screening_date]
+    elif period:
+        _where = "WHERE SUBSTR(periodEnd, 1, 4) = ?"
+        _extra_params = [period]
     else:
-        join_clauses: list[str] = ["FROM FinancialStatements f"]
+        _where = ""
+        _extra_params = []
+
+    join_clauses: list[str] = [
+        "FROM ("
+        f"SELECT {_sub_cols} FROM FinancialStatements f "
+        "INNER JOIN ("
+        "SELECT edinetCode, MAX(periodEnd) AS max_period "
+        "FROM FinancialStatements "
+        f"{_where} "
+        "GROUP BY edinetCode"
+        ") latest ON f.edinetCode = latest.edinetCode "
+        "AND f.periodEnd = latest.max_period"
+        ") f"
+    ]
+    params.extend(_extra_params)
 
     join_clauses.append(
         f"LEFT JOIN CompanyInfo c ON c.[{_safe_identifier(_edinet_col)}] = f.edinetCode"
@@ -739,7 +754,15 @@ def build_screening_query(
             safe_col = _safe_identifier(column)
             col_ref = f"{alias}.[{safe_col}]"
 
-        if comparison_mode == "column":
+        # IS / IS NOT — always appends NULL, no value needed
+        if op in ("IS", "IS NOT"):
+            if comparison_mode == "full_expression":
+                left_sql, left_params = _build_expression_sql(crit.get("left_side", []))
+                where_parts.append(f"({left_sql}) {op} NULL")
+                params.extend(left_params)
+            else:
+                where_parts.append(f"{col_ref} {op} NULL")
+        elif comparison_mode == "column":
             if op == "BETWEEN":
                 raise ValueError("Dynamic criteria do not support BETWEEN")
             compare_table = crit.get("compare_table")
@@ -838,6 +861,7 @@ def run_screening(
     ranking_algorithm: str = "none",
     ranking_rules: list[dict] | None = None,
     computed_columns: list[dict] | None = None,
+    available_metrics: dict[str, list[str]] | None = None,
 ) -> pd.DataFrame:
     """Execute a screening query and return formatted results.
 
@@ -853,11 +877,15 @@ def run_screening(
         ranking_rules: Ranking rule dicts with table, column, weight,
             and direction.
         computed_columns: Optional list of computed column specs.
+        available_metrics: Pre-computed metrics from get_available_metrics.
+            If None, computed fresh from the database.
 
     Returns:
         DataFrame with screening results.
     """
-    available = get_available_metrics(db_path)
+    if available_metrics is None:
+        available_metrics = get_available_metrics(db_path)
+    available = available_metrics
     ranking_columns = ranking_rules if ranking_algorithm != "none" else None
     query_columns, column_aliases, visible_columns = _build_query_column_plan(
         columns,
@@ -877,12 +905,56 @@ def run_screening(
     display_sql = _interpolate_sql(sql, params)
     logger.info("SQL query:\n%s", display_sql)
 
-    conn = sqlite3.connect(db_path)
+    # Set a busy timeout so we don't hang indefinitely if the DB is locked
+    import time as _time
+    _connect_start = _time.monotonic()
+    logger.info("screening connecting to db: %s", db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    # Ensure the screening performance index exists (no-op if already present)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_fin_edinet_period "
+        "ON FinancialStatements(edinetCode, periodEnd)"
+    )
+    logger.info("screening db connected (%.2fs)", _time.monotonic() - _connect_start)
     try:
-        df = pd.read_sql_query(sql, conn, params=params)
+        # Log the query plan for diagnostics
+        _plan_start = _time.monotonic()
+        try:
+            plan_rows = conn.execute(f"EXPLAIN QUERY PLAN {sql}", params).fetchall()
+            plan_lines = []
+            for r in plan_rows:
+                # SQLite EXPLAIN QUERY PLAN returns (selectid, order, from, detail)
+                if len(r) >= 4:
+                    indent = "  " * (int(r[1]) if r[1] else 0)
+                    plan_lines.append(f"{indent}{r[3]}")
+                else:
+                    plan_lines.append(str(r))
+            plan_text = "\n".join(plan_lines) if plan_lines else "(empty plan)"
+            logger.info("screening EXPLAIN QUERY PLAN (%.2fs):\n%s",
+                       _time.monotonic() - _plan_start, plan_text)
+        except Exception as _plan_err:
+            logger.info("screening EXPLAIN QUERY PLAN failed: %s", _plan_err)
+
+        _query_start = _time.monotonic()
+        logger.info("screening executing query with %d params", len(params))
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        _exec_elapsed = _time.monotonic() - _query_start
+        logger.info("screening execute took %.2fs, fetching rows...", _exec_elapsed)
+        _rows = cursor.fetchall()
+        _fetch_elapsed = _time.monotonic() - _query_start - _exec_elapsed
+        _cols = [desc[0] for desc in cursor.description] if cursor.description else []
+        logger.info("screening fetched %d rows in %.2fs (execute=%.2fs, fetch=%.2fs)",
+                   len(_rows), _time.monotonic() - _query_start, _exec_elapsed, _fetch_elapsed)
+        df = pd.DataFrame(_rows, columns=_cols) if _rows else pd.DataFrame(columns=_cols)
+    except sqlite3.OperationalError as _sql_err:
+        _elapsed = _time.monotonic() - _connect_start
+        logger.error("screening SQLite error after %.2fs: %s", _elapsed, _sql_err)
+        raise
     finally:
         conn.close()
-    logger.info("Query returned %d rows", len(df))
+        logger.info("screening db connection closed")
 
     df = apply_screening_ranking(df, ranking_algorithm, ranking_rules)
 

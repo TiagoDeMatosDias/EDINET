@@ -693,6 +693,12 @@ def generate_financial_statements(
                 )
 
         conn.commit()
+        # Ensure screening performance index exists
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fin_edinet_period "
+            "ON FinancialStatements(edinetCode, periodEnd)"
+        )
+        conn.commit()
         logger.info(
             "Completed generate_financial_statements: %d document(s) processed.",
             processed_documents,

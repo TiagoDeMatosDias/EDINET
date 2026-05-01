@@ -294,10 +294,20 @@ def get_available_formulas() -> dict:
 @router.post("/run")
 def run_screening_endpoint(request: ScreeningRunRequest = Body(...)) -> dict:
     """Run a screening query and return results with the generated SQL."""
+    import time as _t
+    _t0 = _t.monotonic()
+    logger.info("screening/run START db=%s criteria=%d cols=%d",
+                request.db_path, len(request.criteria), len(request.columns))
+
     try:
+        _t1 = _t.monotonic()
         resolved = _validate_db_path(request.db_path)
+        logger.info("screening/run db_path validated (%.2fs)", _t.monotonic() - _t1)
+
+        _t1 = _t.monotonic()
         criteria_dicts = _criteria_to_dicts(request.criteria)
         ranking_dicts = _ranking_rules_to_dicts(request.ranking_rules)
+        logger.info("screening/run criteria/ranking converted (%.2fs)", _t.monotonic() - _t1)
 
         all_columns = list(request.columns)
         computed_specs = []
@@ -313,7 +323,12 @@ def run_screening_endpoint(request: ScreeningRunRequest = Body(...)) -> dict:
             })
 
         # Build the SQL for display before executing
+        _t1 = _t.monotonic()
         available = _screening.get_available_metrics(resolved)
+        logger.info("screening/run metrics loaded: %d tables (%.2fs)",
+                    len(available), _t.monotonic() - _t1)
+
+        _t1 = _t.monotonic()
         ranking_columns = ranking_dicts if request.ranking_algorithm != "none" else None
         query_columns, col_aliases, _ = _screening._build_query_column_plan(
             all_columns, ranking_columns
@@ -328,7 +343,9 @@ def run_screening_endpoint(request: ScreeningRunRequest = Body(...)) -> dict:
             computed_columns=computed_specs,
         )
         sql_display = _screening._interpolate_sql(display_sql, display_params)
+        logger.info("screening/run SQL built (%.2fs)", _t.monotonic() - _t1)
 
+        _t1 = _t.monotonic()
         df = _screening.run_screening(
             db_path=resolved,
             criteria=criteria_dicts,
@@ -340,21 +357,29 @@ def run_screening_endpoint(request: ScreeningRunRequest = Body(...)) -> dict:
             ranking_algorithm=request.ranking_algorithm,
             ranking_rules=ranking_dicts,
             computed_columns=computed_specs,
+            available_metrics=available,
         )
+        logger.info("screening/run query executed (%.2fs)", _t.monotonic() - _t1)
 
+        _t1 = _t.monotonic()
         result = _df_to_json(df)
         result["error"] = None
         result["sql_display"] = sql_display
-        logger.info("Screening returned %d rows", result["row_count"])
+        logger.info("screening/run result serialised (%.2fs)", _t.monotonic() - _t1)
+        logger.info("screening/run DONE rows=%d total=%.2fs",
+                    result["row_count"], _t.monotonic() - _t0)
         return result
 
     except HTTPException:
+        logger.warning("screening/run HTTP exception after %.2fs", _t.monotonic() - _t0)
         raise
     except ValueError as e:
-        logger.warning("Screening validation error: %s", str(e))
+        logger.warning("screening/run validation error after %.2fs: %s",
+                       _t.monotonic() - _t0, str(e))
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error("Screening run failed: %s", str(e))
+        logger.error("screening/run FAILED after %.2fs: %s",
+                     _t.monotonic() - _t0, str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

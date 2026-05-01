@@ -1467,6 +1467,67 @@ def test_stock_price_mode_with_expression_end_to_end(sample_db):
     assert set(df["CompanyName"]) == {"Alpha Corp", "Beta Co", "Gamma Ltd"}
 
 
+def test_is_null_operator():
+    """IS should generate col IS NULL without a param."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "PerShare",
+            "column": "BookValue",
+            "operator": "IS",
+            "comparison_mode": "fixed",
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "ps.[BookValue] IS NULL" in sql
+    assert params == []
+
+
+def test_is_not_null_operator():
+    """IS NOT should generate col IS NOT NULL without a param."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "table": "PerShare",
+            "column": "BookValue",
+            "operator": "IS NOT",
+            "comparison_mode": "fixed",
+        }],
+        columns=["CompanyInfo.edinetCode"],
+    )
+    assert "ps.[BookValue] IS NOT NULL" in sql
+    assert params == []
+
+
+def test_is_null_end_to_end(sample_db):
+    """IS NULL should filter correctly in run_screening."""
+    # In our sample, all BookValue values are non-NULL, so IS NULL should return 0 rows
+    df = run_screening(
+        sample_db,
+        criteria=[{
+            "table": "PerShare",
+            "column": "BookValue",
+            "operator": "IS",
+            "comparison_mode": "fixed",
+        }],
+        columns=["CompanyInfo.CompanyName"],
+        period="2024",
+    )
+    assert len(df) == 0
+
+    # IS NOT NULL should return all companies with data
+    df2 = run_screening(
+        sample_db,
+        criteria=[{
+            "table": "PerShare",
+            "column": "BookValue",
+            "operator": "IS NOT",
+            "comparison_mode": "fixed",
+        }],
+        columns=["CompanyInfo.CompanyName"],
+        period="2024",
+    )
+    assert len(df2) >= 1
+
+
 def test_like_operator_results(sample_db):
     """LIKE should match patterns in text columns."""
     df = run_screening(

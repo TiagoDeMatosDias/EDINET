@@ -220,8 +220,9 @@ function buildExprBar(crit) {
     else bar.append(el('span', { class: 'scr-tok-col', text: '[[?]]' }));
     bar.append(tokenOp(crit));
     const rightTokens = crit.right_side || [];
+    const isNullOp = crit.operator === 'IS' || crit.operator === 'IS NOT';
     if (rightTokens.length) bar.append(renderTokenList(rightTokens, crit, 'right_side'));
-    else bar.append(el('span', { class: 'scr-tok-col', text: '[[?]]' }));
+    else bar.append(el('span', { class: 'scr-tok-val', text: isNullOp ? 'NULL' : '[[?]]' }));
   } else {
     // Standard modes: left column + operator + mode-specific right side
     bar.append(tokenCol(crit, 'table', 'column'));
@@ -432,9 +433,9 @@ function showOpMenu(anchor, crit) {
   const ex = document.querySelector('.scr-pop'); if (ex) ex.remove();
   const pop = el('div', { class: 'scr-pop scr-pop-ops' });
   const restricted = crit.comparison_mode === 'stock_price' || crit.comparison_mode === 'full_expression';
-  const allOps = ['>', '>=', '<', '<=', '=', '!=', 'BETWEEN', 'IN', 'LIKE'];
+  const allOps = ['>', '>=', '<', '<=', '=', '!=', 'BETWEEN', 'IN', 'LIKE', 'IS', 'IS NOT'];
   const ops = restricted
-    ? ['>', '>=', '<', '<=', '=', '!=']
+    ? ['>', '>=', '<', '<=', '=', '!=', 'IS', 'IS NOT']
     : allOps;
   for (const o of ops) {
     const btn = el('button', { class: 'scr-pop-op' + (o === crit.operator ? ' is-sel' : ''), text: o });
@@ -443,6 +444,7 @@ function showOpMenu(anchor, crit) {
       if (o === 'IN') { crit.comparison_mode = 'in'; crit.values = crit.value != null ? [String(crit.value)] : ['']; }
       else if (o === 'LIKE') { crit.comparison_mode = 'like'; }
       else if (o === 'BETWEEN') { crit.comparison_mode = 'fixed'; }
+      else if (o === 'IS' || o === 'IS NOT') { crit.right_side = []; }
       else if (crit.comparison_mode === 'in' || crit.comparison_mode === 'like') { crit.comparison_mode = 'fixed'; }
       pop.remove(); renderCriteria();
     });
@@ -533,7 +535,7 @@ function showCritBuilder() {
     const opPane = el('div', { class: 'scr-bld-op' });
     opPane.append(el('div', { class: 'scr-bld-label', text: 'Operator:' }));
     const opRow = el('select', { class: 'scr-bld-sel-scr-bld-op' });
-    for (const o of ['>', '>=', '<', '<=', '=', '!=']) {
+    for (const o of ['>', '>=', '<', '<=', '=', '!=', 'IS', 'IS NOT']) {
       opRow.append(el('option', { value: o, selected: cmpOp === o ? '' : undefined }, o));
     }
     opRow.addEventListener('change', () => { cmpOp = opRow.value; });
@@ -553,7 +555,9 @@ function showCritBuilder() {
 
     const addBtn = el('button', { class: 'scr-bld-add', text: 'Add Criteria' });
     addBtn.addEventListener('click', () => {
-      if (!leftTokens.length || !rightTokens.length) return;
+      if (!leftTokens.length) return;
+      // Right side optional for IS / IS NOT operators
+      if (cmpOp !== 'IS' && cmpOp !== 'IS NOT' && !rightTokens.length) return;
       const crit = {
         id: uid(),
         comparison_mode: 'full_expression',
@@ -707,7 +711,8 @@ function showCritBuilder() {
     const fmt = (tok) => tok.type === 'column' ? `${tok.table}.${tok.column}`
       : tok.type === 'value' ? String(tok.value)
       : tok.op;
-    return `[ ${left.map(fmt).join(' ')}  ${op}  ${right.map(fmt).join(' ')} ]`;
+    const rightText = right.length ? right.map(fmt).join(' ') : (op === 'IS' || op === 'IS NOT' ? 'NULL' : '?');
+    return `[ ${left.map(fmt).join(' ')}  ${op}  ${rightText} ]`;
   }
 
   renderBuilder();
