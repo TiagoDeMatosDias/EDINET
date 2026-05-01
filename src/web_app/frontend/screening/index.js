@@ -23,6 +23,8 @@ const ST = {
   screeningDate: '',
   criteria: [],
   columns: [],
+  computedColumns: [],
+  prebuiltFormulas: [],
   sortBy: '',
   sortOrder: 'DESC',
   formattedValues: true,
@@ -63,7 +65,7 @@ function buildShell() {
   // ── Config area ──
   const cfg = el('div', { id: 'scr-cfg', class: 'scr-cfg' });
 
-  // Row 1: actions
+  // Row 1: actions + details toggle
   cfg.append(
     el('div', { class: 'scr-row-actions' },
       el('button', { id: 'scr-btn-run', class: 'scr-btn-run', text: 'Run' }),
@@ -72,35 +74,40 @@ function buildShell() {
     ),
   );
 
-  // Row 2: date
-  cfg.append(
-    el('div', { class: 'scr-row-date' },
-      el('label', { class: 'scr-lbl', text: 'Screening Date:' }),
-      el('input', { id: 'scr-date', class: 'scr-input-date', type: 'date' }),
-      el('span', { id: 'scr-status', class: 'scr-status' }),
+  // Row 2: Collapsible screening details (date, criteria, computed columns, columns)
+  const detailsEl = el('details', { id: 'scr-details', class: 'scr-details', open: 'open' },
+    el('summary', { id: 'scr-details-toggle', class: 'scr-details-toggle', text: 'Screening Details ▾' }),
+    el('div', { id: 'scr-details-body', class: 'scr-details-body' },
+      // Date
+      el('div', { class: 'scr-row-date' },
+        el('label', { class: 'scr-lbl', text: 'Screening Date:' }),
+        el('input', { id: 'scr-date', class: 'scr-input-date', type: 'date' }),
+        el('span', { id: 'scr-status', class: 'scr-status' }),
+      ),
+      // Criteria
+      el('div', { class: 'scr-section' },
+        el('div', { class: 'scr-section-head' }, el('span', { text: 'Criteria:' })),
+        el('div', { id: 'scr-criteria' }),
+        el('div', { id: 'scr-crit-builder' }),
+        el('button', { id: 'scr-add-crit', class: 'scr-btn-add', text: '+ Add Criteria' }),
+      ),
+      // Computed Columns
+      el('div', { class: 'scr-section' },
+        el('div', { class: 'scr-section-head' }, el('span', { text: 'Computed Columns:' })),
+        el('div', { id: 'scr-computed-cols' }),
+        el('button', { id: 'scr-add-comp', class: 'scr-btn-add', text: '+ Add Computed Column' }),
+      ),
+      // Columns
+      el('div', { class: 'scr-section' },
+        el('div', { class: 'scr-section-head' }, el('span', { text: 'Columns:' })),
+        el('div', { id: 'scr-columns' }),
+        el('button', { id: 'scr-add-col', class: 'scr-btn-add', text: '+ Add Column' }),
+      ),
     ),
   );
+  cfg.append(detailsEl);
 
-  // Row 3: Criteria
-  cfg.append(
-    el('div', { class: 'scr-section' },
-      el('div', { class: 'scr-section-head' }, el('span', { text: 'Criteria:' })),
-      el('div', { id: 'scr-criteria' }),
-      el('div', { id: 'scr-crit-builder' }),
-      el('button', { id: 'scr-add-crit', class: 'scr-btn-add', text: '+ Add Criteria' }),
-    ),
-  );
-
-  // Row 4: Columns
-  cfg.append(
-    el('div', { class: 'scr-section' },
-      el('div', { class: 'scr-section-head' }, el('span', { text: 'Columns:' })),
-      el('div', { id: 'scr-columns' }),
-      el('button', { id: 'scr-add-col', class: 'scr-btn-add', text: '+ Add Column' }),
-    ),
-  );
-
-  // Row 5: Results toolbar
+  // Row 3: Results toolbar
   cfg.append(
     el('div', { class: 'scr-row-bottom' },
       el('button', { id: 'scr-btn-export', class: 'scr-btn-soft', text: 'Export CSV' }),
@@ -143,6 +150,16 @@ function wireShell() {
   $('#scr-fmt').addEventListener('change', () => { ST.formattedValues = $('#scr-fmt').checked; renderResults(); });
   $('#scr-add-crit').addEventListener('click', showCritBuilder);
   $('#scr-add-col').addEventListener('click', showColPicker);
+  $('#scr-add-comp').addEventListener('click', showComputedColBuilder);
+
+  // Update details summary text when toggled
+  const detailsEl = $('#scr-details');
+  if (detailsEl) {
+    detailsEl.addEventListener('toggle', () => {
+      const s = $('#scr-details-toggle');
+      if (s) s.textContent = detailsEl.open ? 'Screening Details ▾' : 'Screening Details ▸';
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +175,13 @@ async function init() {
   try {
     await loadMetrics(path);
     if (ST.columns.length === 0) setDefaultColumns();
+
+    // Load prebuilt formula definitions
+    try {
+      const f = await fetchJson('/api/screening/formulas');
+      ST.prebuiltFormulas = f.formulas || [];
+    } catch {} // formulas are optional — silent fail
+
     status(`${Object.keys(ST.availableMetrics).length} tables loaded`);
     log('info', `DB: ${path}`);
     renderAll();
@@ -191,6 +215,7 @@ function status(msg) {
 
 function renderAll() {
   renderCriteria();
+  renderComputedColumns();
   renderColumns();
   renderResults();
 }
@@ -779,6 +804,167 @@ function showColPicker() {
 }
 
 // ---------------------------------------------------------------------------
+// Computed Columns
+// ---------------------------------------------------------------------------
+
+function renderComputedColumns() {
+  const ctr = $('#scr-computed-cols'); if (!ctr) return;
+  ctr.innerHTML = '';
+  for (const cc of ST.computedColumns) {
+    const bar = el('div', { class: 'scr-col scr-col-comp' },
+      el('span', { class: 'scr-tok-comp', text: `[ ${cc.name} ]` }),
+      el('span', { class: 'scr-hint', text: cc._hint || '' }),
+      el('button', { class: 'scr-rm', text: '✕' }),
+    );
+    bar.querySelector('.scr-rm').addEventListener('click', () => {
+      ST.computedColumns = ST.computedColumns.filter(c => c.id !== cc.id);
+      renderComputedColumns();
+    });
+    ctr.append(bar);
+  }
+}
+
+function showComputedColBuilder() {
+  const ex = document.querySelector('.scr-pop'); if (ex) ex.remove();
+  const pop = el('div', { class: 'scr-pop scr-pop-comp' });
+  const hdr = el('div', { class: 'scr-pop-hdr', text: 'Add Computed Column' });
+  pop.append(hdr);
+
+  // Tabs: Pre-built | Custom
+  let tab = 'prebuilt';
+  const tabRow = el('div', { class: 'scr-comp-tabs' });
+  const preTab = el('button', { class: 'scr-comp-tab is-sel', text: 'Pre-built' });
+  const custTab = el('button', { class: 'scr-comp-tab', text: 'Custom' });
+  const body = el('div', { class: 'scr-comp-body' });
+
+  function selectTab(t) {
+    tab = t;
+    preTab.className = 'scr-comp-tab' + (t === 'prebuilt' ? ' is-sel' : '');
+    custTab.className = 'scr-comp-tab' + (t === 'custom' ? ' is-sel' : '');
+    renderTab();
+  }
+
+  preTab.addEventListener('click', () => selectTab('prebuilt'));
+  custTab.addEventListener('click', () => selectTab('custom'));
+  tabRow.append(preTab, custTab);
+
+  function renderTab() {
+    body.innerHTML = '';
+    if (tab === 'prebuilt') {
+      if (!ST.prebuiltFormulas.length) {
+        body.append(el('div', { class: 'scr-pick-empty', text: 'No pre-built formulas available' }));
+        return;
+      }
+      for (const f of ST.prebuiltFormulas) {
+        const row = el('div', { class: 'scr-comp-row' });
+        const btn = el('button', { class: 'scr-comp-btn', text: f.name });
+        btn.addEventListener('click', () => {
+          ST.computedColumns.push({
+            id: uid(),
+            name: f.name,
+            formula_type: f.formula_type,
+            numerator_table: f.numerator_table,
+            numerator_column: f.numerator_column,
+            denominator_table: f.denominator_table,
+            denominator_column: f.denominator_column,
+            formula: f.formula || null,
+            _hint: `${f.numerator_table}.${f.numerator_column} / ${f.denominator_table}.${f.denominator_column}`,
+          });
+          pop.remove();
+          renderComputedColumns();
+        });
+        row.append(btn);
+        const hint = el('span', { class: 'scr-comp-hint', text: `${f.numerator_table}.${f.numerator_column} ÷ ${f.denominator_table}.${f.denominator_column}` });
+        row.append(hint);
+        body.append(row);
+      }
+    } else {
+      // Custom computed column form
+      const nameInp = el('input', { class: 'scr-inp scr-comp-inp', type: 'text', placeholder: 'Column name (e.g. My Ratio)' });
+      body.append(el('div', { class: 'scr-comp-fld' }, el('label', { class: 'scr-comp-lbl', text: 'Name' }), nameInp));
+
+      const typeSel = el('select', { class: 'scr-pop-sel scr-comp-inp' });
+      typeSel.append(el('option', { value: 'price_ratio', selected: '' }, 'Price Ratio (num / den)'));
+      typeSel.append(el('option', { value: 'custom' }, 'Custom SQL'));
+      body.append(el('div', { class: 'scr-comp-fld' }, el('label', { class: 'scr-comp-lbl', text: 'Formula Type' }), typeSel));
+
+      // Numerator
+      const numTable = el('select', { class: 'scr-pop-sel scr-comp-inp' });
+      const numCol = el('select', { class: 'scr-pop-sel scr-comp-inp' });
+      fillTableSelect(numTable);
+      numTable.addEventListener('change', () => fillColSelect(numCol, numTable.value));
+
+      // Denominator
+      const denTable = el('select', { class: 'scr-pop-sel scr-comp-inp' });
+      const denCol = el('select', { class: 'scr-pop-sel scr-comp-inp' });
+      fillTableSelect(denTable);
+      denTable.addEventListener('change', () => fillColSelect(denCol, denTable.value));
+
+      const numGrp = el('div', { class: 'scr-comp-fld' }, el('label', { class: 'scr-comp-lbl', text: 'Numerator' }),
+        el('div', { class: 'scr-comp-inline' }, numTable, numCol));
+      const denGrp = el('div', { class: 'scr-comp-fld' }, el('label', { class: 'scr-comp-lbl', text: 'Denominator' }),
+        el('div', { class: 'scr-comp-inline' }, denTable, denCol));
+
+      // Custom SQL textarea
+      const customSQL = el('textarea', { class: 'scr-comp-sql', placeholder: 'Custom SQL expression using table aliases (e.g. ps.[EPS] * 2)' });
+      customSQL.style.display = 'none';
+      const customGrp = el('div', { class: 'scr-comp-fld' }, el('label', { class: 'scr-comp-lbl', text: 'SQL Expression' }), customSQL);
+
+      typeSel.addEventListener('change', () => {
+        const isCustom = typeSel.value === 'custom';
+        numGrp.style.display = isCustom ? 'none' : '';
+        denGrp.style.display = isCustom ? 'none' : '';
+        customGrp.style.display = isCustom ? '' : 'none';
+      });
+
+      body.append(numGrp, denGrp, customGrp);
+
+      // Add button
+      const addBtn = el('button', { class: 'scr-bld-add', text: 'Add Computed Column' });
+      addBtn.addEventListener('click', () => {
+        const name = nameInp.value.trim();
+        if (!name) return;
+        const ftype = typeSel.value;
+        const entry = {
+          id: uid(),
+          name,
+          formula_type: ftype,
+          numerator_table: numTable.value,
+          numerator_column: numCol.value,
+          denominator_table: denTable.value,
+          denominator_column: denCol.value,
+          formula: ftype === 'custom' ? customSQL.value.trim() || null : null,
+          _hint: ftype === 'custom' ? 'custom SQL' : `${numTable.value || '?'}.${numCol.value || '?'} / ${denTable.value || '?'}.${denCol.value || '?'}`,
+        };
+        ST.computedColumns.push(entry);
+        pop.remove();
+        renderComputedColumns();
+      });
+      body.append(el('div', { class: 'scr-comp-acts' }, addBtn));
+    }
+  }
+
+  pop.append(tabRow, body);
+  document.body.append(pop);
+  pop.style.position = 'fixed'; pop.style.left = '200px'; pop.style.top = '150px'; pop.style.zIndex = '1000';
+  renderTab();
+  autoClose(pop);
+}
+
+function fillTableSelect(sel) {
+  sel.innerHTML = '<option value="">— table —</option>';
+  for (const t of Object.keys(ST.availableMetrics).sort()) {
+    sel.append(el('option', { value: t }, t));
+  }
+}
+
+function fillColSelect(sel, table) {
+  sel.innerHTML = '<option value="">— column —</option>';
+  const cols = ST.availableMetrics[table] || [];
+  for (const c of cols) sel.append(el('option', { value: c }, c));
+}
+
+// ---------------------------------------------------------------------------
 // Render columns
 // ---------------------------------------------------------------------------
 
@@ -839,6 +1025,17 @@ async function run() {
   }
   const columns = [...colRefs];
 
+  // Build computed column specs for API
+  const computedCols = ST.computedColumns.map(cc => ({
+    name: cc.name,
+    formula_type: cc.formula_type || 'price_ratio',
+    numerator_table: cc.numerator_table || '',
+    numerator_column: cc.numerator_column || '',
+    denominator_table: cc.denominator_table || '',
+    denominator_column: cc.denominator_column || '',
+    formula: cc.formula || null,
+  }));
+
   ST.resultsLoading = true;
   status('Running…');
   renderResults();
@@ -847,6 +1044,7 @@ async function run() {
     const data = await fetchJson('/api/screening/run', {
       method: 'POST', body: JSON.stringify({
         db_path: ST.dbPath, criteria, columns,
+        computed_columns: computedCols,
         screening_date: ST.screeningDate || null,
         sort_by: ST.sortBy || null, sort_order: ST.sortOrder,
       }),
@@ -960,9 +1158,19 @@ async function save() {
   const name = prompt('Name:');
   if (!name?.trim()) return;
   try {
+    const computedCols = ST.computedColumns.map(cc => ({
+      name: cc.name,
+      formula_type: cc.formula_type || 'price_ratio',
+      numerator_table: cc.numerator_table || '',
+      numerator_column: cc.numerator_column || '',
+      denominator_table: cc.denominator_table || '',
+      denominator_column: cc.denominator_column || '',
+      formula: cc.formula || null,
+    }));
     await fetchJson('/api/screening/save', {
       method: 'POST', body: JSON.stringify({
         name: name.trim(), criteria: ST.criteria, columns: ST.columns.map(c => c.ref),
+        computed_columns: computedCols,
         screening_date: ST.screeningDate || null,
       }),
     });
@@ -992,6 +1200,17 @@ async function load() {
           const d = await fetchJson(`/api/screening/saved/${encodeURIComponent(name)}`);
           ST.criteria = (d.criteria || []).map(c => ({ id: uid(), ...c }));
           ST.columns = (d.columns || []).map(ref => ({ id: uid(), ref }));
+          ST.computedColumns = (d.computed_columns || []).map(cc => ({
+            id: uid(),
+            name: cc.name,
+            formula_type: cc.formula_type || 'price_ratio',
+            numerator_table: cc.numerator_table || '',
+            numerator_column: cc.numerator_column || '',
+            denominator_table: cc.denominator_table || '',
+            denominator_column: cc.denominator_column || '',
+            formula: cc.formula || null,
+            _hint: cc.formula ? 'custom SQL' : `${cc.numerator_table || '?'}.${cc.numerator_column || '?'} / ${cc.denominator_table || '?'}.${cc.denominator_column || '?'}`,
+          }));
           ST.screeningDate = d.screening_date || '';
           if ($('#scr-date')) $('#scr-date').value = d.screening_date || '';
           renderAll();
@@ -1025,9 +1244,18 @@ async function load() {
 async function exportCSV() {
   if (!ST.results?.row_count) { log('warn', 'No results'); return; }
   try {
+    const computedCols = ST.computedColumns.map(cc => ({
+      name: cc.name,
+      formula_type: cc.formula_type || 'price_ratio',
+      numerator_table: cc.numerator_table || '',
+      numerator_column: cc.numerator_column || '',
+      denominator_table: cc.denominator_table || '',
+      denominator_column: cc.denominator_column || '',
+      formula: cc.formula || null,
+    }));
     const r = await fetch('/api/screening/export', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ db_path: ST.dbPath, criteria: ST.criteria, columns: ST.columns.map(c => c.ref), screening_date: ST.screeningDate || null, format: 'csv' }),
+      body: JSON.stringify({ db_path: ST.dbPath, criteria: ST.criteria, columns: ST.columns.map(c => c.ref), computed_columns: computedCols, screening_date: ST.screeningDate || null, format: 'csv' }),
     });
     const blob = await r.blob();
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'screening.csv'; a.click();

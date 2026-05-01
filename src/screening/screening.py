@@ -1170,6 +1170,7 @@ def export_screening_to_backtest_csv(
     ranking_algorithm: str = "none",
     ranking_rules: list[dict] | None = None,
     historical: bool = False,
+    computed_columns: list[dict] | None = None,
 ) -> str:
     """Export screening results in the CSV format used by run_backtest_set."""
     if max_companies <= 0:
@@ -1208,6 +1209,7 @@ def export_screening_to_backtest_csv(
             period=year,
             ranking_algorithm=ranking_algorithm,
             ranking_rules=ranking_rules,
+            computed_columns=computed_columns,
         )
         export_df = _resolve_backtest_export_frame(df, year, max_companies)
         if not export_df.empty:
@@ -1369,6 +1371,7 @@ def save_screening_criteria(
     save_dir: str,
     ranking_algorithm: str = "none",
     ranking_rules: list[dict] | None = None,
+    computed_columns: list[dict] | None = None,
 ) -> Path:
     """Persist a named screening configuration as JSON.
 
@@ -1395,6 +1398,8 @@ def save_screening_criteria(
         "period": period,
         "ranking_algorithm": ranking_algorithm,
         "ranking_rules": ranking_rules or [],
+        "computed_columns": computed_columns or [],
+        "screening_date": None,
     }
 
     existing_path = _find_saved_screening_path(display_name, save_path)

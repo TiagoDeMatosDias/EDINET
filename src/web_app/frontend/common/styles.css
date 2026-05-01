@@ -817,6 +817,139 @@ body.console-collapsed .console {
 
 /* ── SQL display ── */
 
+/* ── Collapsible details (screening config) ── */
+
+.scr-details {
+  border-bottom: 1px solid var(--line);
+}
+.scr-details-toggle {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.scr-details-toggle::-webkit-details-marker { display: none; }
+.scr-details-toggle:hover { color: var(--accent); }
+.scr-details-body {
+  padding: 0;
+}
+
+/* ── Computed column bars ── */
+
+.scr-col-comp {
+  padding-left: 10px;
+}
+.scr-tok-comp {
+  color: #b794f4;
+  font-weight: 500;
+}
+.scr-hint {
+  font-size: 10px;
+  color: var(--muted);
+  margin-left: 4px;
+}
+
+/* ── Computed column builder popup ── */
+
+.scr-pop-comp {
+  width: 400px;
+  max-height: 480px;
+  overflow-y: auto;
+}
+.scr-comp-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 6px;
+}
+.scr-comp-tab {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: var(--font);
+}
+.scr-comp-tab:hover { color: var(--text); }
+.scr-comp-tab.is-sel {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.scr-comp-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.scr-comp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(48,63,82,0.3);
+}
+.scr-comp-btn {
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--text);
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font);
+  white-space: nowrap;
+}
+.scr-comp-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.scr-comp-hint {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.scr-comp-fld {
+  margin-bottom: 4px;
+}
+.scr-comp-lbl {
+  font-size: 10px;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 2px;
+}
+.scr-comp-inp {
+  width: 100%;
+}
+.scr-comp-inline {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+.scr-comp-sql {
+  width: 100%;
+  min-height: 60px;
+  font-size: 11px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  background: #0b1320;
+  color: var(--text);
+  font-family: var(--font);
+  resize: vertical;
+}
+.scr-comp-sql:focus { border-color: var(--accent); }
+.scr-comp-acts {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+/* ── SQL display ── */
+
 .scr-sql-section {
   border-top: 1px solid var(--line);
   background: #070c13;

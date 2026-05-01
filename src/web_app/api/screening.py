@@ -247,8 +247,8 @@ def get_available_formulas() -> dict:
             "formula_type": "price_ratio",
             "numerator_table": "Stock_Prices",
             "numerator_column": "Price",
-            "denominator_table": "PerShare",
-            "denominator_column": "EPS",
+            "denominator_table": "ShareMetrics",
+            "denominator_column": "Basic earnings (loss) per share",
             "format": "ratio",
         },
         {
@@ -256,8 +256,8 @@ def get_available_formulas() -> dict:
             "formula_type": "price_ratio",
             "numerator_table": "Stock_Prices",
             "numerator_column": "Price",
-            "denominator_table": "PerShare",
-            "denominator_column": "BookValue",
+            "denominator_table": "ShareMetrics",
+            "denominator_column": "Net assets per share",
             "format": "ratio",
         },
         {
@@ -265,15 +265,15 @@ def get_available_formulas() -> dict:
             "formula_type": "price_ratio",
             "numerator_table": "Stock_Prices",
             "numerator_column": "Price",
-            "denominator_table": "PerShare",
-            "denominator_column": "Sales",
+            "denominator_table": "PerShare_Metrics",
+            "denominator_column": "Sales Per Share",
             "format": "ratio",
         },
         {
             "name": "Dividend Yield",
             "formula_type": "price_ratio",
-            "numerator_table": "PerShare",
-            "numerator_column": "Dividends",
+            "numerator_table": "ShareMetrics",
+            "numerator_column": "Dividend paid per share",
             "denominator_table": "Stock_Prices",
             "denominator_column": "Price",
             "format": "percent",
@@ -281,8 +281,8 @@ def get_available_formulas() -> dict:
         {
             "name": "Earnings Yield",
             "formula_type": "price_ratio",
-            "numerator_table": "PerShare",
-            "numerator_column": "EPS",
+            "numerator_table": "ShareMetrics",
+            "numerator_column": "Basic earnings (loss) per share",
             "denominator_table": "Stock_Prices",
             "denominator_column": "Price",
             "format": "percent",
@@ -412,6 +412,17 @@ def save_screening(request: ScreeningSaveRequest = Body(...)) -> dict:
     try:
         criteria_dicts = _criteria_to_dicts(request.criteria)
         ranking_dicts = _ranking_rules_to_dicts(request.ranking_rules)
+        computed_specs = []
+        for cc in request.computed_columns:
+            computed_specs.append({
+                "name": cc.name,
+                "formula_type": cc.formula_type,
+                "numerator_table": cc.numerator_table,
+                "numerator_column": cc.numerator_column,
+                "denominator_table": cc.denominator_table,
+                "denominator_column": cc.denominator_column,
+                "formula": cc.formula,
+            })
         path = _screening.save_screening_criteria(
             name=request.name,
             criteria=criteria_dicts,
@@ -420,6 +431,7 @@ def save_screening(request: ScreeningSaveRequest = Body(...)) -> dict:
             save_dir=_screening_save_dir(),
             ranking_algorithm=request.ranking_algorithm,
             ranking_rules=ranking_dicts,
+            computed_columns=computed_specs,
         )
         return {"saved": True, "path": str(path)}
     except Exception as e:
@@ -474,6 +486,17 @@ def export_results(request: ScreeningExportRequest = Body(...)) -> StreamingResp
         ranking_dicts = _ranking_rules_to_dicts(request.ranking_rules)
 
         if request.format == "backtest":
+            computed_specs = []
+            for cc in request.computed_columns:
+                computed_specs.append({
+                    "name": cc.name,
+                    "formula_type": cc.formula_type,
+                    "numerator_table": cc.numerator_table,
+                    "numerator_column": cc.numerator_column,
+                    "denominator_table": cc.denominator_table,
+                    "denominator_column": cc.denominator_column,
+                    "formula": cc.formula,
+                })
             output_path = _screening.export_screening_to_backtest_csv(
                 db_path=resolved,
                 criteria=criteria_dicts,
@@ -484,12 +507,24 @@ def export_results(request: ScreeningExportRequest = Body(...)) -> StreamingResp
                 ranking_algorithm=request.ranking_algorithm,
                 ranking_rules=ranking_dicts,
                 historical=request.historical,
+                computed_columns=computed_specs,
             )
             with open(output_path, "r", encoding="utf-8") as f:
                 content = f.read()
             filename = "screening_backtest_export.csv"
         else:
             all_columns = list(request.columns)
+            computed_specs = []
+            for cc in request.computed_columns:
+                computed_specs.append({
+                    "name": cc.name,
+                    "formula_type": cc.formula_type,
+                    "numerator_table": cc.numerator_table,
+                    "numerator_column": cc.numerator_column,
+                    "denominator_table": cc.denominator_table,
+                    "denominator_column": cc.denominator_column,
+                    "formula": cc.formula,
+                })
             df = _screening.run_screening(
                 db_path=resolved,
                 criteria=criteria_dicts,
@@ -498,6 +533,7 @@ def export_results(request: ScreeningExportRequest = Body(...)) -> StreamingResp
                 screening_date=request.screening_date,
                 ranking_algorithm=request.ranking_algorithm,
                 ranking_rules=ranking_dicts,
+                computed_columns=computed_specs,
             )
             stream = io.StringIO()
             df.to_csv(stream, index=False)
