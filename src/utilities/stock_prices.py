@@ -230,7 +230,9 @@ def _load_provider_history(ticker: str, start_date: str | None = None) -> tuple[
 
 def _create_prices_table(conn, table_name):
     """Create the stock prices table if it doesn't exist using pandas.
-    
+
+    Also ensures a composite index on (Date, Ticker) exists for fast lookups.
+
     Args:
         conn (sqlite3.Connection): Database connection
         table_name (str): Name of the table to create
@@ -245,6 +247,13 @@ def _create_prices_table(conn, table_name):
     # Create table if it doesn't exist (append is idempotent for empty df)
     df.to_sql(table_name, conn, if_exists='append', index=False)
     logger.debug(f"Stock prices table '{table_name}' is ready")
+
+    # Ensure a composite index on (Date, Ticker) for query performance
+    idx_name = f"ix_{table_name}_Date_Ticker"
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS [{idx_name}] ON [{table_name}] (Date, Ticker)"
+    )
+    logger.debug(f"Index '{idx_name}' on ({table_name}.Date, {table_name}.Ticker) is ready")
 
 
 def load_ticker_data(ticker, prices_table, conn) -> bool:
