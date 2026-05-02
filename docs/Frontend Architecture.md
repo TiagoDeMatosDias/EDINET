@@ -4,23 +4,63 @@ This document describes the structure of the web workstation's frontend and expl
 
 ---
 
+## Architecture overview
+
+Each HTML page loads a thin bootstrap script that imports a screen module from its sibling directory. All screen modules share `common/state.js` (application state), `common/utils.js` (DOM/network helpers), and `common/console.js` (log panel). The browser communicates with the backend exclusively through `fetchJson` calls to API endpoints.
+
+```mermaid
+flowchart LR
+    subgraph Pages["HTML Pages"]
+        MAIN_P["/ (main.html)"]
+        ORCH_P["/orchestrator"]
+        SCR_P["/screening"]
+        SEC_P["/security"]
+    end
+
+    subgraph Modules["JS Screen Modules"]
+        ORCH_MOD["orchestrator/index.js"]
+        SCR_MOD["screening/index.js"]
+        SEC_MOD["security_analysis/index.js"]
+    end
+
+    subgraph API["API Endpoints"]
+        ORCH_API["/api/steps<br/>/api/pipeline/run<br/>/api/jobs<br/>/api/config<br/>/health"]
+        SCR_API["/api/screening/metrics<br/>/api/screening/run<br/>/api/screening/saved<br/>/api/screening/export"]
+    end
+
+    MAIN_P --> ORCH_MOD
+    ORCH_P --> ORCH_MOD
+    SCR_P --> SCR_MOD
+    SEC_P --> SEC_MOD
+
+    ORCH_MOD -->|"fetchJson"| ORCH_API
+    SCR_MOD -->|"fetchJson"| SCR_API
+
+    ORCH_MOD -.->|"imports"| common["common/ (state, utils, console, topbar)"]
+    SCR_MOD -.->|"imports"| common
+    SEC_MOD -.->|"imports"| common
+```
+
+The main dashboard (`/`) and the orchestrator page (`/orchestrator`) both import from `orchestrator/index.js` — the main page uses the dashboard rendering functions (`renderMain`, `renderRecentJobs`), while the orchestrator page uses the full pipeline builder.
+
 ## Directory layout
 
 ```
 src/web_app/
 ├── server.py                   ← FastAPI server (Python)
 ├── api/
-│   └── __init__.py             ← API façade (Python)
+│   ├── __init__.py             ← API façade (re-exports router + screening routes)
+│   └── screening.py            ← Screening API routes (/api/screening/*)
 └── frontend/                   ← All browser-side assets
     ├── common/                 ← Shared utilities used by every screen
     │   ├── styles.css          ← Global stylesheet (design tokens + all component classes)
     │   ├── state.js            ← Shared application state, DOM element cache, callbacks
-    │   ├── utils.js            ← Pure DOM/data helpers (el, $, fetchJson, …)
+    │   ├── utils.js            ← Pure DOM/data helpers (el, $, fetchJson, resolveDbPath, …)
     │   ├── console.js          ← Console log panel (log, renderConsole, exportConsole)
-    │   └── topbar.js           ← Topbar wiring: health check, console toggle
+    │   └── topbar.js           ← Topbar wiring: health check, refresh button, console toggle
     ├── main/
     │   ├── main.html           ← Main dashboard page (served at /)
-    │   └── main.js             ← Main page entry point
+    │   └── main.js             ← Main page entry point (loads orchestrator module)
     ├── orchestrator/
     │   ├── orchestrator.html   ← Orchestrator page (served at /orchestrator)
     │   ├── orchestrator.js     ← Orchestrator page entry point
@@ -28,7 +68,7 @@ src/web_app/
     ├── screening/
     │   ├── screening.html      ← Screening page (served at /screening)
     │   ├── screening.js        ← Screening page entry point
-    │   └── index.js            ← Screening screen logic (stub)
+    │   └── index.js            ← Screening screen logic (full implementation)
     └── security_analysis/
         ├── security.html       ← Security Analysis page (served at /security)
         ├── security.js         ← Security Analysis page entry point
@@ -58,8 +98,21 @@ The thin FastAPI application.  Responsibilities:
 
 ### `api/__init__.py`
 
-A façade that re-exports the `router_app` FastAPI sub-application and `cleanup_completed_jobs` from `src.api.router`.  
-Adding new API endpoints for a specific screen should be done by creating a new route module in this package and importing it here, rather than modifying `src.api.router` directly.
+A façade that re-exports the `router_app` FastAPI sub-application (from `src.api.router`) plus screening routes (from `src/web_app.api.screening`). Adding new API endpoints for a specific screen should be done by creating a new route module in this package and importing it here.
+
+### `api/screening.py`
+
+Dedicated screening API routes at `/api/screening/*`. Exposes endpoints for:
+- `GET /api/screening/db-path` — default database path
+- `GET /api/screening/metrics` — available table columns
+- `GET /api/screening/periods` — available fiscal period years
+- `GET /api/screening/formulas` — pre-built computed column formulas (P/E, P/B, etc.)
+- `POST /api/screening/run` — execute a screening query
+- `GET /api/screening/saved` / `POST /api/screening/save` / `DELETE /api/screening/saved/{name}` — saved criteria CRUD
+- `GET /api/screening/history` / `POST /api/screening/history` — screening run history
+- `POST /api/screening/export` — CSV or backtest-set export
+
+All database interactions go through `src.screening` functions — the frontend never touches the database directly.
 
 ---
 
@@ -180,11 +233,22 @@ Contains all logic for the Orchestrator screen and the Main dashboard (which sur
 
 ### `screening/index.js`
 
-Stub screen.  Exports a single `render()` function that is called by `screening/screening.js` when the Screening page loads.  Add all screening-specific state, API calls, and DOM rendering here.
+Fully-implemented screening workspace with an expression-bar criteria builder. Features:
+- Expression-bar criteria builder (`[ [Table].[Column] > [[value]] ]` style)
+- Supports comparison modes: `fixed`, `column`, `expression`, `in`, `like`, `stock_price`, `full_expression`
+- Unified column list (regular + computed) with drag-and-drop reorder
+- Pre-built computed columns (P/E, P/B, P/S, Dividend Yield, Earnings Yield)
+- Custom computed column builder with token-based expression editor
+- Sortable results table with column drag-to-reorder (syncs config + results)
+- Formatted/raw value toggle
+- Save/Load criteria (server-side via `/api/screening/saved`)
+- Session-state caching via `sessionStorage` for cross-navigation persistence
+- Export CSV and row-click drill-down to Security Analysis
+- All API interaction via `fetchJson` to `/api/screening/*` endpoints
 
 ### `security_analysis/index.js`
 
-Stub screen.  Same contract as the Screening module.
+Stub screen. Exports a single `render()` function that is called by `security/security.js` when the Security Analysis page loads. Currently renders no dynamic content.
 
 ---
 
@@ -226,7 +290,12 @@ Stub screen.  Same contract as the Screening module.
    <button class="tab" onclick="location.href='/my_screen'">My Screen</button>
    ```
 
-4. **Add API routes** (if needed) in `src/web_app/api/` and import them in `src/web_app/api/__init__.py`.
+4. **Add API routes** (if needed) in `src/web_app/api/` (create a new file like `my_screen.py`) and import the router in `src/web_app/api/__init__.py`:
+
+   ```python
+   from src.web_app.api.my_screen import router as _my_screen_router
+   router_app.router.routes.extend(_my_screen_router.routes)
+   ```
 
 No build step, no config changes — the browser loads the new module automatically via native ES module resolution.
 
@@ -241,3 +310,5 @@ No build step, no config changes — the browser loads the new module automatica
 - **`el()` over `innerHTML`.** Use the `el()` helper from `common/utils.js` to build DOM nodes programmatically.  This avoids XSS risks and keeps the code auditable.
 - **`log()` for all user-visible events.**  Use `log('info' | 'warn' | 'error' | 'debug', message)` from `common/console.js` to surface status messages to the operator in the bottom console panel.
 - **Tab navigation via inline `onclick`.** Tabs use `onclick="location.href='/...'"` — simple, no JS wiring needed.
+- **Database path resolution via `resolveDbPath`.** Database paths entered by the user in the web UI are resolved to absolute filesystem paths by querying the server's `repo_root` via `/api/config`, then prefixing relative paths. This lets the web UI submit absolute paths that the backend can use directly.
+- **File uploads via File System Access API.** The orchestrator `index.js` uses the browser's File System Access API (`window.showOpenFilePicker`, `window.showDirectoryPicker`) for file/database path picking. Uploaded files are base64-encoded and sent inline; the backend `resolve_file_uploads` decodes them to temp files.

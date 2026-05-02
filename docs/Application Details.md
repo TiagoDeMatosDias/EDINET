@@ -1,7 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-04-23
+Last updated: 2026-05-02
 - Central reference for runtime/test Python modules (`src/`), Tk UI modules (`ui_tk/`), and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
@@ -32,28 +32,67 @@ Suggested per-function format:
 - Default interface: the Tk desktop shell launched by `python main.py` is the primary maintained UI.
 - Maintained top-level views: `Home`, `Orchestrator`, `Data`, `Screening`, and `Security Analysis`.
 
-- Architecture status: `src.orchestrator` is a thin dispatcher; backend modules remain largely decoupled from `Config` and are called with explicit parameters.
-- Mature user-facing workflows: ingestion, ETL, translation, ratio generation, backtesting, screening, and security analysis all have dedicated test coverage.
-- Partial surface: the Data Workspace is operational for navigation/resource inspection, but it is not yet a full analytical data browser.
+- Architecture status: `src.orchestrator` is a thin dispatcher with dynamically discovered step packages; backend modules are decoupled from `Config` and called with explicit parameters.
+- Mature user-facing workflows: ingestion, ETL, ratio generation, backtesting, screening, and security analysis all have dedicated test coverage.
+- Web workstation: a secondary web UI (FastAPI + vanilla JS) served at `/orchestrator`, `/screening`, `/security`. The Screener is fully functional; Security Analysis is a stub.
 - Visual review workflow: screenshot capture tests save current UI images under `data/mockups/screenshots/`, and the curated README copies live under `docs/images/`.
 
 ---
 
 ## Runtime modules (`src`)
 
-### [src/orchestrator/__init__.py](src/orchestrator/__init__.py)
+## Architecture overview
+
+The application has two UI surfaces (Tk desktop and web workstation) that share the same backend. The orchestrator is the central dispatcher: it discovers step packages and delegates work to backend modules.
+
+```mermaid
+flowchart LR
+    subgraph Entry["Entry Point"]
+        MAIN["main.py"]
+    end
+
+    subgraph UI["UI Layer"]
+        TK["Tk Desktop<br/>(ui_tk/)"]
+        WEB["Web Workstation<br/>(FastAPI + vanilla JS)"]
+    end
+
+    subgraph API["API"]
+        RTR["/api/*"]
+        SCR_API["/api/screening/*"]
+    end
+
+    subgraph Core["Core"]
+        ORCH["Orchestrator<br/>(src/orchestrator/)"]
+        SCR["Screening<br/>(src/screening/)"]
+        SA["Security Analysis<br/>(src/security_analysis/)"]
+    end
+
+    MAIN --> TK
+    MAIN -->|"--web"| WEB
+    TK -->|"controllers.py<br/>(direct calls)"| ORCH
+    WEB -->|"HTTP"| RTR
+    WEB -->|"HTTP"| SCR_API
+    RTR --> ORCH
+    SCR_API --> SCR
+    ORCH --> SCR
+    ORCH --> SA
+```
+
+The web workstation server mounts both the orchestrator API routes (`/api/steps`, `/api/pipeline/run`, `/api/jobs`) and screening routes (`/api/screening/metrics`, `/api/screening/run`, etc.) into a single FastAPI application. The browser's vanilla JS modules call these endpoints via `fetchJson`. The Tk desktop calls orchestrator functions directly through `ui_tk/controllers.py`.
+
+### [src/orchestrator/__init__.py](../src/orchestrator/__init__.py)
 
 Responsibility: public orchestration API and step dispatch. The orchestrator is a thin dispatcher with **no business logic**. Step execution is discovered dynamically from step packages directly under `src/orchestrator`, so new step packages can be added without modifying the orchestrator runtime.
 
 Architecture:
 - **`src/orchestrator/orchestrator.py`**: runtime entry point that owns step registries, public API validation, and execution.
 - **`src/orchestrator/common/__init__.py`**: shared `StepDefinition` type plus discovery helpers that scan immediate child step packages under `src/orchestrator`.
-- **`src/orchestrator/common/__init__.py`**: Step contracts and discovery helpers, including `StepDefinition`, `StepFieldDefinition`, and registry construction.
+- **`src/orchestrator/common/validation.py`**: pipeline validation and step config normalization.
 - **Discovered step packages**: each step lives in its own package such as `src/orchestrator/generate_financial_statements/` and exports `STEP_DEFINITION` only.
 - **`STEP_HANDLERS`**: generated registry mapping step names and aliases to discovered handlers.
 
 - `def run(config=None, steps=None, on_step_start=None, on_step_done=None, on_step_error=None, cancel_event=None) -> None`
-	- Purpose: Run the provided pipeline config. If `config` is omitted, it loads the saved runtime config.
+	- Purpose: Run the provided pipeline config.
 	- Inputs: optional `Config` or config dict, optional ordered `steps`, optional callbacks, optional `cancel_event`.
 	- Output: None.
 	- Calls/Dependencies: `Config`, `validate_input`, `STEP_HANDLERS`.
@@ -68,11 +107,23 @@ Architecture:
 	- Inputs: `Config` or config dict, optional ordered `steps`.
 	- Output: normalized list of step dicts (raises `RuntimeError` on invalid input).
 
----
+### [src/orchestrator/common/edinet.py](../src/orchestrator/common/edinet.py)
 
-### [src/backtesting.py](src/backtesting.py)
+Responsibility: EDINET API wrapper, document listing, download/unzip, CSV ingestion to DB. (Was `src/edinet_api.py` before the orchestration rework.) No Config dependency; all parameters are passed explicitly via the constructor.
 
-Responsibility: portfolio construction, price/dividend ingestion, return calculations, performance metrics, human-readable reports and charts. The orchestration entry point is `run_backtest()` which is invoked by `src.orchestrator`.
+`class Edinet`
+	- Purpose: EDINET HTTP wrapper and helpers to download, extract and ingest financial CSVs into the project DB.
+	- Constructor: `Edinet(base_url, api_key, db_path, raw_docs_path=None, doc_list_table=None, company_info_table=None, taxonomy_table=None)`
+
+	- `def get_All_documents_withMetadata(self, start_date, end_date) -> list` — Iterate a date range via the EDINET listing API and persist discovered document metadata.
+	- `def downloadDoc(self, docID, fileLocation=None, docTypeCode=None) -> None` — Download a single EDINET document ZIP.
+	- `def downloadDocs(self, input_table, output_table=None, filter=None) -> None` — Download and extract all not-yet-downloaded documents.
+	- `def load_financial_data(self, financialFiles, table_name, doc, connection=None) -> None` — Read extracted TSV/CSV financial files into a DataFrame and persist.
+	- `def store_edinetCodes(self, csv_file, target_database=None, table_name=None) -> None` — Load EDINET company codes CSV into the DB.
+
+### [src/orchestrator/common/backtesting.py](../src/orchestrator/common/backtesting.py)
+
+Responsibility: portfolio construction, price/dividend ingestion, return calculations, performance metrics, human-readable reports and charts. (Was `src/backtesting.py` before the orchestration rework.)
 
 - `def _normalise_portfolio_entry(spec) -> tuple[str, float]`
 	- Purpose: Parse a single portfolio entry (legacy float or dict) into a canonical `(mode, numeric_value)` tuple.
@@ -171,84 +222,27 @@ Responsibility: portfolio construction, price/dividend ingestion, return calcula
 
 ---
 
-### [src/orchestrator/processor](src/orchestrator/processor)
+### [src/orchestrator/common/db_config.py](../src/orchestrator/common/db_config.py)
 
-Responsibility: Orchestrator-owned processor mixins that provide the shared SQLite/schema helpers consumed by the extracted orchestrator services.
+Responsibility: Configuration-driven database path resolution.
 
-- `OrchestratorDataProcessor`
-	- Purpose: Compose the shared base helpers plus the ratio, financial-statement, and taxonomy helper mixins used by `src/orchestrator/services/*`.
-	- Notes: Instantiated directly by orchestrator step modules; preserves the historical `d.data()` test seam without importing `src/data_processing.py`.
+- `def get_db2() -> str` — Return the default DB2 path from `config/database_paths.json`, falling back to the `DB2_PATH` env var.
 
-### [src/data_processing.py](src/data_processing.py)
+### [src/orchestrator/common/ratios.py](../src/orchestrator/common/ratios.py)
 
-Responsibility: Backward-compatible facade over orchestrator-owned services and the remaining legacy ETL helpers that have not been moved yet.
+Responsibility: Ratio generation logic consumed by `generate_ratios` and `generate_rolling_metrics` step packages.
 
-`class data`
-	- Purpose: Compatibility subclass of `OrchestratorDataProcessor` that keeps the legacy public API stable while delegating orchestrator-facing workflows into `src/orchestrator/services/*`.
+### [src/orchestrator/common/sqlite.py](../src/orchestrator/common/sqlite.py)
 
-	- `def generate_financial_statements(self, source_database, target_database, granularity_level, overwrite=False) -> None`
-		- Purpose: Generate taxonomy-backed wide financial-statement tables from `financialData_full`; resumable processing in internal docID batches.
-		- Inputs: `source_database`, `target_database`, `granularity_level`, optional `overwrite`.
-		- Output: None (writes/updates DB tables: `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, `ShareMetrics`).
-		- Calls/Dependencies: `_resolve_table_name_in_schema`, `_resolve_source_col_names`, pandas batch queries, bulk SQLite temp-table inserts, Taxonomy queries, `conn.execute`, `conn.executescript`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
+Responsibility: Shared SQLite helpers (table creation, schema introspection, batch operations).
 
-	- `def generate_ratios(database, overwrite=False, batch_size=5000, helper=None) -> dict`
-		- Purpose: Build configured ratio tables keyed by `FinancialStatements.docID`, using the hardcoded definition file in `src/orchestrator/generate_ratios/ratios_definitions.json`.
-		- Inputs: `database`, optional `overwrite`, optional `batch_size`, optional DB helper.
-		- Output: status dict summarizing generated tables, ratio count, and processed documents.
-		- Calls/Dependencies: `_load_ratio_definitions`, `_ensure_ratio_table_schema`, `_seed_ratio_docids`, `_populate_ratio_table`, `sqlite3.connect`, `conn.commit`, `conn.close`, `logger.info`.
+### [src/orchestrator/common/validation.py](../src/orchestrator/common/validation.py)
 
-	- `def generate_historical_ratios(self, source_database, target_database, overwrite=False, company_batch_size=200) -> None`
-		- Purpose: Produce per-company historical metric tables (e.g. `Pershare_Historical`) by computing rolling/aggregate statistics and inserting in batches.
-		- Inputs: `source_database`, `target_database`, optional `overwrite`, `company_batch_size`.
-		- Output: None (writes/updates historical tables).
-		- Calls/Dependencies: `_resolve_table_name_in_schema`, `_create_index_if_not_exists`, `_ensure_historical_table_schema`, `_build_cross_sectional_stats`, `_compute_historical_metrics`, `conn.execute`, `conn.commit`, `conn.close`, `logger.info`, `logger.warning`.
+Responsibility: Pipeline validation — step config default application, pipeline normalization, and required-key validation.
 
-	- `def parse_edinet_taxonomy(self, xsd_file, table_name, connection=None, db_path=None) -> None`
-		- Purpose: Parse an EDINET taxonomy XSD and persist relevant elements to `table_name`.
-		- Inputs: `xsd_file` (path to XSD), `table_name`, optional `connection`, optional `db_path` (required when `connection` is not provided).
-		- Output: None (writes taxonomy rows to DB table).
-		- Calls/Dependencies: `ET.parse`, `_create_table`, `_insert_data`, `_adjust_string`, `conn.commit`, `conn.close`.
-
----
-
-### [src/edinet_api.py](src/edinet_api.py)
-
-Responsibility: EDINET API wrapper, document listing, download/unzip, CSV ingestion to DB.
-
-`class Edinet`
-	- Purpose: EDINET HTTP wrapper and helpers to download, extract and ingest financial CSVs into the project DB. No Config dependency; all parameters are passed explicitly via the constructor.
-	- Constructor: `Edinet(base_url, api_key, db_path, raw_docs_path=None, doc_list_table=None, company_info_table=None, taxonomy_table=None)`
-
-	- `def get_All_documents_withMetadata(self, start_date: str = '2015-01-01', end_date: str | None = None) -> list`
-		- Purpose: Iterate a date range, call the EDINET listing API and persist discovered document metadata into the configured DB table.
-		- Inputs: `start_date` (YYYY-MM-DD), optional `end_date` (YYYY-MM-DD).
-		- Output: List of document rows inserted/retrieved for the period.
-		- Calls/Dependencies: `requests.get`, `sqlite3.connect`, `self.create_table`, `cursor.execute`, `conn.commit`, `conn.close`.
-
-	- `def downloadDoc(self, docID: str, fileLocation: str | None = None, docTypeCode: str | None = None) -> None`
-		- Purpose: Download a single EDINET document ZIP to disk.
-		- Inputs: `docID`, optional `fileLocation`, optional `docTypeCode`.
-		- Output: None (writes ZIP file to `fileLocation`).
-		- Calls/Dependencies: `generateURL` (via `src.utils.generateURL`), `requests.get`, `open` (file write).
-
-	- `def downloadDocs(self, input_table: str, output_table: str | None = None, filter: dict | None = None) -> None`
-		- Purpose: Download and extract all not-yet-downloaded documents from the DB list, load CSVs into `output_table`, and mark as downloaded.
-		- Inputs: `input_table`, optional `output_table`, optional `filter`.
-		- Output: None (writes DB rows and files on disk).
-		- Calls/Dependencies: `generate_filter`, `query_database_select`, `sqlite3.connect`, `create_folder`, `downloadDoc`, `list_files_in_folder`, `unzip_files`, `load_financial_data`, `query_database_setColumn`, `delete_folder`.
-
-	- `def load_financial_data(self, financialFiles: list, table_name: str, doc: dict, connection: sqlite3.Connection | None = None) -> None`
-		- Purpose: Read extracted TSV/CSV financial files into a DataFrame, attach document metadata and persist to the DB table.
-		- Inputs: `financialFiles` (list of paths), `table_name`, `doc` (metadata), optional `connection`.
-		- Output: None (appends rows into `table_name`).
-		- Calls/Dependencies: `detect_file_encoding`, `pd.read_csv`, `self.create_table`, `df.to_sql`, `conn.commit`, `conn.close`.
-
-	- `def store_edinetCodes(self, csv_file: str, target_database: str | None = None, table_name: str | None = None) -> None`
-		- Purpose: Load EDINET company codes CSV and persist into the configured company-info table.
-		- Inputs: `csv_file`, optional `target_database`, optional `table_name`.
-		- Output: None (writes to DB).
-		- Calls/Dependencies: `pd.read_csv`, `sqlite3.connect`, `df.to_sql`, `conn.commit`, `conn.close`.
+- `def apply_step_config_defaults(config, steps, step_definitions)` — Apply field defaults from step definitions.
+- `def normalize_pipeline_steps(config, steps)` — Resolve enabled steps from run_config.
+- `def validate_pipeline_input(config, steps, step_definitions)` — Check required keys and field types.
 
 
 ---
@@ -687,22 +681,28 @@ Core implementation in `src/screening/screening.py`:
 
 ## Tests (`tests/`)
 
-Responsibility: Unit tests covering core logic and UI helpers. Each test file targets the corresponding module:
+Responsibility: Unit tests covering core logic and UI helpers.
 
-- `[tests/test_backtesting.py](tests/test_backtesting.py)` — tests backtest data retrieval, calculations, report and chart generation, and end-to-end `run_backtest` flows.
-- `[tests/test_data_processing.py](tests/test_data_processing.py)` — tests `data` ETL methods, formula compilation, historical ratio generation, and XSD parsing helpers.
-- `[tests/test_edinet_api.py](tests/test_edinet_api.py)` — tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
-- `[tests/test_security_analysis.py](tests/test_security_analysis.py)` — tests schema normalization, search ranking, overview payloads, price history, peer selection, and single-ticker price updates.
-- `[tests/test_stockprice_api.py](tests/test_stockprice_api.py)` — tests CSV import and stock price ingestion logic.
-- `[tests/test_ui_screenshots.py](tests/test_ui_screenshots.py)` — launches the real Tk application, navigates the maintained views, and saves screenshots to `data/mockups/screenshots/` for visual review.
-- `[tests/test_ui_tk_smoke.py](tests/test_ui_tk_smoke.py)` — Tk UI smoke tests: imports, theme application, widget instantiation, controller functions, QueueLogHandler, ScreeningPage, and SecurityAnalysisPage.
-- `[tests/test_screening.py](tests/test_screening.py)` — Backend screening tests: query building, execution, persistence, formatting, SQL injection prevention.
-- `[tests/test_orchestrator.py](tests/test_orchestrator.py)` — Orchestrator tests: `run_pipeline` basic flow, cancellation, error handling, `execute_step` dispatch, `validate_config`, `Config.from_dict` independence and singleton behaviour.
-- `[tests/test_utils.py](tests/test_utils.py)` — small helper tests for URL generation and CSV export.
+- **[test_backtesting.py](../tests/test_backtesting.py)** — tests backtest data retrieval, calculations, report and chart generation, and end-to-end `run_backtest` flows.
+- **[test_edinet_api.py](../tests/test_edinet_api.py)** — tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
+- **[test_security_analysis.py](../tests/test_security_analysis.py)** — tests schema normalization, search ranking, overview payloads, price history, peer selection, and single-ticker price updates.
+- **[test_stockprice_api.py](../tests/test_stockprice_api.py)** — tests CSV import and stock price ingestion logic.
+- **[test_ui_screenshots.py](../tests/test_ui_screenshots.py)** — launches the real Tk application, navigates the maintained views, and saves screenshots to `data/mockups/screenshots/` for visual review.
+- **[test_ui_tk_smoke.py](../tests/test_ui_tk_smoke.py)** — Tk UI smoke tests: imports, theme application, widget instantiation, controller functions, QueueLogHandler, ScreeningPage, and SecurityAnalysisPage.
+- **[test_screening.py](../tests/test_screening.py)** — Backend screening tests: query building, execution, persistence, formatting, SQL injection prevention.
+- **[test_screening_api.py](../tests/test_screening_api.py)** — Web API screening endpoint tests.
+- **[test_orchestrator.py](../tests/test_orchestrator.py)** — Orchestrator tests: `run_pipeline` basic flow, cancellation, error handling, `execute_step` dispatch, `validate_config`, `Config.from_dict` independence and singleton behaviour.
+- **[test_orchestrator_services.py](../tests/test_orchestrator_services.py)** — Tests for individual orchestrator step services.
+- **[test_playwright_orchestrator.py](../tests/test_playwright_orchestrator.py)** — Browser-level orchestrator E2E tests.
+- **[test_playwright_screening.py](../tests/test_playwright_screening.py)** — Browser-level screening E2E tests.
+- **[test_taxonomy_processing.py](../tests/test_taxonomy_processing.py)** — Taxonomy parsing and processing tests.
+- **[test_utils.py](../tests/test_utils.py)** — small helper tests for URL generation and CSV export.
+- **[test_web_app_server.py](../tests/test_web_app_server.py)** — Tests for the FastAPI web application server.
+- **[test_web_ui_smoke.py](../tests/test_web_ui_smoke.py)** — Web UI smoke tests.
 
 ---
 
-Last updated: 2026-04-23
+Last updated: 2026-05-02
 
 Keep this document aligned with code changes in the same PR or commit.
 

@@ -28,8 +28,7 @@ Optional host/port flags are shared across both modes:
 python main.py --web --api-host 127.0.0.1 --api-port 8000
 ```
 
-The web frontend is a single-page app and talks to the backend only through endpoints exposed in `src/api/router.py`.
-At this stage, `Screening` and `Security Analysis` are intentional stubs in the web UI.
+The web frontend is a multi-page vanilla JS application that talks to the backend through endpoints exposed in `src/api/router.py` and `src/web_app/api/screening.py`. The Screening view is fully functional; Security Analysis is an intentional stub in the web UI.
 
 Most steps now require an explicit source or target database path in their step configuration. The GUI exposes those paths directly in each step's config dialog.
 
