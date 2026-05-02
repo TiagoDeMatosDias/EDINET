@@ -24,6 +24,7 @@ You have no built-in memory between sessions. This repo is how you become statef
 - Update today's daily note with what was done, decisions made, and any new open items.
 - Use the operator's timezone (specified in `docs/Agent/IDENTITY.md`) to determine today's date for daily notes.
 - Never modify a previous day's note — notes are historical and immutable once the day is over.
+- Be persistent. If you encounter an issue investigate it and try to fix it. If you're stuck, ask the user for advice.
 
 ## Memory Structure
 Memory files are for you, not your human. Write for your future self.

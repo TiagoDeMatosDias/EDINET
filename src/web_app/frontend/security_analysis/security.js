@@ -1,23 +1,29 @@
 /**
- * Security Analysis page entry point (moved into the security_analysis folder).
+ * Security Analysis page entry point.
  */
 
 import { log } from '../common/console.js';
 import { els } from '../common/state.js';
 import { refreshHealth, wireTopbarEvents } from '../common/topbar.js';
-import { render as renderSecurityAnalysis } from './index.js';
+import { init, render, selectCompany, markReady } from './index.js';
 
 async function bootstrap() {
   wireTopbarEvents();
+  els.backendStatus = document.getElementById('sa-backend-status');
+  init();
+  markReady();
 
-  els.backendStatus    = document.getElementById('backend-status');
+  window._pageRefresh = () => { refreshHealth(); render(); };
 
-  window._pageRefresh = () => refreshHealth();
   log('info', 'Security Analysis page initialized');
   await refreshHealth();
-  renderSecurityAnalysis();
+
+  const lastCode = sessionStorage.getItem('sa.lastEdinetCode');
+  if (lastCode) {
+    try { await selectCompany(lastCode); } catch (e) { log('warn', e.message); }
+  }
+
+  render();
 }
 
-bootstrap().catch(err => {
-  log('error', `Fatal startup error: ${err.message}`);
-});
+bootstrap().catch(err => log('error', `Startup: ${err.message}`));
