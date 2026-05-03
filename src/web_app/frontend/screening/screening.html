@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shade Research — Screening</title>
+    <link rel="stylesheet" href="/assets/common/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell" style="grid-template-rows:52px 1fr;">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-logo" src="/brand-assets/icon_hexagon.svg" alt="Shade Research" />
+          <div>
+            <div class="brand-title">Shade Research</div>
+            <div class="brand-subtitle">terminal-style research console</div>
+          </div>
+        </div>
+        <nav class="tabs" aria-label="Primary navigation">
+          <button class="tab" onclick="location.href='/'">Main</button>
+          <button class="tab" onclick="location.href='/orchestrator'">Orchestrator</button>
+          <button class="tab is-active" onclick="void 0">Screening</button>
+          <button class="tab" onclick="location.href='/security'">Security Analysis</button>
+        </nav>
+        <div class="topbar-actions">
+          <div class="status-pill" id="backend-status">Connecting…</div>
+          <button class="ghost-btn" id="refresh-btn">Refresh</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="view is-active" data-view-panel="screening">
+          <div id="screening-root"></div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/assets/screening/screening.js"></script>
+  </body>
+</html>

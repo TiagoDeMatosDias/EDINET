@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from src.stockprice_api import _create_prices_table, import_stock_prices_csv, load_ticker_data
+from src.orchestrator.import_stock_prices_csv.import_stock_prices_csv import import_stock_prices_csv
+from src.utilities.stock_prices import _create_prices_table, load_ticker_data
 
 
 class TestImportStockPricesCsv(unittest.TestCase):
@@ -88,6 +89,46 @@ class TestImportStockPricesCsv(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_import_auto_detects_backup_csv_columns_when_pipeline_defaults_are_stale(self):
+        df = pd.DataFrame(
+            {
+                "Date": ["2026-01-01", "2026-01-02"],
+                "Ticker": ["7203", "6758"],
+                "Currency": ["JPY", "JPY"],
+                "Price": [1000.5, 2000.0],
+            }
+        )
+        df.to_csv(self.csv_path, index=False)
+
+        inserted = import_stock_prices_csv(
+            self.db_path,
+            "stock_prices",
+            self.csv_path,
+            default_ticker="",
+            default_currency="JPY",
+            date_column="Date",
+            price_column="Close",
+            ticker_column="",
+            currency_column="",
+        )
+
+        self.assertEqual(inserted, 2)
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT Date, Ticker, Currency, Price FROM stock_prices ORDER BY Date"
+            ).fetchall()
+            self.assertEqual(
+                rows,
+                [
+                    ("2026-01-01", "7203", "JPY", 1000.5),
+                    ("2026-01-02", "6758", "JPY", 2000.0),
+                ],
+            )
+        finally:
+            conn.close()
+
     def test_load_ticker_data_prefers_stooq_history(self):
         db_path = os.path.join(self.tmpdir.name, "history.db")
         history = pd.DataFrame(
@@ -97,8 +138,8 @@ class TestImportStockPricesCsv(unittest.TestCase):
             }
         )
 
-        with patch("src.stockprice_api._fetch_stooq_history", return_value=history) as fetch_stooq, patch(
-            "src.stockprice_api._fetch_yahoo_history"
+        with patch("src.utilities.stock_prices._fetch_stooq_history", return_value=history) as fetch_stooq, patch(
+            "src.utilities.stock_prices._fetch_yahoo_history"
         ) as fetch_yahoo:
             conn = sqlite3.connect(db_path)
             try:
@@ -134,8 +175,8 @@ class TestImportStockPricesCsv(unittest.TestCase):
         )
         history.index.name = "Date"
 
-        with patch("src.stockprice_api._fetch_stooq_history", side_effect=RuntimeError("blocked")) as fetch_stooq, patch(
-            "src.stockprice_api._fetch_yahoo_history", return_value=history
+        with patch("src.utilities.stock_prices._fetch_stooq_history", side_effect=RuntimeError("blocked")) as fetch_stooq, patch(
+            "src.utilities.stock_prices._fetch_yahoo_history", return_value=history
         ) as fetch_yahoo:
             conn = sqlite3.connect(db_path)
             try:
@@ -164,8 +205,8 @@ class TestImportStockPricesCsv(unittest.TestCase):
         bad_history = pd.DataFrame({"Volume": [1000]}, index=pd.to_datetime(["2026-01-01"]))
         bad_history.index.name = "Date"
 
-        with patch("src.stockprice_api._fetch_stooq_history", side_effect=RuntimeError("blocked")), patch(
-            "src.stockprice_api._fetch_yahoo_history", return_value=bad_history
+        with patch("src.utilities.stock_prices._fetch_stooq_history", side_effect=RuntimeError("blocked")), patch(
+            "src.utilities.stock_prices._fetch_yahoo_history", return_value=bad_history
         ):
             conn = sqlite3.connect(db_path)
             try:

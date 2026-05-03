@@ -1,0 +1,497 @@
+{
+    "ratios": {
+        "Financial_Ratios": [
+            {
+                "Return on Assets": {
+                    "inputs": [
+                        {
+                            "name": "Assets",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Assets"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "NetIncome",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net income (loss)",
+                                "Profit (loss)"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "NetIncome / Assets",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Return on Equity": {
+                    "inputs": [
+                        {
+                            "name": "Equity",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Net assets"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "NetIncome",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net income (loss)",
+                                "Profit (loss)"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "NetIncome / Equity",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Sales on Assets": {
+                    "inputs": [
+                        {
+                            "name": "Assets",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Assets"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "Sales",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net sales"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "Sales / Assets",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Current Ratio": {
+                    "inputs": [
+                        {
+                            "name": "CurrentAssets",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Current assets"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "CurrentLiabilities",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Current liabilities"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "CurrentAssets / CurrentLiabilities",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Intangibles on Assets": {
+                    "inputs": [
+                        {
+                            "name": "Assets",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Assets"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "Intangibleassets",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Intangible assets"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "Intangibleassets / Assets",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "PPE on Assets": {
+                    "inputs": [
+                        {
+                            "name": "Assets",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Assets"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "PPE",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Property, plant and equipment"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "PPE / Assets",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Net Margin": {
+                    "inputs": [
+                        {
+                            "name": "Revenue",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net sales"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "NetIncome",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net income (loss)",
+                                "Profit (loss)"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "NetIncome / Revenue",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Gross Margin": {
+                    "inputs": [
+                        {
+                            "name": "Revenue",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net sales"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "Costofsales",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Cost of sales"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "(Revenue - Costofsales) / Revenue",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Pre-tax Margin": {
+                    "inputs": [
+                        {
+                            "name": "Revenue",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net sales"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "PretaxIncome",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Income (loss) before income taxes"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "PretaxIncome / Revenue",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "G&A Margin": {
+                    "inputs": [
+                        {
+                            "name": "Revenue",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net sales"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "GAExpenses",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "General and administrative expenses"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "GAExpenses / Revenue",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Depreciation Margin": {
+                    "inputs": [
+                        {
+                            "name": "Revenue",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net sales"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "DepreciationExpenses",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Depreciation"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "DepreciationExpenses / Revenue",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Interest expenses Margin": {
+                    "inputs": [
+                        {
+                            "name": "Revenue",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net sales"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "Interestexpenses",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Interest expenses"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "Interestexpenses / Revenue",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Salaries Margin": {
+                    "inputs": [
+                        {
+                            "name": "Revenue",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net sales"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "SalariesExpenses",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Salaries"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "SalariesExpenses / Revenue",
+                    "skip_nulls": true
+                }
+            }
+        ],
+        "PerShare_Metrics": [
+            {
+                "Sales Per Share": {
+                    "inputs": [
+                        {
+                            "name": "Revenue",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Net sales"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "SharesOutstanding",
+                            "Table": "ShareMetrics",
+                            "Columns": [
+                                "Total number of issued shares",
+                                "Number of issued shares as of filing date",
+                                "Number of issued shares as of fiscal year end"
+                            ],
+                            "Aggregation": "FirstNonNull"
+                        }
+                    ],
+                    "formula": "Revenue / SharesOutstanding",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Earnings Per Share": {
+                    "inputs": [
+                        {
+                            "name": "Earnings",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Profit (loss)",
+                                "Net income (loss)"
+                            ],
+                            "Aggregation": "FirstNonNull"
+                        },
+                        {
+                            "name": "SharesOutstanding",
+                            "Table": "ShareMetrics",
+                            "Columns": [
+                                "Total number of issued shares",
+                                "Number of issued shares as of filing date",
+                                "Number of issued shares as of fiscal year end"
+                            ],
+                            "Aggregation": "FirstNonNull"
+                        }
+                    ],
+                    "formula": "Earnings / SharesOutstanding",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Operating Cashflow Per Share": {
+                    "inputs": [
+                        {
+                            "name": "OperatingCashflow",
+                            "Table": "CashflowStatement",
+                            "Columns": [
+                                "Net cash provided by (used in) operating activities"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "SharesOutstanding",
+                            "Table": "ShareMetrics",
+                            "Columns": [
+                                "Total number of issued shares",
+                                "Number of issued shares as of filing date",
+                                "Number of issued shares as of fiscal year end"
+                            ],
+                            "Aggregation": "FirstNonNull"
+                        }
+                    ],
+                    "formula": "OperatingCashflow / SharesOutstanding",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Free Cashflow Per Share": {
+                    "inputs": [
+                        {
+                            "name": "OperatingCashflow",
+                            "Table": "CashflowStatement",
+                            "Columns": [
+                                "Net cash provided by (used in) operating activities"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "investingCashflow",
+                            "Table": "CashflowStatement",
+                            "Columns": [
+                                "Net cash provided by (used in) investing activities"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "SharesOutstanding",
+                            "Table": "ShareMetrics",
+                            "Columns": [
+                                "Total number of issued shares",
+                                "Number of issued shares as of filing date",
+                                "Number of issued shares as of fiscal year end"
+                            ],
+                            "Aggregation": "FirstNonNull"
+                        }
+                    ],
+                    "formula": "( OperatingCashflow - investingCashflow ) / SharesOutstanding",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "Net Assets Per Share": {
+                    "inputs": [
+                        {
+                            "name": "Netassets",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Net assets"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "SharesOutstanding",
+                            "Table": "ShareMetrics",
+                            "Columns": [
+                                "Total number of issued shares",
+                                "Number of issued shares as of filing date",
+                                "Number of issued shares as of fiscal year end"
+                            ],
+                            "Aggregation": "FirstNonNull"
+                        }
+                    ],
+                    "formula": "Netassets / SharesOutstanding",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "NCAV Per Share": {
+                    "inputs": [
+                        {
+                            "name": "Currentassets",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Current assets"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "Liabilities",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Liabilities"
+                            ],
+                            "Aggregation": "sum"
+                        },
+                        {
+                            "name": "SharesOutstanding",
+                            "Table": "ShareMetrics",
+                            "Columns": [
+                                "Total number of issued shares",
+                                "Number of issued shares as of filing date",
+                                "Number of issued shares as of fiscal year end"
+                            ],
+                            "Aggregation": "FirstNonNull"
+                        }
+                    ],
+                    "formula": "( Currentassets - Liabilities ) / SharesOutstanding",
+                    "skip_nulls": true
+                }
+            }
+        ]
+
+    }
+}

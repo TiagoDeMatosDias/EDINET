@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shade Research — Security Analysis</title>
+    <link rel="stylesheet" href="/assets/common/styles.css" />
+    <link rel="stylesheet" href="/assets/security_analysis/security.css" />
+  </head>
+  <body>
+    <div class="app-shell" style="grid-template-rows:52px 1fr;">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-logo" src="/brand-assets/icon_hexagon.svg" alt="Shade Research" />
+          <div>
+            <div class="brand-title">Shade Research</div>
+            <div class="brand-subtitle">terminal-style research console</div>
+          </div>
+        </div>
+        <nav class="tabs" aria-label="Primary navigation">
+          <button class="tab" onclick="location.href='/'">Main</button>
+          <button class="tab" onclick="location.href='/orchestrator'">Orchestrator</button>
+          <button class="tab" onclick="location.href='/screening'">Screening</button>
+          <button class="tab is-active" onclick="void 0">Security Analysis</button>
+        </nav>
+        <div class="topbar-actions">
+          <div class="status-pill" id="sa-backend-status">Connecting…</div>
+          <button class="ghost-btn" id="refresh-btn">Refresh</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="view is-active" data-view-panel="security">
+          <div class="sa-toolbar" id="sa-toolbar">
+            <div class="sa-search-wrap">
+              <input type="text" class="sa-search-input" id="sa-search"
+                placeholder="Search by ticker, EDINET code, or company name…"
+                autocomplete="off" disabled />
+              <div class="sa-search-dropdown" id="sa-search-dropdown"></div>
+            </div>
+            <div class="sa-status" id="sa-status">Initializing…</div>
+          </div>
+          <div class="sa-header" id="sa-header"></div>
+          <div class="sa-banner sa-banner-warn" id="sa-banner" style="display:none"></div>
+          <div class="sa-tabbar" id="sa-tabbar"></div>
+          <div class="sa-table-view" id="sa-table-view"></div>
+          <div class="sa-empty" id="sa-empty">
+            <div class="sa-empty-icon">📊</div>
+            <div class="sa-empty-title" id="sa-empty-title">Search for a company to begin</div>
+            <div class="sa-empty-sub" id="sa-empty-sub">Type a ticker, EDINET code, or company name above.</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script type="module" src="/assets/security_analysis/security.js"></script>
+  </body>
+</html>

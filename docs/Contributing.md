@@ -11,7 +11,7 @@ Use this checklist when your change affects behavior, UI, workflows, or architec
 - Update user-facing docs impacted by the change (for example `docs/Readme.md` and `docs/RUNNING.md`)
 - Update technical docs when implementation details changed (especially `docs/Application Details.md`)
 - Update contributing guidance if contributor workflows changed (for example screenshot/dev loops in `docs/Contributing.md`)
-- If UI changed, refresh screenshots (`python -m pytest tests/test_ui_screenshots.py -v`) and update assets in `docs/images/`
+- If UI changed, capture new screenshots (see the Screenshots section below) and update assets in `docs/images/`
 - Remove obsolete documentation references, commands, flags, screenshots, and files
 - Verify markdown links/images render correctly in preview
 - Include documentation updates in the same PR as the code change
@@ -26,7 +26,7 @@ Use this checklist when your change affects behavior, UI, workflows, or architec
     - Configuration state (runtime config, saved setups) in `config/state/`
     - Configuration examples in `config/examples/`
     - Source code in `src/`
-    - UI code in `ui_tk/`
+    - Web frontend code in `src/web_app/frontend/`
     - Data files in `data/`
 
 ## Your First Contribution
@@ -52,7 +52,7 @@ When contributing code, please keep the following in mind:
 
 ### Comment Standards
 
-All Python code in this project follows a consistent commenting style. The standards below are derived from `src/regression_analysis.py`, which serves as the reference implementation.
+All Python code in this project follows a consistent commenting style. The standards below are derived from `src/orchestrator/generate_ratios/generate_ratios.py`, which serves as the reference implementation.
 
 #### Docstrings (Google Style)
 
@@ -117,134 +117,93 @@ _NON_PREDICTOR_COLUMNS: frozenset[str] = frozenset({
 })
 ```
 
-### UI Development — Screenshot Review Loop
+### UI Development — Screenshots
 
-The project includes a screenshot capture test suite (`tests/test_ui_screenshots.py`) that enables a visual review development workflow.  This is especially useful when working with an AI coding assistant:
+The web workstation UI can be captured using Playwright or a standard browser screenshot tool. Launch the app with `python main.py`, open the desired page in your browser, and capture screenshots for documentation.
 
-1. **Capture** — run the screenshot tests to save PNGs of every view.
-2. **Review** — inspect the screenshots (or have an AI agent review them) for visual issues.
-3. **Fix** — implement corrections based on what you see.
-4. **Repeat** — re-run the capture and compare.
+#### Taking screenshots
 
-#### Running the screenshot tests
-
-```powershell
-# Capture all views in both themes (saves to data/mockups/screenshots/)
-python -m pytest tests/test_ui_screenshots.py -v
-```
-
-Screenshots are saved to `data/mockups/screenshots/` with filenames like `home_dark.png`, `orchestrator_light.png`, etc.
-
-#### Updating screenshots used in documentation
-
-When UI changes are substantial, update documentation screenshots in the same pull request.
-
-1. Capture fresh screenshots:
-
-```powershell
-python -m pytest tests/test_ui_screenshots.py -v
-```
-
-2. Copy selected images from `data/mockups/screenshots/` to `docs/images/` using clear, stable names.
-
-```powershell
-Copy-Item data/mockups/screenshots/home_dark.png docs/images/ui-home-dark.png -Force
-Copy-Item data/mockups/screenshots/orchestrator_dark.png docs/images/ui-orchestrator-dark.png -Force
-Copy-Item data/mockups/screenshots/data_dark.png docs/images/ui-data-dark.png -Force
-```
-
-3. Update markdown links in docs (for example, in `docs/Readme.md`) to point to the new files.
-
-4. Remove obsolete images that are no longer referenced to keep `docs/images/` clean.
-
-5. Verify all image links resolve correctly in markdown preview before opening the PR.
+1. Launch the web server: `python main.py`
+2. Open `http://127.0.0.1:8000` (or the appropriate view URL) in your browser
+3. Use your browser's dev tools or a screenshot extension to capture each view
+4. Save screenshots to `docs/images/` with descriptive names (e.g., `web-dashboard.png`, `web-screening.png`)
+5. Update markdown image links in the README to reference the new screenshots
 
 Notes:
 
 - Prefer PNG files for UI screenshots.
 - Keep image dimensions consistent across related screenshots when possible.
-- Include both dark/light captures when the change affects theme-specific visuals.
-
-#### Using the reusable API in scripts or notebooks
-
-The module exposes a `capture_all_views()` helper that can be called outside of pytest:
-
-```python
-from tests.test_ui_screenshots import capture_all_views
-
-# Capture a "before" snapshot with a filename prefix
-capture_all_views(themes=["dark"], prefix="before_")
-
-# ... make UI changes ...
-
-# Capture an "after" snapshot
-capture_all_views(themes=["dark"], prefix="after_")
-```
-
-Parameters:
-
-| Parameter   | Default              | Description                                                    |
-|-------------|----------------------|----------------------------------------------------------------|
-| `views`     | All (`Home`, `Orchestrator`, `Data`) | List of view names to capture.                   |
-| `themes`    | Current theme only   | `["dark"]`, `["light"]`, or `["dark", "light"]`.               |
-| `geometry`  | `"1100x750"`         | Window size for the capture.                                   |
-| `settle_ms` | `800`                | Milliseconds to wait for rendering before capture.             |
-| `prefix`    | `""`                 | Filename prefix (e.g. `"pre_refactor_"`) for before/after comparisons. |
-
-#### Requirements
-
-- A real display (the tests auto-skip in headless environments).
-- `Pillow` (already in `requirements.txt`) for `ImageGrab`.
-- `customtkinter` (already in `requirements.txt`) for rounded button rendering.
-
-#### Tips
-
-- Use the `prefix` parameter to create timestamped or labelled snapshots for side-by-side comparison.
-- When working with an AI assistant, ask it to `view_image` the captured screenshots to identify visual regressions, alignment issues, or colour problems.
-- The tests create a fresh `App` instance for each capture, so they always reflect the latest code.
+- Use a consistent browser window size (e.g., 1280×800).
 
 ---
 
 ### Adding a New Pipeline Step
 
-The pipeline is designed so that adding a new step requires changes in exactly three places, with no UI-specific branching needed:
+The pipeline is designed so that adding a new step requires changes in exactly two places, with no UI-specific branching needed:
 
-#### 1. Orchestrator handler (`src/orchestrator.py`)
+#### 1. Orchestrator step package (`src/orchestrator/<step_name>/`)
 
-Create a handler function and register it in `STEP_HANDLERS`:
+Create a new step package with an `__init__.py` and a same-named implementation module. The package should export only `STEP_DEFINITION`; the runtime handler stays internal to the step module. The orchestrator discovers the package automatically, so no core registry edit is needed:
 
 ```python
-def _step_my_new_step(config, overwrite=False):
+from src.orchestrator.common import StepDefinition, StepFieldDefinition
+
+
+def run_my_new_step(config, overwrite=False):
     step_cfg = config.get("my_new_step_config", {})
     # ... call the relevant module with explicit params ...
 
-STEP_HANDLERS["my_new_step"] = _step_my_new_step
+STEP_DEFINITION = StepDefinition(
+    name="my_new_step",
+    handler=run_my_new_step,
+    input_fields=(
+        StepFieldDefinition("Target_Database", "database", required=True),
+    ),
+)
 ```
 
-Add validation entries to `STEP_REQUIRED_KEYS` and `STEP_REQUIRED_CONFIG_FIELDS` if the step requires top-level config keys or step-config fields.
+Example package layout:
 
-#### 2. Step catalogue & field registry (`ui_tk/controllers.py`)
+```text
+src/orchestrator/my_new_step/
+├── __init__.py
+└── my_new_step.py
+```
 
-Register the step in the catalogue constants and declare its config fields:
+`__init__.py` should stay minimal:
 
 ```python
-# Add to STEP_CONFIG_KEY
-STEP_CONFIG_KEY["my_new_step"] = "my_new_step_config"
+from .my_new_step import STEP_DEFINITION
 
-# Add to STEP_DISPLAY
-STEP_DISPLAY["my_new_step"] = "My New Step"
-
-# Declare fields in STEP_FIELD_DEFINITIONS
-STEP_FIELD_DEFINITIONS["my_new_step"] = [
-    StepField("Source_Database", "database"),
-    StepField("output_file", "file", default="data/output.txt"),
-    StepField("batch_size", "num", default=1000),
-]
+__all__ = ["STEP_DEFINITION"]
 ```
 
-The `DEFAULT_STEP_CONFIGS` dict is derived automatically from the field definitions — there is nothing else to update.
+Declare any required top-level keys with `required_keys` and declare step-config fields directly in `input_fields`. Mark required step-config entries with `required=True` on the relevant `StepFieldDefinition`.
 
-If the step supports overwrite, add it to `STEPS_WITH_OVERWRITE`.
+#### 2. Step-local field registry
+
+Register the step's UI metadata and config fields directly in the step definition:
+
+```python
+from src.orchestrator.common import StepDefinition, StepFieldDefinition
+
+
+STEP_DEFINITION = StepDefinition(
+    name="my_new_step",
+    handler=run_my_new_step,
+    display_name="My New Step",
+    supports_overwrite=True,
+    input_fields=(
+        StepFieldDefinition("Source_Database", "database", required=True),
+        StepFieldDefinition("output_file", "file", default="data/output.txt"),
+        StepFieldDefinition("batch_size", "num", default=1000),
+    ),
+)
+```
+
+If the step needs a custom display name, config-key override, or overwrite support, declare that metadata on `StepDefinition` as well.
+
+The UI reads `orchestrator.list_available_steps()` and derives its menu/config widgets from the discovered step definitions — there is nothing to update in the orchestrator frontend module beyond the step package itself.
 
 #### 3. Verify
 
@@ -254,7 +213,7 @@ Run the test suite to ensure nothing is broken:
 python -m pytest tests/ -v
 ```
 
-The UI config panel will automatically render the correct inputs for the new step based on the field definitions. No changes to the UI page code are needed.
+The UI config panel will automatically render the correct inputs for the new step based on the orchestrator metadata. No changes to the UI page code are needed.
 
 #### Available field types
 

@@ -1,13 +1,22 @@
 ﻿# Running the Application
 
-## Execution Modes
+Launch the web workstation with:
 
-The application supports two execution modes:
+```
+python main.py
+```
 
-- **GUI mode** (default): `python main.py` — launches the Tk desktop UI where you can configure steps and run the pipeline visually.
-- **CLI mode**: `python main.py --cli` — reads `config/state/run_config.json` and executes enabled steps headlessly.
+Then open `http://127.0.0.1:8000` in your browser.
 
-Most steps now require an explicit source or target database path in their step configuration. The GUI exposes those paths directly in each step's config dialog.
+Optional host/port flags:
+
+```bash
+python main.py --host 0.0.0.0 --port 8080 --no-reload
+```
+
+The web frontend is a multi-page vanilla JS application. It communicates with the backend through endpoints exposed in `src/web_app/api/`. The Dashboard, Orchestrator, Screening, and Security Analysis views are all fully functional.
+
+Most steps require an explicit source or target database path in their step configuration. The orchestrator exposes those paths directly in each step's config panel.
 
 ## Configuration Format
 
@@ -17,34 +26,18 @@ All execution is controlled by `config/state/run_config.json`. Each step is an o
 "run_steps": {
   "get_documents": { "enabled": true, "overwrite": false },
   "generate_financial_statements": { "enabled": true, "overwrite": false },
-  "populate_business_descriptions_en": { "enabled": true, "overwrite": false },
   ...
 }
 ```
 
 - `enabled` — set to `true` to run the step, `false` to skip it.
-- `overwrite` — when `true`, the step rebuilds or refreshes the step output. Supported by: `generate_financial_statements`, `populate_business_descriptions_en`, `generate_ratios`, `generate_historical_ratios`.
+- `overwrite` — when `true`, the step rebuilds or refreshes the step output. Supported by: `generate_financial_statements`, `generate_ratios`, `generate_rolling_metrics`.
 
 Steps execute in the order they appear in the `run_steps` object. In the GUI, you can reorder steps by dragging them.
 
 ## Pre-flight Validation
 
 Before any step runs, the orchestrator checks that all required `.env` / config keys are set for every enabled step. If anything is missing, execution halts with a clear error listing the missing keys and which steps need them.
-
-## Business Description Translation APIs
-
-The Security Analysis view no longer performs runtime model translation. Instead, `FinancialStatements` includes a `DescriptionOfBusiness_EN` column that is populated ahead of time by the `populate_business_descriptions_en` pipeline step.
-
-Translation providers are defined in `config/reference/business_description_translation_providers.example.json`. Providers are tried in the order listed, so if one API is rate-limited or unavailable the step automatically falls back to the next enabled provider.
-
-The bundled example config includes:
-
-- a LibreTranslate-compatible endpoint
-- the free MyMemory API
-
-You can reorder providers, disable them, or add new ones later by editing that JSON file.
-
----
 
 ## Steps
 
@@ -111,7 +104,7 @@ Imports historical stock prices from a user-supplied CSV file into the `stock_pr
   "default_ticker": "TPX",
   "default_currency": "JPY",
   "date_column": "Date",
-  "price_column": "Close",
+  "price_column": "Price",
   "ticker_column": "Ticker",
   "currency_column": "Currency"
 }
@@ -122,15 +115,15 @@ Imports historical stock prices from a user-supplied CSV file into the `stock_pr
 - `default_ticker` — fallback ticker assigned when the CSV has no ticker column or the row value is blank.
 - `default_currency` — fallback currency assigned when the CSV has no currency column or the row value is blank.
 - `date_column` — name of the CSV column that contains dates.
-- `price_column` — name of the CSV column that contains the price values (e.g. `Close`, `Open`, `High`).
-- `ticker_column` — optional ticker column in the CSV.
-- `currency_column` — optional currency column in the CSV.
+- `price_column` — name of the CSV column that contains the price values. The standardized backup CSV uses `Price`; common alternatives such as `Close` are also detected automatically.
+- `ticker_column` — optional ticker column in the CSV. If left blank, the importer auto-detects `Ticker` when present before falling back to `default_ticker`.
+- `currency_column` — optional currency column in the CSV. If left blank, the importer auto-detects `Currency` when present before falling back to `default_currency`.
 
 Example CSV format:
 ```
-Date,Open,High,Low,Close,Volume
-2015-01-05,1400.87,1410.26,1388.37,1401.09,2044459904
-2015-01-06,1377.53,1377.88,1361.14,1361.14,2684290816
+Date,Ticker,Currency,Price
+2015-01-05,13010,JPY,1401.09
+2015-01-06,13010,JPY,1361.14
 ```
 
 ---
@@ -149,17 +142,32 @@ Fetches historical share prices from the Stooq API for all companies in the sele
 ---
 
 ### `parse_taxonomy`
-Parses an EDINET XBRL taxonomy XSD file and stores element metadata (name, statement type, balance type) into the taxonomy table.
+Syncs EDINET taxonomy releases into normalized taxonomy tables, or imports a local XSD file for offline use.
 
 ```json
 "parse_taxonomy_config": {
-  "xsd_file": "config/reference/jppfs_cor_2013-08-31.xsd",
+  "xsd_file": "",
+  "namespace_prefix": "jppfs_cor",
+  "release_label": "",
+  "release_year": "",
+  "taxonomy_date": "",
+  "release_selection": "all",
+  "release_years": [],
+  "namespaces": ["jppfs_cor", "jpcrp_cor"],
+  "download_dir": "assets/taxonomy",
+  "force_download": "False",
+  "force_reparse": "False",
   "Target_Database": "C:/path/to/standardized.db"
 }
 ```
 
-- `xsd_file` — taxonomy XSD file to parse.
-- `Target_Database` — database where the taxonomy table will be written.
+- Leave `xsd_file` empty to download and parse official EDINET taxonomy releases.
+- Set `xsd_file` to import a local XSD instead; `namespace_prefix`, `release_label`, `release_year`, and `taxonomy_date` are only used in that local-import mode.
+- `release_selection`, `release_years`, and `namespaces` control which official releases are synced. The default `all` setting downloads the full historical set for the selected namespaces.
+- `download_dir` stores downloaded taxonomy ZIP archives locally.
+- `force_download` redownloads archives even if they already exist locally.
+- `force_reparse` rebuilds normalized taxonomy tables even if the archive hash is unchanged.
+- `Target_Database` — database where the normalized taxonomy tables will be written.
 
 ---
 
@@ -171,114 +179,58 @@ Supports `overwrite` — when enabled, the output tables are dropped and fully r
 ```json
 "generate_financial_statements_config": {
   "Source_Database": "C:/path/to/base.db",
-  "Source_Table": "financialData_full",
   "Target_Database": "C:/path/to/standardized.db",
-  "Company_Info_Table": "",
-  "Stock_Prices_Table": "",
-  "Mappings_Config": "config/reference/financial_statements_mappings_config.json",
-  "batch_size": 2500
+  "Granularity_level": 3
 }
 ```
 
 - `Source_Database` — database containing the raw EDINET financial data.
-- `Source_Table` — the raw financial data table to read from (default: `financialData_full`).
-- `Target_Database` — database where `FinancialStatements`, `IncomeStatement`, `BalanceSheet`, and `CashflowStatement` are written.
-- `FinancialStatements.DescriptionOfBusiness_EN` is created automatically as an empty `TEXT` column and preserved on reruns so it can be populated by the translation step.
-- `Company_Info_Table` — optional override for the company info table name.
-- `Stock_Prices_Table` — optional override for the stock prices table name.
-- `Mappings_Config` — JSON mapping file used to translate taxonomy tags into statement fields.
-- `batch_size` — rows/documents processed per batch.
+- The source table is fixed to `financialData_full`.
+- `Target_Database` — database where `FinancialStatements` and the wide taxonomy-backed `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, and `ShareMetrics` tables are written.
+- `Granularity_level` — maximum taxonomy level to materialize into the statement tables. `ShareMetrics` concepts are stored at level `0` so they are always included.
 
----
+Runtime notes:
 
-### `populate_business_descriptions_en`
-Populates `FinancialStatements.DescriptionOfBusiness_EN` by translating `DescriptionOfBusiness` through an ordered list of HTTP providers.
-
-Supports `overwrite`.
-
-```json
-"populate_business_descriptions_en_config": {
-  "Target_Database": "C:/path/to/standardized.db",
-  "Table_Name": "FinancialStatements",
-  "DocID_Column": "docID",
-  "Source_Column": "DescriptionOfBusiness",
-  "Target_Column": "DescriptionOfBusiness_EN",
-  "Providers_Config": "config/reference/business_description_translation_providers.example.json",
-  "Source_Language": "ja",
-  "Target_Language": "en",
-  "batch_size": 25
-}
-```
-
-- `Target_Database` — database containing the `FinancialStatements` table to update.
-- `Table_Name` — target table containing the description columns (default: `FinancialStatements`).
-- `DocID_Column` — unique identifier column used for updates (default: `docID`).
-- `Source_Column` — source description column to translate (default: `DescriptionOfBusiness`).
-- `Target_Column` — destination English column to populate (default: `DescriptionOfBusiness_EN`).
-- `Providers_Config` — JSON file defining enabled providers and their fallback order.
-- `Source_Language` — source language passed to the providers (default: `ja`).
-- `Target_Language` — target language passed to the providers (default: `en`).
-- `batch_size` — number of rows to process per batch.
-
-The provider config supports a top-level `chunk_char_limit` for long descriptions and `row_delay_seconds` if you want to slow requests to stay under free-tier limits.
+- `FinancialStatements` contains only filing metadata: `docID`, `edinetCode`, `docTypeCode`, `submitDateTime`, `periodStart`, `periodEnd`, and `release_id`.
+- `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, and `ShareMetrics` contain `docID` plus taxonomy-label columns only.
+- `ShareMetrics` materializes selected share-count, dividend-per-share, and related summary concepts as flat level-`0` columns.
+- The step reads family-specific contexts and applies deterministic context priority before loading each table.
+- Pending filings are processed in internal pandas-backed batches of 1000 docIDs, with vectorized release resolution, release-aware concept filtering, and bulk SQLite writes per batch.
 
 ---
 
 ### `generate_ratios`
-Calculates per-share values and valuation ratios for every company. Formula definitions are controlled by `config/reference/generate_ratios_formulas_config.json`.
-
-Supports `overwrite`. In incremental mode (the default), documents already processed are skipped.
-
-```json
-"generate_ratios_config": {
-  "Source_Database": "C:/path/to/standardized.db",
-  "Target_Database": "C:/path/to/standardized.db",
-  "Formulas_Config": "config/reference/generate_ratios_formulas_config.json",
-  "batch_size": 5000
-}
-```
-
-- `Source_Database` — database containing the financial statement tables.
-- `Target_Database` — database where the `PerShare`, `Valuation`, and `Quality` tables are written.
-- `Formulas_Config` — JSON formula file used to derive ratio fields.
-- `batch_size` — rows/documents processed per batch.
-
----
-
-### `generate_historical_ratios`
-Computes rolling averages, growth rates, and z-scores over the ratio tables produced by `generate_ratios`.
+Calculates JSON-defined ratio tables for every filing. Definitions are hardcoded to `src/orchestrator/generate_ratios/ratios_definitions.json`.
 
 Supports `overwrite`.
 
 ```json
-"generate_historical_ratios_config": {
-  "Source_Database": "C:/path/to/standardized.db",
-  "Target_Database": "C:/path/to/standardized.db",
-  "company_batch_size": 200
+"generate_ratios_config": {
+  "Database": "C:/path/to/standardized.db",
+  "batch_size": 5000
 }
 ```
 
-- `Source_Database` — database containing the current ratio tables.
-- `Target_Database` — database where the historical ratio tables are written.
-- `company_batch_size` — number of companies processed per batch.
+- `Database` — single database containing the source financial statement tables and the generated ratio tables.
+- Ratio definitions are always loaded from `src/orchestrator/generate_ratios/ratios_definitions.json`.
+- `batch_size` — accepted for compatibility; ratio generation currently runs set-based SQL against the full filing set.
 
 ---
 
-### `Multivariate_Regression`
-Runs a multivariate OLS regression defined entirely by a SQL query. The **first column** in the query is the dependent variable; all remaining columns are the independent variables.
+### `generate_rolling_metrics`
+Computes rolling averages and CAGR-style growth rates for configurable metrics across selected statement tables. The columns and tables to process are declared in `src/orchestrator/generate_rolling_metrics/rolling_metrics.json`. Output tables are named `<SourceTable>_Rolling` and contain `_Average_3_Year`, `_Average_5_Year`, `_Average_10_Year`, `_Growth_3_Year`, `_Growth_5_Year`, and `_Growth_10_Year` columns for each configured metric.
+
+Supports `overwrite`.
 
 ```json
-"Multivariate_Regression_config": {
+"generate_rolling_metrics_config": {
   "Source_Database": "C:/path/to/standardized.db",
-  "Output": "data/ols_results/ols_results_summary.txt",
-  "winsorize_thresholds": { "lower": 0.05, "upper": 0.95 },
-  "SQL_Query": "SELECT dep_var, ind_var_1, ind_var_2 FROM Quality_Historical"
+  "Target_Database": "C:/path/to/standardized.db"
 }
 ```
 
-- `Source_Database` — database queried by the regression SQL.
-- `winsorize_thresholds` — optional; omit the key entirely to skip winsorisation.
-- `SQL_Query` — any valid SQLite `SELECT`. Change this to adjust the model without touching any code.
+- `Source_Database` — database containing the source statement and ratio tables.
+- `Target_Database` — database where the rolling metric tables are written.
 
 ---
 

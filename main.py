@@ -1,37 +1,53 @@
-import sys
+"""EDINET launcher — starts the web workstation server."""
+
+import argparse
+import logging
 
 
-def _run_cli():
-    """Original headless / CLI execution path."""
-    import logging
-    import src.orchestrator as o
-    from src.logger import setup_logging
+def _run_web(host: str = "127.0.0.1", port: int = 8000, reload: bool = True) -> None:
+    """Launch the web workstation server.
 
-    logger, log_path = setup_logging()
-    logger.info("=" * 80)
-    logger.info("APPLICATION START")
-    logger.info("=" * 80)
+    Args:
+        host: Host interface for the web server.
+        port: Port for the web server.
+        reload: Enable auto-reload for development.
+    """
+    from src.utilities.logger import setup_logging
+    import uvicorn
 
-    try:
-        o.run()
-        logger.info("=" * 80)
-        logger.info("APPLICATION COMPLETED SUCCESSFULLY")
-        logger.info("=" * 80)
-    except Exception as e:
-        logger.error(f"Application failed with error: {e}", exc_info=True)
-        raise
-
-
-def _run_gui():
-    """Launch the Tkinter terminal-style GUI."""
-    from src.logger import setup_logging
     setup_logging()
-    from ui_tk import run_tk_app
-    run_tk_app()
+    logger = logging.getLogger(__name__)
+    logger.info("Starting web workstation on http://%s:%s", host, port)
+
+    uvicorn.run("src.web_app.server:app", host=host, port=port, reload=reload)
+
+
+def _parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns:
+        Parsed argparse namespace.
+    """
+    parser = argparse.ArgumentParser(description="EDINET launcher")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host for the web server (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port for the web server (default: 8000).",
+    )
+    parser.add_argument(
+        "--no-reload",
+        action="store_true",
+        help="Disable auto-reload.",
+    )
+    return parser.parse_args()
 
 
 if __name__ == '__main__':
-    if '--cli' in sys.argv:
-        _run_cli()
-    else:
-        _run_gui()
+    args = _parse_args()
+    _run_web(host=args.host, port=args.port, reload=not args.no_reload)
