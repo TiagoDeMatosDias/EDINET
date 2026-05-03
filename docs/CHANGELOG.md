@@ -4,12 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+- **Tk desktop UI (`ui_tk/`)** — retired in favor of the web workstation (`src/web_app/`). All Tkinter-dependent code, tests, and dependencies removed:
+  - `ui_tk/` package (app, controllers, style, utils, pages, shared widgets)
+  - `tests/test_ui_tk_smoke.py` and `tests/test_ui_screenshots.py`
+  - `customtkinter` and `pillow` dependencies
+  - `docs/Feature Development/Update User Interface.md`
+- **`--web` / `--no-api` / `--api-host` / `--api-port` flags** — simplified to `--host`, `--port`, `--no-reload`; web is now the only mode.
+
 ### Added
 - **Screening view** — new top-level view for filtering companies by financial criteria:
   - Backend package (`src/screening/`): package facade plus screening implementation for parameterised SQL query building, screening execution, CSV export, financial value formatting, and persistence for saved criteria and screening history.
-  - UI page (`ui_tk/pages/screening.py`): database picker, period selector, dynamic criteria builder, column selector, sortable results Treeview with alternating row colours, and toolbar with Save/Load/History/Export actions.
-  - Controller adapters in `ui_tk/controllers.py` for all screening operations.
-  - Registered as fourth view in `ui_tk/app.py` with `Ctrl+4` keyboard shortcut.
+  - Web UI: dynamic criteria builder, column picker, sortable results, save/load/history/export, drill-in to Security Analysis.
   - Tests: `tests/test_screening.py` with 18 test cases covering query building, execution, persistence, formatting, and SQL injection prevention.
   - Smoke tests and screenshot capture updated to include the Screening view.
 - **`generate_rolling_metrics` step** — new orchestrator step package (`src/orchestrator/generate_rolling_metrics/`) that replaces `generate_historical_ratios`:
@@ -36,8 +42,8 @@ All notable changes to this project will be documented in this file.
 - **`find_significant_predictors` step** — univariate OLS sweep removed.
 - **`Multivariate_Regression` step** — removed from the pipeline step catalog; OLS results remain available as standalone output under `data/ols_results/`.
 - **`populate_business_descriptions_en` step** — translation step removed along with its package (`src/orchestrator/populate_business_descriptions_en/`), provider config reference, and associated tests.
-- **Legacy Flet UI (`ui/`)** — retired in favor of the Tk desktop UI (`ui_tk/`).
-- **`--flet` startup flag** — removed from `main.py`; GUI mode now always starts Tk.
+- **Legacy Flet UI (`ui/`)** — retired in favor of the Tk desktop UI (which has itself been retired; see Unreleased).
+- **`--flet` startup flag** — removed from `main.py`.
 - **`tests/test_ui.py`** — removed with the legacy Flet UI modules.
 - **`flet` runtime dependency** — removed from `requirements.txt`.
 - **`FINANCIAL_RATIOS_CONFIG_PATH` env key** — no longer required.

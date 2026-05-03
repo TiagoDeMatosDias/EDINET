@@ -1,8 +1,8 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-05-02
-- Central reference for runtime/test Python modules (`src/`), Tk UI modules (`ui_tk/`), and top-level scripts.
+Last updated: 2026-05-03
+- Central reference for runtime/test Python modules (`src/`), web app modules (`src/web_app/`), and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
 
@@ -29,13 +29,11 @@ Suggested per-function format:
 
 ## Current project status
 
-- Default interface: the Tk desktop shell launched by `python main.py` is the primary maintained UI.
-- Maintained top-level views: `Home`, `Orchestrator`, `Data`, `Screening`, and `Security Analysis`.
-
+- Default interface: the web workstation (FastAPI + vanilla JS) launched by `python main.py` is the primary maintained UI.
+- Maintained top-level views: `Dashboard`, `Orchestrator`, `Screening`, and `Security Analysis`.
 - Architecture status: `src.orchestrator` is a thin dispatcher with dynamically discovered step packages; backend modules are decoupled from `Config` and called with explicit parameters.
 - Mature user-facing workflows: ingestion, ETL, ratio generation, backtesting, screening, and security analysis all have dedicated test coverage.
-- Web workstation: a secondary web UI (FastAPI + vanilla JS) served at `/orchestrator`, `/screening`, `/security`. The Screener is fully functional; Security Analysis is a stub.
-- Visual review workflow: screenshot capture tests save current UI images under `data/mockups/screenshots/`, and the curated README copies live under `docs/images/`.
+- Web workstation: full-featured web UI (FastAPI + vanilla JS) served at `/`, `/orchestrator`, `/screening`, `/security`. Both Screening and Security Analysis are fully functional.
 
 ---
 
@@ -43,7 +41,7 @@ Suggested per-function format:
 
 ## Architecture overview
 
-The application has two UI surfaces (Tk desktop and web workstation) that share the same backend. The orchestrator is the central dispatcher: it discovers step packages and delegates work to backend modules.
+The application has a web workstation UI backed by a FastAPI server. The orchestrator is the central dispatcher: it discovers step packages and delegates work to backend modules.
 
 ```mermaid
 flowchart LR
@@ -52,13 +50,13 @@ flowchart LR
     end
 
     subgraph UI["UI Layer"]
-        TK["Tk Desktop<br/>(ui_tk/)"]
         WEB["Web Workstation<br/>(FastAPI + vanilla JS)"]
     end
 
     subgraph API["API"]
         RTR["/api/*"]
         SCR_API["/api/screening/*"]
+        SEC_API["/api/security/*"]
     end
 
     subgraph Core["Core"]
@@ -67,18 +65,18 @@ flowchart LR
         SA["Security Analysis<br/>(src/security_analysis/)"]
     end
 
-    MAIN --> TK
-    MAIN -->|"--web"| WEB
-    TK -->|"controllers.py<br/>(direct calls)"| ORCH
+    MAIN --> WEB
     WEB -->|"HTTP"| RTR
     WEB -->|"HTTP"| SCR_API
+    WEB -->|"HTTP"| SEC_API
     RTR --> ORCH
     SCR_API --> SCR
+    SEC_API --> SA
     ORCH --> SCR
     ORCH --> SA
 ```
 
-The web workstation server mounts both the orchestrator API routes (`/api/steps`, `/api/pipeline/run`, `/api/jobs`) and screening routes (`/api/screening/metrics`, `/api/screening/run`, etc.) into a single FastAPI application. The browser's vanilla JS modules call these endpoints via `fetchJson`. The Tk desktop calls orchestrator functions directly through `ui_tk/controllers.py`.
+The web workstation server mounts orchestrator API routes (`/api/steps`, `/api/pipeline/run`, `/api/jobs`), screening routes (`/api/screening/*`), and security analysis routes (`/api/security/*`) into a single FastAPI application. The browser's vanilla JS modules call these endpoints via `fetchJson`.
 
 ### [src/orchestrator/__init__.py](../src/orchestrator/__init__.py)
 
@@ -115,11 +113,11 @@ Responsibility: EDINET API wrapper, document listing, download/unzip, CSV ingest
 	- Purpose: EDINET HTTP wrapper and helpers to download, extract and ingest financial CSVs into the project DB.
 	- Constructor: `Edinet(base_url, api_key, db_path, raw_docs_path=None, doc_list_table=None, company_info_table=None, taxonomy_table=None)`
 
-	- `def get_All_documents_withMetadata(self, start_date, end_date) -> list` — Iterate a date range via the EDINET listing API and persist discovered document metadata.
-	- `def downloadDoc(self, docID, fileLocation=None, docTypeCode=None) -> None` — Download a single EDINET document ZIP.
-	- `def downloadDocs(self, input_table, output_table=None, filter=None) -> None` — Download and extract all not-yet-downloaded documents.
-	- `def load_financial_data(self, financialFiles, table_name, doc, connection=None) -> None` — Read extracted TSV/CSV financial files into a DataFrame and persist.
-	- `def store_edinetCodes(self, csv_file, target_database=None, table_name=None) -> None` — Load EDINET company codes CSV into the DB.
+	- `def get_All_documents_withMetadata(self, start_date, end_date) -> list` - Iterate a date range via the EDINET listing API and persist discovered document metadata.
+	- `def downloadDoc(self, docID, fileLocation=None, docTypeCode=None) -> None` - Download a single EDINET document ZIP.
+	- `def downloadDocs(self, input_table, output_table=None, filter=None) -> None` - Download and extract all not-yet-downloaded documents.
+	- `def load_financial_data(self, financialFiles, table_name, doc, connection=None) -> None` - Read extracted TSV/CSV financial files into a DataFrame and persist.
+	- `def store_edinetCodes(self, csv_file, target_database=None, table_name=None) -> None` - Load EDINET company codes CSV into the DB.
 
 ### [src/orchestrator/common/backtesting.py](../src/orchestrator/common/backtesting.py)
 
@@ -127,7 +125,7 @@ Responsibility: portfolio construction, price/dividend ingestion, return calcula
 
 - `def _normalise_portfolio_entry(spec) -> tuple[str, float]`
 	- Purpose: Parse a single portfolio entry (legacy float or dict) into a canonical `(mode, numeric_value)` tuple.
-	- Inputs: `spec` — an `int`/`float` (legacy weight) or `dict` with keys `mode` and `value`.
+	- Inputs: `spec` - an `int`/`float` (legacy weight) or `dict` with keys `mode` and `value`.
 	- Output: `(mode, value)` where `mode` is one of `"weight"|"shares"|"value"`.
 	- Calls/Dependencies: `logger.warning`.
 
@@ -226,7 +224,7 @@ Responsibility: portfolio construction, price/dividend ingestion, return calcula
 
 Responsibility: Configuration-driven database path resolution.
 
-- `def get_db2() -> str` — Return the default DB2 path from `config/database_paths.json`, falling back to the `DB2_PATH` env var.
+- `def get_db2() -> str` - Return the default DB2 path from `config/database_paths.json`, falling back to the `DB2_PATH` env var.
 
 ### [src/orchestrator/common/ratios.py](../src/orchestrator/common/ratios.py)
 
@@ -238,11 +236,11 @@ Responsibility: Shared SQLite helpers (table creation, schema introspection, bat
 
 ### [src/orchestrator/common/validation.py](../src/orchestrator/common/validation.py)
 
-Responsibility: Pipeline validation — step config default application, pipeline normalization, and required-key validation.
+Responsibility: Pipeline validation - step config default application, pipeline normalization, and required-key validation.
 
-- `def apply_step_config_defaults(config, steps, step_definitions)` — Apply field defaults from step definitions.
-- `def normalize_pipeline_steps(config, steps)` — Resolve enabled steps from run_config.
-- `def validate_pipeline_input(config, steps, step_definitions)` — Check required keys and field types.
+- `def apply_step_config_defaults(config, steps, step_definitions)` - Apply field defaults from step definitions.
+- `def normalize_pipeline_steps(config, steps)` - Resolve enabled steps from run_config.
+- `def validate_pipeline_input(config, steps, step_definitions)` - Check required keys and field types.
 
 
 ---
@@ -308,7 +306,7 @@ Responsibility: Small helpers used across modules (URL building, CSV helpers, si
 
 Responsibility: Centralized logging setup.
 
-- `class LogSetup` / `def setup_logging(...)` — configure console/file handlers and rotate/archival behavior.
+- `class LogSetup` / `def setup_logging(...)` - configure console/file handlers and rotate/archival behavior.
 `class LogSetup`
 	- Purpose: Configure application logging with file and console handlers, archive old logs.
 
@@ -367,11 +365,11 @@ Responsibility: Singleton configuration loader. Reads `.env` and `run_config.jso
 
 ### [main.py](../main.py)
 
-Responsibility: GUI entry point launcher.
+Responsibility: Web workstation entry point launcher.
 
-- `def _run_gui() -> None`
-	- Purpose: Launch the Tk desktop GUI with optional HTTP API server in background.
-	- Calls/Dependencies: `setup_logging`, `ui_tk.run_tk_app`, `_start_api_server`.
+- `def _run_web(host: str = "127.0.0.1", port: int = 8000, reload: bool = True) -> None`
+	- Purpose: Launch the web workstation server via uvicorn.
+	- Calls/Dependencies: `setup_logging`, `uvicorn.run`.
 
 ---
 
@@ -385,225 +383,23 @@ This reference is intentionally concise. Expand signatures, examples, and depend
 
 ---
 
-## Tk UI modules (`ui_tk`) — default GUI
+## Web App modules (`src/web_app`)
 
-### [ui_tk/app.py](../ui_tk/app.py)
+### [src/web_app/server.py](../src/web_app/server.py)
 
-Responsibility: Tk root bootstrap, view switching, event loop, and log handler wiring.
+Responsibility: FastAPI application assembly — creates the app, mounts API routers, serves static frontend files, and defines the page routes (`/`, `/orchestrator`, `/screening`, `/security`).
 
-`class App`
-	- Purpose: Top-level application controller; owns the Tk root, branded top bar, log panel, view switching, and cross-view drill-ins.
+### [src/web_app/api/screening.py](../src/web_app/api/screening.py)
 
-	- `def __init__(self, root: tk.Tk) -> None`
-		- Purpose: Initialise the root window, apply the active theme, build the shell layout, wire the log handler, and register `Ctrl+1..5` shortcuts.
+Responsibility: Screening API routes at `/api/screening/*` — metrics, periods, run, export, save/load, history, update-prices.
 
-	- `def switch_view(self, name: str) -> None`
-		- Purpose: Switch between Home / Orchestrator / Data / Screening / Security Analysis views. Views are lazily created on first access.
+### [src/web_app/api/security_analysis.py](../src/web_app/api/security_analysis.py)
 
-	- `def show_security_analysis(self, record: dict, db_path: str | None = None) -> None`
-		- Purpose: Switch to Security Analysis and open a company record selected from another view (currently the Screening results grid).
+Responsibility: Security Analysis API routes at `/api/security/*` — search, overview, statements, price-history, peers, update-price, optimize, db-path, available-columns, chart-data.
 
-- `def run_tk_app() -> None`
-	- Purpose: Public entry point — creates `Tk` root, instantiates `App`, and starts `root.mainloop()`.
-	- Calls/Dependencies: `apply_theme`, `poll_events`, `QueueLogHandler`, `HomePage`, `OrchestratorPage`, `DataPage`, `ScreeningPage`, `SecurityAnalysisPage`.
+### [src/web_app/frontend/](../src/web_app/frontend/)
 
----
-
-### [ui_tk/style.py](../ui_tk/style.py)
-
-Responsibility: Dark/light theme tokens and ttk.Style configuration for the Tk desktop shell.
-
-- Constants: `COLORS` / `theme` (live palette dicts), typography tokens (`FONT_UI`, `FONT_UI_BOLD`, `FONT_HEADING`, `FONT_TITLE`, `FONT_SMALL`, etc.), and geometry tokens (`PAD`, `SHELL_PAD`, button radii).
-
-- `def is_dark() -> bool`
-	- Purpose: Return whether the active theme mode is dark.
-
-- `def toggle_theme(root: tk.Tk) -> str`
-	- Purpose: Switch between dark and light mode and re-apply ttk styles.
-
-- `def apply_theme(root: tk.Tk) -> ttk.Style`
-	- Purpose: Apply the active theme to the root window and all ttk widget styles (using "clam" base).
-	- Inputs: `root`
-	- Output: Configured `ttk.Style`.
-
----
-
-### [ui_tk/utils.py](../ui_tk/utils.py)
-
-Responsibility: Background worker utilities — thread pool, event queue, log handler.
-
-- `executor: ThreadPoolExecutor` — shared pool (2 workers).
-- `event_q: queue.Queue` — thread-safe callback queue drained by `poll_events`.
-
-- `def run_in_background(fn, args=(), on_done=None, on_error=None)`
-	- Purpose: Submit `fn` to the thread pool. Callbacks are posted to `event_q` for safe dispatch on the Tk main thread.
-
-- `def poll_events(root) -> None`
-	- Purpose: Drain `event_q` and invoke callbacks; reschedules itself every 100 ms via `root.after`.
-
-- `class QueueLogHandler(logging.Handler)`
-	- Purpose: Logging handler that posts `("log", level_name, formatted_message)` tuples onto a `queue.Queue`.
-
----
-
-### [ui_tk/controllers.py](../ui_tk/controllers.py)
-
-Responsibility: Thin adapter layer between the Tk UI and backend modules. Provides pipeline execution, setup persistence, and step configuration helpers.
-
-- Constants: step metadata derived from `orchestrator.list_available_steps()`, plus path constants (`BASE_DIR`, `ENV_PATH`, `STATE_DIR`, `RUN_CONFIG_PATH`, `SAVED_SETUPS_DIR`, `APP_STATE_PATH`).
-
-#### Step Field Registry
-
-The orchestrator step definitions are the single source of truth for which configuration fields each pipeline step requires. The controller derives `STEP_CONFIG_KEY`, `STEP_DISPLAY`, `ALL_STEP_NAMES`, `STEP_FIELD_DEFINITIONS`, and `DEFAULT_STEP_CONFIGS` from `orchestrator.list_available_steps()`.
-
-- `@dataclass StepField` — Metadata for a single step-config field.
-	- `key: str` — config dict key (e.g. `"Source_Database"`).
-	- `field_type: str` — widget type. One of: `"str"`, `"num"`, `"text"`, `"json"`, `"database"`, `"file"`, `"portfolio"`.
-	- `default: object` — default value (empty string if omitted).
-	- `label: str | None` — display label; defaults to `key` when `None`.
-	- `filetypes: list[tuple[str, str]] | None` — file-dialog filters (for `"file"` type).
-	- `height: int` — text-area rows (for `"text"` / `"json"` types, default 3).
-
-- `STEP_FIELD_DEFINITIONS: dict[str, list[StepField]]` — Controller-local projection of the orchestrator step definitions. The UI reads this to render only the relevant inputs per step.
-
-- `DEFAULT_STEP_CONFIGS: dict[str, dict]` — Derived automatically from `STEP_FIELD_DEFINITIONS` via `_build_defaults_from_fields()`. Do **not** edit this dict directly — add/change fields in the underlying orchestrator step definition instead.
-
-#### Functions
-
-- `def run_pipeline(steps, config_dict, on_step_start=None, on_step_done=None, on_step_error=None, cancel_event=None) -> None`
-	- Purpose: Build `Config.from_dict` and delegate to `orchestrator.run` with explicit step order.
-	- Calls/Dependencies: `Config.from_dict`, `orchestrator.run`.
-
-- `def list_setups() -> list[str]` — Return sorted list of saved setup names.
-- `def load_setup(name: str) -> dict` — Load named setup JSON from `saved_setups/`.
-- `def save_setup(name: str, setup_data: dict) -> Path` — Save named setup JSON.
-- `def save_run_config(cfg: dict)` / `def load_run_config() -> dict` — Read/write `run_config.json`.
-- `def get_api_key() -> str` / `def save_api_key(key: str)` — Read/write API key in `.env`.
-- `def get_default_database_path() -> str` / `def remember_database_path(db_path: str) -> None` — Resolve/persist recently used SQLite database paths for analysis views.
-- `def load_app_state() -> dict` / `def save_app_state(state: dict)` — Persist UI state.
-- `def build_config_dict(steps, step_configs) -> dict` — Serialize UI state into a run-config dict.
-- `def build_steps_from_config(run_cfg) -> list` — Convert `run_steps` into `[[name, enabled, overwrite], ...]`.
-- `def build_step_configs_from_config(run_cfg) -> dict` — Build per-step configs with defaults filled in.
-- `def get_default_config_for_step(step_name) -> dict` — Return a deep copy of the default config for a step.
-
-#### Screening Adapters
-
-- `def screening_get_metrics(db_path: str) -> dict[str, list[str]]` — Return available screening metrics.
-- `def screening_get_periods(db_path: str) -> list[str]` — Return available period years.
-- `def screening_run(db_path, criteria, columns, period, sort_by, sort_order, ranking_algorithm="none", ranking_rules=None) -> pd.DataFrame` — Run a screening query with optional weighted ranking.
-- `def screening_export(df, output_path) -> str` — Export results to CSV.
-- `def screening_export_backtest(db_path, criteria, columns, output_path, period, max_companies, ranking_algorithm="none", ranking_rules=None, historical=False) -> str` — Export screening results in the CSV shape expected by `run_backtest_set`.
-- `def screening_save(name, criteria, columns, period, ranking_algorithm="none", ranking_rules=None) -> Path` — Save screening criteria and ranking state.
-- `def screening_load(name) -> dict` — Load saved screening criteria.
-- `def screening_list() -> list[str]` — List saved screening names.
-- `def screening_delete(name) -> None` — Delete a saved screening.
-- `def screening_save_history(entry) -> None` — Append a screening history entry.
-- `def screening_load_history() -> list[dict]` — Load screening run history.
-
-#### Security Analysis Adapters
-
-- `def security_search(db_path: str, query: str, limit: int = 25) -> list[dict]` — Search securities by company name, ticker, EDINET code, or industry.
-- `def security_optimize_database(db_path: str) -> dict` — Create one-time indexes used by the Security Analysis workflow.
-- `def security_get_overview(db_path: str, edinet_code: str) -> dict` — Return company, market, fundamentals, valuation, and metadata for the selected security.
-- `def security_get_statements(db_path: str, edinet_code: str, periods: int = 8, statement_sources: dict[str, str] | None = None) -> dict` — Return ordered historical statement rows and period labels.
-- `def security_get_ratios(db_path: str, edinet_code: str) -> dict` — Return latest valuation and quality ratios.
-- `def security_get_price_history(db_path: str, ticker: str, start_date: str | None = None, end_date: str | None = None) -> list[dict]` — Return ordered daily price history rows.
-- `def security_get_peers(db_path: str, edinet_code: str, industry: str | None = None, limit: int = 10) -> list[dict]` — Return deterministic peer-comparison rows.
-- `def security_update_price(db_path: str, ticker: str) -> dict` — Refresh one ticker’s price history and return a structured result summary.
-
----
-
-### [ui_tk/shared/widgets.py](../ui_tk/shared/widgets.py)
-
-Responsibility: Reusable composite widgets and display helpers used across the Tk shell.
-
-- `class RoundedButton` — Theme-aware button wrapper with `reapply_colors()` support for runtime theme toggles.
-- `class SearchableCombobox` — Combobox that filters its source list while the user types; used heavily for large metric/table lists.
-- `class PageHeader` — Standard page title/subtitle/actions strip used across top-level views.
-- `class SectionCard` / `class StatTile` / `class EmptyState` — Reusable layout primitives for dashboards and analysis surfaces.
-
-- `class LogPanel(ttk.Frame)` — Color-coded log output with auto-scroll, level filter, clear, and export.
-	- `def append(self, level: str, text: str)` — Append a log line (thread-safe).
-	- `def clear(self)` — Clear all log records and display.
-
-- `class TabBar(ttk.Frame)` — Horizontal bracket-style text tab bar.
-	- `def select(self, index: int)` — Programmatic tab selection.
-
-- `class LabeledEntry(ttk.Frame)` — Label + `ttk.Entry` with `get()` / `set()` helpers.
-- `class LabeledText(ttk.Frame)` — Label + multi-line `tk.Text` with `get()` / `set()`.
-- `class FilePickerEntry(ttk.Frame)` — Entry with Browse button for file selection.
-- `class DatabasePickerEntry(FilePickerEntry)` — Pre-configured for `.db` files.
-- `class PortfolioGrid(ttk.Frame)` — Editable Treeview table for portfolio allocations with inline editing, add/delete rows.
-	- `def get_portfolio(self) -> dict` — Return portfolio dict in `run_config.json` format.
-	- `def set_portfolio(self, portfolio: dict)` — Load and display portfolio dict.
-
----
-
-### [ui_tk/pages/home.py](../ui_tk/pages/home.py)
-
-Responsibility: Landing dashboard — saved setup inventory, quick workflow entry points, and working notes.
-
-- `class HomePage(ttk.Frame)` — Hero stats plus a saved-setups tree, quick actions into Orchestrator/Screening/Security Analysis/Data Workspace, and keyboard shortcut hints. Double-click or [Open Selected] loads a setup and switches to Orchestrator view.
-
----
-
-### [ui_tk/pages/orchestrator.py](../ui_tk/pages/orchestrator.py)
-
-Responsibility: Main pipeline builder — step list, per-step config panel, run/stop controls.
-
-- `class OrchestratorPage(ttk.Frame)`
-	- `def load_config(self, cfg: dict, name: str = "")` — Load a config dict into UI state (steps, configs, labels).
-	- `def new_setup(self, name: str)` — Initialise a new empty setup.
-	- `def _build_step_fields(self, parent, step_name, cfg)` — Data-driven config panel builder. Reads `ctrl.STEP_FIELD_DEFINITIONS[step_name]` and creates the appropriate widget for each declared field. No step-specific branching — all steps use this single method.
-	- Keyboard shortcuts: `Alt+Up/Down` (reorder), `Delete` (remove), `Enter` (open config). Context menu for remove/disable.
-
----
-
-### [ui_tk/pages/data.py](../ui_tk/pages/data.py)
-
-Responsibility: Data Workspace — project resources, reference assets, default database context, and quick navigation.
-
-- `class DataPage(ttk.Frame)` — Operational resource surface showing the default database, reference/output counts, stable project paths, and direct navigation into downstream workflows.
-
----
-
-### [ui_tk/pages/screening.py](../ui_tk/pages/screening.py)
-
-Responsibility: Screening workspace — filter, rank, export, and drill into candidate companies.
-
-- `class ScreeningPage(ttk.Frame)`
-	- Layout: left builder surface plus right results grid.
-	- Left panel: `DatabasePickerEntry`, period selector, dynamic criteria rows, ranking rules, column selection, and run controls.
-	- Right panel: sortable Treeview with alternating row colours, result summary, and empty-state handling.
-	- Toolbar/actions: Load, Save, History, Export, Backtest Export, and raw/formatted value toggle.
-	- `def _on_db_changed(self)` — Refresh metrics/periods when database changes.
-	- `def _add_criterion(self)` / `def _remove_criterion(self, row_data)` — Manage criteria rows.
-	- `def _add_ranking_rule(self)` / `def _remove_ranking_rule(self, row_data)` — Manage weighted ranking rules.
-	- `def _run_screening(self)` — Collect inputs, run in background thread, populate results.
-	- `def _populate_results(self, df)` — Clear and fill Treeview with formatted values.
-	- `def _sort_by_column(self, col)` — Client-side sort with ascending/descending toggle.
-	- `def _on_company_click(self, event)` — Open the selected result in Security Analysis when a company row can be resolved.
-	- `def _save_screening(self)` / `def _load_screening(self)` — Save/load criteria dialogs.
-	- `def _show_history(self)` — History dialog with re-run support.
-	- `def _export_results(self)` — CSV export via file dialog.
-	- `def _export_backtest_results(self)` — Export a screening result set into the backtest-set CSV shape.
-	- `def reapply_colors(self)` — Theme toggle support.
-
----
-
-### [ui_tk/pages/security_analysis.py](../ui_tk/pages/security_analysis.py)
-
-Responsibility: Security-level research view — typeahead search, overview cards, statement history, charts, and peer comparison.
-
-- `class SecurityAnalysisPage(ttk.Frame)`
-	- Layout: toolbar (refresh/update), database picker + search, summary cards, and four tabs (`Overview`, `Statements`, `Charts`, `Peers`).
-	- Database optimization: when a DB is selected the view can request one-time index creation for large standardized databases.
-	- Search: debounced typeahead over company name, ticker, EDINET code, and industry with keyboard navigation for suggestions.
-	- Overview tab: company profile, business description display, fundamentals tree, ratio tree, and metadata panel.
-	- Statements tab: selectable statement/ratio source with historical period table and period-count selector.
-	- Charts tab: matplotlib-backed price, statement, and peer-comparison charts with table/column/timeframe/style controls and optional peer overlays.
-	- Peers tab: default industry peers plus manual peer additions and reset flows.
-	- `def reapply_colors(self)` — Re-apply colours for raw Tk widgets and redraw charts after theme changes.
+Responsibility: Browser-side assets — vanilla JS screen modules (`orchestrator/`, `screening/`, `security_analysis/`), shared utilities (`common/`), and HTML pages.
 
 ---
 
@@ -641,10 +437,10 @@ Core implementation in `src/security_analysis/security_analysis.py`:
 	- Purpose: Return ordered daily price history rows for charting and change calculations.
 
 - `def get_security_peers(db_path: str, edinet_code: str, industry: str | None = None, limit: int = 10) -> list[dict[str, Any]]`
-	- Purpose: Return deterministic peer-comparison rows based on the selected company’s industry and latest snapshot.
+	- Purpose: Return deterministic peer-comparison rows based on the selected company's industry and latest snapshot.
 
 - `def update_security_price(db_path: str, ticker: str) -> dict[str, Any]`
-	- Purpose: Refresh one ticker’s price history using the existing stock-price provider module and return a structured result summary.
+	- Purpose: Refresh one ticker's price history using the existing stock-price provider module and return a structured result summary.
 
 ---
 
@@ -659,23 +455,23 @@ Core implementation in `src/screening/screening.py`:
 
 - Constants: `SCREENING_TABLES`, `OPERATOR_MAP`, `DEFAULT_COLUMNS`, `FORMAT_RULES`, ranking-related constants, and column alias helpers.
 
-- `def get_available_metrics(db_path: str) -> dict[str, list[str]]` — Introspect DB for screening table columns.
-- `def get_available_periods(db_path: str) -> list[str]` — Return distinct periodEnd years.
+- `def get_available_metrics(db_path: str) -> dict[str, list[str]]` - Introspect DB for screening table columns.
+- `def get_available_periods(db_path: str) -> list[str]` - Return distinct periodEnd years.
 - ``screening_date`` (YYYY-MM-DD) selects the most recent filing per company with ``periodEnd <= date``, and caps stock prices at that date.
 - ``computed_columns`` accepts formula specs for runtime valuation columns (P/E, P/B, etc.).
 - Column comparisons now support an optional ``offset`` parameter for relative thresholds.
 
-- `def build_screening_query(criteria, columns, period=None, screening_date=None, available_metrics=None, column_aliases=None, computed_columns=None) -> tuple[str, list]` — Build parameterised SQL with validation.
-- `def run_screening(db_path: str, criteria: list[dict], columns: list[str], period: str | None = None, sort_by: str | None = None, sort_order: str = "ASC", ranking_algorithm: str = "none", ranking_rules: list[dict] | None = None) -> pd.DataFrame` — Execute screening, apply optional ranking, and return results.
-- `def export_screening_to_backtest_csv(db_path: str, criteria: list[dict], columns: list[str], output_path: str, period: str | None = None, max_companies: int = 25, ranking_algorithm: str = "none", ranking_rules: list[dict] | None = None, historical: bool = False) -> str` — Export screening results in the CSV format used by `run_backtest_set`.
-- `def export_screening_to_csv(df, output_path) -> str` — Export DataFrame to CSV.
-- `def format_financial_value(value, column_name: str, formatted: bool = False) -> str` — Format values for display or return the raw representation used by the UI toggle.
-- `def save_screening_criteria(name: str, criteria: list[dict], columns: list[str], period: str | None, save_dir: str, ranking_algorithm: str = "none", ranking_rules: list[dict] | None = None) -> Path` — Persist criteria and ranking state as JSON.
-- `def load_screening_criteria(name, save_dir) -> dict` — Load saved criteria.
-- `def list_saved_screenings(save_dir) -> list[str]` — List saved screening names.
-- `def delete_screening_criteria(name, save_dir) -> None` — Delete saved criteria.
-- `def save_screening_history(entry, history_path) -> None` — Append to JSON-lines history.
-- `def load_screening_history(history_path) -> list[dict]` — Load history (most recent first).
+- `def build_screening_query(criteria, columns, period=None, screening_date=None, available_metrics=None, column_aliases=None, computed_columns=None) -> tuple[str, list]` - Build parameterised SQL with validation.
+- `def run_screening(db_path: str, criteria: list[dict], columns: list[str], period: str | None = None, sort_by: str | None = None, sort_order: str = "ASC", ranking_algorithm: str = "none", ranking_rules: list[dict] | None = None) -> pd.DataFrame` - Execute screening, apply optional ranking, and return results.
+- `def export_screening_to_backtest_csv(db_path: str, criteria: list[dict], columns: list[str], output_path: str, period: str | None = None, max_companies: int = 25, ranking_algorithm: str = "none", ranking_rules: list[dict] | None = None, historical: bool = False) -> str` - Export screening results in the CSV format used by `run_backtest_set`.
+- `def export_screening_to_csv(df, output_path) -> str` - Export DataFrame to CSV.
+- `def format_financial_value(value, column_name: str, formatted: bool = False) -> str` - Format values for display or return the raw representation used by the UI toggle.
+- `def save_screening_criteria(name: str, criteria: list[dict], columns: list[str], period: str | None, save_dir: str, ranking_algorithm: str = "none", ranking_rules: list[dict] | None = None) -> Path` - Persist criteria and ranking state as JSON.
+- `def load_screening_criteria(name, save_dir) -> dict` - Load saved criteria.
+- `def list_saved_screenings(save_dir) -> list[str]` - List saved screening names.
+- `def delete_screening_criteria(name, save_dir) -> None` - Delete saved criteria.
+- `def save_screening_history(entry, history_path) -> None` - Append to JSON-lines history.
+- `def load_screening_history(history_path) -> list[dict]` - Load history (most recent first).
 
 ---
 
@@ -683,26 +479,24 @@ Core implementation in `src/screening/screening.py`:
 
 Responsibility: Unit tests covering core logic and UI helpers.
 
-- **[test_backtesting.py](../tests/test_backtesting.py)** — tests backtest data retrieval, calculations, report and chart generation, and end-to-end `run_backtest` flows.
-- **[test_edinet_api.py](../tests/test_edinet_api.py)** — tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
-- **[test_security_analysis.py](../tests/test_security_analysis.py)** — tests schema normalization, search ranking, overview payloads, price history, peer selection, and single-ticker price updates.
-- **[test_stockprice_api.py](../tests/test_stockprice_api.py)** — tests CSV import and stock price ingestion logic.
-- **[test_ui_screenshots.py](../tests/test_ui_screenshots.py)** — launches the real Tk application, navigates the maintained views, and saves screenshots to `data/mockups/screenshots/` for visual review.
-- **[test_ui_tk_smoke.py](../tests/test_ui_tk_smoke.py)** — Tk UI smoke tests: imports, theme application, widget instantiation, controller functions, QueueLogHandler, ScreeningPage, and SecurityAnalysisPage.
-- **[test_screening.py](../tests/test_screening.py)** — Backend screening tests: query building, execution, persistence, formatting, SQL injection prevention.
-- **[test_screening_api.py](../tests/test_screening_api.py)** — Web API screening endpoint tests.
-- **[test_orchestrator.py](../tests/test_orchestrator.py)** — Orchestrator tests: `run_pipeline` basic flow, cancellation, error handling, `execute_step` dispatch, `validate_config`, `Config.from_dict` independence and singleton behaviour.
-- **[test_orchestrator_services.py](../tests/test_orchestrator_services.py)** — Tests for individual orchestrator step services.
-- **[test_playwright_orchestrator.py](../tests/test_playwright_orchestrator.py)** — Browser-level orchestrator E2E tests.
-- **[test_playwright_screening.py](../tests/test_playwright_screening.py)** — Browser-level screening E2E tests.
-- **[test_taxonomy_processing.py](../tests/test_taxonomy_processing.py)** — Taxonomy parsing and processing tests.
-- **[test_utils.py](../tests/test_utils.py)** — small helper tests for URL generation and CSV export.
-- **[test_web_app_server.py](../tests/test_web_app_server.py)** — Tests for the FastAPI web application server.
-- **[test_web_ui_smoke.py](../tests/test_web_ui_smoke.py)** — Web UI smoke tests.
+- **[test_backtesting.py](../tests/test_backtesting.py)** - tests backtest data retrieval, calculations, report and chart generation, and end-to-end `run_backtest` flows.
+- **[test_edinet_api.py](../tests/test_edinet_api.py)** - tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
+- **[test_security_analysis.py](../tests/test_security_analysis.py)** - tests schema normalization, search ranking, overview payloads, price history, peer selection, and single-ticker price updates.
+- **[test_stockprice_api.py](../tests/test_stockprice_api.py)** - tests CSV import and stock price ingestion logic.
+- **[test_screening.py](../tests/test_screening.py)** - Backend screening tests: query building, execution, persistence, formatting, SQL injection prevention.
+- **[test_screening_api.py](../tests/test_screening_api.py)** - Web API screening endpoint tests.
+- **[test_orchestrator.py](../tests/test_orchestrator.py)** - Orchestrator tests: `run_pipeline` basic flow, cancellation, error handling, `execute_step` dispatch, `validate_config`, `Config.from_dict` independence and singleton behaviour.
+- **[test_orchestrator_services.py](../tests/test_orchestrator_services.py)** - Tests for individual orchestrator step services.
+- **[test_playwright_orchestrator.py](../tests/test_playwright_orchestrator.py)** - Browser-level orchestrator E2E tests.
+- **[test_playwright_screening.py](../tests/test_playwright_screening.py)** - Browser-level screening E2E tests.
+- **[test_taxonomy_processing.py](../tests/test_taxonomy_processing.py)** - Taxonomy parsing and processing tests.
+- **[test_utils.py](../tests/test_utils.py)** - small helper tests for URL generation and CSV export.
+- **[test_web_app_server.py](../tests/test_web_app_server.py)** - Tests for the FastAPI web application server.
+- **[test_web_ui_smoke.py](../tests/test_web_ui_smoke.py)** - Web UI smoke tests.
 
 ---
 
-Last updated: 2026-05-02
+Last updated: 2026-05-03
 
 Keep this document aligned with code changes in the same PR or commit.
 

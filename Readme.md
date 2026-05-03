@@ -1,17 +1,16 @@
-﻿# EDINET Financial Data Tool
+# EDINET Financial Data Tool
 
 Downloads financial filings from the Japanese securities regulator (EDINET), processes them into a structured SQLite database, and runs statistical analysis to identify relationships between financial ratios and stock valuations.
 
-The primary maintained interface is the Tk desktop application shown in the screenshots below. In-app it is branded as `SHADE Research — EDINET` and currently exposes five top-level workspaces: Home, Orchestrator, Data Workspace, Screening, and Security Analysis.
+The primary interface is a web workstation (FastAPI + vanilla JavaScript) accessible at `http://127.0.0.1:8000`. It exposes four top-level views: Dashboard, Orchestrator, Screening, and Security Analysis.
 
 Each pipeline step is configured independently, including its source or target database path where applicable.
 
 ## Current Status
 
-- **Primary UI** – the Tk desktop application is the default experience and the actively maintained GUI surface.
-- **Research surfaces** – Screening and Security Analysis are now first-class views for candidate discovery and single-company research.
-- **Operational workspace** – the Data view is no longer a placeholder; it summarizes project resources, reference assets, and output locations.
-- **Documentation screenshots** – the README gallery is mirrored from the live screenshot capture flow used by `tests/test_ui_screenshots.py`.
+- **Primary UI** – the web workstation is the default and actively maintained interface.
+- **Research surfaces** – Screening and Security Analysis are fully functional views for candidate discovery and single-company research.
+- **Architecture** – FastAPI backend with vanilla JS frontend modules communicating via `fetchJson` calls to REST API endpoints.
 
 ## Quick Start
 
@@ -19,7 +18,7 @@ Each pipeline step is configured independently, including its source or target d
 2. Extract the latest release archive for your platform
 3. Copy `config/examples/run_config.example.json` to `config/state/run_config.json` and configure your settings
 4. Create a `.env` file with your API keys (see Setup section below)
-5. Run `EDINET.exe` (Windows) or the binary for your OS
+5. Run `EDINET.exe` (Windows) or the binary for your OS — then open `http://127.0.0.1:8000` in your browser
 
 ## What it does
 
@@ -35,35 +34,34 @@ Each pipeline step is configured independently, including its source or target d
 10. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
 11. **Backtest set** – batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
 12. **Screening** – filter companies by financial criteria (valuation, quality, per-share metrics), apply weighted ranking rules, review sortable results, toggle raw or formatted value display, save/load criteria, inspect screening history, export CSVs, or generate backtest-set CSV inputs.
-13. **Security analysis** – inspect a single company with typeahead search, overview cards, statement history, charts, price refresh, and peer comparison.
+13. **Security analysis** – inspect a single company with typeahead search, overview metric tiles, statement history with configurable column filter, interactive Chart.js charts, price refresh, and peer comparison.
 
-## Screenshots
+## Web Interface
 
-Current captures from the live Tk desktop application. The gallery below shows the current shell and five maintained workspaces in both dark and light themes using the latest images mirrored into `docs/images/`.
+The web workstation is a multi-page vanilla JS application served by FastAPI:
 
-| View | Dark | Light |
+| View | URL | Description |
 |---|---|---|
-| Home | <img src="images/ui-home-dark.png" alt="EDINET Home dark theme" width="420"> | <img src="images/ui-home-light.png" alt="EDINET Home light theme" width="420"> |
-| Orchestrator | <img src="images/ui-orchestrator-dark.png" alt="EDINET Orchestrator dark theme" width="420"> | <img src="images/ui-orchestrator-light.png" alt="EDINET Orchestrator light theme" width="420"> |
-| Data Workspace | <img src="images/ui-data-dark.png" alt="EDINET Data Workspace dark theme" width="420"> | <img src="images/ui-data-light.png" alt="EDINET Data Workspace light theme" width="420"> |
-| Screening | <img src="images/ui-screening-dark.png" alt="EDINET Screening dark theme" width="420"> | <img src="images/ui-screening-light.png" alt="EDINET Screening light theme" width="420"> |
-| Security Analysis | <img src="images/ui-security-analysis-dark.png" alt="EDINET Security Analysis dark theme" width="420"> | <img src="images/ui-security-analysis-light.png" alt="EDINET Security Analysis light theme" width="420"> |
+| **Dashboard** | `/` | Job history, metrics summary, quick-launch cards into other views |
+| **Orchestrator** | `/orchestrator` | Pipeline builder: step library, drag-to-order pipeline, per-step config inspector, run controls |
+| **Screening** | `/screening` | Criteria and ranking builder, sortable results, formatted/raw toggle, save/load/history/export, drill-in to Security Analysis |
+| **Security Analysis** | `/security` | Company search, overview tiles, historical data with column filter, Chart.js charts, peer comparison, price refresh |
 
-- **Home** – saved pipeline dashboard, quick workflow entry points, and working notes.
-- **Orchestrator** – ordered pipeline builder with per-step configuration and live execution controls.
-- **Data Workspace** – project paths, reference assets, state files, and output-folder summaries.
-- **Screening** – criteria and ranking builder, saved/history/export actions, and drill-in to single-company analysis.
-- **Security Analysis** – overview, statements, charts, peer comparison, and price-refresh workflows.
+> **Screenshots** — web UI screenshots are forthcoming. Launch with `python main.py` and open `http://127.0.0.1:8000` to explore the interface.
 
 ## Running the Application
 
-The application runs as a Tk desktop GUI:
-
 ```bash
-python main.py          # launches the GUI
+python main.py          # starts the web server on http://127.0.0.1:8000
 ```
 
-The GUI provides five workspace views, keyboard navigation (`Ctrl+1..5`), per-step configuration panels, setup save/load, a theme toggle, and a live log output panel.
+Optional flags:
+
+```bash
+python main.py --host 0.0.0.0 --port 8080 --no-reload
+```
+
+Then open your browser to the URL shown in the console output.
 
 ## Setup
 
@@ -105,16 +103,18 @@ python main.py
 
 1. Extract the release ZIP file
 2. Edit the `.env` file with your configuration
-3. Run the executable
+3. Run the executable — it starts the web server automatically
+4. Open `http://127.0.0.1:8000` in your browser
 
 All output is logged to timestamped files in the `logs/` directory. See [LOGGING.md](LOGGING.md) for details.
 
 ## Documentation
 
-- [RUNNING.md](RUNNING.md) – Full description of every step and configuration options
-- [LOGGING.md](LOGGING.md) – Logging system documentation
-- [Contributing.md](Contributing.md) – Contribution guidelines
-- [CHANGELOG.md](CHANGELOG.md) – Version history and changes
+- [RUNNING.md](docs/RUNNING.md) – Full description of every step and configuration options
+- [LOGGING.md](docs/LOGGING.md) – Logging system documentation
+- [Frontend Architecture.md](docs/Frontend%20Architecture.md) – Web frontend structure and extension guide
+- [Contributing.md](docs/Contributing.md) – Contribution guidelines
+- [CHANGELOG.md](docs/CHANGELOG.md) – Version history and changes
 
 ## Building an executable
 
@@ -161,6 +161,7 @@ data/
 ### 4. Run
 
 Double-click `EDINET.exe` or launch it from a terminal.
+It starts the web server — open `http://127.0.0.1:8000` in your browser.
 It will look for `config/` and `.env` in the same folder as the exe.
 
 > **Note:** Large dependencies (pandas, scipy) make the final exe around 200-300 MB.
@@ -172,32 +173,22 @@ It will look for `config/` and `.env` in the same folder as the exe.
 |---|---|
 | `config/state/run_config.json` | Controls which steps run, their order, and step-specific parameters |
 | `config/reference/companyinfo.csv` | Optional local company info CSV override for `populate_company_info` |
-| `config/reference/canonical_metrics_config.json` | Metric registry used for doc-level `FinancialStatements` fields and downstream ratio derivation during the current transition away from legacy canonical statement wiring |
+| `config/reference/canonical_metrics_config.json` | Metric registry used for doc-level `FinancialStatements` fields and downstream ratio derivation |
 | `config/reference/financial_statements_mappings_config.json` | Legacy mapping file retained for compatibility and migration reference |
 | `src/orchestrator/generate_ratios/ratios_definitions.json` | Ratio-table definitions used by `generate_ratios` |
 | `assets/taxonomy/` | Cached official EDINET taxonomy ZIP archives downloaded by `parse_taxonomy` |
 | `config/examples/run_config.example.json` | Example run configuration for new users |
-| `config/state/saved_setups/` | Named setup files saved from the GUI |
+| `config/state/saved_setups/` | Named setup files saved from the UI |
 | `.env` | API keys, file paths, and database table names |
 
-## GUI Features
+## Web Interface Features
 
-The Tk-based GUI provides:
-
-- **Home dashboard** – list saved pipelines with modification dates, open existing setups, create new ones, and jump directly into the main workflow surfaces.
-- **Top-level workspace navigation** – switch between Home, Orchestrator, Data Workspace, Screening, and Security Analysis with `Ctrl+1..5`.
-- **Theme toggle** – switch between dark and light mode without restarting the app.
-- **API Key dialog** – securely set the EDINET API key without editing `.env` manually.
-- **Type-to-filter dropdowns** – comboboxes across the app support partial-match filtering to make large table and column lists faster to navigate.
-- **Step ordering controls** – reorder pipeline steps with keyboard shortcuts (`Alt+Up` / `Alt+Down`) and contextual actions.
-- **Per-step enable/disable** – check or uncheck each step.
-- **Per-step configuration panel** – configure each step (including database paths and advanced options) in the side panel.
-- **Overwrite toggle** – steps that support it (Generate Financial Statements, Generate Ratios, Generate Rolling Metrics) show an "Overwrite" checkbox.
-- **Data workspace** – review the current default database, reference assets, stable config/state paths, and common output folders before moving into another workflow.
-- **Screening workspace** – build filter and ranking rules, sort results, toggle raw/formatted values, save/load criteria, inspect run history, export CSVs, export backtest-set company lists, and open Security Analysis directly from a result row.
-- **Save / Load setups** – persist and recall named configurations from `config/state/saved_setups/`.
-- **Live log output** – see real-time log messages during execution in the output panel.
-- **Security analysis** – search companies by company name, ticker, EDINET code, or industry; inspect statements and ratios; review translated or original business descriptions; view charts; refresh prices; compare peers; and jump directly from screening results.
+- **Multi-page navigation** – tab bar switches between Dashboard, Orchestrator, Screening, and Security Analysis views without page reload.
+- **Pipeline builder** – drag-and-drop step ordering, per-step configuration inspector, run/cancel controls with real-time job status.
+- **Screening** – dynamic criteria builder with metric picker, weighted ranking rules, sortable/sort-preserving results, formatted/raw value toggle, save/load criteria, run history, CSV export, backtest-set export, and drill-in to Security Analysis.
+- **Security Analysis** – typeahead company search (by ticker, name, EDINET code, industry), overview metric tiles, unified historical data table with column filter (multi-select grouped by source table), period count selector, Chart.js charts (line/bar/area, multi-series, add/remove panels), peer comparison, and stock price refresh.
+- **Database management** – resolve, optimize, and select database paths from the UI.
+- **Session persistence** – screening criteria, results, and security analysis context survive tab switches via sessionStorage.
 
 ## Key EDINET document type codes
 

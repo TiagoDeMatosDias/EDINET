@@ -1,36 +1,22 @@
 ﻿# Running the Application
 
-Launch the application with:
+Launch the web workstation with:
 
 ```
 python main.py
 ```
 
-This opens the Tk desktop GUI where you can configure steps and run the pipeline visually.
-
-To launch the web workstation (Main + Orchestrator views), run:
-
-```bash
-python -m src.web_app.server
-```
-
 Then open `http://127.0.0.1:8000` in your browser.
 
-You can also start web mode from the unified launcher:
+Optional host/port flags:
 
 ```bash
-python main.py --web
+python main.py --host 0.0.0.0 --port 8080 --no-reload
 ```
 
-Optional host/port flags are shared across both modes:
+The web frontend is a multi-page vanilla JS application. It communicates with the backend through endpoints exposed in `src/web_app/api/`. The Dashboard, Orchestrator, Screening, and Security Analysis views are all fully functional.
 
-```bash
-python main.py --web --api-host 127.0.0.1 --api-port 8000
-```
-
-The web frontend is a multi-page vanilla JS application that talks to the backend through endpoints exposed in `src/api/router.py` and `src/web_app/api/screening.py`. The Screening view is fully functional; Security Analysis is an intentional stub in the web UI.
-
-Most steps now require an explicit source or target database path in their step configuration. The GUI exposes those paths directly in each step's config dialog.
+Most steps require an explicit source or target database path in their step configuration. The orchestrator exposes those paths directly in each step's config panel.
 
 ## Configuration Format
 
