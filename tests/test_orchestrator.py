@@ -422,10 +422,7 @@ class TestUpdateStockPricesStep:
     def test_uses_local_update_all_stock_prices_function(self):
         from src.orchestrator.update_stock_prices.update_stock_prices import run_update_stock_prices
 
-        config = Config.from_dict({
-            "DB_COMPANY_INFO_TABLE": "company_info",
-            "DB_STOCK_PRICES_TABLE": "stock_prices",
-        })
+        config = Config.from_dict({})
 
         with (
             patch(
@@ -440,8 +437,8 @@ class TestUpdateStockPricesStep:
 
         mock_update.assert_called_once_with(
             "prices.db",
-            Company_Table="company_info",
-            prices_table="stock_prices",
+            Company_Table="CompanyInfo",
+            prices_table="Stock_Prices",
         )
 
 

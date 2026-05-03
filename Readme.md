@@ -80,21 +80,13 @@ pip install -r requirements.txt
 
 #### 2. Create a `.env` file
 
-Copy the template below into a `.env` file in the project root and fill in your values:
+Copy the template below into a `.env` file in the project root and fill in your API key:
 
 ```
 API_KEY=<your_edinet_api_key>
-baseURL=https://api.edinet-fsa.go.jp/api/v2/documents
-doctype=5
-
-RAW_DOCUMENTS_PATH=<your_documents_path>
-DB_PATH=<your_sqlite_db_path>
-
-DB_DOC_LIST_TABLE=DocumentList
-DB_FINANCIAL_DATA_TABLE=financialData_full
-DB_COMPANY_INFO_TABLE=CompanyInfo
-DB_STOCK_PRICES_TABLE=Stock_Prices
 ```
+
+All other configuration (database paths, document storage paths, table names, API endpoints) is hardcoded or configured via the web UI / `config/database_paths.json`.
 
 #### 3. Configure and run
 
@@ -184,7 +176,7 @@ It will look for `config/` and `.env` in the same folder as the exe.
 | `assets/taxonomy/` | Cached official EDINET taxonomy ZIP archives downloaded by `parse_taxonomy` |
 | `config/examples/run_config.example.json` | Example run configuration for new users |
 | `config/state/saved_setups/` | Named setup files saved from the UI |
-| `.env` | API keys, file paths, and database table names |
+| `.env` | EDINET API key |
 
 ## Web Interface Features
 

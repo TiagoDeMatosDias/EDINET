@@ -2,7 +2,7 @@ import logging
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common.db_config import get_db2
-from src.orchestrator.common.edinet import Edinet
+from src.orchestrator.common.edinet import Edinet, EDINET_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,7 @@ def run_populate_company_info(config, overwrite=False):
     db2 = get_db2()
 
     edinet = Edinet(
-        base_url=config.get("baseURL", ""),
+        base_url=EDINET_BASE_URL,
         api_key=config.get("API_KEY", ""),
         db_path=db2,
         company_info_table="CompanyInfo",

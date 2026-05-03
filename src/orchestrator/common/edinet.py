@@ -19,6 +19,9 @@ from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
+# Hardcoded EDINET API base URL (was in .env)
+EDINET_BASE_URL = "https://api.edinet-fsa.go.jp/api/v2/documents"
+
 
 class _HiddenInputValueParser(HTMLParser):
     """Extract a hidden input value from an HTML document."""

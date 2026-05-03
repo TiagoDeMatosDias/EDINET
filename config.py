@@ -28,10 +28,10 @@ class Config:
         - If ``db_value`` is an absolute path, return it unchanged.
         - If ``db_value`` contains a path separator, return its absolute path.
         - Otherwise treat ``db_value`` as a filename and attempt to locate it
-          relative to the configured ``DB_PATH`` (from settings or environment).
-          If ``DB_PATH`` points to a file, the filename's dirname is used; if
+          relative to the ``db2`` path from ``config/database_paths.json``.
+          If ``db2`` points to a file, the filename's dirname is used; if
           it points to a directory that exists, that directory is used. When
-          no ``DB_PATH`` is available, the filename is resolved relative to
+          ``db2`` is unavailable, the filename is resolved relative to
           the current working directory.
         """
         if not db_value:
@@ -45,7 +45,12 @@ class Config:
             return os.path.abspath(raw)
 
         # Bare filename: try to derive a directory from DB_PATH
-        db_path_setting = self.settings.get("DB_PATH") or os.getenv("DB_PATH")
+        # Resolve DB_PATH from database_paths.json (db2) instead of .env
+        from src.orchestrator.common.db_config import get_db2 as _get_db2
+        try:
+            db_path_setting = _get_db2()
+        except Exception:
+            db_path_setting = None
         if db_path_setting:
             db_path_setting = str(db_path_setting).strip().strip("\"'")
             # If DB_PATH is an existing directory, join against it

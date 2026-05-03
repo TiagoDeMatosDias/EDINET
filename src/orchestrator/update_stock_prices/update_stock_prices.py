@@ -78,13 +78,10 @@ def run_update_stock_prices(config, overwrite=False):
     """Handler that resolves the target database path and runs the updater."""
     logger.info("Updating stock prices...")
 
-    Company_Table = config.get("DB_COMPANY_INFO_TABLE", "CompanyInfo")
-    prices_table = config.get("DB_STOCK_PRICES_TABLE", "Stock_Prices")
-
     return update_all_stock_prices(
         get_db2(),
-        Company_Table=Company_Table,
-        prices_table=prices_table,
+        Company_Table="CompanyInfo",
+        prices_table="Stock_Prices",
     )
 
 
