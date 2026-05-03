@@ -158,6 +158,7 @@ function buildShell() {
   // Row 3: Results toolbar
   cfg.append(
     el('div', { class: 'scr-row-bottom' },
+      el('button', { id: 'scr-btn-update-prices', class: 'scr-btn-soft', text: 'Update Prices' }),
       el('button', { id: 'scr-btn-export', class: 'scr-btn-soft', text: 'Export CSV' }),
       el('label', { class: 'scr-toggle' },
         el('input', { id: 'scr-fmt', type: 'checkbox', checked: 'checked' }),
@@ -194,6 +195,7 @@ function wireShell() {
   $('#scr-btn-save').addEventListener('click', save);
   $('#scr-btn-load').addEventListener('click', load);
   $('#scr-btn-export').addEventListener('click', exportCSV);
+  $('#scr-btn-update-prices').addEventListener('click', updatePrices);
   $('#scr-date').addEventListener('change', () => { ST.screeningDate = $('#scr-date').value; });
   $('#scr-fmt').addEventListener('change', () => { ST.formattedValues = $('#scr-fmt').checked; renderResults(); });
   $('#scr-add-crit').addEventListener('click', showCritBuilder);
@@ -1528,7 +1530,8 @@ function drill(row) {
   const p = new URLSearchParams();
   if (ei >= 0 && row[ei]) p.set('edinet_code', String(row[ei]));
   if (ti >= 0 && row[ti]) p.set('ticker', String(row[ti]));
-  if (ST.dbPath) p.set('db_path', ST.dbPath);
+  // Store in sessionStorage for the security page to pick up (avoids exposing db_path in URL)
+  if (ei >= 0 && row[ei]) sessionStorage.setItem('sa.lastEdinetCode', String(row[ei]));
   if (p.toString()) window.location.href = `/security?${p.toString()}`;
 }
 
@@ -1614,6 +1617,61 @@ async function load() {
   const r = anchor.getBoundingClientRect();
   pop.style.position = 'fixed'; pop.style.left = r.left + 'px'; pop.style.top = (r.bottom + 4) + 'px'; pop.style.zIndex = '1000';
   autoClose(pop);
+}
+
+async function updatePrices() {
+  if (!ST.results?.row_count) { log('warn', 'No results to update'); return; }
+
+  // Extract tickers from results
+  let tickerIdx = -1;
+  for (let i = 0; i < ST.results.columns.length; i++) {
+    const c = ST.results.columns[i].toLowerCase();
+    if (/company_ticker|^ticker$/.test(c)) { tickerIdx = i; break; }
+  }
+  if (tickerIdx === -1) {
+    log('warn', 'No Ticker column in results — add CompanyInfo.Ticker to columns first');
+    status('Add Ticker column to results first');
+    return;
+  }
+
+  const tickers = [...new Set(ST.results.rows.map(r => {
+    const v = r[tickerIdx];
+    return v ? String(v).trim() : null;
+  }).filter(Boolean))];
+
+  if (!tickers.length) { log('warn', 'No tickers found in results'); return; }
+
+  log('info', `Updating prices for ${tickers.length} tickers…`);
+  const btn = $('#scr-btn-update-prices');
+  if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
+
+  try {
+    const data = await fetchJson('/api/screening/update-prices', {
+      method: 'POST',
+      body: JSON.stringify({ db_path: ST.dbPath, tickers }),
+    });
+
+    const results = data.results || [];
+    const ok = results.filter(r => r.ok).length;
+    const fail = results.filter(r => !r.ok).length;
+    const inserted = results.reduce((s, r) => s + (r.rows_inserted || 0), 0);
+
+    if (fail) {
+      const failedTickers = results.filter(r => !r.ok).map(r => r.ticker).join(', ');
+      log('warn', `Prices updated: ${ok} ok, ${fail} failed (${failedTickers})`);
+    } else {
+      log('info', `Prices updated for ${ok} tickers (${inserted} new rows)`);
+    }
+
+    // Re-run screening so price-dependent columns (e.g. P/E) reflect new prices
+    if (inserted > 0) {
+      await run();
+    }
+  } catch (e) {
+    log('error', `Price update: ${e.message}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Update Prices'; }
+  }
 }
 
 async function exportCSV() {

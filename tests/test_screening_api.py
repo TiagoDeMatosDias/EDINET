@@ -563,3 +563,65 @@ def test_metrics_includes_custom_tables(tmp_path):
     assert "docID" not in tables["Custom_Metrics"]
     # More than 1 table
     assert len(tables) > 3
+
+
+# ---------------------------------------------------------------------------
+# Update prices
+# ---------------------------------------------------------------------------
+
+
+def _create_db_for_update_prices(path: str) -> str:
+    """Create a minimal DB with Stock_Prices so update-prices can write."""
+    conn = sqlite3.connect(path)
+    c = conn.cursor()
+    c.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Company_Ticker TEXT, Company_Name TEXT)")
+    c.execute("CREATE TABLE FinancialStatements (edinetCode TEXT, docID TEXT, periodEnd TEXT)")
+    c.execute("""CREATE TABLE Stock_Prices (
+        Date TEXT, Ticker TEXT, Currency TEXT, Price REAL
+    )""")
+    c.execute(
+        "INSERT INTO CompanyInfo VALUES ('E00001', '7203', 'Toyota Motor')"
+    )
+    c.execute(
+        "INSERT INTO CompanyInfo VALUES ('E00002', '6758', 'Sony Group')"
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_update_prices_requires_tickers(tmp_path):
+    db_path = _create_db_for_update_prices(str(tmp_path / "test.db"))
+    resp = client.post("/api/screening/update-prices", json={"db_path": db_path, "tickers": []})
+    assert resp.status_code == 400
+
+
+def test_update_prices_requires_db_path():
+    resp = client.post("/api/screening/update-prices", json={"tickers": ["7203"]})
+    assert resp.status_code == 400
+
+
+def test_update_prices_returns_results_structure(tmp_path):
+    db_path = _create_db_for_update_prices(str(tmp_path / "test.db"))
+    resp = client.post(
+        "/api/screening/update-prices",
+        json={"db_path": db_path, "tickers": ["7203", "6758"]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "results" in data
+    assert isinstance(data["results"], list)
+    assert len(data["results"]) == 2
+    for r in data["results"]:
+        assert "ticker" in r
+        assert "ok" in r
+        assert "rows_inserted" in r
+        assert "message" in r
+
+
+def test_update_prices_unknown_db(tmp_path):
+    resp = client.post(
+        "/api/screening/update-prices",
+        json={"db_path": "/nonexistent/path.db", "tickers": ["7203"]},
+    )
+    assert resp.status_code == 400

@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import screening as _screening
+from src import security_analysis as _security
 from src.orchestrator.common.db_config import get_db2
 
 logger = logging.getLogger(__name__)
@@ -199,6 +200,36 @@ def _df_to_json(df: pd.DataFrame) -> dict:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@router.post("/update-prices")
+def update_prices(request: dict = Body(...)) -> dict:
+    """Update stock prices for all tickers in a screening result set."""
+    db_path = request.get("db_path", "")
+    tickers = request.get("tickers", [])
+    if not db_path or not tickers:
+        raise HTTPException(status_code=400, detail="db_path and tickers required")
+
+    resolved = _validate_db_path(db_path)
+    results = []
+    for ticker in tickers:
+        try:
+            result = _security.update_security_price(resolved, ticker)
+            results.append({
+                "ticker": ticker,
+                "ok": result.get("ok", False),
+                "rows_inserted": result.get("rows_inserted", 0),
+                "message": result.get("message", ""),
+            })
+        except Exception as e:
+            logger.warning("Update price failed for %s: %s", ticker, str(e))
+            results.append({
+                "ticker": ticker,
+                "ok": False,
+                "rows_inserted": 0,
+                "message": str(e),
+            })
+    return {"results": results}
+
 
 @router.get("/db-path")
 def get_default_db_path() -> dict:

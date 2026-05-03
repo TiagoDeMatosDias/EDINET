@@ -18,7 +18,10 @@ async function bootstrap() {
   log('info', 'Security Analysis page initialized');
   await refreshHealth();
 
-  const lastCode = sessionStorage.getItem('sa.lastEdinetCode');
+  // Check URL params first, then fall back to sessionStorage
+  const params = new URLSearchParams(window.location.search);
+  const urlCode = params.get('edinet_code');
+  const lastCode = urlCode || sessionStorage.getItem('sa.lastEdinetCode');
   if (lastCode) {
     try { await selectCompany(lastCode); } catch (e) { log('warn', e.message); }
   }
