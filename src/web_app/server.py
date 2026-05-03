@@ -61,6 +61,11 @@ def page_security() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "security_analysis" / "security.html")
 
 
+@app.get("/favicon.ico")
+def page_favicon() -> FileResponse:
+    return FileResponse(BRAND_ASSETS_DIR / "icon.ico")
+
+
 @app.get("/{path:path}")
 def not_found(path: str) -> FileResponse:
     if path.startswith("api/") or path == "health":
