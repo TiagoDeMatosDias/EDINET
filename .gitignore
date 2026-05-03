@@ -8,7 +8,7 @@ __pycache__/
 .venv/
 .vscode/
 .env
-docs/Feature Development/
+docs/Feature Development/*
 
 # Runtime state (user-specific, not committed)
 config/state/*
@@ -24,3 +24,7 @@ nul
 *.db
 *.log
 __pycache__/config.cpython-313.pyc
+
+# Agents documentation
+agents.md
+docs/Agent/*
