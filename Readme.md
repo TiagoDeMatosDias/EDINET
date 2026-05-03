@@ -36,18 +36,23 @@ Each pipeline step is configured independently, including its source or target d
 12. **Screening** – filter companies by financial criteria (valuation, quality, per-share metrics), apply weighted ranking rules, review sortable results, toggle raw or formatted value display, save/load criteria, inspect screening history, export CSVs, or generate backtest-set CSV inputs.
 13. **Security analysis** – inspect a single company with typeahead search, overview metric tiles, statement history with configurable column filter, interactive Chart.js charts, price refresh, and peer comparison.
 
-## Web Interface
+## Screenshots
 
-The web workstation is a multi-page vanilla JS application served by FastAPI:
+Current captures from the web workstation at 1280×800:
 
-| View | URL | Description |
-|---|---|---|
-| **Dashboard** | `/` | Job history, metrics summary, quick-launch cards into other views |
-| **Orchestrator** | `/orchestrator` | Pipeline builder: step library, drag-to-order pipeline, per-step config inspector, run controls |
-| **Screening** | `/screening` | Criteria and ranking builder, sortable results, formatted/raw toggle, save/load/history/export, drill-in to Security Analysis |
-| **Security Analysis** | `/security` | Company search, overview tiles, historical data with column filter, Chart.js charts, peer comparison, price refresh |
+| View | Screenshot |
+|---|---|
+| **Dashboard** | <img src="docs/images/web-dashboard.png" alt="EDINET Web Dashboard" width="640"> |
+| **Orchestrator** | <img src="docs/images/web-orchestrator.png" alt="EDINET Web Orchestrator" width="640"> |
+| **Screening** | <img src="docs/images/web-screening.png" alt="EDINET Web Screening" width="640"> |
+| **Security Analysis** | <img src="docs/images/web-security-analysis.png" alt="EDINET Web Security Analysis" width="640"> |
 
-> **Screenshots** — web UI screenshots are forthcoming. Launch with `python main.py` and open `http://127.0.0.1:8000` to explore the interface.
+- **Dashboard** (`/`) — job history, metrics summary, quick-launch cards into other views.
+- **Orchestrator** (`/orchestrator`) — pipeline builder: step library, drag-to-order pipeline, per-step config inspector, run controls.
+- **Screening** (`/screening`) — criteria and ranking builder, sortable results, formatted/raw toggle, save/load/history/export, drill-in to Security Analysis.
+- **Security Analysis** (`/security`) — company search, overview tiles, historical data with column filter, Chart.js charts, peer comparison, price refresh.
+
+> Screenshots captured via Playwright. Regenerate with `python tests/capture_screenshots.py`.
 
 ## Running the Application
 
