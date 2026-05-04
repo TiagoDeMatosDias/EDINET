@@ -160,6 +160,7 @@ function buildShell() {
     el('div', { class: 'scr-row-bottom' },
       el('button', { id: 'scr-btn-update-prices', class: 'scr-btn-soft', text: 'Update Prices' }),
       el('button', { id: 'scr-btn-export', class: 'scr-btn-soft', text: 'Export CSV' }),
+      el('button', { id: 'scr-btn-export-bt', class: 'scr-btn-soft', text: 'Export Backtest' }),
       el('label', { class: 'scr-toggle' },
         el('input', { id: 'scr-fmt', type: 'checkbox', checked: 'checked' }),
         el('span', { text: 'Formatted' }),
@@ -195,6 +196,7 @@ function wireShell() {
   $('#scr-btn-save').addEventListener('click', save);
   $('#scr-btn-load').addEventListener('click', load);
   $('#scr-btn-export').addEventListener('click', exportCSV);
+  $('#scr-btn-export-bt').addEventListener('click', exportBacktest);
   $('#scr-btn-update-prices').addEventListener('click', updatePrices);
   $('#scr-date').addEventListener('change', () => { ST.screeningDate = $('#scr-date').value; });
   $('#scr-fmt').addEventListener('change', () => { ST.formattedValues = $('#scr-fmt').checked; renderResults(); });
@@ -1684,6 +1686,153 @@ async function exportCSV() {
     const blob = await r.blob();
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'screening.csv'; a.click();
   } catch (e) { log('error', `Export: ${e.message}`); }
+}
+
+// ---------------------------------------------------------------------------
+// Export Backtest — equal-weight backtest CSV with benchmark + discount rate
+// ---------------------------------------------------------------------------
+
+function showBacktestExportPopup() {
+  return new Promise((resolve) => {
+    const ex = document.querySelector('.scr-pop'); if (ex) ex.remove();
+    const pop = el('div', { class: 'scr-pop scr-pop-backtest' });
+
+    pop.append(el('div', { class: 'scr-pop-hdr', text: 'Backtest Export Settings' }));
+
+    // Benchmark ticker
+    const benchRow = el('div', { class: 'scr-bt-row' },
+      el('label', { class: 'scr-bt-lbl', text: 'Benchmark Ticker:' }),
+      el('input', { id: 'scr-bt-bench', class: 'scr-inp', type: 'text', placeholder: 'e.g. 1306.T', value: '1306.T' }),
+    );
+
+    // Discount rate
+    const rateRow = el('div', { class: 'scr-bt-row' },
+      el('label', { class: 'scr-bt-lbl', text: 'Discount Rate:' }),
+      el('input', { id: 'scr-bt-rate', class: 'scr-inp', type: 'text', placeholder: 'e.g. 0.02', value: '0.02' }),
+    );
+
+    // Info
+    const info = el('div', { class: 'scr-bt-info', text: `Exporting ${ST.results.row_count} companies with equal weight in backtest CSV format.` });
+
+    // Actions
+    const cancelBtn = el('button', { class: 'scr-bld-cancel', text: 'Cancel' });
+    cancelBtn.addEventListener('click', () => { pop.remove(); resolve(null); });
+
+    const exportBtn = el('button', { class: 'scr-bld-add', text: 'Export' });
+    exportBtn.addEventListener('click', () => {
+      const benchmark = $('#scr-bt-bench')?.value?.trim() || '';
+      const discountRate = $('#scr-bt-rate')?.value?.trim() || '0.02';
+      pop.remove();
+      resolve({ benchmark, discountRate });
+    });
+
+    const acts = el('div', { class: 'scr-bt-acts' }, cancelBtn, exportBtn);
+
+    pop.append(benchRow, rateRow, info, acts);
+    document.body.append(pop);
+    pop.style.position = 'fixed';
+    pop.style.left = '50%';
+    pop.style.top = '40%';
+    pop.style.transform = 'translate(-50%, -50%)';
+    pop.style.zIndex = '1000';
+    pop.style.minWidth = '380px';
+
+    setTimeout(() => {
+      const benchInput = $('#scr-bt-bench');
+      if (benchInput) benchInput.focus();
+    }, 50);
+
+    // Close on Escape
+    const onKey = (e) => {
+      if (e.key === 'Escape') { pop.remove(); document.removeEventListener('keydown', onKey); resolve(null); }
+    };
+    document.addEventListener('keydown', onKey);
+    // Auto-close on outside click (after a beat)
+    setTimeout(() => document.addEventListener('click', function f(e) {
+      if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('click', f); document.removeEventListener('keydown', onKey); resolve(null); }
+    }), 0);
+  });
+}
+
+async function exportBacktest() {
+  if (!ST.results?.row_count) { log('warn', 'No results to export'); return; }
+
+  const cfg = await showBacktestExportPopup();
+  if (!cfg) return; // cancelled
+
+  try {
+    const rows = ST.results.rows;
+    const cols = ST.results.columns;
+
+    // Find relevant column indices
+    let tickerIdx = -1, edinetIdx = -1, nameIdx = -1, industryIdx = -1, periodIdx = -1;
+    for (let i = 0; i < cols.length; i++) {
+      const c = cols[i].toLowerCase();
+      if (/company_ticker|^ticker$/.test(c) && tickerIdx === -1) tickerIdx = i;
+      if (/edinetcode/.test(c) && edinetIdx === -1) edinetIdx = i;
+      if (/company_name|name|submitter|filer/i.test(c) && nameIdx === -1) nameIdx = i;
+      if (/company_industry|industry|sector/i.test(c) && industryIdx === -1) industryIdx = i;
+      if (/periodend/.test(c) && periodIdx === -1) periodIdx = i;
+    }
+
+    if (tickerIdx === -1) {
+      status('Add Company_Ticker column to results first');
+      log('warn', 'No ticker column in results — cannot export backtest');
+      return;
+    }
+
+    const n = rows.length;
+    const weight = n > 0 ? (1.0 / n) : 0;
+    const year = ST.screeningDate ? ST.screeningDate.substring(0, 4) : (new Date().getFullYear().toString());
+
+    // Build CSV lines
+    const lines = [];
+
+    // Header comments with config
+    lines.push('# Backtest Configuration');
+    lines.push(`# Benchmark: ${cfg.benchmark}`);
+    lines.push(`# Discount Rate: ${cfg.discountRate}`);
+    lines.push('# Generated: ' + new Date().toISOString().split('T')[0]);
+    if (ST.screeningDate) lines.push(`# Screening Date: ${ST.screeningDate}`);
+    lines.push('#');
+
+    // Build header
+    const header = ['Year', 'Tickers', 'Type', 'Amount'];
+    if (edinetIdx >= 0) header.push('EdinetCode');
+    if (nameIdx >= 0) header.push('CompanyName');
+    if (industryIdx >= 0) header.push('Industry');
+    if (periodIdx >= 0) header.push('PeriodEnd');
+    lines.push(header.join(','));
+
+    for (const row of rows) {
+      const values = [year, escapeCSV(String(row[tickerIdx] || '')), 'weight', weight.toFixed(6)];
+      if (edinetIdx >= 0) values.push(escapeCSV(String(row[edinetIdx] || '')));
+      if (nameIdx >= 0) values.push(escapeCSV(String(row[nameIdx] || '')));
+      if (industryIdx >= 0) values.push(escapeCSV(String(row[industryIdx] || '')));
+      if (periodIdx >= 0) values.push(escapeCSV(String(row[periodIdx] || '')));
+      lines.push(values.join(','));
+    }
+
+    const csv = lines.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'screening_backtest.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+
+    status(`Exported ${n} companies (equal weight: ${(weight * 100).toFixed(1)}% each)`);
+    log('info', `Backtest export: ${n} companies, benchmark=${cfg.benchmark}, discount=${cfg.discountRate}`);
+  } catch (e) {
+    log('error', `Backtest export: ${e.message}`);
+  }
+}
+
+function escapeCSV(val) {
+  if (/[,"\n\r]/.test(val)) {
+    return '"' + val.replace(/"/g, '""') + '"';
+  }
+  return val;
 }
 
 // ---------------------------------------------------------------------------

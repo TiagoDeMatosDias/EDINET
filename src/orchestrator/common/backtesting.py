@@ -208,17 +208,39 @@ def get_portfolio_prices(
             raise ValueError("db_path is required when no active connection is provided.")
         conn = sqlite3.connect(db_path)
     try:
-        placeholders = ",".join(["?"] * len(tickers))
+        # Build ticker variants — try bare, with .T, and without .T
+        # so that both "1911" and "19110" match "1911.T" in the DB.
+        variants: list[str] = []
+        variant_to_original: dict[str, str] = {}
+        for t in tickers:
+            t = str(t).strip()
+            if t not in variant_to_original:
+                variants.append(t)
+                variant_to_original[t] = t
+            if not t.endswith(".T"):
+                tv = t + ".T"
+                if tv not in variant_to_original:
+                    variants.append(tv)
+                    variant_to_original[tv] = t
+            else:
+                tv = t[:-2]
+                if tv not in variant_to_original:
+                    variants.append(tv)
+                    variant_to_original[tv] = t
+
+        placeholders = ",".join(["?"] * len(variants))
         query = (
             f"SELECT Date, Ticker, Price FROM {prices_table} "
             f"WHERE Ticker IN ({placeholders}) "
             f"AND Date >= ? AND Date <= ? "
             f"ORDER BY Date"
         )
-        params = [*tickers, start_date, end_date]
+        params = [*variants, start_date, end_date]
         df = pd.read_sql_query(query, conn, params=params)
         df["Date"] = pd.to_datetime(df["Date"])
         df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
+        # Map DB tickers back to original portfolio keys
+        df["Ticker"] = df["Ticker"].map(variant_to_original).fillna(df["Ticker"])
         return df
     finally:
         if own_conn:
@@ -294,7 +316,26 @@ def get_dividend_data(
                 columns=["Ticker", "periodEnd", "PerShare_Dividends"]
             )
 
-        placeholders = ",".join(["?"] * len(tickers))
+        # Build ticker variants for fuzzy matching (bare, .T, no .T)
+        variants: list[str] = []
+        variant_to_original: dict[str, str] = {}
+        for t in tickers:
+            t = str(t).strip()
+            if t not in variant_to_original:
+                variants.append(t)
+                variant_to_original[t] = t
+            if not t.endswith(".T"):
+                tv = t + ".T"
+                if tv not in variant_to_original:
+                    variants.append(tv)
+                    variant_to_original[tv] = t
+            else:
+                tv = t[:-2]
+                if tv not in variant_to_original:
+                    variants.append(tv)
+                    variant_to_original[tv] = t
+
+        placeholders = ",".join(["?"] * len(variants))
 
         # ShareMetrics schema path: ShareMetrics(docID, Dividend paid per share) →
         # FinancialStatements(docID, edinetCode, periodEnd) → companyInfo.
@@ -319,12 +360,14 @@ def get_dividend_data(
                 columns=["Ticker", "periodEnd", "PerShare_Dividends"]
             )
 
-        params = [*tickers, start_date, end_date]
+        params = [*variants, start_date, end_date]
         df = pd.read_sql_query(query, conn, params=params)
         df["periodEnd"] = pd.to_datetime(df["periodEnd"])
         df["PerShare_Dividends"] = pd.to_numeric(
             df["PerShare_Dividends"], errors="coerce"
         ).fillna(0.0)
+        # Map DB tickers back to original portfolio keys
+        df["Ticker"] = df["Ticker"].map(variant_to_original).fillna(df["Ticker"])
         return df
     finally:
         if own_conn:
@@ -1830,8 +1873,34 @@ def run_backtest_set(
     if not csv_file:
         raise ValueError("backtest_set_config must contain 'csv_file'.")
 
+    # ── Read and parse CSV comments for config ───────────────────────
+    # Headers with "#" prefix are treated as comments.  Lines starting
+    # with "# Benchmark:" and "# Discount Rate:" supply defaults that
+    # can be overridden by explicit config keys.
+    csv_config: dict[str, str] = {}
+    with open(csv_file, "r", encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped.startswith("#"):
+                break
+            if stripped.startswith("# Benchmark:"):
+                csv_config["benchmark_ticker"] = stripped[len("# Benchmark:"):].strip()
+            elif stripped.startswith("# Discount Rate:"):
+                csv_config["risk_free_rate"] = stripped[len("# Discount Rate:"):].strip()
+
+    # Use CSV-embedded config as defaults; let explicit config override
+    if not benchmark_ticker:
+        benchmark_ticker = csv_config.get("benchmark_ticker", "")
+    if not risk_free_rate:
+        raw_rate = csv_config.get("risk_free_rate", "")
+        if raw_rate:
+            try:
+                risk_free_rate = float(raw_rate)
+            except ValueError:
+                logger.warning("Invalid risk_free_rate in CSV comments: %r", raw_rate)
+
     # ── Read and validate CSV ─────────────────────────────────────────
-    df = pd.read_csv(csv_file)
+    df = pd.read_csv(csv_file, comment="#")
     required_cols = {"Year", "Tickers", "Type", "Amount"}
     missing = required_cols - set(df.columns)
     if missing:
