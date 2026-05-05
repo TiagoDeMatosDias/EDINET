@@ -22,19 +22,20 @@ Each pipeline step is configured independently, including its source or target d
 
 ## What it does
 
-1. **Fetch document list** – queries the EDINET API for available filings in a given date range.
-2. **Download documents** – downloads the XBRL/CSV filings that match the filter criteria.
-3. **Populate company info** – loads the EDINET company code list from CSV into the database.
-4. **Import stock prices (CSV)** – imports historical prices from a user-supplied CSV file with configurable column mapping.
-5. **Update stock prices** – fetches historical share prices via the Stooq API by default, with a Yahoo Finance chart fallback if Stooq is unavailable.
-6. **Parse taxonomy** – parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
-7. **Generate financial statements** – extracts tagged values from raw XBRL data into structured per-company financial tables.
-8. **Generate ratios** – calculates per-share values, valuation ratios, and derived metrics for every company.
-9. **Generate rolling metrics** – computes rolling averages and CAGR-style growth rates for configurable metrics across selected statement tables, producing `<Table>_Rolling` output tables.
-10. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
-11. **Backtest set** – batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
-12. **Screening** – filter companies by financial criteria (valuation, quality, per-share metrics), apply weighted ranking rules, review sortable results, toggle raw or formatted value display, save/load criteria, inspect screening history, export CSVs, or generate backtest-set CSV inputs.
-13. **Security analysis** – inspect a single company with typeahead search, overview metric tiles, statement history with configurable column filter, interactive Chart.js charts, price refresh, and peer comparison.
+1. **Orchestrator** - Runs a user definable set of steps:
+   1. **Fetch document list** – queries the EDINET API for available filings in a given date range.
+   2. **Download documents** – downloads the XBRL/CSV filings that match the filter criteria.
+   3. **Populate company info** – loads the EDINET company code list from CSV into the database.
+   4. **Import stock prices (CSV)** – imports historical prices from a user-supplied CSV file with configurable column mapping.
+   5. **Update stock prices** – fetches historical share prices via the Stooq API by default, with a Yahoo Finance chart fallback if Stooq is unavailable.
+   6. **Parse taxonomy** – parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
+   7. **Generate financial statements** – extracts tagged values from raw XBRL data into structured per-company financial tables.
+   8. **Generate ratios** – calculates per-share values, valuation ratios, and derived metrics for every company.
+   9. **Generate rolling metrics** – computes rolling averages and CAGR-style growth rates for configurable metrics across selected statement tables, producing `<Table>_Rolling` output tables.
+   10. **Backtest** – portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
+   11. **Backtest set** – batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
+2.  **Screening** – filter companies by financial criteria (valuation, quality, per-share metrics), apply weighted ranking rules, review sortable results, toggle raw or formatted value display, save/load criteria, inspect screening history, export CSVs, or generate backtest-set CSV inputs.
+3.  **Security analysis** – inspect a single company with typeahead search, overview metric tiles, statement history with configurable column filter, interactive Chart.js charts, price refresh, and peer comparison.
 
 ## Screenshots
 
@@ -143,16 +144,11 @@ Create a deployment folder and copy the required items into it:
 EDINET.exe                                   <- built by PyInstaller (from dist/)
 .env                                         <- your API keys and DB paths
 config/
-    reference/
-        companyinfo.csv
-        jppfs_cor_2013-08-31.xsd
-    state/
-        run_config.json
-    examples/
-        run_config.example.json
+    database_paths.json                      <- A list of database paths
 data/
     ols_results/                             <- must exist for regression output steps
     backtest_results/                        <- must exist for backtest output
+    raw_documents                            <- a wip folder where documents will be downloaded and deleted
 ```
 
 ### 4. Run
@@ -168,14 +164,8 @@ It will look for `config/` and `.env` in the same folder as the exe.
 
 | File | Purpose |
 |---|---|
-| `config/state/run_config.json` | Controls which steps run, their order, and step-specific parameters |
-| `config/reference/companyinfo.csv` | Optional local company info CSV override for `populate_company_info` |
-| `config/reference/canonical_metrics_config.json` | Metric registry used for doc-level `FinancialStatements` fields and downstream ratio derivation |
-| `config/reference/financial_statements_mappings_config.json` | Legacy mapping file retained for compatibility and migration reference |
 | `src/orchestrator/generate_ratios/ratios_definitions.json` | Ratio-table definitions used by `generate_ratios` |
-| `assets/taxonomy/` | Cached official EDINET taxonomy ZIP archives downloaded by `parse_taxonomy` |
-| `config/examples/run_config.example.json` | Example run configuration for new users |
-| `config/state/saved_setups/` | Named setup files saved from the UI |
+| `config/database_paths.json` | Lists the databases to be used |
 | `.env` | EDINET API key |
 
 ## Web Interface Features

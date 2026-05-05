@@ -10,17 +10,22 @@ Edit ``config/database_paths.json`` to point to the right databases.
 
 import json
 import os
+import sys
 
 _CONFIG_DIR_NAME = "config"
 _CONFIG_FILE_NAME = "database_paths.json"
 
 
 def _find_project_root() -> str:
-    """Walk up from this module's directory to find the project root.
+    """Return the project root directory.
 
-    The project root is identified by the presence of ``config/`` and
-    ``src/orchestrator/`` directories.
+    - PyInstaller frozen exe: the folder that contains the exe.
+    - Plain Python script: walks up from this module to find the repo root
+      (identified by ``config/`` and ``src/orchestrator/`` directories).
     """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+
     current = os.path.dirname(os.path.abspath(__file__))
     for _ in range(5):
         parent = os.path.dirname(current)
