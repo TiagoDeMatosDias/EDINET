@@ -63,3 +63,6 @@ export function persistLocalSetups() {
 export function saveLastSetupName(name) {
   localStorage.setItem(LAST_SETUP_KEY, name || '');
 }
+
+// Expose STATE on window for integration testing
+window.STATE = STATE;
