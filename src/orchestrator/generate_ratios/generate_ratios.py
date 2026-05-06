@@ -158,6 +158,8 @@ def _build_input_sql_expression(helper, table_alias, actual_columns, aggregation
     qualified_columns = [f"{table_alias}.{helper._sql_ident(col)}" for col in actual_columns]
 
     if aggregation_key == "firstnonnull":
+        if len(qualified_columns) == 1:
+            return qualified_columns[0]
         return f"COALESCE({', '.join(qualified_columns)})"
 
     if aggregation_key == "sum":
@@ -230,91 +232,104 @@ def _resolve_ratio_query_plan(helper, conn, source_schema, fs_actual, ratio_entr
     ratio_sql_specs = []
 
     for ratio_entry in ratio_entries:
-        input_sql_by_name = {}
-        null_checks = []
+        try:
+            input_sql_by_name = {}
+            null_checks = []
 
-        for input_spec in ratio_entry["inputs"]:
-            declared_table = input_spec["table"]
-            actual_table = helper._resolve_table_name_in_schema(conn, source_schema, declared_table)
-            if not actual_table:
-                raise RuntimeError(
-                    f"Source table '{declared_table}' referenced by ratio '{ratio_entry['name']}' was not found."
-                )
+            for input_spec in ratio_entry["inputs"]:
+                declared_table = input_spec["table"]
+                actual_table = helper._resolve_table_name_in_schema(conn, source_schema, declared_table)
+                if not actual_table:
+                    raise RuntimeError(
+                        f"Source table '{declared_table}' referenced by ratio '{ratio_entry['name']}' was not found."
+                    )
 
-            if actual_table.lower() == fs_actual.lower():
-                table_alias = "fs"
-            else:
-                table_state = source_tables.get(actual_table)
-                if table_state is None:
-                    source_docid_col = _resolve_column_name_in_schema(
+                if actual_table.lower() == fs_actual.lower():
+                    table_alias = "fs"
+                else:
+                    table_state = source_tables.get(actual_table)
+                    if table_state is None:
+                        source_docid_col = _resolve_column_name_in_schema(
+                            helper,
+                            conn,
+                            source_schema,
+                            actual_table,
+                            "docID",
+                        )
+                        if not source_docid_col:
+                            raise RuntimeError(
+                                f"Source table '{actual_table}' referenced by ratio '{ratio_entry['name']}' is missing a docID column."
+                            )
+
+                        helper._create_index_if_not_exists(conn, source_schema, actual_table, [source_docid_col])
+                        table_alias = f"t{len(source_tables)}"
+                        table_state = {
+                            "alias": table_alias,
+                            "docid_col": source_docid_col,
+                        }
+                        source_tables[actual_table] = table_state
+                        join_specs.append(
+                            f"LEFT JOIN {helper._sql_ident(source_schema)}.{helper._sql_ident(actual_table)} {table_alias} "
+                            f"ON {table_alias}.{helper._sql_ident(source_docid_col)} = fs.{helper._sql_ident(fs_docid_col)}"
+                        )
+                    else:
+                        table_alias = table_state["alias"]
+
+                actual_columns = []
+                seen_columns = set()
+                for requested_column in input_spec["columns"]:
+                    actual_column = _resolve_column_name_in_schema(
                         helper,
                         conn,
                         source_schema,
                         actual_table,
-                        "docID",
+                        requested_column,
                     )
-                    if not source_docid_col:
-                        raise RuntimeError(
-                            f"Source table '{actual_table}' referenced by ratio '{ratio_entry['name']}' is missing a docID column."
-                        )
+                    if not actual_column:
+                        continue
+                    column_key = actual_column.lower()
+                    if column_key in seen_columns:
+                        continue
+                    seen_columns.add(column_key)
+                    actual_columns.append(actual_column)
 
-                    helper._create_index_if_not_exists(conn, source_schema, actual_table, [source_docid_col])
-                    table_alias = f"t{len(source_tables)}"
-                    table_state = {
-                        "alias": table_alias,
-                        "docid_col": source_docid_col,
-                    }
-                    source_tables[actual_table] = table_state
-                    join_specs.append(
-                        f"LEFT JOIN {helper._sql_ident(source_schema)}.{helper._sql_ident(actual_table)} {table_alias} "
-                        f"ON {table_alias}.{helper._sql_ident(source_docid_col)} = fs.{helper._sql_ident(fs_docid_col)}"
+                if not actual_columns:
+                    all_columns = helper._get_table_columns_in_schema(conn, source_schema, actual_table)
+                    sample_columns = sorted(all_columns)[:30]
+                    raise RuntimeError(
+                        f"Ratio '{ratio_entry['name']}' could not resolve any of the configured columns "
+                        f"{input_spec['columns']} in source table '{declared_table}'. "
+                        f"Table has {len(all_columns)} column(s); first 30: {sample_columns}"
                     )
-                else:
-                    table_alias = table_state["alias"]
 
-            actual_columns = []
-            seen_columns = set()
-            for requested_column in input_spec["columns"]:
-                actual_column = _resolve_column_name_in_schema(
+                input_sql = _build_input_sql_expression(
                     helper,
-                    conn,
-                    source_schema,
-                    actual_table,
-                    requested_column,
+                    table_alias,
+                    actual_columns,
+                    input_spec["aggregation"],
                 )
-                if not actual_column:
-                    continue
-                column_key = actual_column.lower()
-                if column_key in seen_columns:
-                    continue
-                seen_columns.add(column_key)
-                actual_columns.append(actual_column)
+                input_sql_by_name[input_spec["name"]] = input_sql
+                null_checks.append(f"({input_sql}) IS NULL")
 
-            if not actual_columns:
-                raise RuntimeError(
-                    f"Ratio '{ratio_entry['name']}' could not resolve any of the configured columns "
-                    f"{input_spec['columns']} in source table '{declared_table}'."
-                )
+            formula_sql = _compile_formula_sql(ratio_entry["formula"], input_sql_by_name)
+            if ratio_entry["skip_nulls"] and null_checks:
+                formula_sql = f"(CASE WHEN {' OR '.join(null_checks)} THEN NULL ELSE {formula_sql} END)"
 
-            input_sql = _build_input_sql_expression(
-                helper,
-                table_alias,
-                actual_columns,
-                input_spec["aggregation"],
+            ratio_sql_specs.append(
+                {
+                    "name": ratio_entry["name"],
+                    "sql": formula_sql,
+                }
             )
-            input_sql_by_name[input_spec["name"]] = input_sql
-            null_checks.append(f"({input_sql}) IS NULL")
+        except Exception:
+            logger.warning(
+                "Skipping ratio '%s' — could not resolve (will be NULL in output table).",
+                ratio_entry["name"],
+                exc_info=True,
+            )
 
-        formula_sql = _compile_formula_sql(ratio_entry["formula"], input_sql_by_name)
-        if ratio_entry["skip_nulls"] and null_checks:
-            formula_sql = f"(CASE WHEN {' OR '.join(null_checks)} THEN NULL ELSE {formula_sql} END)"
-
-        ratio_sql_specs.append(
-            {
-                "name": ratio_entry["name"],
-                "sql": formula_sql,
-            }
-        )
+    if not ratio_sql_specs:
+        return None
 
     return {
         "fs_docid_col": fs_docid_col,
@@ -325,9 +340,12 @@ def _resolve_ratio_query_plan(helper, conn, source_schema, fs_actual, ratio_entr
 
 def _populate_ratio_table(helper, conn, source_schema, fs_actual, target_table, ratio_entries):
     query_plan = _resolve_ratio_query_plan(helper, conn, source_schema, fs_actual, ratio_entries)
+    if query_plan is None:
+        logger.warning("No ratios could be resolved for table '%s' — skipping.", target_table)
+        return 0
     ratio_names = [ratio_spec["name"] for ratio_spec in query_plan["ratios"]]
     if not ratio_names:
-        return
+        return 0
 
     select_columns_sql = ",\n                ".join(
         f"{ratio_spec['sql']} AS {helper._sql_ident(ratio_spec['name'])}"
@@ -354,6 +372,7 @@ def _populate_ratio_table(helper, conn, source_schema, fs_actual, target_table, 
         ON CONFLICT({helper._sql_ident('docID')}) DO UPDATE SET {update_columns_sql}
     """
     conn.execute(insert_sql)
+    return len(ratio_names)
 
 
 def generate_ratios(
@@ -387,7 +406,6 @@ def generate_ratios(
             raise RuntimeError("Source table 'FinancialStatements' not found; required for generate_ratios.")
 
         target_tables = list(ratio_definitions)
-        ratio_count = 0
         for target_table, ratio_entries in ratio_definitions.items():
             ratio_names = [ratio_entry["name"] for ratio_entry in ratio_entries]
             _ensure_ratio_table_schema(
@@ -397,7 +415,6 @@ def generate_ratios(
                 overwrite=overwrite,
                 helper=helper,
             )
-            ratio_count += len(ratio_entries)
 
         fs_docid_col = _resolve_column_name_in_schema(helper, conn, source_schema, fs_actual, "docID")
         if not fs_docid_col:
@@ -412,8 +429,9 @@ def generate_ratios(
             fs_docid_col,
         )
 
+        successful_ratio_count = 0
         for target_table, ratio_entries in ratio_definitions.items():
-            _populate_ratio_table(
+            populated = _populate_ratio_table(
                 helper,
                 conn,
                 source_schema,
@@ -421,18 +439,19 @@ def generate_ratios(
                 target_table,
                 ratio_entries,
             )
+            successful_ratio_count += populated
 
         conn.commit()
         logger.info(
             "Generated %d ratio(s) across %d table(s) for %d document(s).",
-            ratio_count,
+            successful_ratio_count,
             len(target_tables),
             seeded_documents,
         )
         return {
             "status": "success",
             "documents_seeded": seeded_documents,
-            "ratio_count": ratio_count,
+            "ratio_count": successful_ratio_count,
             "tables": target_tables,
             "formulas_config": formulas_path,
             "batch_size": batch_size,

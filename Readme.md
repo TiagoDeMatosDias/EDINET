@@ -108,6 +108,7 @@ All output is logged to timestamped files in the `logs/` directory. See [LOGGING
 
 ## Documentation
 
+- [BUILDING.md](docs/BUILDING.md) – How to build a distributable EXE and ZIP
 - [RUNNING.md](docs/RUNNING.md) – Full description of every step and configuration options
 - [LOGGING.md](docs/LOGGING.md) – Logging system documentation
 - [Frontend Architecture.md](docs/Frontend%20Architecture.md) – Web frontend structure and extension guide
@@ -116,49 +117,15 @@ All output is logged to timestamped files in the `logs/` directory. See [LOGGING
 
 ## Building an executable
 
-The project can be packaged into a single `.exe` with [PyInstaller](https://pyinstaller.org).
-The exe resolves all config paths relative to the folder it lives in, so `config/`, `.env`,
-and the output `data/` folder just need to sit alongside it.
+Run the build script from the project root:
 
-### 1. Install PyInstaller
-
-```
-pip install pyinstaller
+```bash
+python scripts/build.py
 ```
 
-### 2. Build
-
-Run from the project root:
-
-```
-pyinstaller --onefile --name EDINET main.py
-```
-
-The exe is written to `dist/EDINET.exe`.
-
-### 3. Prepare the distribution folder
-
-Create a deployment folder and copy the required items into it:
-
-```
-EDINET.exe                                   <- built by PyInstaller (from dist/)
-.env                                         <- your API keys and DB paths
-config/
-    database_paths.json                      <- A list of database paths
-data/
-    ols_results/                             <- must exist for regression output steps
-    backtest_results/                        <- must exist for backtest output
-    raw_documents                            <- a wip folder where documents will be downloaded and deleted
-```
-
-### 4. Run
-
-Double-click `EDINET.exe` or launch it from a terminal.
-It starts the web server — open `http://127.0.0.1:8000` in your browser.
-It will look for `config/` and `.env` in the same folder as the exe.
-
-> **Note:** Large dependencies (pandas, scipy) make the final exe around 200-300 MB.
-> Build time is a few minutes on the first run.
+This produces `dist/EDINET-Release.zip` containing the `.exe`, empty databases,
+configuration files, and an `.env` template. See [docs/BUILDING.md](docs/BUILDING.md)
+for the full step-by-step guide.
 
 ## Configuration files
 

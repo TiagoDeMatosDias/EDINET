@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import sys
 
 
 def _run_web(host: str = "127.0.0.1", port: int = 8000, reload: bool = True) -> None:
@@ -10,13 +11,20 @@ def _run_web(host: str = "127.0.0.1", port: int = 8000, reload: bool = True) -> 
     Args:
         host: Host interface for the web server.
         port: Port for the web server.
-        reload: Enable auto-reload for development.
+        reload: Enable auto-reload for development. Forced to ``False``
+                in frozen PyInstaller builds.
     """
     from src.utilities.logger import setup_logging
     import uvicorn
 
     setup_logging()
     logger = logging.getLogger(__name__)
+
+    # PyInstaller one-file exe: reload spawns a child process that inherits
+    # internal multiprocessing args, breaking argparse.
+    if getattr(sys, "frozen", False):
+        reload = False
+
     logger.info("Starting web workstation on http://%s:%s", host, port)
 
     uvicorn.run("src.web_app.server:app", host=host, port=port, reload=reload)

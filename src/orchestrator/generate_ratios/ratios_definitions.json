@@ -211,7 +211,8 @@
                             "name": "PretaxIncome",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Income (loss) before income taxes"
+                                "Income (loss) before income taxes",
+                                "Profit (loss) before income taxes"
                             ],
                             "Aggregation": "sum"
                         }

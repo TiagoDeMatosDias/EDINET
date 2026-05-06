@@ -99,6 +99,7 @@ step("4/5  Assembling distribution directory")
 
 if STAGING_DIR.exists():
     shutil.rmtree(STAGING_DIR)
+STAGING_DIR.mkdir(parents=True, exist_ok=True)
 
 # Copy EXE
 shutil.copy2(EXE_SRC, STAGING_DIR / "EDINET.exe")
