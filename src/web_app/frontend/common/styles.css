@@ -1601,3 +1601,22 @@ th .bt-ticker-link:hover {
   margin-bottom: 6px;
   text-transform: uppercase;
 }
+
+.bt-csv-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+}
+
+.bt-csv-scroll table {
+  width: 100%;
+  font-size: 11px;
+  border-collapse: collapse;
+}
+
+.bt-csv-scroll th {
+  position: sticky;
+  top: 0;
+  background: var(--panel2);
+  z-index: 1;
+}

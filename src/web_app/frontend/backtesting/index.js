@@ -69,10 +69,11 @@ export function handleHashParams() {
     // New payload format: {csvContent, tickerCount, screeningDate}
     // Old payload format: {criteria, columns, screeningDate, …}
     if (payload.csvContent) {
-      // Direct ticker list — switch to CSV mode with pre-built content
+      // Direct ticker list from screening — stay on screener tab, preload CSV
       ST.csvContent = payload.csvContent;
       parseCSVPreview(payload.csvContent);
-      ST.mode = 'csv';
+      ST.mode = 'screener';
+      ST.screenerConfig = { tickerCount: payload.tickerCount, screeningDate: payload.screeningDate };
       if (payload.screeningDate) ST.startDate = payload.screeningDate;
       log('info', `Loaded ${payload.tickerCount || '?'} tickers from screening results.`);
     } else {
@@ -840,7 +841,7 @@ function parseCSVPreview(content) {
   }
   const header = lines[0].split(',').map(h => h.trim());
   const rows = [];
-  for (let i = 1; i < Math.min(lines.length, 21); i++) {
+  for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split(',');
     if (cols.length >= 4) {
       rows.push({
@@ -859,20 +860,22 @@ function renderCSVPreview() {
   if (!data || !data.rows.length) return el('div', { class: 'bt-warning', text: 'Could not parse CSV. Check format: Year,Tickers,Type,Amount' });
 
   return el('div', { class: 'bt-csv-preview' },
-    el('div', { class: 'bt-csv-preview-title', text: `Preview (${data.totalLines} rows total)` }),
-    el('table', { class: 'data-table' },
-      el('thead', {},
-        el('tr', {},
-          ...data.header.map(h => el('th', { text: h })),
-        ),
-      ),
-      el('tbody', {},
-        ...data.rows.map(r =>
+    el('div', { class: 'bt-csv-preview-title', text: `${data.totalLines} companies` }),
+    el('div', { class: 'bt-csv-scroll' },
+      el('table', { class: 'data-table' },
+        el('thead', {},
           el('tr', {},
-            el('td', { text: r.Year }),
-            el('td', { text: r.Tickers }),
-            el('td', { text: r.Type }),
-            el('td', { text: r.Amount }),
+            ...data.header.map(h => el('th', { text: h })),
+          ),
+        ),
+        el('tbody', {},
+          ...data.rows.map(r =>
+            el('tr', {},
+              el('td', { text: r.Year }),
+              el('td', {}, tickerLink(r.Tickers)),
+              el('td', { text: r.Type }),
+              el('td', { text: r.Amount }),
+            ),
           ),
         ),
       ),
