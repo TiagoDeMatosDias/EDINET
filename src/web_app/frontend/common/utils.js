@@ -30,6 +30,7 @@ export function el(tag, attrs = {}, ...children) {
     else if (key === 'text') node.textContent = value;
     else if (key === 'html') node.innerHTML = value;
     else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2), value);
+    else if (value === false) { /* no-op — boolean false means omit the attribute */ }
     else if (value !== undefined && value !== null) node.setAttribute(key, value);
   }
   for (const child of children.flat()) {

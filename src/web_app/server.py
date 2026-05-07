@@ -56,6 +56,11 @@ def page_screening() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "screening" / "screening.html")
 
 
+@app.get("/backtesting")
+def page_backtesting() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "backtesting" / "backtesting.html")
+
+
 @app.get("/security")
 def page_security() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "security_analysis" / "security.html")

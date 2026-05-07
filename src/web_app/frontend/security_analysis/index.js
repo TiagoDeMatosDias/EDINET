@@ -16,17 +16,34 @@ const state = {
 export function init() {
   try {
     const s = sessionStorage.getItem('sa.state');
-    if (s) { const p = JSON.parse(s); Object.assign(state, p); }
+    if (s) {
+      const p = JSON.parse(s);
+      // hiddenMetrics is serialized as { tableName: [field1, field2, ...] }
+      if (p.hiddenMetrics) {
+        const hm = {};
+        for (const [key, val] of Object.entries(p.hiddenMetrics)) {
+          hm[key] = new Set(Array.isArray(val) ? val : []);
+        }
+        p.hiddenMetrics = hm;
+      }
+      Object.assign(state, p);
+    }
   } catch (e) {}
 }
 
 export function markReady() { state.initDone = true; }
 
 function persist() {
-  try { sessionStorage.setItem('sa.state', JSON.stringify({
-    activeTable: state.activeTable, viewMode: state.viewMode,
-    millions: state.millions, hiddenMetrics: state.hiddenMetrics,
-  })); } catch (e) {}
+  try {
+    const hm = {};
+    for (const [key, s] of Object.entries(state.hiddenMetrics)) {
+      hm[key] = s instanceof Set ? [...s] : [];
+    }
+    sessionStorage.setItem('sa.state', JSON.stringify({
+      activeTable: state.activeTable, viewMode: state.viewMode,
+      millions: state.millions, hiddenMetrics: hm,
+    }));
+  } catch (e) {}
 }
 
 // ---------------------------------------------------------------------------

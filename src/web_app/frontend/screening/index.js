@@ -161,6 +161,7 @@ function buildShell() {
       el('button', { id: 'scr-btn-update-prices', class: 'scr-btn-soft', text: 'Update Prices' }),
       el('button', { id: 'scr-btn-export', class: 'scr-btn-soft', text: 'Export CSV' }),
       el('button', { id: 'scr-btn-export-bt', class: 'scr-btn-soft', text: 'Export Backtest' }),
+      el('button', { id: 'scr-btn-backtest', class: 'scr-btn-soft', text: 'Backtest →' }),
       el('label', { class: 'scr-toggle' },
         el('input', { id: 'scr-fmt', type: 'checkbox', checked: 'checked' }),
         el('span', { text: 'Formatted' }),
@@ -197,6 +198,7 @@ function wireShell() {
   $('#scr-btn-load').addEventListener('click', load);
   $('#scr-btn-export').addEventListener('click', exportCSV);
   $('#scr-btn-export-bt').addEventListener('click', exportBacktest);
+  $('#scr-btn-backtest').addEventListener('click', openInBacktesting);
   $('#scr-btn-update-prices').addEventListener('click', updatePrices);
   $('#scr-date').addEventListener('change', () => { ST.screeningDate = $('#scr-date').value; });
   $('#scr-fmt').addEventListener('change', () => { ST.formattedValues = $('#scr-fmt').checked; renderResults(); });
@@ -1833,6 +1835,58 @@ function escapeCSV(val) {
     return '"' + val.replace(/"/g, '""') + '"';
   }
   return val;
+}
+
+// ---------------------------------------------------------------------------
+// Open in Backtesting — pass ticker list directly (no re-screening)
+// ---------------------------------------------------------------------------
+
+function openInBacktesting() {
+  if (!ST.results?.row_count) {
+    log('warn', 'Run a screening first, then click Backtest →');
+    return;
+  }
+
+  const rows = ST.results.rows;
+  const cols = ST.results.columns;
+
+  // Find ticker column
+  let tickerIdx = -1;
+  for (let i = 0; i < cols.length; i++) {
+    if (/company_ticker|^ticker$/i.test(cols[i])) { tickerIdx = i; break; }
+  }
+  if (tickerIdx === -1) {
+    log('warn', 'Add Company_Ticker column to results first');
+    return;
+  }
+
+  // Extract unique tickers (preserving screening order)
+  const tickers = [];
+  for (const row of rows) {
+    const t = String(row[tickerIdx] || '').trim();
+    if (t && !tickers.includes(t)) tickers.push(t);
+  }
+
+  const year = ST.screeningDate
+    ? ST.screeningDate.substring(0, 4)
+    : new Date().getFullYear().toString();
+  const weight = tickers.length > 0 ? (1.0 / tickers.length) : 0;
+
+  // Build CSV lines — the backtesting page opens in CSV mode with this
+  const csvLines = ['Year,Tickers,Type,Amount'];
+  for (const t of tickers) {
+    csvLines.push(`${year},${t},weight,${weight.toFixed(6)}`);
+  }
+
+  const payload = {
+    csvContent: csvLines.join('\n'),
+    tickerCount: tickers.length,
+    screeningDate: ST.screeningDate,
+  };
+
+  const key = 'bt-screener-' + crypto.randomUUID();
+  sessionStorage.setItem(key, JSON.stringify(payload));
+  window.open('/backtesting#screener-key=' + encodeURIComponent(key), '_blank');
 }
 
 // ---------------------------------------------------------------------------

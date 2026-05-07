@@ -4,8 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" href="/favicon.ico" />
-    <title>Shade Research — Screening</title>
+    <title>Shade Research — Backtesting</title>
     <link rel="stylesheet" href="/assets/common/styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   </head>
   <body>
     <div class="app-shell" style="grid-template-rows:52px 1fr;">
@@ -20,23 +21,23 @@
         <nav class="tabs" aria-label="Primary navigation">
           <button class="tab" onclick="location.href='/'">Main</button>
           <button class="tab" onclick="location.href='/orchestrator'">Orchestrator</button>
-          <button class="tab is-active" onclick="void 0">Screening</button>
-          <button class="tab" onclick="location.href='/backtesting'">Backtesting</button>
+          <button class="tab" onclick="location.href='/screening'">Screening</button>
+          <button class="tab is-active" onclick="void 0">Backtesting</button>
           <button class="tab" onclick="location.href='/security'">Security Analysis</button>
         </nav>
         <div class="topbar-actions">
-          <div class="status-pill" id="backend-status">Connecting…</div>
+          <div class="status-pill" id="bt-backend-status">Connecting…</div>
           <button class="ghost-btn" id="refresh-btn">Refresh</button>
         </div>
       </header>
 
       <main class="workspace">
-        <section class="view is-active" data-view-panel="screening">
-          <div id="screening-root"></div>
+        <section class="view is-active" data-view-panel="backtesting">
+          <div id="bt-root"></div>
         </section>
       </main>
     </div>
 
-    <script type="module" src="/assets/screening/screening.js"></script>
+    <script type="module" src="/assets/backtesting/backtesting.js"></script>
   </body>
 </html>
