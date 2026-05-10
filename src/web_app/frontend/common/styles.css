@@ -1289,7 +1289,29 @@ body.console-collapsed .console {
 
 .bt-results {
   margin-top: 16px;
-  padding-bottom: 48px;
+  padding-bottom: 24px;
+}
+
+.bt-results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.bt-results-header-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.bt-results-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .bt-metric-row {
@@ -1555,6 +1577,104 @@ th .bt-ticker-link:hover {
 
 .bt-warning div {
   margin-bottom: 2px;
+}
+
+/* ── Saved backtests ── */
+
+.bt-saved {
+  margin-top: 24px;
+  padding-top: 16px;
+  padding-bottom: 48px;
+  border-top: 1px solid var(--line);
+}
+
+.bt-saved-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+
+.bt-saved-empty {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 12px;
+  background: var(--bg);
+  border: 1px dashed var(--line);
+}
+
+.bt-saved-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.bt-saved-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.bt-saved-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.bt-saved-name {
+  display: block;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bt-saved-meta {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.bt-saved-return {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.bt-saved-btn {
+  padding: 4px 12px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: var(--font);
+  white-space: nowrap;
+}
+
+.bt-saved-btn:hover {
+  background: rgba(88,166,255,0.1);
+  border-color: var(--accent);
+}
+
+.bt-saved-del {
+  padding: 2px 6px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.bt-saved-del:hover {
+  color: var(--danger);
 }
 
 /* ── CSV drop zone ── */

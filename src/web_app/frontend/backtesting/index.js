@@ -40,8 +40,35 @@ const ST = {
   activeResultIdx: 0,         // for set results: which result is selected
   charts: {},                 // {id: Chart} — active Chart.js instances
 
+  // Saved backtests (persisted in localStorage)
+  savedResults: [],           // [{id, name, mode, results, savedAt}]
+
   _nextId: 1,
 };
+
+const SAVED_KEY = 'edinet.backtesting.saved';
+
+function loadSavedResults() {
+  try {
+    const raw = localStorage.getItem(SAVED_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      ST.savedResults = Array.isArray(parsed)
+        ? parsed.filter(e => e && e.id && e.name && e.results)
+        : [];
+    } else {
+      ST.savedResults = [];
+    }
+  } catch { ST.savedResults = []; }
+}
+
+function persistSavedResults() {
+  try {
+    localStorage.setItem(SAVED_KEY, JSON.stringify(ST.savedResults));
+  } catch (e) {
+    log('warn', 'Failed to save backtest results: ' + e.message);
+  }
+}
 
 function uid() { return String(ST._nextId++); }
 
@@ -93,6 +120,7 @@ export function handleHashParams() {
 // ---------------------------------------------------------------------------
 
 function tickerLink(ticker) {
+  if (!ticker) return el('span', { text: '-' });
   return el('button', {
     class: 'bt-ticker-link',
     text: ticker,
@@ -177,6 +205,7 @@ function getTickersFromCSV() {
 // ---------------------------------------------------------------------------
 
 export async function render() {
+  loadSavedResults();
   const root = document.getElementById('bt-root');
   if (!root) return;
 
@@ -198,6 +227,9 @@ export async function render() {
       }
     });
   }
+
+  // Saved backtests section at the bottom
+  root.append(renderSavedResults());
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +251,6 @@ function renderModeTabs() {
         onclick: () => {
           if (ST.running) return;
           ST.mode = m.key;
-          ST.results = null;
           destroyAllCharts();
           render();
         },
@@ -1008,7 +1039,16 @@ function _downloadCSV(content, filename) {
 function renderResults() {
   if (!ST.results) return null;
 
-  const container = el('div', { class: 'bt-results' });
+  // Results header with actions
+  const header = el('div', { class: 'bt-results-header' },
+    el('span', { class: 'bt-results-header-title', text: 'Results' }),
+    el('div', { class: 'bt-results-actions' },
+      el('button', { class: 'bt-export-btn', text: 'Save', title: 'Save this backtest', onclick: () => saveBacktest() }),
+      el('button', { class: 'bt-export-btn', text: 'Clear', title: 'Remove results from view', onclick: () => { ST.results = null; destroyAllCharts(); render(); } }),
+    ),
+  );
+
+  const container = el('div', { class: 'bt-results' }, header);
 
   // Check if it's a single result (has metrics directly) or a set (has aggregate + results)
   if (ST.results.aggregate) {
@@ -1431,6 +1471,76 @@ function renderDividendTable(dividends) {
         ),
       ),
     ),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Save / Load backtest results
+// ---------------------------------------------------------------------------
+
+function saveBacktest() {
+  if (!ST.results) return;
+  const name = prompt('Save backtest as:', new Date().toLocaleString());
+  if (!name) return;
+
+  // Strip chart data to keep storage lean — charts are recreated from data
+  const slim = JSON.parse(JSON.stringify(ST.results));
+  const entry = {
+    id: uid(),
+    name,
+    mode: ST.mode,
+    results: slim,
+    savedAt: new Date().toISOString(),
+  };
+  ST.savedResults.unshift(entry);
+  persistSavedResults();
+  render();
+  log('info', `Saved backtest "${name}".`);
+}
+
+function loadBacktest(id) {
+  const entry = ST.savedResults.find(e => e.id === id);
+  if (!entry) return;
+  ST.results = entry.results;
+  ST.activeResultIdx = 0;
+  ST.mode = entry.mode || 'manual';
+  destroyAllCharts();
+  render();
+  log('info', `Loaded backtest "${entry.name}".`);
+}
+
+function deleteSavedBacktest(id) {
+  ST.savedResults = ST.savedResults.filter(e => e.id !== id);
+  persistSavedResults();
+  render();
+}
+
+function renderSavedResults() {
+  return el('div', { class: 'bt-saved' },
+    el('div', { class: 'bt-saved-title', text: 'Saved Backtests' }),
+    ST.savedResults.length === 0
+      ? el('div', { class: 'bt-saved-empty', text: 'No saved backtests. Run a backtest and click "Save" to keep it.' })
+      : el('div', { class: 'bt-saved-list' },
+        ...ST.savedResults.map(entry => {
+          const date = entry.savedAt ? new Date(entry.savedAt) : new Date();
+          const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          let summary = '';
+          if (entry.results && entry.results.metrics) {
+            summary = fmtPct(entry.results.metrics.total_return);
+          } else if (entry.results && entry.results.aggregate) {
+            summary = `Set (${entry.results.aggregate.successful}/${entry.results.aggregate.total_runs})`;
+          }
+          return el('div', { class: 'bt-saved-row' },
+            el('div', { class: 'bt-saved-info' },
+              el('span', { class: 'bt-saved-name', text: entry.name || 'Unnamed' }),
+              el('span', { class: 'bt-saved-meta', text: `${entry.mode || 'manual'} · ${dateStr}` }),
+            ),
+            summary ? el('span', { class: 'bt-saved-return', text: summary }) : el('span', { class: 'bt-saved-return' }),
+            el('button', { class: 'bt-saved-btn', text: 'Load', title: 'Load this backtest', onclick: () => loadBacktest(entry.id) }),
+            el('button', { class: 'bt-saved-del', text: '✕', title: 'Delete', onclick: () => deleteSavedBacktest(entry.id) }),
+          );
+        }),
+      ),
   );
 }
 
