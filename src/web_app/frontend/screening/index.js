@@ -162,6 +162,7 @@ function buildShell() {
       el('button', { id: 'scr-btn-export', class: 'scr-btn-soft', text: 'Export CSV' }),
       el('button', { id: 'scr-btn-export-bt', class: 'scr-btn-soft', text: 'Export Backtest' }),
       el('button', { id: 'scr-btn-backtest', class: 'scr-btn-soft', text: 'Backtest →' }),
+      el('button', { id: 'scr-btn-rolling-bt', class: 'scr-btn-soft', text: 'Rolling Backtest →', title: 'Pass criteria to Rolling Screening mode' }),
       el('label', { class: 'scr-toggle' },
         el('input', { id: 'scr-fmt', type: 'checkbox', checked: 'checked' }),
         el('span', { text: 'Formatted' }),
@@ -199,6 +200,7 @@ function wireShell() {
   $('#scr-btn-export').addEventListener('click', exportCSV);
   $('#scr-btn-export-bt').addEventListener('click', exportBacktest);
   $('#scr-btn-backtest').addEventListener('click', openInBacktesting);
+  $('#scr-btn-rolling-bt').addEventListener('click', openRollingBacktest);
   $('#scr-btn-update-prices').addEventListener('click', updatePrices);
   $('#scr-date').addEventListener('change', () => { ST.screeningDate = $('#scr-date').value; });
   $('#scr-fmt').addEventListener('change', () => { ST.formattedValues = $('#scr-fmt').checked; renderResults(); });
@@ -1887,6 +1889,47 @@ function openInBacktesting() {
   const key = 'bt-screener-' + crypto.randomUUID();
   sessionStorage.setItem(key, JSON.stringify(payload));
   window.open('/backtesting#screener-key=' + encodeURIComponent(key), '_blank');
+}
+
+// ---------------------------------------------------------------------------
+// Open Rolling Backtest — pass full criteria config
+// ---------------------------------------------------------------------------
+
+function openRollingBacktest() {
+  if (!ST.criteria.length) {
+    log('warn', 'Add at least one screening criterion first.');
+    return;
+  }
+
+  // Build clean criteria (strip UI-only fields)
+  const cleanCriteria = ST.criteria.map(c => {
+    const crit = { ...c };
+    delete crit.id;
+    if (c.comparison_mode === 'full_expression' || crit.operator === 'IS' || crit.operator === 'IS NOT') {
+      if (crit.value === undefined) delete crit.value;
+    }
+    return crit;
+  });
+
+  // Ensure Stock_Prices column is present for LatestPrice
+  const fullCols = [...colRefs()];
+  if (!fullCols.some(c => c.startsWith('Stock_Prices.'))) {
+    fullCols.push('Stock_Prices.Price');
+  }
+
+  const payload = {
+    mode: 'rolling',
+    criteria: cleanCriteria,
+    columns: fullCols,
+    computedColumns: computedColSpecs(),
+    rankingAlgorithm: 'none',  // default, user configures on backtesting page
+    rankingRules: [],
+    screeningDate: ST.screeningDate,
+  };
+
+  const key = 'bt-rolling-' + crypto.randomUUID();
+  sessionStorage.setItem(key, JSON.stringify(payload));
+  window.open('/backtesting#rolling-key=' + encodeURIComponent(key), '_blank');
 }
 
 // ---------------------------------------------------------------------------

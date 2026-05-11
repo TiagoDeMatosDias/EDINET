@@ -170,3 +170,53 @@ export function metric(label, value, tone) {
     el('div', { class: 'metric-sub', text: tone.toUpperCase() }),
   );
 }
+
+/**
+ * Fetch a streaming SSE endpoint and call onEvent for each event.
+ * Returns the AbortController for cancellation.
+ *
+ * @param {string} url
+ * @param {object} options - fetch options (method, headers, body)
+ * @param {function} onEvent - called with {type, data} for each SSE event
+ * @param {function} onError - called on stream/network errors
+ * @returns {AbortController}
+ */
+export function fetchSSE(url, options, onEvent, onError) {
+  const controller = new AbortController();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  fetch(url, { ...options, signal: controller.signal })
+    .then(async (response) => {
+      if (!response.ok) {
+        const err = await response.text();
+        onError(new Error(err || `HTTP ${response.status}`));
+        return;
+      }
+      const reader = response.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop(); // incomplete last chunk
+        for (const part of parts) {
+          const lines = part.split('\n');
+          let eventType = 'message', data = '';
+          for (const line of lines) {
+            if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+            else if (line.startsWith('data: ')) data = line.slice(6);
+          }
+          if (data) {
+            try { data = JSON.parse(data); } catch (e) { /* keep as string */ }
+            onEvent({ type: eventType, data });
+          }
+        }
+      }
+    })
+    .catch((err) => {
+      if (err.name !== 'AbortError') onError(err);
+    });
+
+  return controller;
+}

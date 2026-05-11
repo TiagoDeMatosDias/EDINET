@@ -61,6 +61,16 @@ COMPANYINFO_INDUSTRY_CANDIDATES: list[str] = [
     "Business_Industry",
 ]
 
+SHARES_OUTSTANDING_CANDIDATES: list[str] = [
+    "SharesOutstanding",
+    "Shares_Outstanding",
+    "NumberOfShares",
+    "Number_of_shares",
+    "TotalShares",
+    "shares_outstanding",
+    "Shares",
+]
+
 OPERATOR_MAP: dict[str, str] = {
     ">": ">",
     ">=": ">=",

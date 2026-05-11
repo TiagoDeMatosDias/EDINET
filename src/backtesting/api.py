@@ -8,12 +8,16 @@ Heavy computation is offloaded via ``asyncio.to_thread`` with a
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import queue
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import backtesting as _bt
@@ -82,6 +86,24 @@ class CSVBacktestRequest(BaseModel):
     durations: list[str] = ["1yr", "2yr", "3yr", "5yr", "10yr"]
     initial_capital: float = 0.0
     risk_free_rate: float = 0.0
+
+
+class RollingScreeningRequest(BaseModel):
+    db_path: str = ""
+    criteria: list[dict]
+    columns: list[str]
+    computed_columns: list[dict] = []
+    cadence: str = "monthly"
+    durations: list[str] = ["1yr", "2yr", "3yr", "5yr", "10yr"]
+    weighting_modes: list[str] = ["equal"]
+    max_companies: int = 25
+    ranking_algorithm: str = "none"
+    ranking_rules: list[dict] = []
+    benchmark_ticker: str = ""
+    initial_capital: float = 0.0
+    risk_free_rate: float = 0.0
+    start_period: str | None = None
+    end_period: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -203,3 +225,110 @@ async def run_from_csv(request: CSVBacktestRequest = Body(...)) -> dict:
         except Exception as e:
             logger.error("CSV backtest set failed: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rolling-periods")
+def get_rolling_periods(
+    db_path: str = Query(default="", description="Database path"),
+    cadence: str = Query(default="monthly", description="monthly|quarterly|yearly"),
+    start_period: str | None = Query(default=None, description="YYYY-MM"),
+    end_period: str | None = Query(default=None, description="YYYY-MM"),
+    durations: str = Query(default="1yr,2yr,3yr,5yr,10yr"),
+    weighting_modes: str = Query(default="equal", description="comma-separated"),
+) -> dict:
+    """Return available screening periods and estimated backtest count."""
+    db = _resolve_db(db_path)
+    try:
+        periods = _bt._discover_screening_periods(
+            db, cadence, start_period, end_period,
+        )
+        dur_list = [d.strip() for d in durations.split(",") if d.strip()]
+        wm_list = [w.strip() for w in weighting_modes.split(",") if w.strip()]
+        estimated_backtests = len(periods) * len(dur_list) * len(wm_list)
+        return {
+            "periods": periods,
+            "count": len(periods),
+            "estimated_backtests": estimated_backtests,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("rolling-periods failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/run-rolling")
+async def run_rolling(
+    request: RollingScreeningRequest,
+    http_request: Request,
+) -> StreamingResponse:
+    """Run a rolling screening backtest with SSE progress streaming."""
+    db = _resolve_db(request.db_path)
+    progress_queue: queue.Queue = queue.Queue()
+    cancel_event = threading.Event()
+
+    async def event_generator():
+        loop = asyncio.get_event_loop()
+        task = asyncio.ensure_future(
+            asyncio.to_thread(
+                _bt.run_screening_backtest_rolling,
+                db_path=db,
+                criteria=request.criteria,
+                columns=request.columns,
+                cadence=request.cadence,
+                durations=request.durations,
+                weighting_modes=request.weighting_modes,
+                max_companies=request.max_companies,
+                ranking_algorithm=request.ranking_algorithm,
+                ranking_rules=request.ranking_rules,
+                computed_columns=request.computed_columns,
+                benchmark_ticker=request.benchmark_ticker,
+                initial_capital=request.initial_capital,
+                risk_free_rate=request.risk_free_rate,
+                start_period=request.start_period,
+                end_period=request.end_period,
+                progress_queue=progress_queue,
+                cancel_event=cancel_event,
+            )
+        )
+        try:
+            while True:
+                # Check if client disconnected
+                if await http_request.is_disconnected():
+                    cancel_event.set()
+                    break
+
+                try:
+                    msg = await loop.run_in_executor(
+                        None, progress_queue.get, True, 1.0,
+                    )
+                except queue.Empty:
+                    if task.done():
+                        break
+                    continue
+
+                yield f"data: {json.dumps(msg)}\n\n"
+                if msg.get("type") in ("result", "error"):
+                    break
+        finally:
+            cancel_event.set()
+            if not task.done():
+                task.cancel()
+
+        # After loop, check for thread exception
+        if task.done() and not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                error_msg = str(exc)
+                if "cancelled" in error_msg.lower():
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'cancelled'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'message': error_msg})}\n\n"
+
+    async with _semaphore:
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+        )

@@ -1979,3 +1979,62 @@ th .bt-ticker-link:hover {
 .bt-company-table th.sorted {
   color: var(--accent);
 }
+
+/* ── Rolling screening ────────────────────────────────────────── */
+
+.bt-heatmap-container {
+  min-height: 400px;
+  width: 100%;
+  max-width: 100%;
+  margin: 16px 0;
+}
+
+.bt-heatmap-container canvas {
+  display: block;
+  width: 100%;
+}
+
+.bt-rolling-summary {
+  margin: 16px 0;
+}
+
+.bt-period-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0;
+  flex-wrap: wrap;
+  padding-bottom: 4px;
+}
+
+.bt-period-nav {
+  padding: 4px 8px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.bt-period-nav:hover:not([disabled]) {
+  background: var(--line);
+}
+
+.bt-period-months {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.bt-rolling-drilldown {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.bt-config-summary {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+}

@@ -5,7 +5,7 @@
  * Results: charts (Chart.js), metric tiles, tables, heatmap for sets.
  */
 
-import { el, $, fetchJson } from '../common/utils.js';
+import { el, $, fetchJson, fetchSSE } from '../common/utils.js';
 import { log } from '../common/console.js';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +53,26 @@ const ST = {
   // Saved backtests (persisted in localStorage)
   savedResults: [],           // [{id, name, mode, results, savedAt}]
 
+  // Rolling screening backtest
+  rollingConfig: null,         // {criteria, columns, computedColumns, rankingAlgorithm, rankingRules}
+  rollingCadence: 'monthly',
+  rollingWeightingModes: ['equal'],
+  rollingMaxCompanies: 25,
+  rollingBenchmark: '',
+  rollingStartPeriod: '',
+  rollingEndPeriod: '',
+  rollingResult: null,         // RollingBacktestResult
+  rollingRunning: false,
+  rollingAbortController: null,
+  rollingProgress: null,       // current progress event
+  rollingActive: {
+    period: '',                // selected period for drill-down
+    weighting: 'equal',        // selected weighting mode for heatmap
+    duration: '1yr',           // selected duration for drill-down
+  },
+  rollingPeriodCount: null,   // estimated period count from API
+  rollingEstimatedBacktests: null,
+
   _nextId: 1,
 };
 
@@ -97,6 +117,42 @@ export function handleHashParams() {
   if (!hash) return;
 
   const params = new URLSearchParams(hash);
+
+  // Rolling screening mode
+  const rollingKey = params.get('rolling-key');
+  if (rollingKey) {
+    try {
+      const raw = sessionStorage.getItem(rollingKey);
+      if (!raw) {
+        log('warn', 'No rolling config found in sessionStorage for key ' + rollingKey);
+        return;
+      }
+      sessionStorage.removeItem(rollingKey);
+      const payload = JSON.parse(raw);
+      ST.mode = 'rolling';
+      ST.rollingConfig = {
+        criteria: payload.criteria || [],
+        columns: payload.columns || [],
+        computedColumns: payload.computedColumns || [],
+        rankingAlgorithm: payload.rankingAlgorithm || 'none',
+        rankingRules: payload.rankingRules || [],
+        screeningDate: payload.screeningDate || '',
+      };
+      if (payload.screeningDate) {
+        // Use screening year as default start period
+        ST.rollingStartPeriod = payload.screeningDate.substring(0, 7);
+      }
+      log('info', `Loaded rolling screening config with ${ST.rollingConfig.criteria.length} criteria.`);
+      // Fetch period estimate
+      fetchRollingPeriods();
+    } catch (err) {
+      log('error', 'Failed to parse rolling config: ' + err.message);
+      ST.mode = 'manual';
+    }
+    return;
+  }
+
+  // Screener mode (existing)
   const key = params.get('screener-key');
   if (!key) return;
 
@@ -119,6 +175,41 @@ export function handleHashParams() {
   } catch (err) {
     log('error', 'Failed to parse screener config: ' + err.message);
     ST.mode = 'manual';
+  }
+}
+
+async function fetchRollingPeriods() {
+  if (!ST.rollingConfig) return;
+
+  // Clear stale estimates before fetch so the UI shows loading state
+  ST.rollingPeriodCount = null;
+  ST.rollingEstimatedBacktests = null;
+
+  try {
+    const durList = ST.durations.join(',');
+    const wmList = ST.rollingWeightingModes.join(',');
+    const params = new URLSearchParams({
+      cadence: ST.rollingCadence,
+      durations: durList,
+      weighting_modes: wmList,
+      db_path: ST.dbPath || '',
+    });
+    if (ST.rollingStartPeriod) params.set('start_period', ST.rollingStartPeriod);
+    if (ST.rollingEndPeriod) params.set('end_period', ST.rollingEndPeriod);
+
+    const result = await fetchJson(
+      `/api/backtesting/rolling-periods?${params.toString()}`
+    );
+    ST.rollingPeriodCount = result.count;
+    ST.rollingEstimatedBacktests = result.estimated_backtests;
+    log('info', `Rolling periods (${ST.rollingCadence}): ${result.count} periods, ~${result.estimated_backtests} backtests`);
+  } catch (e) {
+    log('warn', 'Could not fetch rolling periods: ' + e.message);
+    ST.rollingPeriodCount = null;
+    ST.rollingEstimatedBacktests = null;
+  } finally {
+    // Re-render so the UI reflects the updated estimate
+    render();
   }
 }
 
@@ -236,16 +327,21 @@ export async function render() {
   );
 
   // If we have results, show them
-  if (ST.resultsList.length > 0) {
-    const r = renderResults();
+  if (ST.resultsList.length > 0 || ST.rollingResult) {
+    const r = ST.mode === 'rolling' && ST.rollingResult
+      ? renderRollingResults()
+      : renderResults();
     if (r) root.append(r);
-    // Smooth-scroll to results after DOM is painted
-    requestAnimationFrame(() => {
-      const anchor = document.getElementById('bt-results-anchor');
-      if (anchor && window.scrollY < anchor.offsetTop - 60) {
-        anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
-    });
+    // Smooth-scroll to results on initial load only (not during drill-down)
+    if (!ST._suppressScroll) {
+      requestAnimationFrame(() => {
+        const anchor = document.getElementById('bt-results-anchor');
+        if (anchor && window.scrollY < anchor.offsetTop - 60) {
+          anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+    }
+    ST._suppressScroll = false;
   }
 
   // Saved backtests section at the bottom
@@ -261,6 +357,7 @@ function renderModeTabs() {
     { key: 'manual', label: 'Manual Portfolio' },
     { key: 'screener', label: 'From Screener' },
     { key: 'csv', label: 'From CSV' },
+    { key: 'rolling', label: 'Rolling Screening' },
   ];
 
   return el('div', { class: 'bt-mode-tabs' },
@@ -353,6 +450,8 @@ function renderConfigPanel() {
     container.append(...renderScreenerConfig());
   } else if (ST.mode === 'csv') {
     container.append(...renderCSVConfig());
+  } else if (ST.mode === 'rolling') {
+    container.append(...renderRollingConfig());
   }
 
   return container;
@@ -717,6 +816,975 @@ function cancelRun() {
     ST.runPhase = 'Cancelling…';
     log('info', 'Cancelling backtest…');
   }
+}
+
+// ── Rolling Screening ────────────────────────────────────────────────
+
+function renderRollingConfig() {
+  const children = [];
+  const cfg = ST.rollingConfig;
+
+  if (!cfg) {
+    if (ST.rollingResult) {
+      // Results loaded from saved — show minimal info
+      children.push(
+        el('div', { class: 'bt-config-row' },
+          el('label', { class: 'bt-config-label', text: 'Source' }),
+          el('div', { class: 'bt-config-fields' },
+            el('span', { class: 'bt-config-summary', text: 'Loaded from saved results' }),
+          ),
+        ),
+      );
+      return children;
+    }
+    children.push(
+      el('div', { class: 'bt-warning', text: 'No rolling screening configuration loaded. Go to the Screening page, build criteria, and click "Rolling Backtest →".' }),
+    );
+    return children;
+  }
+
+  // Criteria summary
+  children.push(
+    el('div', { class: 'bt-config-row' },
+      el('label', { class: 'bt-config-label', text: 'Criteria' }),
+      el('div', { class: 'bt-config-fields' },
+        el('span', { class: 'bt-config-summary', text: `${cfg.criteria.length} criterion/criteria from Screening page` }),
+        el('button', { class: 'btn-ghost', text: 'Edit in Screening →', style: 'margin-left:8px',
+          onclick: () => window.open('/screening', '_blank'),
+        }),
+      ),
+    ),
+  );
+
+  // Cadence selector
+  children.push(
+    el('div', { class: 'bt-config-row' },
+      el('label', { class: 'bt-config-label', text: 'Cadence' }),
+      el('div', { class: 'bt-duration-group' },
+        ...['monthly', 'quarterly', 'yearly'].map(c =>
+          el('label', { class: 'bt-duration-chip' },
+            el('input', {
+              type: 'radio', name: 'rolling-cadence',
+              checked: ST.rollingCadence === c,
+              onchange: () => {
+                ST.rollingCadence = c;
+                fetchRollingPeriods();
+                render();
+              },
+            }),
+            el('span', { text: c.charAt(0).toUpperCase() + c.slice(1) }),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  // Durations
+  children.push(
+    el('div', { class: 'bt-config-row' },
+      el('label', { class: 'bt-config-label', text: 'Durations' }),
+      el('div', { class: 'bt-duration-group' },
+        ...['1yr', '2yr', '3yr', '5yr', '10yr'].map(d =>
+          el('label', { class: 'bt-duration-chip' },
+            el('input', {
+              type: 'checkbox',
+              checked: ST.durations.includes(d),
+              onchange: (e) => {
+                if (e.target.checked) {
+                  if (!ST.durations.includes(d)) ST.durations.push(d);
+                } else {
+                  ST.durations = ST.durations.filter(x => x !== d);
+                }
+                fetchRollingPeriods();
+                render();
+              },
+            }),
+            el('span', { text: d }),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  // Weighting modes
+  children.push(
+    el('div', { class: 'bt-config-row' },
+      el('label', { class: 'bt-config-label', text: 'Weighting' }),
+      el('div', { class: 'bt-duration-group' },
+        el('label', { class: 'bt-duration-chip' },
+          el('input', {
+            type: 'checkbox',
+            checked: ST.rollingWeightingModes.includes('equal'),
+            disabled: true,
+          }),
+          el('span', { text: 'Equal Weight' }),
+        ),
+        el('label', { class: 'bt-duration-chip' },
+          el('input', {
+            type: 'checkbox',
+            checked: ST.rollingWeightingModes.includes('market_cap'),
+            onchange: (e) => {
+              if (e.target.checked) {
+                if (!ST.rollingWeightingModes.includes('market_cap')) ST.rollingWeightingModes.push('market_cap');
+              } else {
+                ST.rollingWeightingModes = ST.rollingWeightingModes.filter(x => x !== 'market_cap');
+              }
+              fetchRollingPeriods();
+              render();
+            },
+          }),
+          el('span', { text: 'Market Cap Weighted' }),
+        ),
+      ),
+    ),
+  );
+
+  // Max companies
+  children.push(
+    el('div', { class: 'bt-config-row' },
+      el('label', { class: 'bt-config-label', text: 'Max Companies' }),
+      el('div', { class: 'bt-config-fields' },
+        el('input', {
+          type: 'number', class: 'bt-input', style: 'width:100px',
+          min: 1, max: 100,
+          value: ST.rollingMaxCompanies,
+          oninput: (e) => { ST.rollingMaxCompanies = parseInt(e.target.value) || 25; },
+        }),
+      ),
+    ),
+  );
+
+  // Benchmark ticker
+  children.push(
+    el('div', { class: 'bt-config-row' },
+      el('label', { class: 'bt-config-label', text: 'Benchmark' }),
+      el('div', { class: 'bt-config-fields' },
+        el('input', {
+          type: 'text', class: 'bt-input', style: 'width:160px',
+          placeholder: 'e.g. 1321.T',
+          value: ST.rollingBenchmark,
+          oninput: (e) => { ST.rollingBenchmark = e.target.value; },
+        }),
+      ),
+    ),
+  );
+
+  // Period range
+  children.push(
+    el('div', { class: 'bt-config-row' },
+      el('label', { class: 'bt-config-label', text: 'Period Range' }),
+      el('div', { class: 'bt-config-fields' },
+        el('input', {
+          type: 'month', class: 'bt-input', style: 'width:150px',
+          value: ST.rollingStartPeriod,
+          onchange: (e) => {
+            ST.rollingStartPeriod = e.target.value;
+            fetchRollingPeriods();
+          },
+        }),
+        el('span', { text: ' → ', class: 'bt-config-sep' }),
+        el('input', {
+          type: 'month', class: 'bt-input', style: 'width:150px',
+          value: ST.rollingEndPeriod,
+          onchange: (e) => {
+            ST.rollingEndPeriod = e.target.value;
+            fetchRollingPeriods();
+          },
+        }),
+      ),
+    ),
+  );
+
+  // Estimated run count
+  if (ST.rollingPeriodCount != null) {
+    const warnClass = ST.rollingEstimatedBacktests > 2000 ? ' style="color:var(--warning)"' : '';
+    children.push(
+      el('div', { class: 'bt-config-row' },
+        el('label', { class: 'bt-config-label', text: 'Estimate' }),
+        el('div', { class: 'bt-config-fields' },
+          el('span', { class: 'bt-config-summary',
+            html: `~${ST.rollingEstimatedBacktests} backtests across ${ST.rollingPeriodCount} periods` +
+              (ST.rollingEstimatedBacktests > 2000 ? ' <span style="color:var(--warning)">(may take several minutes)</span>' : ''),
+          }),
+        ),
+      ),
+    );
+  }
+
+  // Run / Cancel buttons
+  children.push(
+    el('div', { class: 'bt-config-actions' },
+      el('button', {
+        class: 'bt-run-btn',
+        text: ST.rollingRunning ? 'Running…' : 'Run Rolling Backtest',
+        disabled: ST.rollingRunning,
+        onclick: () => runRollingBacktest(),
+      }),
+    ),
+  );
+
+  // Progress spinner when running
+  if (ST.rollingRunning) {
+    const prog = ST.rollingProgress;
+    children.push(
+      el('div', { class: 'bt-spinner' },
+        el('div', { class: 'bt-spinner-text', text: prog ? prog.phase || 'Running…' : 'Running…' }),
+        prog ? el('div', { id: 'bt-rolling-status', class: 'bt-update-status',
+          text: prog.period_index != null
+            ? `Period ${prog.period_index + 1}/${prog.total_periods} · Backtest ${prog.completed_backtests}/${prog.total_backtests}`
+            : '',
+        }) : null,
+        el('button', { class: 'bt-cancel-btn', text: 'Cancel', onclick: () => cancelRollingRun() }),
+      ),
+    );
+  }
+
+  return children;
+}
+
+function cancelRollingRun() {
+  if (ST.rollingAbortController) {
+    ST.rollingAbortController.abort();
+    log('info', 'Cancelling rolling backtest…');
+  }
+}
+
+/** Navigate drill-down without scrolling to top. Call instead of render(). */
+function drillDownRefresh() {
+  ST._suppressScroll = true;
+  destroyAllCharts();
+  render();
+}
+
+async function runRollingBacktest() {
+  const cfg = ST.rollingConfig;
+  if (!cfg) {
+    ST.error = 'No rolling screening configuration loaded.';
+    render();
+    return;
+  }
+  if (!cfg.criteria.length) {
+    ST.error = 'At least one screening criterion is required.';
+    render();
+    return;
+  }
+  if (!ST.durations.length) {
+    ST.error = 'Select at least one holding duration.';
+    render();
+    return;
+  }
+
+  ST.error = null;
+  ST.warning = null;
+  ST.rollingRunning = true;
+  ST.rollingProgress = null;
+  ST.rollingResult = null;
+  ST.rollingAbortController = new AbortController();
+  render();
+
+  try {
+    const controller = fetchSSE(
+      '/api/backtesting/run-rolling',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          criteria: cfg.criteria,
+          columns: cfg.columns,
+          computed_columns: cfg.computedColumns,
+          cadence: ST.rollingCadence,
+          durations: ST.durations,
+          weighting_modes: ST.rollingWeightingModes,
+          max_companies: ST.rollingMaxCompanies,
+          ranking_algorithm: cfg.rankingAlgorithm,
+          ranking_rules: cfg.rankingRules,
+          benchmark_ticker: ST.rollingBenchmark,
+          start_period: ST.rollingStartPeriod || null,
+          end_period: ST.rollingEndPeriod || null,
+        }),
+        signal: ST.rollingAbortController.signal,
+      },
+      (event) => {
+        if (event.type === 'result' || event.data?.type === 'result') {
+          const data = event.type === 'result' ? event.data : event.data;
+          ST.rollingResult = data;
+          ST.rollingRunning = false;
+          ST.rollingProgress = null;
+          log('info', `Rolling backtest complete: ${data.aggregate?.successful || 0} successful backtests.`);
+          render();
+        } else if (event.type === 'error' || event.data?.type === 'error') {
+          const data = event.type === 'error' ? event.data : event.data;
+          const msg = typeof data === 'string' ? data : (data?.message || 'Unknown error');
+          if (msg === 'cancelled') {
+            log('info', 'Rolling backtest cancelled.');
+          } else {
+            ST.error = 'Rolling backtest failed: ' + msg;
+            log('error', 'Rolling backtest failed: ' + msg);
+          }
+          ST.rollingRunning = false;
+          ST.rollingProgress = null;
+          render();
+        } else if (event.type === 'progress' || event.data?.type === 'progress') {
+          const data = event.type === 'progress' ? event.data : event.data;
+          ST.rollingProgress = data;
+          render();
+        }
+      },
+      (err) => {
+        if (err.name === 'AbortError') {
+          log('info', 'Rolling backtest cancelled by user.');
+        } else {
+          ST.error = 'Rolling backtest failed: ' + err.message;
+          log('error', 'Rolling backtest failed: ' + err.message);
+        }
+        ST.rollingRunning = false;
+        ST.rollingProgress = null;
+        render();
+      },
+    );
+    // Sync with ST.rollingAbortController
+    controller.signal.addEventListener('abort', () => {
+      // Already handled via the SSE controller
+    });
+  } catch (e) {
+    ST.error = 'Rolling backtest failed: ' + e.message;
+    ST.rollingRunning = false;
+    ST.rollingProgress = null;
+    render();
+  }
+}
+
+// ── Rolling Results ──────────────────────────────────────────────────
+
+function renderRollingResults() {
+  const result = ST.rollingResult;
+  if (!result) return null;
+
+  const agg = result.aggregate;
+  const container = el('div', { class: 'bt-results', id: 'bt-results-anchor' });
+
+  // Header with actions
+  const header = el('div', { class: 'bt-results-header' },
+    el('span', { class: 'bt-results-header-title', text: 'Rolling Screening Results' }),
+    el('div', { class: 'bt-results-actions' },
+      el('button', { class: 'bt-export-btn', text: 'Save', title: 'Save this rolling backtest', onclick: () => saveRollingBacktest() }),
+    ),
+  );
+  container.append(header);
+
+  // Parameter summary
+  const cfg = result.config;
+  if (cfg) {
+    const parts = [
+      `Cadence: ${cfg.cadence}`,
+      `Durations: ${(cfg.durations || []).join(', ')}`,
+      `Weighting: ${(cfg.weighting_modes || []).join(', ')}`,
+      `Max companies: ${cfg.max_companies}`,
+    ];
+    if (cfg.benchmark_ticker) parts.push(`Benchmark: ${cfg.benchmark_ticker}`);
+    if (cfg.start_period) parts.push(`Range: ${cfg.start_period} → ${cfg.end_period || 'latest'}`);
+    container.append(el('div', { class: 'bt-param-summary', text: parts.join('  ·  ') }));
+  }
+
+  // ── Summary metric tiles ──────────────────────────────────────────
+  if (agg.stats) {
+    const tiles = [
+      { label: 'Mean Ann. Return', value: fmtPct(agg.stats.total_return.mean) },
+      { label: 'Mean Sharpe', value: (agg.stats.sharpe_ratio.mean || 0).toFixed(3) },
+      { label: 'Mean Max Drawdown', value: fmtPct(agg.stats.max_drawdown.mean), color: 'var(--danger)' },
+    ];
+    if (agg.stats.total_return) {
+      tiles.push(
+        { label: 'Best Period', value: fmtPct(agg.stats.total_return.max), color: 'var(--success)' },
+        { label: 'Worst Period', value: fmtPct(agg.stats.total_return.min), color: 'var(--danger)' },
+      );
+    }
+    if (agg.benchmark_comparison) {
+      const bc = agg.benchmark_comparison;
+      tiles.push({
+        label: 'Beat Benchmark',
+        value: `${bc.outperformed}/${bc.outperformed + bc.underperformed} (${(bc.win_rate * 100).toFixed(0)}%)`,
+      });
+    }
+    tiles.push({
+      label: 'Backtests',
+      value: `${agg.successful} / ${agg.total_runs}`,
+    });
+
+    container.append(
+      el('div', { class: 'bt-metric-row' },
+        ...tiles.map(t =>
+          el('div', { class: 'bt-metric-tile' },
+            el('div', { class: 'bt-metric-label', text: t.label }),
+            el('div', { class: 'bt-metric-value', style: t.color ? `color:${t.color}` : '', text: t.value }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Summary table by duration ─────────────────────────────────────
+  if (agg.by_weighting) {
+    container.append(renderRollingSummaryTable(agg));
+  }
+
+  // ── Heatmap ───────────────────────────────────────────────────────
+  if (agg.heatmap) {
+    container.append(renderRollingHeatmapTabs(agg));
+  }
+
+  // ── Returns distribution chart ────────────────────────────────────
+  if (agg.stats && agg.stats.total_return) {
+    container.append(renderRollingDistribution(agg));
+  }
+
+  // ── Drill-down ────────────────────────────────────────────────────
+  if (result.results && result.results.length) {
+    container.append(renderRollingDrilldown(result));
+  }
+
+  return container;
+}
+
+function renderRollingSummaryTable(agg) {
+  const wmKeys = Object.keys(agg.by_weighting);
+  const durKeys = agg.by_weighting[wmKeys[0]] ? Object.keys(agg.by_weighting[wmKeys[0]]) : [];
+
+  return el('div', { class: 'bt-rolling-summary' },
+    el('div', { class: 'bt-chart-title', text: 'Summary by Duration' }),
+    el('table', { class: 'data-table' },
+      el('thead', {},
+        el('tr', {},
+          el('th', { text: 'Duration' }),
+          el('th', { text: 'Count' }),
+          el('th', { text: 'Mean Ann. Return' }),
+          el('th', { text: 'Median Ann. Return' }),
+          el('th', { text: 'Mean Sharpe' }),
+          ...(agg.benchmark_comparison?.by_duration
+            ? [el('th', { text: 'Win Rate' })]
+            : []
+          ),
+        ),
+      ),
+      el('tbody', {},
+        ...durKeys.map(dur => {
+          // Use first weighting mode for the table
+          const data = agg.by_weighting[wmKeys[0]][dur];
+          const winRate = agg.benchmark_comparison?.by_duration?.[dur];
+          return el('tr', {},
+            el('td', { text: dur }),
+            el('td', { class: 'num', text: data?.count || 0 }),
+            el('td', { class: 'num', style: colorStyle(data?.mean_return), text: fmtPct(data?.mean_return || 0) }),
+            el('td', { class: 'num', style: colorStyle(data?.median_return), text: fmtPct(data?.median_return || 0) }),
+            el('td', { class: 'num', text: (data?.mean_sharpe || 0).toFixed(3) }),
+            ...(winRate
+              ? [el('td', { class: 'num', text: `${(winRate.win_rate * 100).toFixed(0)}% (${winRate.out}/${winRate.total})` })]
+              : []
+            ),
+          );
+        }),
+      ),
+    ),
+  );
+}
+
+function renderRollingHeatmapTabs(agg) {
+  const container = el('div', {});
+  const wmKeys = Object.keys(agg.heatmap || {});
+  if (!wmKeys.length) return container;
+
+  // Use active weighting or first
+  const activeWM = ST.rollingActive.weighting && wmKeys.includes(ST.rollingActive.weighting)
+    ? ST.rollingActive.weighting
+    : wmKeys[0];
+
+  // Weighting selector
+  container.append(
+    el('div', { class: 'bt-duration-selector', style: 'margin-bottom:8px' },
+      ...wmKeys.map(wm =>
+        el('button', {
+          class: 'bt-duration-tab' + (wm === activeWM ? ' is-active' : ''),
+          text: wm === 'equal' ? 'Equal Weight' : wm === 'market_cap' ? 'Market Cap' : wm,
+          onclick: () => {
+            ST.rollingActive.weighting = wm;
+            drillDownRefresh();
+          },
+        }),
+      ),
+    ),
+  );
+
+  // Heatmap chart
+  container.append(
+    el('div', { class: 'bt-chart-container bt-heatmap-container' },
+      el('div', { class: 'bt-chart-title', text: 'Returns Heatmap' }),
+      el('canvas', { id: 'bt-rolling-heatmap' }),
+    ),
+  );
+
+  const hmData = agg.heatmap[activeWM];
+  if (hmData && document.getElementById('bt-rolling-heatmap')) {
+    requestAnimationFrame(() => {
+      createRollingHeatmapChart('bt-rolling-heatmap', hmData, agg);
+    });
+  }
+
+  return container;
+}
+
+function createRollingHeatmapChart(canvasId, hmData, agg) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+
+  let attempts = 0;
+  const tryCreate = () => {
+    if (!canvas.offsetParent && attempts < 20) {
+      attempts++;
+      requestAnimationFrame(tryCreate);
+      return;
+    }
+
+    const durations = Object.keys(hmData).sort((a, b) => {
+      const nums = { '1yr': 1, '2yr': 2, '3yr': 3, '5yr': 5, '10yr': 10 };
+      return (nums[a] || 99) - (nums[b] || 99);
+    });
+    if (!durations.length) return;
+
+    // Collect all periods and build lookup
+    const periodSet = new Set();
+    const returnMap = {};
+    for (const dur of durations) {
+      for (const item of (hmData[dur] || [])) {
+        periodSet.add(item.period);
+        returnMap[item.period + '|' + dur] = item.return;
+      }
+    }
+    const periods = [...periodSet].sort();
+    if (!periods.length) return;
+
+    const allVals = [];
+    for (const period of periods) {
+      for (const dur of durations) {
+        const v = returnMap[period + '|' + dur];
+        if (v != null) allVals.push(v * 100);
+      }
+    }
+    const minV = Math.min(...allVals, 0);
+    const maxV = Math.max(...allVals, 0);
+    const range = maxV - minV || 1;
+
+    function heatColor(t) {
+      if (t >= 0) {
+        const g = Math.round(150 + 105 * Math.min(t, 1));
+        return `rgb(68,${g},123)`;
+      }
+      const r = Math.round(200 + 55 * Math.min(Math.abs(t), 1));
+      return `rgb(${r},68,68)`;
+    }
+
+    // Set canvas size (HiDPI-aware)
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    const W = Math.max(rect.width, 600);  // fallback minimum
+    const leftPad = 90, rightPad = 16, topPad = 28, bottomPad = 20;
+    const cellH = Math.min(20, Math.max(12, (400 - topPad - bottomPad) / periods.length));
+    const cellW = (W - leftPad - rightPad) / durations.length;
+    const H = topPad + periods.length * cellH + bottomPad;
+
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+
+    // Draw cells
+    for (let pi = 0; pi < periods.length; pi++) {
+      const period = periods[pi];
+      const y = topPad + pi * cellH;
+      for (let di = 0; di < durations.length; di++) {
+        const dur = durations[di];
+        const ret = returnMap[period + '|' + dur];
+        const x = leftPad + di * cellW;
+
+        if (ret == null) {
+          ctx.fillStyle = 'rgba(255,255,255,0.03)';
+        } else {
+          const t = (ret * 100 - minV) / range;
+          ctx.fillStyle = heatColor(t);
+        }
+        ctx.fillRect(x + 1, y + 1, cellW - 2, cellH - 2);
+      }
+    }
+
+    // Y-axis labels (periods — show every Nth to avoid crowding)
+    ctx.fillStyle = '#8ea0b8';
+    ctx.font = '10px "IBM Plex Mono", monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    const labelStep = Math.max(1, Math.floor(periods.length / 25));
+    for (let pi = 0; pi < periods.length; pi++) {
+      if (pi % labelStep !== 0 && pi !== periods.length - 1) continue;
+      const y = topPad + pi * cellH + cellH / 2;
+      ctx.fillText(periods[pi].substring(0, 7), leftPad - 6, y);
+    }
+
+    // X-axis labels (durations)
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (let di = 0; di < durations.length; di++) {
+      const x = leftPad + di * cellW + cellW / 2;
+      ctx.fillText(durations[di].toUpperCase(), x, 8);
+    }
+
+    // Mouse interaction
+    canvas.onmousemove = (e) => {
+      const mx = e.offsetX, my = e.offsetY;
+      const di = Math.floor((mx - leftPad) / cellW);
+      const pi = Math.floor((my - topPad) / cellH);
+      if (di >= 0 && di < durations.length && pi >= 0 && pi < periods.length) {
+        canvas.style.cursor = 'pointer';
+        canvas.title = `${periods[pi]} / ${durations[di]}: ${fmtPct(returnMap[periods[pi] + '|' + durations[di]])}`;
+      } else {
+        canvas.style.cursor = 'default';
+        canvas.title = '';
+      }
+    };
+
+    canvas.onclick = (e) => {
+      const mx = e.offsetX, my = e.offsetY;
+      const di = Math.floor((mx - leftPad) / cellW);
+      const pi = Math.floor((my - topPad) / cellH);
+      if (di >= 0 && di < durations.length && pi >= 0 && pi < periods.length) {
+        ST.rollingActive.period = periods[pi];
+        ST.rollingActive.duration = durations[di];
+        destroyAllCharts();
+        render();
+        const panel = document.querySelector('.bt-rolling-drilldown');
+        if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    };
+
+    // Color legend
+    const legendY = H - 12;
+    const legendW = Math.min(120, rightPad + cellW * 2);
+    const legendX = W - legendW - 4;
+    const grad = ctx.createLinearGradient(legendX, 0, legendX + legendW, 0);
+    grad.addColorStop(0, heatColor(0));
+    grad.addColorStop(0.3, heatColor(0.3));
+    grad.addColorStop(0.7, heatColor(0.7));
+    grad.addColorStop(1, heatColor(1));
+    ctx.fillStyle = grad;
+    ctx.fillRect(legendX, legendY, legendW, 8);
+    ctx.fillStyle = '#8ea0b8';
+    ctx.font = '8px "IBM Plex Mono", monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(minV.toFixed(1) + '%', legendX - 4, legendY + 8);
+    ctx.textAlign = 'left';
+    ctx.fillText(maxV.toFixed(1) + '%', legendX + legendW + 4, legendY + 8);
+
+    // Store canvas ref for export
+    ST.charts[canvasId] = { canvas, destroy: () => { delete ST.charts[canvasId]; } };
+    addChartExport(canvasId, 'rolling-heatmap');
+  };
+  tryCreate();
+}
+
+function renderRollingDistribution(agg) {
+  const container = el('div', { class: 'bt-chart-container', style: 'width:100%;max-width:100%' },
+    el('div', { class: 'bt-chart-title', text: 'Returns Distribution (Ann. 1yr)' }),
+    el('canvas', { id: 'bt-rolling-distribution' }),
+  );
+
+  setTimeout(() => {
+    const canvas = document.getElementById('bt-rolling-distribution');
+    if (!canvas) return;
+    let attempts = 0;
+    const tryCreate = () => {
+      if (!canvas.offsetParent && attempts < 20) {
+        attempts++;
+        requestAnimationFrame(tryCreate);
+        return;
+      }
+      if (ST.charts['bt-rolling-distribution']) {
+        ST.charts['bt-rolling-distribution'].destroy();
+        delete ST.charts['bt-rolling-distribution'];
+      }
+
+      // Collect 1yr annualized returns
+      const values = [];
+      const result = ST.rollingResult;
+      if (result?.results) {
+        for (const r of result.results) {
+          if (!r.backtests) continue;
+          for (const wm of Object.keys(r.backtests)) {
+            const bt = (r.backtests[wm] || {})['1yr'];
+            if (bt?.metrics?.total_return != null) {
+              values.push(bt.metrics.total_return * 100);
+            }
+          }
+        }
+      }
+
+      if (!values.length) return;
+
+      // Bin into ~20 buckets
+      const minV = Math.min(...values);
+      const maxV = Math.max(...values);
+      const bucketCount = Math.min(25, Math.max(8, Math.ceil(Math.sqrt(values.length))));
+      const bucketW = (maxV - minV) / bucketCount || 1;
+      const buckets = new Array(bucketCount).fill(0);
+      const bucketLabels = [];
+      for (let i = 0; i < bucketCount; i++) {
+        const lo = minV + i * bucketW;
+        const hi = lo + bucketW;
+        bucketLabels.push(`${lo >= 0 ? '+' : ''}${lo.toFixed(1)}%`);
+      }
+      for (const v of values) {
+        const idx = Math.min(bucketCount - 1, Math.floor((v - minV) / bucketW));
+        buckets[idx]++;
+      }
+
+      const ctx = canvas.getContext('2d');
+      ST.charts['bt-rolling-distribution'] = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: bucketLabels,
+          datasets: [{
+            label: 'Count',
+            data: buckets,
+            backgroundColor: 'rgba(88,166,255,0.3)',
+            borderColor: 'rgba(88,166,255,0.6)',
+            borderWidth: 1,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: {
+              ticks: { color: '#8ea0b8', maxTicksLimit: 12, maxRotation: 45, font: { size: 9 } },
+              grid: { color: 'rgba(255,255,255,0.06)' },
+            },
+            y: {
+              title: { display: true, text: 'Count', color: '#8ea0b8' },
+              ticks: { color: '#8ea0b8' },
+              grid: { color: 'rgba(255,255,255,0.06)' },
+            },
+          },
+          plugins: {
+            legend: { display: false },
+          },
+        },
+      });
+      addChartExport('bt-rolling-distribution', 'returns-distribution');
+    };
+    tryCreate();
+  }, 0);
+
+  return container;
+}
+
+function renderRollingDrilldown(result) {
+  const container = el('div', { class: 'bt-rolling-drilldown' });
+
+  // Period selector with prev/next + year-grouped dropdown
+  const periods = (result.results || []).map(r => r.period);
+  const activePeriod = ST.rollingActive.period || periods[0] || '';
+  const activeIdx = periods.indexOf(activePeriod);
+  const prevPeriod = activeIdx > 0 ? periods[activeIdx - 1] : null;
+  const nextPeriod = activeIdx < periods.length - 1 ? periods[activeIdx + 1] : null;
+
+  // Build year groups for dropdown
+  const yearGroups = {};
+  for (const p of periods) {
+    const y = p.substring(0, 4);
+    if (!yearGroups[y]) yearGroups[y] = [];
+    yearGroups[y].push(p);
+  }
+  const years = Object.keys(yearGroups).sort();
+
+  const periodRow = el('div', { class: 'bt-period-selector' });
+
+  // Prev button
+  periodRow.append(
+    el('button', {
+      class: 'bt-period-nav',
+      text: '◀',
+      title: prevPeriod ? `Previous: ${prevPeriod.substring(0, 7)}` : 'First period',
+      disabled: !prevPeriod,
+      style: prevPeriod ? '' : 'opacity:0.3;cursor:default',
+      onclick: prevPeriod ? () => {
+        ST.rollingActive.period = prevPeriod;
+        drillDownRefresh();
+      } : null,
+    }),
+  );
+
+  // Year dropdown
+  const activeYear = activePeriod.substring(0, 4);
+  const sel = el('select', {
+    class: 'bt-input',
+    style: 'width:auto;padding:4px 8px',
+    onchange: (e) => {
+      const y = e.target.value;
+      const first = yearGroups[y]?.[0];
+      if (first) {
+        ST.rollingActive.period = first;
+        drillDownRefresh();
+      }
+    },
+  });
+  for (const y of years) {
+    sel.append(el('option', { value: y, selected: y === activeYear ? '' : undefined }, y + ` (${yearGroups[y].length} periods)`));
+  }
+  periodRow.append(sel);
+
+  // Month buttons for the active year
+  const activeYearPeriods = yearGroups[activeYear] || [];
+  if (activeYearPeriods.length <= 15) {
+    periodRow.append(
+      el('span', { class: 'bt-period-months' },
+        ...activeYearPeriods.map(p => {
+          const label = p.substring(5, 7);
+          return el('button', {
+            class: 'bt-duration-tab' + (p === activePeriod ? ' is-active' : ''),
+            text: label,
+            title: p.substring(0, 7),
+            onclick: () => {
+              ST.rollingActive.period = p;
+              drillDownRefresh();
+            },
+          });
+        }),
+      ),
+    );
+  }
+
+  // Next button
+  periodRow.append(
+    el('button', {
+      class: 'bt-period-nav',
+      text: '▶',
+      title: nextPeriod ? `Next: ${nextPeriod.substring(0, 7)}` : 'Last period',
+      disabled: !nextPeriod,
+      style: nextPeriod ? '' : 'opacity:0.3;cursor:default',
+      onclick: nextPeriod ? () => {
+        ST.rollingActive.period = nextPeriod;
+        drillDownRefresh();
+      } : null,
+    }),
+  );
+
+  container.append(periodRow);
+
+  // Find selected period result
+  const periodResult = (result.results || []).find(r => r.period === activePeriod);
+  if (!periodResult) return container;
+
+  // Ticker list
+  if (periodResult.tickers?.length) {
+    container.append(
+      el('div', { class: 'bt-detail-panel' },
+        el('div', { class: 'bt-detail-title', text: `${periodResult.ticker_count || periodResult.tickers.length} companies matched at ${activePeriod}` }),
+        el('div', { class: 'bt-detail-tickers' },
+          ...periodResult.tickers.map(t => tickerLink(t)),
+        ),
+      ),
+    );
+  }
+
+  // Warnings for this period
+  if (periodResult.warnings?.length) {
+    container.append(
+      el('div', { class: 'bt-warning' },
+        ...periodResult.warnings.map(w => el('div', { text: '⚠ ' + w })),
+      ),
+    );
+  }
+
+  // Backtest detail for each weighting x duration
+  const backtests = periodResult.backtests || {};
+  const wmKeys = Object.keys(backtests);
+
+  // Weighting mode tabs for drill-down
+  const activeWM = ST.rollingActive.weighting && wmKeys.includes(ST.rollingActive.weighting)
+    ? ST.rollingActive.weighting
+    : wmKeys[0];
+
+  if (wmKeys.length > 1) {
+    container.append(
+      el('div', { class: 'bt-duration-selector' },
+        ...wmKeys.map(wm =>
+          el('button', {
+            class: 'bt-duration-tab' + (wm === activeWM ? ' is-active' : ''),
+            text: wm === 'equal' ? 'Equal Weight' : wm === 'market_cap' ? 'Market Cap' : wm,
+            onclick: () => {
+              ST.rollingActive.weighting = wm;
+              drillDownRefresh();
+            },
+          }),
+        ),
+      ),
+    );
+  }
+
+  // Duration tabs for detail view
+  const durKeys = Object.keys(backtests[activeWM] || {});
+  const activeDur = ST.rollingActive.duration && durKeys.includes(ST.rollingActive.duration)
+    ? ST.rollingActive.duration
+    : durKeys[0];
+
+  if (durKeys.length > 1) {
+    container.append(
+      el('div', { class: 'bt-duration-selector' },
+        ...durKeys.map(d =>
+          el('button', {
+            class: 'bt-duration-tab' + (d === activeDur ? ' is-active' : ''),
+            text: d,
+            onclick: () => {
+              ST.rollingActive.duration = d;
+              drillDownRefresh();
+            },
+          }),
+        ),
+      ),
+    );
+  }
+
+  // Render selected backtest
+  const btResult = (backtests[activeWM] || {})[activeDur];
+  if (btResult && btResult.metrics) {
+    container.append(
+      el('div', { class: 'bt-detail-panel' },
+        el('div', { class: 'bt-detail-title', text: `${activePeriod} — ${activeDur} (${activeWM})` }),
+        ...renderSingleResults(btResult),
+      ),
+    );
+  }
+
+  return container;
+}
+
+function saveRollingBacktest() {
+  if (!ST.rollingResult) return;
+  const name = prompt('Save rolling backtest as:', `Rolling ${ST.rollingCadence} ${new Date().toLocaleString()}`);
+  if (!name) return;
+
+  const slim = JSON.parse(JSON.stringify(ST.rollingResult));
+  const saved = {
+    id: uid(),
+    name,
+    mode: 'rolling',
+    results: slim,
+    savedAt: new Date().toISOString(),
+  };
+  ST.savedResults.unshift(saved);
+  persistSavedResults();
+  render();
+  log('info', `Saved rolling backtest "${name}".`);
 }
 
 // ── From Screener ────────────────────────────────────────────────────
@@ -1815,6 +2883,18 @@ function saveBacktest() {
 function loadBacktest(id) {
   const entry = ST.savedResults.find(e => e.id === id);
   if (!entry) return;
+
+  if (entry.mode === 'rolling') {
+    // Load rolling result directly
+    ST.rollingResult = entry.results;
+    ST.mode = 'rolling';
+    ST.rollingActive = { period: '', weighting: 'equal', duration: '1yr' };
+    destroyAllCharts();
+    render();
+    log('info', `Loaded rolling backtest "${entry.name}".`);
+    return;
+  }
+
   const resultEntry = {
     id: uid(),
     name: entry.name,
