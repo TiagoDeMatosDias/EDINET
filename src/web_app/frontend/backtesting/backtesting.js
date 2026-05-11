@@ -8,7 +8,8 @@
 import { log } from '../common/console.js';
 import { els } from '../common/state.js';
 import { refreshHealth, wireTopbarEvents } from '../common/topbar.js';
-import { render, handleHashParams } from './index.js';
+import { fetchJson } from '../common/utils.js';
+import { render, handleHashParams, setAvailableTickers } from './index.js';
 
 async function bootstrap() {
   wireTopbarEvents();
@@ -18,6 +19,17 @@ async function bootstrap() {
   window._pageRefresh = () => refreshHealth();
   log('info', 'Backtesting page initialized');
   await refreshHealth();
+
+  // Fetch available tickers for autocomplete
+  try {
+    const data = await fetchJson('/api/backtesting/available-tickers');
+    if (data.tickers) {
+      setAvailableTickers(data.tickers);
+      log('info', `Loaded ${data.tickers.length} tickers for autocomplete.`);
+    }
+  } catch (e) {
+    log('warn', 'Could not load ticker list: ' + e.message);
+  }
 
   // Parse hash params first so render() can show the correct mode
   handleHashParams();

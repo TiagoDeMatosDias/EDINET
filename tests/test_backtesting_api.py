@@ -66,12 +66,6 @@ class TestBacktestingAPI(unittest.TestCase):
 
     # ── POST /api/backtesting/run-from-screener ───────────────────────
 
-    def test_run_from_screener_missing_date_422(self):
-        resp = client.post("/api/backtesting/run-from-screener", json={
-            "criteria": [{"table": "PerShare", "column": "test", "operator": ">", "value": 0}],
-        })
-        self.assertEqual(resp.status_code, 422)
-
     # ── POST /api/backtesting/run-from-csv ────────────────────────────
 
     def test_run_from_csv_empty_400(self):

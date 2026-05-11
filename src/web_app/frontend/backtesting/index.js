@@ -33,12 +33,22 @@ const ST = {
 
   // Run state
   running: false,
+  abortController: null,      // AbortController for cancel
+  runPhase: '',               // current run phase label
   durations: ['1yr', '2yr', '3yr', '5yr', '10yr'],
 
-  // Results
-  results: null,              // BacktestResult | BacktestSetResult
+  // UX state
+  error: null,                // string error message (inline banner)
+  warning: null,              // string warning message (inline banner)
+  lastRun: null,              // {mode, params} for retry
+  availableTickers: [],       // autocomplete list
+
+  // Results — array for multi-result comparison
+  resultsList: [],            // [{id, name, results, mode, params}]
+  activeResultTab: 0,         // which result tab is active
   activeResultIdx: 0,         // for set results: which result is selected
   charts: {},                 // {id: Chart} — active Chart.js instances
+  companySort: { column: 'total_return', asc: false },  // sortable per-company table
 
   // Saved backtests (persisted in localStorage)
   savedResults: [],           // [{id, name, mode, results, savedAt}]
@@ -72,6 +82,12 @@ function persistSavedResults() {
 
 function uid() { return String(ST._nextId++); }
 
+// Exported setter for backtesting.js bootstrap
+// (prevents circular import — sets ST.availableTickers after module load)
+export function setAvailableTickers(tickers) {
+  ST.availableTickers = tickers || [];
+}
+
 // ---------------------------------------------------------------------------
 // Hash params — screener deep-link
 // ---------------------------------------------------------------------------
@@ -93,22 +109,13 @@ export function handleHashParams() {
     sessionStorage.removeItem(key);
     const payload = JSON.parse(raw);
 
-    // New payload format: {csvContent, tickerCount, screeningDate}
-    // Old payload format: {criteria, columns, screeningDate, …}
-    if (payload.csvContent) {
-      // Direct ticker list from screening — stay on screener tab, preload CSV
-      ST.csvContent = payload.csvContent;
-      parseCSVPreview(payload.csvContent);
-      ST.mode = 'screener';
-      ST.screenerConfig = { tickerCount: payload.tickerCount, screeningDate: payload.screeningDate };
-      if (payload.screeningDate) ST.startDate = payload.screeningDate;
-      log('info', `Loaded ${payload.tickerCount || '?'} tickers from screening results.`);
-    } else {
-      // Legacy screener config — keep screener mode for now
-      ST.screenerConfig = payload;
-      ST.mode = 'screener';
-      log('warn', 'Using legacy screener config (will re-run screening).');
-    }
+    // Direct ticker list from screening — preload CSV, stay on screener tab
+    ST.csvContent = payload.csvContent;
+    parseCSVPreview(payload.csvContent);
+    ST.mode = 'screener';
+    ST.screenerConfig = { tickerCount: payload.tickerCount, screeningDate: payload.screeningDate };
+    if (payload.screeningDate) ST.startDate = payload.screeningDate;
+    log('info', `Loaded ${payload.tickerCount || '?'} tickers from screening results.`);
   } catch (err) {
     log('error', 'Failed to parse screener config: ' + err.message);
     ST.mode = 'manual';
@@ -156,16 +163,25 @@ async function updatePricesForTickers(tickers, benchmarkTicker) {
 
   const statusEl = document.getElementById('bt-update-status');
   const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
+  const parentSignal = ST.abortController?.signal;
 
   log('info', `Updating prices for ${all.length} ticker(s) before backtest…`);
   let updated = 0, failed = 0;
   for (let i = 0; i < all.length; i++) {
+    // Check parent abort between tickers
+    if (parentSignal?.aborted) {
+      log('info', 'Price update cancelled.');
+      return;
+    }
     const t = all[i];
     setStatus(`Updating prices… ${i + 1}/${all.length} (${t})`);
     try {
       // 15-second timeout per ticker so a hung request doesn't block the rest
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 15000);
+      // Also abort if parent is aborted
+      const onParentAbort = () => ctrl.abort();
+      parentSignal?.addEventListener('abort', onParentAbort, { once: true });
       await fetchJson('/api/security/update-price', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -173,11 +189,15 @@ async function updatePricesForTickers(tickers, benchmarkTicker) {
         signal: ctrl.signal,
       });
       clearTimeout(timer);
+      parentSignal?.removeEventListener('abort', onParentAbort);
       updated++;
     } catch (e) {
       failed++;
-      const reason = e.name === 'AbortError' ? 'timed out' : e.message;
+      const reason = e.name === 'AbortError'
+        ? (parentSignal?.aborted ? 'cancelled' : 'timed out')
+        : e.message;
       log('warn', `Price update failed for ${t}: ${reason}`);
+      if (parentSignal?.aborted) return;
     }
   }
   setStatus('');
@@ -212,18 +232,18 @@ export async function render() {
   root.replaceChildren();
 
   root.append(
-    renderModeTabs(),
-    renderConfigPanel(),
+    ...[renderModeTabs(), renderErrorBanner(), renderConfigPanel()].filter(Boolean),
   );
 
   // If we have results, show them
-  if (ST.results) {
-    root.append(renderResults());
+  if (ST.resultsList.length > 0) {
+    const r = renderResults();
+    if (r) root.append(r);
     // Smooth-scroll to results after DOM is painted
     requestAnimationFrame(() => {
-      const el = document.querySelector('.bt-results');
-      if (el && window.scrollY < el.offsetTop - 60) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const anchor = document.getElementById('bt-results-anchor');
+      if (anchor && window.scrollY < anchor.offsetTop - 60) {
+        anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
     });
   }
@@ -248,15 +268,66 @@ function renderModeTabs() {
       el('button', {
         class: 'bt-mode-tab' + (ST.mode === m.key ? ' is-active' : ''),
         text: m.label,
-        onclick: () => {
-          if (ST.running) return;
-          ST.mode = m.key;
-          destroyAllCharts();
-          render();
-        },
+        onclick: () => switchMode(m.key),
       })
     ),
   );
+}
+
+function switchMode(newMode) {
+  if (ST.running) return;
+  if (newMode === ST.mode) return;
+
+  // Warn if switching away from a mode with unsaved work
+  const hasUnsaved =
+    (ST.mode === 'manual' && ST.portfolio.some(p => p.ticker)) ||
+    (ST.mode === 'csv' && ST.csvContent);
+
+  if (hasUnsaved && !confirm('Switch mode? Your current configuration will be preserved but hidden. Continue?')) {
+    return;
+  }
+
+  ST.mode = newMode;
+  ST.error = null;
+  ST.warning = null;
+  destroyAllCharts();
+  render();
+}
+
+// ---------------------------------------------------------------------------
+// Error / warning banners
+// ---------------------------------------------------------------------------
+
+function renderErrorBanner() {
+  const children = [];
+  if (ST.error) {
+    children.push(
+      el('div', { class: 'bt-error' },
+        el('div', { class: 'bt-err-msg', text: ST.error }),
+        ST.lastRun ? el('button', { class: 'bt-err-retry', text: 'Retry', onclick: () => retryLastRun() }) : null,
+        el('button', { class: 'bt-err-dismiss', text: '✕', title: 'Dismiss', onclick: () => { ST.error = null; ST.warning = null; render(); } }),
+      ),
+    );
+  }
+  if (ST.warning) {
+    children.push(
+      el('div', { class: 'bt-warning' },
+        el('div', { text: '⚠ ' + ST.warning }),
+        el('button', { class: 'bt-err-dismiss', text: '✕', title: 'Dismiss', onclick: () => { ST.warning = null; render(); } }),
+      ),
+    );
+  }
+  return children.length ? el('div', { class: 'bt-banner-area' }, ...children) : null;
+}
+
+function retryLastRun() {
+  if (!ST.lastRun) return;
+  ST.error = null;
+  ST.warning = null;
+  const { mode, params } = ST.lastRun;
+  if (mode === 'manual') runManualBacktest();
+  else if (mode === 'screener') runScreenerBacktest();
+  else if (mode === 'csv') runCSVBacktest();
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +336,16 @@ function renderModeTabs() {
 
 function renderConfigPanel() {
   const container = el('div', { class: 'bt-config' });
+
+  if (ST.error) {
+    // Show error inside config too for proximity
+    container.append(
+      el('div', { class: 'bt-error', style: 'margin-bottom:12px' },
+        el('span', { text: ST.error }),
+        ST.lastRun ? el('button', { class: 'bt-err-retry', text: 'Retry', onclick: () => retryLastRun() }) : null,
+      ),
+    );
+  }
 
   if (ST.mode === 'manual') {
     container.append(...renderManualConfig());
@@ -286,18 +367,21 @@ function renderManualConfig() {
   children.push(
     el('div', { class: 'bt-config-row' },
       el('label', { class: 'bt-config-label', text: 'Date Range' }),
-      el('div', { class: 'bt-config-fields' },
-        el('input', {
-          type: 'date', class: 'bt-input',
-          value: ST.startDate,
-          onchange: (e) => { ST.startDate = e.target.value; },
-        }),
-        el('span', { text: ' → ', class: 'bt-config-sep' }),
-        el('input', {
-          type: 'date', class: 'bt-input',
-          value: ST.endDate,
-          onchange: (e) => { ST.endDate = e.target.value; },
-        }),
+      el('div', {},
+        el('div', { class: 'bt-config-fields' },
+          el('input', {
+            type: 'date', class: 'bt-input',
+            value: ST.startDate,
+            onchange: (e) => { ST.startDate = e.target.value; ST.error = null; },
+          }),
+          el('span', { text: ' → ', class: 'bt-config-sep' }),
+          el('input', {
+            type: 'date', class: 'bt-input',
+            value: ST.endDate,
+            onchange: (e) => { ST.endDate = e.target.value; ST.error = null; },
+          }),
+        ),
+        renderDatePresets(),
       ),
     ),
   );
@@ -379,8 +463,12 @@ function renderManualConfig() {
   if (ST.running) {
     children.push(
       el('div', { class: 'bt-spinner' },
-        el('div', { class: 'bt-spinner-text', text: 'Updating prices…' }),
+        el('div', { class: 'bt-spinner-text', text: ST.runPhase || 'Running…' }),
         el('div', { id: 'bt-update-status', class: 'bt-update-status' }),
+        el('button', {
+          class: 'bt-cancel-btn', text: 'Cancel',
+          onclick: () => cancelRun(),
+        }),
       ),
     );
   }
@@ -388,7 +476,60 @@ function renderManualConfig() {
   return children;
 }
 
+// ── Date presets ───────────────────────────────────────────────────
+
+function renderDatePresets() {
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+  const jan1 = `${today.getFullYear()}-01-01`;
+
+  const presets = [
+    { label: '1Y', start: subYears(today, 1) },
+    { label: '3Y', start: subYears(today, 3) },
+    { label: '5Y', start: subYears(today, 5) },
+    { label: '10Y', start: subYears(today, 10) },
+    { label: 'YTD', start: jan1 },
+    { label: '2020-25', start: '2020-01-01', end: '2025-01-01' },
+  ];
+
+  return el('div', { class: 'bt-date-presets' },
+    ...presets.map(p =>
+      el('button', {
+        class: 'bt-date-preset',
+        text: p.label,
+        title: `${p.start} → ${p.end || todayStr}`,
+        onclick: () => {
+          ST.startDate = p.start;
+          ST.endDate = p.end || todayStr;
+          ST.error = null;
+          render();
+        },
+      }),
+    ),
+  );
+}
+
+function subYears(date, n) {
+  const d = new Date(date);
+  d.setFullYear(d.getFullYear() - n);
+  return d.toISOString().slice(0, 10);
+}
+
 function renderPortfolioRows() {
+  // Ensure datalist exists for autocomplete
+  const datalistId = 'bt-ticker-list';
+  let dlist = document.getElementById(datalistId);
+  if (!dlist && ST.availableTickers.length) {
+    dlist = document.createElement('datalist');
+    dlist.id = datalistId;
+    ST.availableTickers.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t;
+      dlist.appendChild(opt);
+    });
+    document.body.appendChild(dlist);
+  }
+
   return ST.portfolio.map((p, idx) => {
     const removeBtn = el('button', {
       class: 'bt-portfolio-remove',
@@ -403,8 +544,9 @@ function renderPortfolioRows() {
     const tickerInput = el('input', {
       type: 'text', class: 'bt-input', style: 'width:110px',
       placeholder: 'e.g. 7203',
+      list: ST.availableTickers.length ? datalistId : null,
       value: p.ticker,
-      oninput: (e) => { p.ticker = e.target.value; },
+      oninput: (e) => { p.ticker = e.target.value; ST.error = null; },
     });
 
     const modeSelect = el('select', {
@@ -462,32 +604,60 @@ function refreshPortfolioList() {
 async function runManualBacktest() {
   // Validation
   if (ST.portfolio.length === 0) {
-    alert('Add at least one ticker to the portfolio.');
+    ST.error = 'Add at least one ticker to the portfolio.';
+    render();
     return;
   }
   if (!ST.startDate || !ST.endDate) {
-    alert('Select start and end dates.');
+    ST.error = 'Select start and end dates.';
+    render();
     return;
   }
   if (ST.startDate >= ST.endDate) {
-    alert('Start date must be before end date.');
+    ST.error = 'Start date must be before end date.';
+    render();
     return;
   }
   const weightSum = ST.portfolio
     .filter(p => p.mode === 'weight')
     .reduce((s, p) => s + (p.value || 0), 0);
   if (weightSum > 0 && Math.abs(weightSum - 1.0) > 0.01) {
-    log('warn', 'Weight-mode allocations sum to ' + weightSum.toFixed(4) + ' — will be normalized.');
+    ST.warning = 'Weight-mode allocations sum to ' + weightSum.toFixed(4) + ' — will be normalized.';
   }
 
+  ST.error = null;
   ST.running = true;
+  ST.runPhase = 'Updating prices…';
+  ST.abortController = new AbortController();
+  ST.lastRun = {
+    mode: 'manual',
+    params: {
+      portfolio: [...ST.portfolio],
+      startDate: ST.startDate,
+      endDate: ST.endDate,
+      benchmarkTicker: ST.benchmarkTicker,
+      initialCapital: ST.initialCapital,
+      riskFreeRate: ST.riskFreeRate,
+    },
+  };
   render();
 
   // Update prices for all tickers + benchmark before backtest
   const allTickers = ST.portfolio.map(p => p.ticker);
   await updatePricesForTickers(allTickers, ST.benchmarkTicker);
 
+  if (ST.abortController?.signal.aborted) {
+    ST.running = false;
+    ST.runPhase = '';
+    ST.abortController = null;
+    render();
+    return;
+  }
+
   try {
+    ST.runPhase = 'Running backtest…';
+    render();
+
     const portfolio = {};
     for (const p of ST.portfolio) {
       portfolio[p.ticker] = { mode: p.mode, value: p.value };
@@ -495,6 +665,7 @@ async function runManualBacktest() {
 
     const result = await fetchJson('/api/backtesting/run', {
       method: 'POST',
+      signal: ST.abortController.signal,
       body: JSON.stringify({
         portfolio,
         start_date: ST.startDate,
@@ -505,16 +676,46 @@ async function runManualBacktest() {
       }),
     });
 
-    ST.results = result;
+    const resultEntry = {
+      id: uid(),
+      name: `Manual: ${allTickers.length} tickers, ${ST.startDate} → ${ST.endDate}`,
+      results: result,
+      mode: 'manual',
+      params: {
+        tickers: allTickers,
+        startDate: ST.startDate,
+        endDate: ST.endDate,
+        benchmarkTicker: ST.benchmarkTicker,
+        initialCapital: ST.initialCapital,
+        riskFreeRate: ST.riskFreeRate,
+      },
+    };
+    ST.resultsList.push(resultEntry);
+    ST.activeResultTab = ST.resultsList.length - 1;
     ST.activeResultIdx = 0;
+    ST.warning = null;
     log('info', 'Backtest complete. Total return: ' +
       (result.metrics.total_return * 100).toFixed(2) + '%');
   } catch (err) {
-    log('error', 'Backtest failed: ' + err.message);
-    alert('Backtest failed: ' + err.message);
+    if (err.name === 'AbortError') {
+      log('info', 'Backtest cancelled by user.');
+    } else {
+      ST.error = 'Backtest failed: ' + err.message;
+      log('error', 'Backtest failed: ' + err.message);
+    }
   } finally {
     ST.running = false;
+    ST.runPhase = '';
+    ST.abortController = null;
     render();
+  }
+}
+
+function cancelRun() {
+  if (ST.abortController) {
+    ST.abortController.abort();
+    ST.runPhase = 'Cancelling…';
+    log('info', 'Cancelling backtest…');
   }
 }
 
@@ -633,73 +834,42 @@ function renderScreenerConfig() {
 }
 
 async function runScreenerBacktest() {
-  // Old-style screener config: run screening once to get tickers,
-  // then build a CSV and use the CSV backtest path.
-  // New-style flow (from screening page) already arrives as CSV content.
   const cfg = ST.screenerConfig;
   if (!cfg) return;
 
+  // Screener mode always uses pre-loaded CSV content from screening page
+  if (!ST.csvContent) {
+    ST.error = 'No ticker data loaded. Click "Backtest →" from the Screening page first.';
+    render();
+    return;
+  }
+
+  ST.error = null;
+  ST.warning = null;
   ST.running = true;
+  ST.runPhase = 'Updating prices…';
+  ST.abortController = new AbortController();
+  ST.lastRun = { mode: 'screener', params: { cfg, durations: [...ST.durations] } };
   render();
 
+  const csvTickers = getTickersFromCSV();
+  await updatePricesForTickers(csvTickers, ST.benchmarkTicker);
+
+  if (ST.abortController?.signal.aborted) {
+    ST.running = false;
+    ST.runPhase = '';
+    ST.abortController = null;
+    render();
+    return;
+  }
+
   try {
-    // If we already have CSV content, use it directly
-    if (ST.csvContent) {
-      // Update prices for all tickers from the CSV + benchmark
-      const csvTickers = getTickersFromCSV();
-      await updatePricesForTickers(csvTickers, ST.benchmarkTicker);
-    } else {
-      // Legacy: run screening to get ticker list, then build CSV
-      log('info', 'Running screening to get ticker list…');
-      const screenData = await fetchJson('/api/screening/run', {
-        method: 'POST',
-        body: JSON.stringify({
-          criteria: cfg.criteria,
-          columns: [...(cfg.columns || []), 'CompanyInfo.Company_Ticker'],
-          screening_date: cfg.screeningDate,
-          ranking_algorithm: cfg.rankingAlgorithm || 'none',
-          ranking_rules: cfg.rankingRules || null,
-          computed_columns: cfg.computedColumns || null,
-        }),
-      });
+    ST.runPhase = 'Running backtest set…';
+    render();
 
-      // Find ticker column
-      const cols = screenData.columns || [];
-      let tickerIdx = -1;
-      for (let i = 0; i < cols.length; i++) {
-        if (/company_ticker|^ticker$/i.test(cols[i])) { tickerIdx = i; break; }
-      }
-      if (tickerIdx === -1) throw new Error('No ticker column in screening results.');
-
-      const rows = screenData.rows || [];
-      const tickers = [];
-      for (const row of rows) {
-        const t = String(row[tickerIdx] || '').trim();
-        if (t && !tickers.includes(t)) tickers.push(t);
-      }
-
-      if (cfg.maxCompanies && tickers.length > cfg.maxCompanies) {
-        tickers.length = cfg.maxCompanies;
-      }
-
-      const weight = tickers.length > 0 ? (1.0 / tickers.length) : 0;
-      const year = cfg.screeningDate
-        ? cfg.screeningDate.substring(0, 4)
-        : new Date().getFullYear().toString();
-
-      const lines = ['Year,Tickers,Type,Amount'];
-      for (const t of tickers) {
-        lines.push(`${year},${t},weight,${weight.toFixed(6)}`);
-      }
-      ST.csvContent = lines.join('\n');
-
-      // Update prices for all tickers + benchmark
-      await updatePricesForTickers(tickers, ST.benchmarkTicker);
-    }
-
-    // Run via CSV endpoint
     const result = await fetchJson('/api/backtesting/run-from-csv', {
       method: 'POST',
+      signal: ST.abortController.signal,
       body: JSON.stringify({
         csv_content: ST.csvContent,
         benchmark_ticker: ST.benchmarkTicker,
@@ -709,14 +879,33 @@ async function runScreenerBacktest() {
       }),
     });
 
-    ST.results = result;
+    const resultEntry = {
+      id: uid(),
+      name: `Screener: ${cfg.tickerCount || csvTickers.length} tickers as of ${cfg.screeningDate || '?'}`,
+      results: result,
+      mode: 'screener',
+      params: {
+        tickerCount: cfg.tickerCount || csvTickers.length,
+        screeningDate: cfg.screeningDate,
+        durations: [...ST.durations],
+        benchmarkTicker: ST.benchmarkTicker,
+      },
+    };
+    ST.resultsList.push(resultEntry);
+    ST.activeResultTab = ST.resultsList.length - 1;
     ST.activeResultIdx = 0;
     log('info', `Screener backtest set complete. ${result.aggregate.successful}/${result.aggregate.total_runs} successful.`);
   } catch (err) {
-    log('error', 'Screener backtest failed: ' + err.message);
-    alert('Screener backtest failed: ' + err.message);
+    if (err.name === 'AbortError') {
+      log('info', 'Backtest cancelled by user.');
+    } else {
+      ST.error = 'Screener backtest failed: ' + err.message;
+      log('error', 'Screener backtest failed: ' + err.message);
+    }
   } finally {
     ST.running = false;
+    ST.runPhase = '';
+    ST.abortController = null;
     render();
   }
 }
@@ -801,25 +990,25 @@ function renderCSVConfig() {
     ),
   );
 
-  // Run button
-  if (ST.csvContent) {
-    children.push(
-      el('div', { class: 'bt-config-actions' },
-        el('button', {
-          class: 'bt-run-btn',
-          text: ST.running ? 'Running…' : 'Run Backtest Set',
-          disabled: ST.running,
-          onclick: () => runCSVBacktest(),
-        }),
-      ),
-    );
-  }
+  // Run button — always visible, disabled until CSV loaded
+  children.push(
+    el('div', { class: 'bt-config-actions' },
+      el('button', {
+        class: 'bt-run-btn',
+        text: ST.running ? 'Running…' : 'Run Backtest Set',
+        disabled: ST.running || !ST.csvContent,
+        title: ST.csvContent ? '' : 'Upload a CSV file to enable',
+        onclick: () => runCSVBacktest(),
+      }),
+    ),
+  );
 
   if (ST.running) {
     children.push(
       el('div', { class: 'bt-spinner' },
-        el('div', { class: 'bt-spinner-text', text: 'Running CSV backtest set…' }),
+        el('div', { class: 'bt-spinner-text', text: ST.runPhase || 'Running CSV backtest set…' }),
         el('div', { id: 'bt-update-status', class: 'bt-update-status' }),
+        el('button', { class: 'bt-cancel-btn', text: 'Cancel', onclick: () => cancelRun() }),
       ),
     );
   }
@@ -916,20 +1105,38 @@ function renderCSVPreview() {
 
 async function runCSVBacktest() {
   if (!ST.csvContent) {
-    alert('Please upload a CSV file first.');
+    ST.error = 'Please upload a CSV file first.';
+    render();
     return;
   }
 
+  ST.error = null;
+  ST.warning = null;
   ST.running = true;
+  ST.runPhase = 'Updating prices…';
+  ST.abortController = new AbortController();
+  ST.lastRun = { mode: 'csv', params: { durations: [...ST.durations] } };
   render();
 
   // Update prices for all tickers from the CSV + benchmark
   const csvTickers = getTickersFromCSV();
   await updatePricesForTickers(csvTickers, ST.benchmarkTicker);
 
+  if (ST.abortController?.signal.aborted) {
+    ST.running = false;
+    ST.runPhase = '';
+    ST.abortController = null;
+    render();
+    return;
+  }
+
   try {
+    ST.runPhase = 'Running backtest set…';
+    render();
+
     const result = await fetchJson('/api/backtesting/run-from-csv', {
       method: 'POST',
+      signal: ST.abortController.signal,
       body: JSON.stringify({
         csv_content: ST.csvContent,
         benchmark_ticker: ST.benchmarkTicker,
@@ -939,14 +1146,32 @@ async function runCSVBacktest() {
       }),
     });
 
-    ST.results = result;
+    const resultEntry = {
+      id: uid(),
+      name: `CSV: ${csvTickers.length} tickers, ${ST.durations.length} durations`,
+      results: result,
+      mode: 'csv',
+      params: {
+        tickerCount: csvTickers.length,
+        durations: [...ST.durations],
+        benchmarkTicker: ST.benchmarkTicker,
+      },
+    };
+    ST.resultsList.push(resultEntry);
+    ST.activeResultTab = ST.resultsList.length - 1;
     ST.activeResultIdx = 0;
     log('info', `CSV backtest set complete. ${result.aggregate.successful}/${result.aggregate.total_runs} successful.`);
   } catch (err) {
-    log('error', 'CSV backtest failed: ' + err.message);
-    alert('CSV backtest failed: ' + err.message);
+    if (err.name === 'AbortError') {
+      log('info', 'Backtest cancelled by user.');
+    } else {
+      ST.error = 'CSV backtest failed: ' + err.message;
+      log('error', 'CSV backtest failed: ' + err.message);
+    }
   } finally {
     ST.running = false;
+    ST.runPhase = '';
+    ST.abortController = null;
     render();
   }
 }
@@ -956,9 +1181,13 @@ async function runCSVBacktest() {
 // ---------------------------------------------------------------------------
 
 async function exportScreenerConfigCSV() {
-  // If we already have CSV content (new-style flow from screening page),
-  // export it directly. Otherwise run screening once to get tickers.
-  if (ST.csvContent) {
+  if (!ST.csvContent) {
+    ST.error = 'No ticker data to export.';
+    render();
+    return;
+  }
+
+  try {
     const lines = [];
     if (ST.benchmarkTicker) lines.push('# Benchmark: ' + ST.benchmarkTicker);
     if (ST.riskFreeRate) lines.push('# Discount Rate: ' + ST.riskFreeRate);
@@ -967,59 +1196,11 @@ async function exportScreenerConfigCSV() {
     const dataLines = csvLines.filter(l => !l.startsWith('#') && l !== 'Year,Tickers,Type,Amount');
     lines.push('Year,Tickers,Type,Amount');
     lines.push(...dataLines);
-    const csv = lines.join('\n');
-    _downloadCSV(csv, 'backtest_setup.csv');
-    log('info', `Exported backtest CSV.`);
-    return;
-  }
-
-  // Legacy: run screening
-  const cfg = ST.screenerConfig;
-  if (!cfg) return;
-
-  try {
-    log('info', 'Running screening to generate backtest CSV…');
-    const data = await fetchJson('/api/screening/run', {
-      method: 'POST',
-      body: JSON.stringify({
-        criteria: cfg.criteria,
-        columns: [...(cfg.columns || []), 'CompanyInfo.Company_Ticker'],
-        screening_date: cfg.screeningDate,
-        ranking_algorithm: cfg.rankingAlgorithm || 'none',
-        ranking_rules: cfg.rankingRules || null,
-        computed_columns: cfg.computedColumns || null,
-      }),
-    });
-
-    const cols = data.columns || [];
-    let tickerIdx = -1;
-    for (let i = 0; i < cols.length; i++) {
-      if (/company_ticker|^ticker$/i.test(cols[i])) { tickerIdx = i; break; }
-    }
-    if (tickerIdx === -1) {
-      alert('Screening results have no ticker column.');
-      return;
-    }
-
-    const rows = data.rows || [];
-    const weight = rows.length > 0 ? (1.0 / rows.length) : 0;
-    const year = cfg.screeningDate ? cfg.screeningDate.substring(0, 4) : new Date().getFullYear().toString();
-
-    const lines = [];
-    if (ST.benchmarkTicker) lines.push('# Benchmark: ' + ST.benchmarkTicker);
-    if (ST.riskFreeRate) lines.push('# Discount Rate: ' + ST.riskFreeRate);
-    lines.push('Year,Tickers,Type,Amount');
-
-    for (const row of rows) {
-      const t = String(row[tickerIdx] || '').trim();
-      if (t) lines.push(`${year},${t},weight,${weight.toFixed(6)}`);
-    }
-
     _downloadCSV(lines.join('\n'), 'backtest_setup.csv');
-    log('info', `Exported ${rows.length} tickers as backtest CSV.`);
+    log('info', `Exported backtest CSV.`);
   } catch (e) {
+    ST.error = 'Export failed: ' + e.message;
     log('error', 'Export failed: ' + e.message);
-    alert('Export failed: ' + e.message);
   }
 }
 
@@ -1037,27 +1218,111 @@ function _downloadCSV(content, filename) {
 // ---------------------------------------------------------------------------
 
 function renderResults() {
-  if (!ST.results) return null;
+  if (ST.resultsList.length === 0) return null;
+
+  const container = el('div', { class: 'bt-results', id: 'bt-results-anchor' });
+
+  // Result tabs for multi-result comparison
+  if (ST.resultsList.length > 1) {
+    container.append(
+      el('div', { class: 'bt-result-tabs' },
+        ...ST.resultsList.map((entry, idx) => {
+          const summary = entry.results.metrics
+            ? fmtPct(entry.results.metrics.total_return)
+            : (entry.results.aggregate
+              ? `${entry.results.aggregate.successful}/${entry.results.aggregate.total_runs}`
+              : '-');
+          return el('div', {
+            class: 'bt-result-tab' + (idx === ST.activeResultTab ? ' is-active' : ''),
+          },
+            el('span', {
+              class: 'bt-result-tab-name',
+              text: entry.name || `Result ${idx + 1}`,
+              title: entry.name,
+              onclick: () => {
+                ST.activeResultTab = idx;
+                ST.activeResultIdx = 0;
+                destroyAllCharts();
+                render();
+              },
+            }),
+            el('span', { class: 'bt-result-tab-summary', text: summary }),
+            el('button', {
+              class: 'bt-result-tab-close',
+              text: '✕',
+              title: 'Remove result',
+              onclick: (e) => {
+                e.stopPropagation();
+                ST.resultsList.splice(idx, 1);
+                if (ST.activeResultTab >= ST.resultsList.length) ST.activeResultTab = Math.max(0, ST.resultsList.length - 1);
+                destroyAllCharts();
+                render();
+              },
+            }),
+          );
+        }),
+        el('button', {
+          class: 'bt-result-tab-clear',
+          text: 'Clear All',
+          title: 'Remove all results',
+          onclick: () => {
+            ST.resultsList = [];
+            ST.activeResultTab = 0;
+            destroyAllCharts();
+            render();
+          },
+        }),
+      ),
+    );
+  }
+
+  // Active result
+  const activeIdx = Math.min(ST.activeResultTab, ST.resultsList.length - 1);
+  const entry = ST.resultsList[activeIdx];
+  if (!entry) return container;
+
+  const result = entry.results;
 
   // Results header with actions
   const header = el('div', { class: 'bt-results-header' },
-    el('span', { class: 'bt-results-header-title', text: 'Results' }),
+    el('span', { class: 'bt-results-header-title', text: entry.name || 'Results' }),
     el('div', { class: 'bt-results-actions' },
       el('button', { class: 'bt-export-btn', text: 'Save', title: 'Save this backtest', onclick: () => saveBacktest() }),
-      el('button', { class: 'bt-export-btn', text: 'Clear', title: 'Remove results from view', onclick: () => { ST.results = null; destroyAllCharts(); render(); } }),
     ),
   );
+  container.append(header);
 
-  const container = el('div', { class: 'bt-results' }, header);
+  // Parameter summary
+  if (entry.params) {
+    container.append(renderParamSummary(entry));
+  }
 
   // Check if it's a single result (has metrics directly) or a set (has aggregate + results)
-  if (ST.results.aggregate) {
+  if (result.aggregate) {
     container.append(...renderSetResults());
   } else {
-    container.append(...renderSingleResults(ST.results));
+    container.append(...renderSingleResults(result));
   }
 
   return container;
+}
+
+// ── Parameter summary ───────────────────────────────────────────────
+
+function renderParamSummary(entry) {
+  const p = entry.params || {};
+  const parts = [];
+  if (entry.mode) parts.push(`Mode: ${entry.mode}`);
+  if (p.tickers) parts.push(`Tickers: ${p.tickers.length}`);
+  if (p.tickerCount) parts.push(`Tickers: ${p.tickerCount}`);
+  if (p.startDate && p.endDate) parts.push(`Period: ${p.startDate} → ${p.endDate}`);
+  if (p.screeningDate) parts.push(`Screen date: ${p.screeningDate}`);
+  if (p.durations) parts.push(`Durations: ${p.durations.join(', ')}`);
+  if (p.benchmarkTicker) parts.push(`Benchmark: ${p.benchmarkTicker}`);
+  if (p.initialCapital > 0) parts.push(`Capital: ${p.initialCapital.toFixed(0)}`);
+  if (p.riskFreeRate) parts.push(`Rate: ${(p.riskFreeRate * 100).toFixed(1)}%`);
+
+  return el('div', { class: 'bt-param-summary', text: parts.join('  ·  ') });
 }
 
 // ── Single backtest results ──────────────────────────────────────────
@@ -1156,7 +1421,11 @@ function renderSingleResults(result) {
 
 function renderSetResults() {
   const children = [];
-  const agg = ST.results.aggregate;
+  const activeIdx = Math.min(ST.activeResultTab, ST.resultsList.length - 1);
+  const entry = ST.resultsList[activeIdx];
+  if (!entry) return [];
+  const setResult = entry.results;
+  const agg = setResult.aggregate;
 
   // Aggregate summary tiles
   if (agg.stats) {
@@ -1188,7 +1457,7 @@ function renderSetResults() {
   }
 
   // Duration selector tabs
-  const durations = [...new Set(ST.results.results.map(r => r.duration))].sort();
+  const durations = [...new Set(setResult.results.map(r => r.duration))].sort();
   children.push(
     el('div', { class: 'bt-duration-selector' },
       ...durations.map(d =>
@@ -1209,8 +1478,8 @@ function renderSetResults() {
   // Filter results by active duration
   const filter = getActiveFilter();
   const filtered = filter
-    ? ST.results.results.filter(r => r.duration === filter)
-    : ST.results.results;
+    ? setResult.results.filter(r => r.duration === filter)
+    : setResult.results;
 
   // Heatmap grid
   if (filtered.length > 1) {
@@ -1328,6 +1597,11 @@ function renderHeatmap(results, activeFilter) {
                   ST.activeResultIdx = idx;
                   destroyAllCharts();
                   render();
+                  // Auto-scroll to detail panel
+                  requestAnimationFrame(() => {
+                    const panel = document.querySelector('.bt-detail-panel');
+                    if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  });
                 },
               });
             }),
@@ -1376,19 +1650,56 @@ function renderMetricTiles(m, hasBench) {
 // ── Tables ───────────────────────────────────────────────────────────
 
 function renderPerCompanyTable(companies, startDate, endDate) {
+  // Sort companies per ST.companySort
+  const col = ST.companySort.column;
+  const asc = ST.companySort.asc;
+  const sorted = [...companies].sort((a, b) => {
+    let va, vb;
+    if (col === 'total_return' || col === 'price_return' || col === 'dividend_return' || col === 'weight') {
+      va = a[col] || 0; vb = b[col] || 0;
+    } else if (col === 'Ticker') {
+      va = (a.Ticker || '').toLowerCase(); vb = (b.Ticker || '').toLowerCase();
+    } else if (col === 'start_price' || col === 'end_price') {
+      va = a[col] || 0; vb = b[col] || 0;
+    } else {
+      va = a[col] || 0; vb = b[col] || 0;
+    }
+    if (va < vb) return asc ? -1 : 1;
+    if (va > vb) return asc ? 1 : -1;
+    return 0;
+  });
+
+  const sortableHeader = (colKey, label) => {
+    const isActive = ST.companySort.column === colKey;
+    const arrow = isActive ? (ST.companySort.asc ? ' ▲' : ' ▼') : '';
+    return el('th', {
+      class: 'sortable' + (isActive ? ' sorted' : ''),
+      text: label + arrow,
+      onclick: () => {
+        if (ST.companySort.column === colKey) {
+          ST.companySort.asc = !ST.companySort.asc;
+        } else {
+          ST.companySort.column = colKey;
+          ST.companySort.asc = false;
+        }
+        render();
+      },
+    });
+  };
+
   return el('div', { class: 'bt-company-table' },
     el('div', { class: 'bt-chart-title', text: 'Per-Company Breakdown' }),
     el('table', { class: 'data-table' },
       el('thead', {},
         el('tr', {},
-          el('th', { text: 'Ticker' }),
-          el('th', { text: 'Start Price' }),
-          el('th', { text: 'End Price' }),
-          el('th', { text: 'Total Return' }),
+          sortableHeader('Ticker', 'Ticker'),
+          sortableHeader('start_price', 'Start Price'),
+          sortableHeader('end_price', 'End Price'),
+          sortableHeader('total_return', 'Total Return'),
           el('th', { text: 'Ann. Return' }),
-          el('th', { text: 'Price Return' }),
-          el('th', { text: 'Div Return' }),
-          el('th', { text: 'Weight' }),
+          sortableHeader('price_return', 'Price Return'),
+          sortableHeader('dividend_return', 'Div Return'),
+          sortableHeader('weight', 'Weight'),
           companies[0] && companies[0].capital_invested != null ? el('th', { text: 'Capital' }) : null,
           companies[0] && companies[0].shares_purchased != null ? el('th', { text: 'Shares' }) : null,
           companies[0] && companies[0].capital_invested != null ? el('th', { text: 'Divs Received' }) : null,
@@ -1396,7 +1707,7 @@ function renderPerCompanyTable(companies, startDate, endDate) {
         ),
       ),
       el('tbody', {},
-        ...companies.map(c => {
+        ...sorted.map(c => {
           const ann = startDate && endDate ? annualize(c.total_return || 0, startDate, endDate) : null;
           return el('tr', {},
             el('td', {}, tickerLink(c.Ticker)),
@@ -1479,20 +1790,23 @@ function renderDividendTable(dividends) {
 // ---------------------------------------------------------------------------
 
 function saveBacktest() {
-  if (!ST.results) return;
-  const name = prompt('Save backtest as:', new Date().toLocaleString());
+  const activeIdx = Math.min(ST.activeResultTab, ST.resultsList.length - 1);
+  const entry = ST.resultsList[activeIdx];
+  if (!entry) return;
+
+  const name = prompt('Save backtest as:', entry.name || new Date().toLocaleString());
   if (!name) return;
 
   // Strip chart data to keep storage lean — charts are recreated from data
-  const slim = JSON.parse(JSON.stringify(ST.results));
-  const entry = {
+  const slim = JSON.parse(JSON.stringify(entry.results));
+  const saved = {
     id: uid(),
     name,
-    mode: ST.mode,
+    mode: entry.mode || ST.mode,
     results: slim,
     savedAt: new Date().toISOString(),
   };
-  ST.savedResults.unshift(entry);
+  ST.savedResults.unshift(saved);
   persistSavedResults();
   render();
   log('info', `Saved backtest "${name}".`);
@@ -1501,9 +1815,16 @@ function saveBacktest() {
 function loadBacktest(id) {
   const entry = ST.savedResults.find(e => e.id === id);
   if (!entry) return;
-  ST.results = entry.results;
+  const resultEntry = {
+    id: uid(),
+    name: entry.name,
+    results: entry.results,
+    mode: entry.mode || 'manual',
+    params: null,
+  };
+  ST.resultsList.push(resultEntry);
+  ST.activeResultTab = ST.resultsList.length - 1;
   ST.activeResultIdx = 0;
-  ST.mode = entry.mode || 'manual';
   destroyAllCharts();
   render();
   log('info', `Loaded backtest "${entry.name}".`);
@@ -1576,6 +1897,33 @@ const zeroLinePlugin = {
 
 // ---------------------------------------------------------------------------
 
+// ── Chart export ─────────────────────────────────────────────────────
+
+function addChartExport(canvasId, filename) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const container = canvas.closest('.bt-chart-container');
+  if (!container) return;
+
+  // Remove existing export button if any
+  const existing = container.querySelector('.bt-chart-export');
+  if (existing) existing.remove();
+
+  const btn = el('button', {
+    class: 'bt-chart-export',
+    text: '⬇',
+    title: 'Download PNG',
+    onclick: () => {
+      const link = document.createElement('a');
+      link.download = (filename || 'chart') + '.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    },
+  });
+  container.style.position = 'relative';
+  container.appendChild(btn);
+}
+
 // ---------------------------------------------------------------------------
 // Chart.js helpers
 // ---------------------------------------------------------------------------
@@ -1642,6 +1990,7 @@ function createCumulativeChart(canvasId, chartData, hasBench) {
       },
     },
   });
+  addChartExport(canvasId, 'cumulative-returns');
 }
 
 function createDrawdownChart(canvasId, chartData, hasBench) {
@@ -1696,6 +2045,7 @@ function createDrawdownChart(canvasId, chartData, hasBench) {
       },
     },
   });
+  addChartExport(canvasId, 'drawdown');
 }
 
 function createDecompositionChart(canvasId, chartData) {
@@ -1717,8 +2067,8 @@ function createDecompositionChart(canvasId, chartData) {
           label: 'Price Return',
           data: price,
           borderColor: '#42A5F5',
-          backgroundColor: 'rgba(66,165,245,0.2)',
-          fill: true,
+          backgroundColor: 'rgba(66,165,245,0.25)',
+          fill: { target: 'origin' },
           borderWidth: 1.5,
           pointRadius: 0,
           tension: 0.1,
@@ -1726,9 +2076,9 @@ function createDecompositionChart(canvasId, chartData) {
         },
         {
           label: 'Dividend Return',
-          data: total,
+          data: chartData.decomposition.map(d => (d.total - d.price_only) * 100),
           borderColor: '#66BB6A',
-          backgroundColor: 'rgba(102,187,106,0.2)',
+          backgroundColor: 'rgba(102,187,106,0.25)',
           fill: '-1',
           borderWidth: 1.5,
           pointRadius: 0,
@@ -1759,12 +2109,14 @@ function createDecompositionChart(canvasId, chartData) {
       scales: {
         x: { ticks: { color: '#8ea0b8', maxTicksLimit: 10, maxRotation: 0 } },
         y: {
+          stacked: true,
           ticks: { color: '#8ea0b8', callback: v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%' },
           grid: { color: 'rgba(255,255,255,0.06)' },
         },
       },
     },
   });
+  addChartExport(canvasId, 'decomposition');
 }
 
 function createPerCompanyChart(canvasId, companies, startDate, endDate) {
@@ -1818,7 +2170,8 @@ function createPerCompanyChart(canvasId, companies, startDate, endDate) {
           callbacks: {
             label: (ctx) => {
               const p = ctx.raw;
-              return `${p.ticker}: ann. price ${p.price >= 0 ? '+' : ''}${p.price.toFixed(1)}%, ann. div ${p.div >= 0 ? '+' : ''}${p.div.toFixed(1)}% (ann. total ${p.total >= 0 ? '+' : ''}${p.total.toFixed(1)}%)`;
+              const tk = p.ticker || '?';
+              return `${tk}: ann. price ${p.price >= 0 ? '+' : ''}${p.price.toFixed(1)}%, ann. div ${p.div >= 0 ? '+' : ''}${p.div.toFixed(1)}% (ann. total ${p.total >= 0 ? '+' : ''}${p.total.toFixed(1)}%)`;
             },
           },
         },
@@ -1838,6 +2191,7 @@ function createPerCompanyChart(canvasId, companies, startDate, endDate) {
     },
     plugins: [zeroLinePlugin],
   });
+  addChartExport(canvasId, 'per-company-scatter');
 }
 
 function createYearlyScatterChart(canvasId, yearly) {
@@ -1887,7 +2241,8 @@ function createYearlyScatterChart(canvasId, yearly) {
           callbacks: {
             label: (ctx) => {
               const p = ctx.raw;
-              return `${p.year}: price ${p.x >= 0 ? '+' : ''}${p.x.toFixed(1)}%, div ${p.y >= 0 ? '+' : ''}${p.y.toFixed(1)}% (total ${p.total >= 0 ? '+' : ''}${p.total.toFixed(1)}%)`;
+              const yr = p.year || '?';
+              return `${yr}: price ${p.x >= 0 ? '+' : ''}${p.x.toFixed(1)}%, div ${p.y >= 0 ? '+' : ''}${p.y.toFixed(1)}% (total ${p.total >= 0 ? '+' : ''}${p.total.toFixed(1)}%)`;
             },
           },
         },
@@ -1907,6 +2262,7 @@ function createYearlyScatterChart(canvasId, yearly) {
     },
     plugins: [zeroLinePlugin],
   });
+  addChartExport(canvasId, 'yearly-scatter');
 }
 
 // Helpers
@@ -1927,11 +2283,15 @@ function annualize(totalReturn, startDate, endDate) {
 // ---------------------------------------------------------------------------
 
 function fmtPct(v) {
-  if (v == null || isNaN(v)) return '-';
-  return (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%';
+  if (v == null || v === '' || (typeof v === 'number' && isNaN(v))) return '-';
+  const n = typeof v === 'string' ? parseFloat(v) : v;
+  if (n == null || isNaN(n)) return '-';
+  return (n >= 0 ? '+' : '') + (n * 100).toFixed(2) + '%';
 }
 
 function colorStyle(v) {
-  if (v == null || isNaN(v)) return '';
-  return v >= 0 ? 'color:var(--success)' : 'color:var(--danger)';
+  if (v == null || v === '' || (typeof v === 'number' && isNaN(v))) return '';
+  const n = typeof v === 'string' ? parseFloat(v) : v;
+  if (n == null || isNaN(n)) return '';
+  return n >= 0 ? 'color:var(--success)' : 'color:var(--danger)';
 }

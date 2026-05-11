@@ -75,21 +75,6 @@ class BacktestRunRequest(BaseModel):
     risk_free_rate: float = 0.0
 
 
-class ScreenerBacktestRequest(BaseModel):
-    db_path: str = ""
-    criteria: list[dict]
-    columns: list[str] = []
-    screening_date: str = Field(..., description="YYYY-MM-DD")
-    max_companies: int = 25
-    ranking_algorithm: str = "none"
-    ranking_rules: list[dict] | None = None
-    computed_columns: list[dict] | None = None
-    benchmark_ticker: str = ""
-    durations: list[str] = ["1yr", "2yr", "3yr", "5yr", "10yr"]
-    initial_capital: float = 0.0
-    risk_free_rate: float = 0.0
-
-
 class CSVBacktestRequest(BaseModel):
     db_path: str = ""
     csv_content: str = Field(..., description="Raw CSV string")
@@ -180,50 +165,6 @@ async def run_backtest(request: BacktestRunRequest = Body(...)) -> dict:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.error("Backtest run failed: %s", e)
-            raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/run-from-screener")
-async def run_from_screener(
-    request: ScreenerBacktestRequest = Body(...),
-) -> dict:
-    """Screen once at *screening_date*, then backtest the resulting
-    ticker set across all requested durations.  All companies get equal
-    weight."""
-    db = _resolve_db(request.db_path)
-
-    async with _semaphore:
-        try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _bt.run_screening_backtest_set,
-                    db_path=db,
-                    criteria=request.criteria,
-                    columns=request.columns,
-                    screening_date=request.screening_date,
-                    max_companies=request.max_companies,
-                    ranking_algorithm=request.ranking_algorithm,
-                    ranking_rules=request.ranking_rules,
-                    computed_columns=request.computed_columns,
-                    durations=request.durations,
-                    benchmark_ticker=request.benchmark_ticker,
-                    initial_capital=request.initial_capital,
-                    risk_free_rate=request.risk_free_rate,
-                ),
-                timeout=120,
-            )
-            return result
-        except asyncio.TimeoutError:
-            raise HTTPException(
-                status_code=504,
-                detail="Backtest set timed out after 120 seconds.",
-            )
-        except HTTPException:
-            raise
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            logger.error("Screener backtest set failed: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
 
 

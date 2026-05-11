@@ -1740,3 +1740,242 @@ th .bt-ticker-link:hover {
   background: var(--panel2);
   z-index: 1;
 }
+
+/* ── Error / warning banners ──────────────────────────────────── */
+
+.bt-banner-area {
+  max-width: 780px;
+  margin: 0 24px;
+}
+
+.bt-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: rgba(220, 50, 50, 0.12);
+  border: 1px solid rgba(220, 50, 50, 0.35);
+  color: var(--danger);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.bt-err-msg {
+  flex: 1;
+}
+
+.bt-err-retry {
+  padding: 4px 10px;
+  background: rgba(220, 50, 50, 0.15);
+  border: 1px solid rgba(220, 50, 50, 0.3);
+  color: var(--danger);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.bt-err-retry:hover {
+  background: rgba(220, 50, 50, 0.25);
+}
+
+.bt-err-dismiss {
+  padding: 2px 6px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.bt-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(224, 175, 79, 0.1);
+  border: 1px solid rgba(224, 175, 79, 0.25);
+  color: var(--warn, #e0af4f);
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+
+/* ── Date presets ─────────────────────────────────────────────── */
+
+.bt-date-presets {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.bt-date-preset {
+  padding: 2px 8px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+
+.bt-date-preset:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* ── Cancel button ────────────────────────────────────────────── */
+
+.bt-cancel-btn {
+  margin-top: 12px;
+  padding: 6px 14px;
+  background: rgba(220, 50, 50, 0.15);
+  border: 1px solid rgba(220, 50, 50, 0.4);
+  color: var(--danger);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.bt-cancel-btn:hover {
+  background: rgba(220, 50, 50, 0.3);
+}
+
+/* ── Multi-result tabs ────────────────────────────────────────── */
+
+.bt-result-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.bt-result-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: background 0.12s;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.bt-result-tab:hover {
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text);
+}
+
+.bt-result-tab.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.bt-result-tab-name {
+  white-space: nowrap;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bt-result-tab-summary {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.bt-result-tab-close {
+  padding: 1px 4px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.bt-result-tab:hover .bt-result-tab-close {
+  opacity: 1;
+}
+
+.bt-result-tab-close:hover {
+  color: var(--danger);
+}
+
+.bt-result-tab-clear {
+  padding: 6px 12px;
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.bt-result-tab-clear:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* ── Parameter summary ────────────────────────────────────────── */
+
+.bt-param-summary {
+  padding: 6px 0;
+  font-size: 10px;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 12px;
+}
+
+/* ── Chart export button ──────────────────────────────────────── */
+
+.bt-chart-export {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  z-index: 5;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bt-chart-container:hover .bt-chart-export {
+  opacity: 1;
+}
+
+.bt-chart-export:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+/* ── Sortable table headers ───────────────────────────────────── */
+
+.bt-company-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.12s;
+}
+
+.bt-company-table th.sortable:hover {
+  color: var(--text);
+}
+
+.bt-company-table th.sorted {
+  color: var(--accent);
+}
