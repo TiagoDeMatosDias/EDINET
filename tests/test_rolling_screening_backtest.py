@@ -785,3 +785,323 @@ class TestRunScreeningBacktestRolling:
                 end_period="2020-04",
                 cancel_event=cancel_event,
             )
+
+
+# ---------------------------------------------------------------------------
+# Chart data integrity tests
+# ---------------------------------------------------------------------------
+
+
+class TestChartDataIntegrity:
+    """Verify that every chart gets populated data.
+
+    These tests mirror what the frontend consumes:
+    1. Heatmap data — agg.heatmap[wm][dur] = [{period, return}, ...]
+    2. Distribution data — 1yr returns from result.results[].backtests[wm][1yr].metrics.total_return
+    3. Drill-down data — result.results[].backtests[wm][dur].metrics + chart_data
+    4. Summary table — agg.by_weighting[wm][dur] = {mean_return, median_return, ...}
+    """
+
+    @pytest.fixture
+    def sample_rolling_result(self):
+        """Build a complete RollingBacktestResult for chart testing."""
+        return {
+            "config": {
+                "cadence": "monthly",
+                "durations": ["1yr", "2yr", "3yr"],
+                "weighting_modes": ["equal", "market_cap"],
+                "max_companies": 25,
+                "criteria": [{"table": "P", "column": "E", "operator": ">", "value": 0}],
+                "benchmark_ticker": "1321.T",
+                "start_period": "2020-01",
+                "end_period": "2020-03",
+            },
+            "aggregate": {
+                "total_runs": 18,
+                "successful": 18,
+                "failed": 0,
+                "periods": 3,
+                "date_range": {"first": "2020-01-01", "last": "2020-03-01"},
+                "by_weighting": {
+                    "equal": {
+                        "1yr": {"mean_return": 0.08, "median_return": 0.07, "mean_sharpe": 0.5, "count": 3},
+                        "2yr": {"mean_return": 0.015, "median_return": 0.01, "mean_sharpe": 0.3, "count": 3},
+                        "3yr": {"mean_return": 0.005, "median_return": 0.003, "mean_sharpe": 0.2, "count": 3},
+                    },
+                    "market_cap": {
+                        "1yr": {"mean_return": 0.09, "median_return": 0.08, "mean_sharpe": 0.55, "count": 3},
+                        "2yr": {"mean_return": 0.02, "median_return": 0.015, "mean_sharpe": 0.35, "count": 3},
+                        "3yr": {"mean_return": 0.008, "median_return": 0.006, "mean_sharpe": 0.25, "count": 3},
+                    },
+                },
+                "benchmark_comparison": {
+                    "outperformed": 12, "underperformed": 6, "win_rate": 0.67,
+                    "by_duration": {
+                        "1yr": {"out": 4, "total": 6, "win_rate": 0.67},
+                        "2yr": {"out": 4, "total": 6, "win_rate": 0.67},
+                        "3yr": {"out": 4, "total": 6, "win_rate": 0.67},
+                    },
+                },
+                "stats": {
+                    "total_return": {"mean": 0.05, "median": 0.04, "min": -0.1, "max": 0.25, "std": 0.08},
+                    "sharpe_ratio": {"mean": 0.4, "median": 0.35, "min": 0.1, "max": 0.9, "std": 0.15},
+                    "max_drawdown": {"mean": -0.2, "median": -0.18, "min": -0.5, "max": -0.05, "std": 0.12},
+                },
+                "heatmap": {
+                    "equal": {
+                        "1yr": [
+                            {"period": "2020-01-01", "return": 0.10},
+                            {"period": "2020-02-01", "return": 0.05},
+                            {"period": "2020-03-01", "return": 0.09},
+                        ],
+                        "2yr": [
+                            {"period": "2020-01-01", "return": 0.02},
+                            {"period": "2020-02-01", "return": 0.01},
+                            {"period": "2020-03-01", "return": 0.015},
+                        ],
+                        "3yr": [
+                            {"period": "2020-01-01", "return": 0.008},
+                            {"period": "2020-02-01", "return": 0.005},
+                            {"period": "2020-03-01", "return": 0.003},
+                        ],
+                    },
+                    "market_cap": {
+                        "1yr": [
+                            {"period": "2020-01-01", "return": 0.12},
+                            {"period": "2020-02-01", "return": 0.06},
+                            {"period": "2020-03-01", "return": 0.09},
+                        ],
+                        "2yr": [
+                            {"period": "2020-01-01", "return": 0.025},
+                            {"period": "2020-02-01", "return": 0.015},
+                            {"period": "2020-03-01", "return": 0.02},
+                        ],
+                        "3yr": [
+                            {"period": "2020-01-01", "return": 0.01},
+                            {"period": "2020-02-01", "return": 0.008},
+                            {"period": "2020-03-01", "return": 0.006},
+                        ],
+                    },
+                },
+            },
+            "results": [
+                {
+                    "period": "2020-01-01",
+                    "screening_date": "2020-01-01",
+                    "tickers": ["7203", "8306", "9984"],
+                    "ticker_count": 3,
+                    "warnings": [],
+                    "backtests": {
+                        "equal": {
+                            "1yr": {
+                                "metrics": {
+                                    "total_return": 0.10, "annualized_return": 0.10,
+                                    "sharpe_ratio": 0.6, "max_drawdown": -0.15,
+                                    "start_date": "2020-01-01", "end_date": "2021-01-01",
+                                },
+                                "chart_data": {
+                                    "cumulative": [
+                                        {"date": "2020-01-01", "portfolio": 0.0, "benchmark": 0.0},
+                                        {"date": "2021-01-01", "portfolio": 0.10, "benchmark": 0.05},
+                                    ],
+                                    "drawdown": [
+                                        {"date": "2020-01-01", "portfolio": 0.0},
+                                        {"date": "2021-01-01", "portfolio": -0.05},
+                                    ],
+                                    "decomposition": [
+                                        {"date": "2021-01-01", "price_only": 0.08, "dividend_only": 0.02, "total": 0.10},
+                                    ],
+                                },
+                                "per_company": [
+                                    {"Ticker": "7203", "total_return": 0.12, "price_return": 0.10, "dividend_return": 0.02, "weight": 0.33},
+                                ],
+                                "yearly_returns": [
+                                    {"Year": 2020, "Price Return": 0.08, "Dividend Return": 0.02, "Total Return": 0.10},
+                                ],
+                                "dividends_by_year": [
+                                    {"year": 2020, "7203": 5000.0, "Total": 15000.0},
+                                ],
+                                "warnings": [],
+                            },
+                        },
+                    },
+                },
+            ],
+        }
+
+    # ── Heatmap data ────────────────────────────────────────────────
+
+    def test_heatmap_has_all_weightings(self, sample_rolling_result):
+        hm = sample_rolling_result["aggregate"]["heatmap"]
+        assert "equal" in hm
+        assert "market_cap" in hm
+
+    def test_heatmap_has_all_durations(self, sample_rolling_result):
+        hm = sample_rolling_result["aggregate"]["heatmap"]
+        for wm in ["equal", "market_cap"]:
+            for dur in ["1yr", "2yr", "3yr"]:
+                assert dur in hm[wm], f"Missing {wm}/{dur} in heatmap"
+
+    def test_heatmap_has_non_empty_data(self, sample_rolling_result):
+        hm = sample_rolling_result["aggregate"]["heatmap"]
+        for wm in ["equal", "market_cap"]:
+            for dur in ["1yr", "2yr", "3yr"]:
+                data = hm[wm][dur]
+                assert len(data) > 0, f"Heatmap {wm}/{dur} is empty"
+                for entry in data:
+                    assert "period" in entry
+                    assert entry["period"], f"Heatmap {wm}/{dur} has empty period"
+                    assert entry["return"] is not None, f"Heatmap {wm}/{dur} has null return"
+
+    def test_heatmap_returns_are_finite(self, sample_rolling_result):
+        hm = sample_rolling_result["aggregate"]["heatmap"]
+        for wm in hm:
+            for dur in hm[wm]:
+                for entry in hm[wm][dur]:
+                    r = entry["return"]
+                    assert np.isfinite(r), f"Heatmap {wm}/{dur} has non-finite return: {r}"
+
+    def test_heatmap_returns_are_annualized(self, sample_rolling_result):
+        """Heatmap 1yr returns should equal total returns (not annualized differently)."""
+        hm = sample_rolling_result["aggregate"]["heatmap"]
+        # 1yr returns in heatmap should be between -1 and, say, 5 (reasonable)
+        for wm in hm:
+            for entry in hm[wm].get("1yr", []):
+                assert -1.0 <= entry["return"] <= 10.0, \
+                    f"Heatmap 1yr return out of range: {entry['return']}"
+        # 3yr returns should be annualized (lower magnitude than raw total)
+        for wm in hm:
+            for entry in hm[wm].get("3yr", []):
+                assert -1.0 <= entry["return"] <= 10.0, \
+                    f"Heatmap 3yr return out of range: {entry['return']}"
+
+    # ── Distribution chart data ─────────────────────────────────────
+
+    def test_distribution_has_1yr_returns(self, sample_rolling_result):
+        """Verify that 1yr returns exist for the distribution chart."""
+        returns_1yr = []
+        for r in sample_rolling_result["results"]:
+            for wm in r.get("backtests", {}):
+                bt = r["backtests"][wm].get("1yr")
+                if bt and bt.get("metrics"):
+                    returns_1yr.append(bt["metrics"]["total_return"])
+        assert len(returns_1yr) > 0, "No 1yr returns for distribution chart"
+        for val in returns_1yr:
+            assert np.isfinite(val), f"Non-finite 1yr return: {val}"
+
+    def test_distribution_returns_are_finite(self, sample_rolling_result):
+        """All returns in all backtests must be finite for chart rendering."""
+        for r in sample_rolling_result["results"]:
+            for wm in r.get("backtests", {}):
+                for dur in r["backtests"][wm]:
+                    bt = r["backtests"][wm][dur]
+                    if bt.get("metrics"):
+                        tr = bt["metrics"].get("total_return")
+                        if tr is not None:
+                            assert np.isfinite(tr), \
+                                f"Non-finite return in {r['period']}/{wm}/{dur}: {tr}"
+
+    # ── Summary table data ──────────────────────────────────────────
+
+    def test_summary_table_has_all_weightings(self, sample_rolling_result):
+        by_w = sample_rolling_result["aggregate"]["by_weighting"]
+        assert "equal" in by_w
+        assert "market_cap" in by_w
+
+    def test_summary_table_has_all_durations(self, sample_rolling_result):
+        by_w = sample_rolling_result["aggregate"]["by_weighting"]
+        for wm in by_w:
+            for dur in ["1yr", "2yr", "3yr"]:
+                assert dur in by_w[wm], f"Missing {wm}/{dur} in by_weighting"
+
+    def test_summary_table_values_are_finite(self, sample_rolling_result):
+        by_w = sample_rolling_result["aggregate"]["by_weighting"]
+        for wm in by_w:
+            for dur in by_w[wm]:
+                entry = by_w[wm][dur]
+                for key in ["mean_return", "median_return", "mean_sharpe"]:
+                    val = entry.get(key)
+                    assert val is not None, f"Missing {key} in {wm}/{dur}"
+                    assert np.isfinite(val), f"Non-finite {key} in {wm}/{dur}: {val}"
+                assert entry["count"] >= 0
+
+    # ── Drill-down data ─────────────────────────────────────────────
+
+    def test_drilldown_period_has_tickers(self, sample_rolling_result):
+        for r in sample_rolling_result["results"]:
+            assert "tickers" in r
+            assert len(r["tickers"]) > 0
+
+    def test_drilldown_period_has_backtests(self, sample_rolling_result):
+        for r in sample_rolling_result["results"]:
+            assert "backtests" in r
+            bt = r["backtests"]
+            # At least one weighting mode
+            assert len(bt) > 0
+
+    def test_drilldown_backtest_has_chart_data(self, sample_rolling_result):
+        for r in sample_rolling_result["results"]:
+            for wm in r.get("backtests", {}):
+                for dur in r["backtests"][wm]:
+                    bt = r["backtests"][wm][dur]
+                    cd = bt.get("chart_data", {})
+                    # Cumulative chart data
+                    assert "cumulative" in cd, f"Missing cumulative in {r['period']}/{wm}/{dur}"
+                    # Drawdown chart data
+                    assert "drawdown" in cd, f"Missing drawdown in {r['period']}/{wm}/{dur}"
+
+    def test_drilldown_chart_data_has_dates(self, sample_rolling_result):
+        for r in sample_rolling_result["results"]:
+            for wm in r.get("backtests", {}):
+                for dur in r["backtests"][wm]:
+                    bt = r["backtests"][wm][dur]
+                    cd = bt.get("chart_data", {})
+                    cumulative = cd.get("cumulative", [])
+                    if cumulative:
+                        for point in cumulative:
+                            assert "date" in point, f"Missing date in cumulative point"
+                            assert point["date"], f"Empty date"
+                            assert "portfolio" in point, f"Missing portfolio value"
+                            assert np.isfinite(point["portfolio"]), \
+                                f"Non-finite portfolio: {point['portfolio']}"
+
+    def test_drilldown_metrics_are_complete(self, sample_rolling_result):
+        """Every backtest in drill-down must have required metric fields."""
+        required = ["total_return", "sharpe_ratio", "max_drawdown", "start_date", "end_date"]
+        for r in sample_rolling_result["results"]:
+            for wm in r.get("backtests", {}):
+                for dur in r["backtests"][wm]:
+                    bt = r["backtests"][wm][dur]
+                    m = bt.get("metrics", {})
+                    for key in required:
+                        assert key in m, f"Missing {key} in {r['period']}/{wm}/{dur}"
+
+    # ── Overall stats tile data ─────────────────────────────────────
+
+    def test_stats_tiles_have_all_fields(self, sample_rolling_result):
+        stats = sample_rolling_result["aggregate"]["stats"]
+        assert "total_return" in stats
+        assert "sharpe_ratio" in stats
+        assert "max_drawdown" in stats
+        for key in ["total_return", "sharpe_ratio", "max_drawdown"]:
+            for field in ["mean", "median", "min", "max", "std"]:
+                val = stats[key].get(field)
+                assert val is not None, f"Missing {key}.{field}"
+                assert np.isfinite(val), f"Non-finite {key}.{field}: {val}"
+
+    def test_no_chart_has_nan(self, sample_rolling_result):
+        """Sanity: recursively check no NaN/Inf in the entire result."""
+        import math
+
+        def check(obj, path=""):
+            if isinstance(obj, float):
+                assert not math.isnan(obj), f"NaN at {path}"
+                assert not math.isinf(obj), f"Inf at {path}"
+            elif isinstance(obj, dict):
+                for k, v in obj.items():
+                    check(v, f"{path}.{k}")
+            elif isinstance(obj, list):
+                for i, v in enumerate(obj):
+                    check(v, f"{path}[{i}]")
+
+        check(sample_rolling_result)

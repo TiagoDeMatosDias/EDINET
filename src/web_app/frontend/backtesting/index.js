@@ -1314,16 +1314,17 @@ function renderRollingHeatmapTabs(agg) {
     ),
   );
 
-  // Heatmap chart
+  // Heatmap chart — save canvas ref before DOM attachment
+  const heatmapCanvas = el('canvas', { id: 'bt-rolling-heatmap' });
   container.append(
     el('div', { class: 'bt-chart-container bt-heatmap-container' },
       el('div', { class: 'bt-chart-title', text: 'Returns Heatmap' }),
-      el('canvas', { id: 'bt-rolling-heatmap' }),
+      heatmapCanvas,
     ),
   );
 
   const hmData = agg.heatmap[activeWM];
-  if (hmData && document.getElementById('bt-rolling-heatmap')) {
+  if (hmData && hmData['1yr'] && hmData['1yr'].length > 0) {
     requestAnimationFrame(() => {
       createRollingHeatmapChart('bt-rolling-heatmap', hmData, agg);
     });
@@ -1344,13 +1345,14 @@ function createRollingHeatmapChart(canvasId, hmData, agg) {
       return;
     }
 
+    // Durations on Y axis (rows), sorted by length
     const durations = Object.keys(hmData).sort((a, b) => {
       const nums = { '1yr': 1, '2yr': 2, '3yr': 3, '5yr': 5, '10yr': 10 };
       return (nums[a] || 99) - (nums[b] || 99);
     });
     if (!durations.length) return;
 
-    // Collect all periods and build lookup
+    // Periods on X axis (columns)
     const periodSet = new Set();
     const returnMap = {};
     for (const dur of durations) {
@@ -1362,6 +1364,7 @@ function createRollingHeatmapChart(canvasId, hmData, agg) {
     const periods = [...periodSet].sort();
     if (!periods.length) return;
 
+    // Collect all non-null values for color range
     const allVals = [];
     for (const period of periods) {
       for (const dur of durations) {
@@ -1382,14 +1385,14 @@ function createRollingHeatmapChart(canvasId, hmData, agg) {
       return `rgb(${r},68,68)`;
     }
 
-    // Set canvas size (HiDPI-aware)
+    // Layout: X=periods, Y=durations
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.parentElement.getBoundingClientRect();
-    const W = Math.max(rect.width, 600);  // fallback minimum
-    const leftPad = 90, rightPad = 16, topPad = 28, bottomPad = 20;
-    const cellH = Math.min(20, Math.max(12, (400 - topPad - bottomPad) / periods.length));
-    const cellW = (W - leftPad - rightPad) / durations.length;
-    const H = topPad + periods.length * cellH + bottomPad;
+    const W = Math.max(rect.width, 600);
+    const leftPad = 50, rightPad = 100, topPad = 8, bottomPad = 30;
+    const cellW = Math.min(60, Math.max(14, (W - leftPad - rightPad) / periods.length));
+    const cellH = 24;
+    const H = topPad + durations.length * cellH + bottomPad;
 
     canvas.width = W * dpr;
     canvas.height = H * dpr;
@@ -1400,14 +1403,14 @@ function createRollingHeatmapChart(canvasId, hmData, agg) {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, W, H);
 
-    // Draw cells
-    for (let pi = 0; pi < periods.length; pi++) {
-      const period = periods[pi];
-      const y = topPad + pi * cellH;
-      for (let di = 0; di < durations.length; di++) {
-        const dur = durations[di];
+    // Draw cells — row=duration, col=period
+    for (let di = 0; di < durations.length; di++) {
+      const dur = durations[di];
+      const y = topPad + di * cellH;
+      for (let pi = 0; pi < periods.length; pi++) {
+        const period = periods[pi];
         const ret = returnMap[period + '|' + dur];
-        const x = leftPad + di * cellW;
+        const x = leftPad + pi * cellW;
 
         if (ret == null) {
           ctx.fillStyle = 'rgba(255,255,255,0.03)';
@@ -1419,32 +1422,43 @@ function createRollingHeatmapChart(canvasId, hmData, agg) {
       }
     }
 
-    // Y-axis labels (periods — show every Nth to avoid crowding)
+    // Y-axis labels (durations)
     ctx.fillStyle = '#8ea0b8';
-    ctx.font = '10px "IBM Plex Mono", monospace';
+    ctx.font = '11px "IBM Plex Mono", monospace';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    const labelStep = Math.max(1, Math.floor(periods.length / 25));
-    for (let pi = 0; pi < periods.length; pi++) {
-      if (pi % labelStep !== 0 && pi !== periods.length - 1) continue;
-      const y = topPad + pi * cellH + cellH / 2;
-      ctx.fillText(periods[pi].substring(0, 7), leftPad - 6, y);
+    for (let di = 0; di < durations.length; di++) {
+      const y = topPad + di * cellH + cellH / 2;
+      ctx.fillText(durations[di], leftPad - 6, y);
     }
 
-    // X-axis labels (durations)
+    // X-axis labels (periods — show every Nth to avoid crowding)
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    for (let di = 0; di < durations.length; di++) {
-      const x = leftPad + di * cellW + cellW / 2;
-      ctx.fillText(durations[di].toUpperCase(), x, 8);
+    ctx.font = '9px "IBM Plex Mono", monospace';
+    const labelStep = Math.max(1, Math.floor(periods.length / 20));
+    for (let pi = 0; pi < periods.length; pi++) {
+      if (pi % labelStep !== 0 && pi !== periods.length - 1 && pi !== 0) continue;
+      const x = leftPad + pi * cellW + cellW / 2;
+      const label = periods[pi].substring(0, 7);
+      // Rotate for space if many periods
+      if (periods.length > 12) {
+        ctx.save();
+        ctx.translate(x, topPad + durations.length * cellH + 4);
+        ctx.rotate(-0.5);
+        ctx.fillText(label, 0, 0);
+        ctx.restore();
+      } else {
+        ctx.fillText(label, x, topPad + durations.length * cellH + 4);
+      }
     }
 
     // Mouse interaction
     canvas.onmousemove = (e) => {
       const mx = e.offsetX, my = e.offsetY;
-      const di = Math.floor((mx - leftPad) / cellW);
-      const pi = Math.floor((my - topPad) / cellH);
-      if (di >= 0 && di < durations.length && pi >= 0 && pi < periods.length) {
+      const pi = Math.floor((mx - leftPad) / cellW);
+      const di = Math.floor((my - topPad) / cellH);
+      if (pi >= 0 && pi < periods.length && di >= 0 && di < durations.length) {
         canvas.style.cursor = 'pointer';
         canvas.title = `${periods[pi]} / ${durations[di]}: ${fmtPct(returnMap[periods[pi] + '|' + durations[di]])}`;
       } else {
@@ -1455,35 +1469,35 @@ function createRollingHeatmapChart(canvasId, hmData, agg) {
 
     canvas.onclick = (e) => {
       const mx = e.offsetX, my = e.offsetY;
-      const di = Math.floor((mx - leftPad) / cellW);
-      const pi = Math.floor((my - topPad) / cellH);
-      if (di >= 0 && di < durations.length && pi >= 0 && pi < periods.length) {
+      const pi = Math.floor((mx - leftPad) / cellW);
+      const di = Math.floor((my - topPad) / cellH);
+      if (pi >= 0 && pi < periods.length && di >= 0 && di < durations.length) {
         ST.rollingActive.period = periods[pi];
         ST.rollingActive.duration = durations[di];
-        destroyAllCharts();
-        render();
+        drillDownRefresh();
         const panel = document.querySelector('.bt-rolling-drilldown');
         if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
     };
 
-    // Color legend
-    const legendY = H - 12;
-    const legendW = Math.min(120, rightPad + cellW * 2);
-    const legendX = W - legendW - 4;
+    // Color legend (horizontal gradient at bottom-right)
+    const legendH = 10;
+    const legendY = topPad + durations.length * cellH + bottomPad - legendH - 2;
+    const legendW = Math.min(140, rightPad - 10);
+    const legendX = W - legendW - 8;
     const grad = ctx.createLinearGradient(legendX, 0, legendX + legendW, 0);
     grad.addColorStop(0, heatColor(0));
     grad.addColorStop(0.3, heatColor(0.3));
     grad.addColorStop(0.7, heatColor(0.7));
     grad.addColorStop(1, heatColor(1));
     ctx.fillStyle = grad;
-    ctx.fillRect(legendX, legendY, legendW, 8);
+    ctx.fillRect(legendX, legendY, legendW, legendH);
     ctx.fillStyle = '#8ea0b8';
     ctx.font = '8px "IBM Plex Mono", monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(minV.toFixed(1) + '%', legendX - 4, legendY + 8);
+    ctx.fillText(minV.toFixed(1) + '%', legendX - 4, legendY + legendH - 1);
     ctx.textAlign = 'left';
-    ctx.fillText(maxV.toFixed(1) + '%', legendX + legendW + 4, legendY + 8);
+    ctx.fillText(maxV.toFixed(1) + '%', legendX + legendW + 4, legendY + legendH - 1);
 
     // Store canvas ref for export
     ST.charts[canvasId] = { canvas, destroy: () => { delete ST.charts[canvasId]; } };
@@ -1493,15 +1507,17 @@ function createRollingHeatmapChart(canvasId, hmData, agg) {
 }
 
 function renderRollingDistribution(agg) {
-  const container = el('div', { class: 'bt-chart-container', style: 'width:100%;max-width:100%' },
+  const distCanvas = el('canvas', { id: 'bt-rolling-distribution' });
+  const container = el('div', { class: 'bt-chart-container', style: 'width:100%;max-width:100%;min-height:300px' },
     el('div', { class: 'bt-chart-title', text: 'Returns Distribution (Ann. 1yr)' }),
-    el('canvas', { id: 'bt-rolling-distribution' }),
+    distCanvas,
   );
 
-  setTimeout(() => {
-    const canvas = document.getElementById('bt-rolling-distribution');
-    if (!canvas) return;
+  // Wait for DOM attachment before creating chart
+  requestAnimationFrame(() => {
+    if (!distCanvas) return;
     let attempts = 0;
+    const canvas = distCanvas;
     const tryCreate = () => {
       if (!canvas.offsetParent && attempts < 20) {
         attempts++;
@@ -1582,7 +1598,7 @@ function renderRollingDistribution(agg) {
       addChartExport('bt-rolling-distribution', 'returns-distribution');
     };
     tryCreate();
-  }, 0);
+  });
 
   return container;
 }
