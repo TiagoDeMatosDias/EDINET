@@ -12,6 +12,7 @@
 
 import { el, $, fetchJson } from '../common/utils.js';
 import { log } from '../common/console.js';
+import { Button, Badge, EmptyState, Popup } from '../common/components.js';
 
 // ---------------------------------------------------------------------------
 // State
@@ -120,8 +121,8 @@ function buildShell() {
   cfg.append(
     el('div', { class: 'scr-row-actions' },
       el('button', { id: 'scr-btn-run', class: 'scr-btn-run', text: 'Run' }),
-      el('button', { id: 'scr-btn-save', class: 'scr-btn-soft', text: 'Save' }),
-      el('button', { id: 'scr-btn-load', class: 'scr-btn-soft', text: 'Load' }),
+      Button({ variant: 'ghost', size: 'sm', label: 'Save', id: 'scr-btn-save' }),
+      Button({ variant: 'ghost', size: 'sm', label: 'Load', id: 'scr-btn-load' }),
     ),
   );
 
@@ -158,11 +159,11 @@ function buildShell() {
   // Row 3: Results toolbar
   cfg.append(
     el('div', { class: 'scr-row-bottom' },
-      el('button', { id: 'scr-btn-update-prices', class: 'scr-btn-soft', text: 'Update Prices' }),
-      el('button', { id: 'scr-btn-export', class: 'scr-btn-soft', text: 'Export CSV' }),
-      el('button', { id: 'scr-btn-export-bt', class: 'scr-btn-soft', text: 'Export Backtest' }),
-      el('button', { id: 'scr-btn-backtest', class: 'scr-btn-soft', text: 'Backtest →' }),
-      el('button', { id: 'scr-btn-rolling-bt', class: 'scr-btn-soft', text: 'Rolling Backtest →', title: 'Pass criteria to Rolling Screening mode' }),
+      Button({ variant: 'ghost', size: 'sm', label: 'Update Prices', id: 'scr-btn-update-prices' }),
+      Button({ variant: 'ghost', size: 'sm', label: 'Export CSV', id: 'scr-btn-export' }),
+      Button({ variant: 'ghost', size: 'sm', label: 'Export Backtest', id: 'scr-btn-export-bt' }),
+      Button({ variant: 'ghost', size: 'sm', label: 'Backtest →', id: 'scr-btn-backtest' }),
+      Button({ variant: 'ghost', size: 'sm', label: 'Rolling Backtest →', id: 'scr-btn-rolling-bt', title: 'Pass criteria to Rolling Screening mode' }),
       el('label', { class: 'scr-toggle' },
         el('input', { id: 'scr-fmt', type: 'checkbox', checked: 'checked' }),
         el('span', { text: 'Formatted' }),

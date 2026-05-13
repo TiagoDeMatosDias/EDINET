@@ -19,14 +19,14 @@
         </div>
         <nav class="tabs" aria-label="Primary navigation">
           <button class="tab" onclick="location.href='/'">Main</button>
-          <button class="tab is-active" onclick="void 0">Orchestrator</button>
+          <button class="tab is-active" onclick="void 0" aria-current="page">Orchestrator</button>
           <button class="tab" onclick="location.href='/screening'">Screening</button>
           <button class="tab" onclick="location.href='/backtesting'">Backtesting</button>
           <button class="tab" onclick="location.href='/security'">Security Analysis</button>
         </nav>
         <div class="topbar-actions">
           <div class="status-pill" id="backend-status">Connecting…</div>
-          <button class="ghost-btn" id="refresh-btn">Refresh</button>
+          <button class="btn-ghost" id="refresh-btn">Refresh</button>
         </div>
       </header>
 
@@ -35,10 +35,7 @@
           <div class="workspace-grid">
             <aside class="panel panel-sidebar">
               <div class="panel-head">
-                <div>
-                  <div class="panel-title">Pipeline Builder</div>
-                  <div class="panel-subtitle">Search, add, reorder, and inspect steps.</div>
-                </div>
+                <div class="panel-title">Pipeline Builder</div>
               </div>
 
               <div class="form-row tight">
@@ -46,11 +43,11 @@
                 <input id="setup-name" type="text" placeholder="Untitled setup" />
               </div>
               <div class="button-row">
-                <button class="ghost-btn" id="new-setup-btn">New</button>
-                <button class="ghost-btn" id="load-setup-btn">Load</button>
-                <button class="ghost-btn" id="save-setup-btn">Save</button>
-                <button class="accent-btn" id="run-btn">Run</button>
-                <button class="danger-btn" id="stop-btn" disabled>Stop</button>
+                <button class="btn-ghost btn-sm" id="new-setup-btn">New</button>
+                <button class="btn-ghost btn-sm" id="load-setup-btn">Load</button>
+                <button class="btn-ghost btn-sm" id="save-setup-btn">Save</button>
+                <button class="btn-primary btn-run" id="run-btn">Run</button>
+                <button class="btn-danger btn-stop" id="stop-btn" disabled>Stop</button>
               </div>
 
               <details class="global-config-panel" id="global-config-panel">
@@ -67,10 +64,7 @@
 
             <section class="panel panel-main">
               <div class="panel-head">
-                <div>
-                  <div class="panel-title">Pipeline Sequence</div>
-                  <div class="panel-subtitle">Selected steps in execution order.</div>
-                </div>
+                <div class="panel-title">Pipeline Sequence</div>
                 <div class="panel-head-meta" id="pipeline-summary"></div>
               </div>
               <div id="pipeline-list" class="pipeline-list"></div>
@@ -80,10 +74,8 @@
 
             <aside class="panel panel-inspector">
               <div class="panel-head">
-                <div>
-                  <div class="panel-title" id="inspector-title">Inspector</div>
-                  <div class="panel-subtitle" id="inspector-subtitle">Select a step to edit its configuration.</div>
-                </div>
+                <div class="panel-title" id="inspector-title">Inspector</div>
+                <div class="panel-subtitle" id="inspector-subtitle"></div>
               </div>
               <div id="inspector-body" class="inspector-body"></div>
             </aside>
@@ -95,12 +87,11 @@
         <div class="panel-head console-head">
           <div>
             <div class="panel-title">Console</div>
-            <div class="panel-subtitle">Dense, terminal-style event stream.</div>
           </div>
           <div class="console-actions">
-            <button class="tiny-btn" id="console-toggle">Hide</button>
-            <button class="tiny-btn" id="console-clear">Clear</button>
-            <button class="tiny-btn" id="console-export">Export</button>
+            <button class="btn-ghost btn-sm" id="console-toggle">Hide</button>
+            <button class="btn-ghost btn-sm" id="console-clear">Clear</button>
+            <button class="btn-ghost btn-sm" id="console-export">Export</button>
             <label class="toggle"><input id="console-autoscroll" type="checkbox" checked /> Auto-scroll</label>
             <select id="console-filter">
               <option value="all">All</option>

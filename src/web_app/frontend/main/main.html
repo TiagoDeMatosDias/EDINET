@@ -19,7 +19,7 @@
         </div>
 
         <nav class="tabs" aria-label="Primary navigation">
-          <button class="tab is-active" onclick="void 0">Main</button>
+          <button class="tab is-active" onclick="void 0" aria-current="page">Main</button>
           <button class="tab" onclick="location.href='/orchestrator'">Orchestrator</button>
           <button class="tab" onclick="location.href='/screening'">Screening</button>
           <button class="tab" onclick="location.href='/backtesting'">Backtesting</button>
@@ -28,76 +28,64 @@
 
         <div class="topbar-actions">
           <div class="status-pill" id="backend-status">Connecting…</div>
-          <button class="ghost-btn" id="refresh-btn">Refresh</button>
+          <button class="btn-ghost" id="refresh-btn">Refresh</button>
         </div>
       </header>
 
       <main class="workspace">
-
-        <!-- ================================================================
-             Main dashboard
-        ================================================================= -->
-        <section class="view view-main is-active" data-view-panel="main">
-          <div class="hero-strip">
-            <div>
-              <div class="kicker">Main screen</div>
-              <h1>Pipeline dashboard and setup launcher</h1>
-              <p>
-                Review recent runs, jump into the orchestrator, and keep the workspace compact and fast.
-              </p>
-            </div>
-            <div class="hero-metrics" id="main-metrics"></div>
-          </div>
-
+        <section class="view is-active" data-view-panel="main">
           <div class="main-grid">
-            <section class="panel panel-large">
+            <section class="panel" id="jobs-panel">
               <div class="panel-head">
                 <div>
                   <div class="panel-title">Recent Jobs</div>
-                  <div class="panel-subtitle">Latest pipeline executions returned by the API.</div>
                 </div>
-                <button class="tiny-btn" id="reload-jobs">Reload</button>
+                <button class="btn-ghost btn-sm" id="reload-jobs">Reload</button>
               </div>
-              <div class="table-wrap">
-                <table class="dense-table" id="jobs-table">
-                  <thead>
-                    <tr>
-                      <th>Job ID</th>
-                      <th>Status</th>
-                      <th>Current Step</th>
-                      <th>Progress</th>
-                      <th>Created</th>
-                    </tr>
-                  </thead>
-                  <tbody></tbody>
-                </table>
+              <div class="panel-body">
+                <div class="table-wrap">
+                  <table class="data-table" id="jobs-table">
+                    <thead>
+                      <tr>
+                        <th>Job ID</th>
+                        <th>Status</th>
+                        <th>Current Step</th>
+                        <th>Progress</th>
+                        <th>Created</th>
+                      </tr>
+                    </thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
               </div>
             </section>
 
             <aside class="side-stack">
-              <section class="panel">
+              <section class="panel" id="metrics-panel">
                 <div class="panel-head">
-                  <div>
-                    <div class="panel-title">Local Setups</div>
-                    <div class="panel-subtitle">Saved in this browser.</div>
-                  </div>
+                  <div class="panel-title">Status</div>
                 </div>
-                <div id="setup-list" class="list compact-list"></div>
+                <div class="panel-body">
+                  <div class="metric-grid" id="main-metrics"></div>
+                </div>
               </section>
 
-              <section class="panel">
+              <section class="panel" id="setups-panel">
                 <div class="panel-head">
-                  <div>
-                    <div class="panel-title">Step Catalog</div>
-                    <div class="panel-subtitle">Discovered from /api/steps.</div>
-                  </div>
+                  <div class="panel-title">Local Setups</div>
                 </div>
-                <div id="step-catalog-preview" class="catalog-preview"></div>
+                <div id="setup-list" class="list"></div>
+              </section>
+
+              <section class="panel" id="catalog-panel">
+                <div class="panel-head">
+                  <div class="panel-title">Quick Add Step</div>
+                </div>
+                <div id="step-catalog-preview" class="list"></div>
               </section>
             </aside>
           </div>
         </section>
-
       </main>
     </div>
 

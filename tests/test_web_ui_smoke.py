@@ -19,7 +19,7 @@ def test_main_page_has_topbar_with_all_tabs() -> None:
     # Topbar is static HTML; tabs and brand are present before JS runs.
     assert soup.select_one("header.topbar") is not None
     tab_labels = [btn.get_text(strip=True) for btn in soup.select("nav.tabs button.tab")]
-    assert tab_labels == ["Main", "Orchestrator", "Screening", "Security Analysis"]
+    assert tab_labels == ["Main", "Orchestrator", "Screening", "Backtesting", "Security Analysis"]
     assert soup.select_one("script[src*='assets/main/main.js']") is not None
 
 

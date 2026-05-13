@@ -59,11 +59,11 @@ function renderContent() {
 
   if (!state.initDone) {
     hideAll(hdr, banner, tabbar, tv); show(empty);
-    et.textContent = 'Initializing…'; es.textContent = 'Connecting…'; return;
+    et.textContent = 'Initializing…'; if (es) es.textContent = 'Connecting…'; return;
   }
   if (state.error) {
     hideAll(hdr, banner, tabbar, tv); show(empty);
-    et.textContent = 'Error'; es.textContent = state.error; return;
+    et.textContent = 'Error'; if (es) es.textContent = state.error; return;
   }
   if (state.loading) {
     hdr.classList.add('is-visible'); hdr.innerHTML = '<div class="sa-loading">Loading…</div>';
@@ -75,7 +75,7 @@ function renderContent() {
   } else {
     hideAll(hdr, banner, tabbar, tv); show(empty);
     et.textContent = 'Search for a company to begin';
-    es.textContent = 'Type a ticker, EDINET code, or company name above.';
+    if (es) es.textContent = 'Type a ticker, EDINET code, or company name above.';
   }
 }
 

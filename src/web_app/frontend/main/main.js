@@ -1,11 +1,11 @@
 /**
- * Main dashboard page entry point (moved into the main folder).
+ * Main dashboard page entry point.
  */
 
 import { STATE, els, callbacks } from '../common/state.js';
 import { $, fetchJson } from '../common/utils.js';
 import { log } from '../common/console.js';
-import { mountTopbar, mountConsoleFooter, refreshHealth, wireTopbarEvents } from '../common/topbar.js';
+import { refreshHealth, wireTopbarEvents } from '../common/topbar.js';
 import {
   renderMain,
   renderRecentJobs,
@@ -46,17 +46,15 @@ async function refreshSteps() {
 async function bootstrap() {
   wireTopbarEvents();
 
-  // DOM element cache
-  els.backendStatus    = document.getElementById('backend-status');
-  els.refreshBtn       = document.getElementById('refresh-btn');
-  els.reloadJobs       = document.getElementById('reload-jobs');
-  els.mainMetrics      = document.getElementById('main-metrics');
-  els.jobsTable        = document.getElementById('jobs-table');
-  els.setupList        = document.getElementById('setup-list');
-  els.catalogPreview   = document.getElementById('step-catalog-preview');
+  els.backendStatus  = document.getElementById('backend-status');
+  els.refreshBtn     = document.getElementById('refresh-btn');
+  els.reloadJobs     = document.getElementById('reload-jobs');
+  els.mainMetrics    = document.getElementById('main-metrics');
+  els.jobsTable      = document.getElementById('jobs-table');
+  els.setupList      = document.getElementById('setup-list');
+  els.catalogPreview = document.getElementById('step-catalog-preview');
   callbacks.refreshJobs = refreshJobs;
 
-  // Events
   if (els.reloadJobs) els.reloadJobs.addEventListener('click', refreshJobs);
 
   window._pageRefresh = async () => {

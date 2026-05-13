@@ -21,18 +21,24 @@ export function renderConsole() {
   );
   const shouldStick = STATE.consoleAutoscroll && nearBottom(els.consoleLog);
   els.consoleLog.replaceChildren();
-  for (const line of lines) {
-    const lvl = line.level === 'warn' ? 'warn'
-      : line.level === 'error' ? 'error'
-      : line.level === 'debug' ? 'debug'
+  const total = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lvl = (line.level === 'warn') ? 'warn'
+      : (line.level === 'error') ? 'error'
+      : (line.level === 'debug') ? 'debug'
       : 'info';
+    const staleClass = ((total - i) > 5) ? ' log-stale' : '';
+    const divClass = 'log-line ' + lvl + staleClass;
+    const logLevelClass = 'log-level ' + lvl;
+    const logLevelText = line.level.toUpperCase().padEnd(5);
     els.consoleLog.append(
-      el('div', { class: `log-line ${lvl}` },
+      el('div', { class: divClass },
         el('span', { class: 'log-time', text: line.time }),
         ' ',
-        el('span', { class: `log-level ${lvl}`, text: line.level.toUpperCase().padEnd(5) }),
-        line.message,
-      ),
+        el('span', { class: logLevelClass, text: logLevelText }),
+        line.message
+      )
     );
   }
   if (shouldStick) els.consoleLog.scrollTop = els.consoleLog.scrollHeight;
