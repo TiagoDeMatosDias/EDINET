@@ -88,6 +88,8 @@ OPERATOR_MAP: dict[str, str] = {
 DEFAULT_COLUMNS: list[str] = [
     "CompanyInfo.edinetCode",
     "CompanyInfo.Company_Ticker",
+    "CompanyInfo.Company_Name",    
+    "CompanyInfo.Company_Industry",
     "FinancialStatements.periodEnd",
 ]
 
@@ -673,13 +675,43 @@ def build_screening_query(
 
     select_clause = ", ".join(select_parts) if select_parts else "*"
 
+    # --- Collect FinancialStatements columns referenced by query ---
+    # The FinancialStatements subquery only projects join keys by default.
+    # Any other column referenced in SELECT or WHERE must be added.
+    _fs_extra_cols: set[str] = set()
+    _FS_BASE_COLS = {"edinetCode", "docID", "periodEnd"}
+    for col in columns:
+        parts = col.split(".", 1)
+        if len(parts) == 2 and parts[0] == "FinancialStatements" and parts[1] not in _FS_BASE_COLS:
+            _fs_extra_cols.add(parts[1])
+    for crit in criteria:
+        if crit.get("comparison_mode") == "full_expression":
+            for token_list in (crit.get("left_side", []), crit.get("right_side", [])):
+                for token in token_list:
+                    if token.get("type") == "column" and token.get("table") == "FinancialStatements":
+                        col_name = token.get("column", "")
+                        if col_name and col_name not in _FS_BASE_COLS:
+                            _fs_extra_cols.add(col_name)
+        else:
+            if crit.get("table") == "FinancialStatements":
+                col_name = crit.get("column", "")
+                if col_name and col_name not in _FS_BASE_COLS:
+                    _fs_extra_cols.add(col_name)
+            if crit.get("comparison_mode") == "column" and crit.get("compare_table") == "FinancialStatements":
+                col_name = crit.get("compare_column", "")
+                if col_name and col_name not in _FS_BASE_COLS:
+                    _fs_extra_cols.add(col_name)
+
     # --- Build FROM / JOIN ---
     # Always restrict FinancialStatements to the latest filing per company.
     # When screening_date is set, also cap periodEnd for point-in-time
     # screening.  When period is set, restrict to latest filing within that
-    # year (used by historical backtest export).  Only the three join columns
-    # are projected — the wide taxonomy columns stay in the base table.
-    _sub_cols = "f.edinetCode, f.docID, f.periodEnd"
+    # year (used by historical backtest export).  Start with the three join
+    # columns — extra columns referenced by SELECT/WHERE are added dynamically.
+    _sub_cols_parts = ["f.edinetCode", "f.docID", "f.periodEnd"]
+    for _ec in sorted(_fs_extra_cols):
+        _sub_cols_parts.append(f"f.[{_safe_identifier(_ec)}]")
+    _sub_cols = ", ".join(_sub_cols_parts)
     if screening_date:
         _where = "WHERE date(periodEnd) <= ?"
         _extra_params = [screening_date]

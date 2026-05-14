@@ -704,6 +704,14 @@ body.console-collapsed .console {
 .scr-bld-tokens { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 28px; }
 .scr-bld-op { margin-bottom: 6px; }
 .scr-bld-sel-scr-bld-op { width: auto; min-width: 80px; }
+/* Builder inputs for LIKE / BETWEEN / IN values */
+.scr-bld-inp {
+  font-size: 12px; padding: 3px 6px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); font-family: var(--font); width: 140px;
+}
+.scr-bld-inp:focus { border-color: var(--accent); outline: none; }
+.scr-bld-and { color: var(--muted); font-weight: 500; font-size: 11px; margin: 0 4px; }
+.scr-bld-in-vals { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .scr-chp {
   display: inline-flex; align-items: center; padding: 3px 8px;
   border: 1px solid var(--line); font-size: 12px; cursor: pointer;

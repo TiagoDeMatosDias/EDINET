@@ -616,20 +616,45 @@ function pickCol(obj, tk, ck, cb) {
 function showOpMenu(anchor, crit) {
   const ex = document.querySelector('.scr-pop'); if (ex) ex.remove();
   const pop = el('div', { class: 'scr-pop scr-pop-ops' });
-  const restricted = crit.comparison_mode === 'stock_price' || crit.comparison_mode === 'full_expression';
+  // All operators are available — switching mode handles the transition
   const allOps = ['>', '>=', '<', '<=', '=', '!=', 'BETWEEN', 'IN', 'LIKE', 'IS', 'IS NOT'];
-  const ops = restricted
-    ? ['>', '>=', '<', '<=', '=', '!=', 'IS', 'IS NOT']
-    : allOps;
-  for (const o of ops) {
+  for (const o of allOps) {
     const btn = el('button', { class: 'scr-pop-op' + (o === crit.operator ? ' is-sel' : ''), text: o });
     btn.addEventListener('click', () => {
+      const wasFullExpr = crit.comparison_mode === 'full_expression';
       crit.operator = o;
-      if (o === 'IN') { crit.comparison_mode = 'in'; crit.values = crit.value != null ? [String(crit.value)] : ['']; }
-      else if (o === 'LIKE') { crit.comparison_mode = 'like'; }
-      else if (o === 'BETWEEN') { crit.comparison_mode = 'fixed'; }
-      else if (o === 'IS' || o === 'IS NOT') { crit.right_side = []; }
-      else if (crit.comparison_mode === 'in' || crit.comparison_mode === 'like') { crit.comparison_mode = 'fixed'; }
+      if (o === 'IN') {
+        if (wasFullExpr) {
+          const colTok = (crit.left_side || []).find(t => t.type === 'column');
+          if (colTok) { crit.table = colTok.table; crit.column = colTok.column; }
+          const firstVal = (crit.right_side || []).find(t => t.type === 'value');
+          crit.values = firstVal ? [String(firstVal.value)] : [''];
+        } else {
+          crit.values = crit.value != null ? [String(crit.value)] : [''];
+        }
+        crit.comparison_mode = 'in';
+      } else if (o === 'LIKE') {
+        if (wasFullExpr) {
+          const colTok = (crit.left_side || []).find(t => t.type === 'column');
+          if (colTok) { crit.table = colTok.table; crit.column = colTok.column; }
+          const firstVal = (crit.right_side || []).find(t => t.type === 'value');
+          crit.value = firstVal ? String(firstVal.value) : '';
+        }
+        crit.comparison_mode = 'like';
+      } else if (o === 'BETWEEN') {
+        if (wasFullExpr) {
+          const colTok = (crit.left_side || []).find(t => t.type === 'column');
+          if (colTok) { crit.table = colTok.table; crit.column = colTok.column; }
+          const vals = (crit.right_side || []).filter(t => t.type === 'value');
+          crit.value = vals[0] ? vals[0].value : null;
+          crit.value2 = vals[1] ? vals[1].value : null;
+        }
+        crit.comparison_mode = 'fixed';
+      } else if (o === 'IS' || o === 'IS NOT') {
+        if (!wasFullExpr) crit.right_side = [];
+      } else if (crit.comparison_mode === 'in' || crit.comparison_mode === 'like') {
+        crit.comparison_mode = 'fixed';
+      }
       pop.remove(); renderCriteria();
     });
     pop.append(btn);
@@ -704,6 +729,16 @@ function showCritBuilder() {
   const rightTokens = [];
   let cmpOp = '>';
 
+  // State for simple-mode right-side values
+  let simpleValue = '';
+  let simpleValue2 = '';
+  let simpleValues = [''];
+
+  const EXPR_OPS = ['>', '>=', '<', '<=', '=', '!=', 'IS', 'IS NOT'];
+  const ALL_OPS = ['>', '>=', '<', '<=', '=', '!=', 'BETWEEN', 'IN', 'LIKE', 'IS', 'IS NOT'];
+
+  function isSimpleOp(op) { return op === 'LIKE' || op === 'IN' || op === 'BETWEEN'; }
+
   function renderBuilder() {
     ctr.innerHTML = '';
 
@@ -719,18 +754,53 @@ function showCritBuilder() {
     const opPane = el('div', { class: 'scr-bld-op' });
     opPane.append(el('div', { class: 'scr-bld-label', text: 'Operator:' }));
     const opRow = el('select', { class: 'scr-bld-sel-scr-bld-op' });
-    for (const o of ['>', '>=', '<', '<=', '=', '!=', 'IS', 'IS NOT']) {
+    for (const o of ALL_OPS) {
       opRow.append(el('option', { value: o, selected: cmpOp === o ? '' : undefined }, o));
     }
-    opRow.addEventListener('change', () => { cmpOp = opRow.value; });
+    opRow.addEventListener('change', () => { cmpOp = opRow.value; renderBuilder(); });
     opPane.append(opRow);
 
     // ── Right side ──
     const rightPane = el('div', { class: 'scr-bld-expr' });
     rightPane.append(el('div', { class: 'scr-bld-label', text: 'Right side:' }));
     const rightRow = el('div', { class: 'scr-bld-tokens' });
-    renderTokenChips(rightTokens, rightRow);
-    rightRow.append(buildTokenAddBtn(rightTokens, rightRow));
+
+    if (cmpOp === 'LIKE') {
+      const inp = el('input', { class: 'scr-inp scr-bld-inp', type: 'text', value: simpleValue, placeholder: 'LIKE pattern (use % as wildcard)' });
+      inp.addEventListener('input', () => { simpleValue = inp.value; });
+      rightRow.append(inp);
+    } else if (cmpOp === 'IN') {
+      const valsWrap = el('div', { class: 'scr-bld-in-vals' });
+      function renderInVals() {
+        valsWrap.innerHTML = '';
+        for (let i = 0; i < simpleValues.length; i++) {
+          const inv = el('input', { class: 'scr-inp scr-bld-inp', type: 'text', value: simpleValues[i] || '', placeholder: 'Value ' + (i + 1) });
+          inv.addEventListener('input', () => { simpleValues[i] = inv.value; });
+          inv.addEventListener('keydown', (e) => {
+            if (e.key === 'Backspace' && inv.value === '' && simpleValues.length > 1) {
+              simpleValues.splice(i, 1); renderInVals();
+            }
+          });
+          valsWrap.append(inv);
+        }
+        const plus = el('button', { class: 'scr-plus', text: '+' });
+        plus.addEventListener('click', () => { simpleValues.push(''); renderInVals(); });
+        valsWrap.append(plus);
+      }
+      renderInVals();
+      rightRow.append(valsWrap);
+    } else if (cmpOp === 'BETWEEN') {
+      const inp1 = el('input', { class: 'scr-inp scr-bld-inp', type: 'text', value: simpleValue, placeholder: 'Lower bound' });
+      inp1.addEventListener('input', () => { simpleValue = inp1.value; });
+      const andSpan = el('span', { class: 'scr-bld-and', text: 'AND' });
+      const inp2 = el('input', { class: 'scr-inp scr-bld-inp', type: 'text', value: simpleValue2, placeholder: 'Upper bound' });
+      inp2.addEventListener('input', () => { simpleValue2 = inp2.value; });
+      rightRow.append(inp1, andSpan, inp2);
+    } else {
+      // Expression mode: token builder
+      renderTokenChips(rightTokens, rightRow);
+      rightRow.append(buildTokenAddBtn(rightTokens, rightRow));
+    }
     rightPane.append(rightRow);
 
     // ── Actions ──
@@ -740,7 +810,59 @@ function showCritBuilder() {
     const addBtn = el('button', { class: 'scr-bld-add', text: 'Add Criteria' });
     addBtn.addEventListener('click', () => {
       if (!leftTokens.length) return;
-      // Right side optional for IS / IS NOT operators
+
+      if (cmpOp === 'LIKE') {
+        const colTok = leftTokens.find(t => t.type === 'column');
+        if (!colTok) return;
+        if (!simpleValue.trim()) return;
+        const crit = {
+          id: uid(),
+          table: colTok.table, column: colTok.column,
+          operator: 'LIKE', comparison_mode: 'like',
+          value: simpleValue.trim(),
+        };
+        ST.criteria.push(crit);
+        ctr.innerHTML = '';
+        renderCriteria();
+        return;
+      }
+
+      if (cmpOp === 'IN') {
+        const colTok = leftTokens.find(t => t.type === 'column');
+        if (!colTok) return;
+        const vals = simpleValues.map(v => v.trim()).filter(Boolean);
+        if (!vals.length) return;
+        const crit = {
+          id: uid(),
+          table: colTok.table, column: colTok.column,
+          operator: 'IN', comparison_mode: 'in',
+          values: vals,
+        };
+        ST.criteria.push(crit);
+        ctr.innerHTML = '';
+        renderCriteria();
+        return;
+      }
+
+      if (cmpOp === 'BETWEEN') {
+        const colTok = leftTokens.find(t => t.type === 'column');
+        if (!colTok) return;
+        const v1 = isNaN(Number(simpleValue)) ? simpleValue.trim() : Number(simpleValue);
+        const v2 = isNaN(Number(simpleValue2)) ? simpleValue2.trim() : Number(simpleValue2);
+        if (simpleValue.trim() === '' || simpleValue2.trim() === '') return;
+        const crit = {
+          id: uid(),
+          table: colTok.table, column: colTok.column,
+          operator: 'BETWEEN', comparison_mode: 'fixed',
+          value: v1, value2: v2,
+        };
+        ST.criteria.push(crit);
+        ctr.innerHTML = '';
+        renderCriteria();
+        return;
+      }
+
+      // Expression mode
       if (cmpOp !== 'IS' && cmpOp !== 'IS NOT' && !rightTokens.length) return;
       const crit = {
         id: uid(),
@@ -754,9 +876,17 @@ function showCritBuilder() {
       renderCriteria();
     });
 
-    const preview = el('div', { class: 'scr-bld-preview', text: previewText(leftTokens, cmpOp, rightTokens) });
+    const previewTextContent = cmpOp === 'LIKE' ? `[ ${compileLeftPreview()} LIKE "${simpleValue || '?'}" ]`
+      : cmpOp === 'IN' ? `[ ${compileLeftPreview()} IN (${simpleValues.filter(v => v.trim()).map(v => `"${v.trim()}"`).join(', ') || '?'}) ]`
+      : cmpOp === 'BETWEEN' ? `[ ${compileLeftPreview()} BETWEEN ${simpleValue || '?'} AND ${simpleValue2 || '?'} ]`
+      : previewText(leftTokens, cmpOp, rightTokens);
+    const preview = el('div', { class: 'scr-bld-preview', text: previewTextContent });
 
     ctr.append(leftPane, opPane, rightPane, preview, el('div', { class: 'scr-bld-acts' }, cancelBtn, addBtn));
+  }
+
+  function compileLeftPreview() {
+    return leftTokens.map(t => t.type === 'column' ? `${t.table}.${t.column}` : t.type === 'value' ? String(t.value) : t.op).join(' ') || '?';
   }
 
   function renderTokenChips(tokens, row) {
