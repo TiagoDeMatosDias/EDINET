@@ -30,10 +30,10 @@ Suggested per-function format:
 ## Current project status
 
 - Default interface: the web workstation (FastAPI + vanilla JS) launched by `python main.py` is the primary maintained UI.
-- Maintained top-level views: `Dashboard`, `Orchestrator`, `Screening`, and `Security Analysis`.
+- Maintained top-level views: `Dashboard`, `Orchestrator`, `Screening`, `Backtesting`, and `Security Analysis`.
 - Architecture status: `src.orchestrator` is a thin dispatcher with dynamically discovered step packages; backend modules are decoupled from `Config` and called with explicit parameters.
 - Mature user-facing workflows: ingestion, ETL, ratio generation, backtesting, screening, and security analysis all have dedicated test coverage.
-- Web workstation: full-featured web UI (FastAPI + vanilla JS) served at `/`, `/orchestrator`, `/screening`, `/security`. Both Screening and Security Analysis are fully functional.
+- Web workstation: full-featured web UI (FastAPI + vanilla JS) served at `/`, `/orchestrator`, `/screening`, `/backtesting`, `/security`. All views are fully functional.
 
 ---
 
@@ -387,7 +387,7 @@ This reference is intentionally concise. Expand signatures, examples, and depend
 
 ### [src/web_app/server.py](../src/web_app/server.py)
 
-Responsibility: FastAPI application assembly — creates the app, mounts API routers, serves static frontend files, and defines the page routes (`/`, `/orchestrator`, `/screening`, `/security`).
+Responsibility: FastAPI application assembly — creates the app, mounts API routers, serves static frontend files, and defines the page routes (`/`, `/orchestrator`, `/screening`, `/backtesting`, `/security`).
 
 ### [src/web_app/api/screening.py](../src/web_app/api/screening.py)
 
@@ -399,7 +399,7 @@ Responsibility: Security Analysis API routes at `/api/security/*` — search, ov
 
 ### [src/web_app/frontend/](../src/web_app/frontend/)
 
-Responsibility: Browser-side assets — vanilla JS screen modules (`orchestrator/`, `screening/`, `security_analysis/`), shared utilities (`common/`), and HTML pages.
+Responsibility: Browser-side assets — vanilla JS screen modules (`orchestrator/`, `screening/`, `backtesting/`, `security_analysis/`), shared utilities (`common/`), and HTML pages.
 
 ---
 

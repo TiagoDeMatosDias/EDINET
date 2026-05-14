@@ -2,7 +2,7 @@
 
 Downloads financial filings from the Japanese securities regulator (EDINET), processes them into a structured SQLite database, and runs statistical analysis to identify relationships between financial ratios and stock valuations.
 
-The primary interface is a web workstation (FastAPI + vanilla JavaScript) accessible at `http://127.0.0.1:8000`. It exposes four top-level views: Dashboard, Orchestrator, Screening, and Security Analysis.
+The primary interface is a web workstation (FastAPI + vanilla JavaScript) accessible at `http://127.0.0.1:8000`. It exposes five top-level views: Dashboard, Orchestrator, Screening, Backtesting, and Security Analysis.
 
 Each pipeline step is configured independently, including its source or target database path where applicable.
 
@@ -36,6 +36,7 @@ Each pipeline step is configured independently, including its source or target d
    11. **Backtest set** – batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
 2.  **Screening** – filter companies by financial criteria (valuation, quality, per-share metrics), apply weighted ranking rules, review sortable results, toggle raw or formatted value display, save/load criteria, inspect screening history, export CSVs, or generate backtest-set CSV inputs.
 3.  **Security analysis** – inspect a single company with typeahead search, overview metric tiles, statement history with configurable column filter, interactive Chart.js charts, price refresh, and peer comparison.
+4.  **Backtesting** – interactive portfolio backtesting with three input modes: manual portfolio entry with ticker autocomplete and allocation types (weight/shares/value), import from screening results, or upload a CSV of yearly portfolio selections. Features Chart.js visualizations (cumulative returns, drawdown, yearly breakdowns), per-company return decomposition, benchmark comparison, and batch set analysis with heatmap.
 
 ## Screenshots
 
@@ -46,12 +47,14 @@ Current captures from the web workstation at 1280×800:
 | **Dashboard** | <img src="docs/images/web-dashboard.png" alt="EDINET Web Dashboard" width="640"> |
 | **Orchestrator** | <img src="docs/images/web-orchestrator.png" alt="EDINET Web Orchestrator" width="640"> |
 | **Screening** | <img src="docs/images/web-screening.png" alt="EDINET Web Screening" width="640"> |
+| **Backtesting** | <img src="docs/images/web-backtesting.png" alt="EDINET Web Backtesting" width="640"> |
 | **Security Analysis** | <img src="docs/images/web-security-analysis.png" alt="EDINET Web Security Analysis" width="640"> |
 
 - **Dashboard** (`/`) — job history, metrics summary, quick-launch cards into other views.
 - **Orchestrator** (`/orchestrator`) — pipeline builder: step library, drag-to-order pipeline, per-step config inspector, run controls.
-- **Screening** (`/screening`) — criteria and ranking builder, sortable results, formatted/raw toggle, save/load/history/export, drill-in to Security Analysis.
-- **Security Analysis** (`/security`) — company search, overview tiles, historical data with column filter, Chart.js charts, peer comparison, price refresh.
+- **Screening** (`/screening`) — criteria and ranking builder, sortable results, formatted/raw toggle, save/load/history/export, drill-in to Security Analysis. *(Shown above: results for Transportation Equipments companies.)*
+- **Backtesting** (`/backtesting`) — interactive backtesting with manual portfolio, screener import, or CSV upload. Chart.js visualizations, per-company decomposition, benchmark comparison, and batch set heatmap.
+- **Security Analysis** (`/security`) — company search, overview tiles, historical data with column filter, Chart.js charts, peer comparison, price refresh. *(Shown above: TOYOTA INDUSTRIES CORPORATION.)*
 
 > Screenshots captured via Playwright. Regenerate with `python tests/capture_screenshots.py`.
 
@@ -137,12 +140,13 @@ for the full step-by-step guide.
 
 ## Web Interface Features
 
-- **Multi-page navigation** – tab bar switches between Dashboard, Orchestrator, Screening, and Security Analysis views without page reload.
+- **Multi-page navigation** – tab bar switches between Dashboard, Orchestrator, Screening, Backtesting, and Security Analysis views without page reload.
 - **Pipeline builder** – drag-and-drop step ordering, per-step configuration inspector, run/cancel controls with real-time job status.
 - **Screening** – dynamic criteria builder with metric picker, weighted ranking rules, sortable/sort-preserving results, formatted/raw value toggle, save/load criteria, run history, CSV export, backtest-set export, and drill-in to Security Analysis.
+- **Backtesting** – three input modes (manual portfolio, import from screener, CSV upload), allocation types (weight/shares/value), Chart.js visualizations (cumulative returns, drawdown, yearly breakdowns), per-company return decomposition, benchmark comparison, batch set analysis with heatmap, and portfolio comparison across multiple runs.
 - **Security Analysis** – typeahead company search (by ticker, name, EDINET code, industry), overview metric tiles, unified historical data table with column filter (multi-select grouped by source table), period count selector, Chart.js charts (line/bar/area, multi-series, add/remove panels), peer comparison, and stock price refresh.
 - **Database management** – resolve, optimize, and select database paths from the UI.
-- **Session persistence** – screening criteria, results, and security analysis context survive tab switches via sessionStorage.
+- **Session persistence** – screening criteria, results, backtesting state, and security analysis context survive tab switches via sessionStorage.
 
 ## Key EDINET document type codes
 

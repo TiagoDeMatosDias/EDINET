@@ -14,30 +14,38 @@ flowchart LR
         MAIN_P["/ (main.html)"]
         ORCH_P["/orchestrator"]
         SCR_P["/screening"]
+        BT_P["/backtesting"]
         SEC_P["/security"]
     end
 
     subgraph Modules["JS Screen Modules"]
         ORCH_MOD["orchestrator/index.js"]
         SCR_MOD["screening/index.js"]
+        BT_MOD["backtesting/index.js"]
         SEC_MOD["security_analysis/index.js"]
     end
 
     subgraph API["API Endpoints"]
         ORCH_API["/api/steps<br/>/api/pipeline/run<br/>/api/jobs<br/>/api/config<br/>/health"]
         SCR_API["/api/screening/metrics<br/>/api/screening/run<br/>/api/screening/saved<br/>/api/screening/export"]
+        BT_API["/api/backtesting/*"]
+        SEC_API["/api/security/*"]
     end
 
     MAIN_P --> ORCH_MOD
     ORCH_P --> ORCH_MOD
     SCR_P --> SCR_MOD
+    BT_P --> BT_MOD
     SEC_P --> SEC_MOD
 
     ORCH_MOD -->|"fetchJson"| ORCH_API
     SCR_MOD -->|"fetchJson"| SCR_API
+    BT_MOD -->|"fetchJson"| BT_API
+    SEC_MOD -->|"fetchJson"| SEC_API
 
     ORCH_MOD -.->|"imports"| common["common/ (state, utils, console, topbar)"]
     SCR_MOD -.->|"imports"| common
+    BT_MOD -.->|"imports"| common
     SEC_MOD -.->|"imports"| common
 ```
 
@@ -69,10 +77,14 @@ src/web_app/
     │   ├── screening.html      ← Screening page (served at /screening)
     │   ├── screening.js        ← Screening page entry point
     │   └── index.js            ← Screening screen logic (full implementation)
+    ├── backtesting/
+    │   ├── backtesting.html   ← Backtesting page (served at /backtesting)
+    │   ├── backtesting.js     ← Backtesting page entry point
+    │   └── index.js           ← Backtesting screen logic (full implementation)
     └── security_analysis/
         ├── security.html       ← Security Analysis page (served at /security)
         ├── security.js         ← Security Analysis page entry point
-        └── index.js            ← Security Analysis screen logic (stub)
+        └── index.js            ← Security Analysis screen logic (full implementation)
 ```
 
 The entire frontend is vanilla ES-module JavaScript — no build step, no bundler.
@@ -94,6 +106,7 @@ The thin FastAPI application.  Responsibilities:
   - `/` → `frontend/main/main.html`
   - `/orchestrator` → `frontend/orchestrator/orchestrator.html`
   - `/screening` → `frontend/screening/screening.html`
+  - `/backtesting` → `frontend/backtesting/backtesting.html`
   - `/security` → `frontend/security_analysis/security.html`
 
 ### `api/__init__.py`
@@ -132,6 +145,7 @@ Tab buttons use inline `onclick` handlers for page navigation:
 <button class="tab is-active" onclick="void 0">Main</button>
 <button class="tab" onclick="location.href='/orchestrator'">Orchestrator</button>
 <button class="tab" onclick="location.href='/screening'">Screening</button>
+<button class="tab" onclick="location.href='/backtesting'">Backtesting</button>
 <button class="tab" onclick="location.href='/security'">Security Analysis</button>
 ```
 
@@ -246,9 +260,28 @@ Fully-implemented screening workspace with an expression-bar criteria builder. F
 - Export CSV and row-click drill-down to Security Analysis
 - All API interaction via `fetchJson` to `/api/screening/*` endpoints
 
+### `backtesting/index.js`
+
+Fully-implemented backtesting workspace with three input modes. Features:
+- **Manual portfolio** — ticker autocomplete, allocation types (weight/shares/value), date range picker, benchmark ticker, initial capital, risk-free rate
+- **From Screener** — import criteria from a screening result (linked via hash params)
+- **From CSV** — upload or paste a yearly portfolio CSV
+- **Results** — Chart.js visualizations (cumulative returns with benchmarks, drawdown, yearly breakdowns, dividends), metric tiles (total return, CAGR, Sharpe, max drawdown), per-company return decomposition table
+- **Batch set** — when running from CSV: results comparison table with heatmap, per-year drill-down
+- **Multi-run comparison** — accumulate multiple runs and tab between them
+- **Session persistence** — state survives tab switches via `sessionStorage`
+- All API interaction via `fetchJson` and `fetchSSE` to `/api/backtesting/*` endpoints
+
 ### `security_analysis/index.js`
 
-Stub screen. Exports a single `render()` function that is called by `security/security.js` when the Security Analysis page loads. Currently renders no dynamic content.
+Fully-implemented security analysis workspace. Features:
+- **Typeahead search** — search by ticker, EDINET code, company name, or industry with keyboard-navigable dropdown
+- **Company overview** — metric tiles (price, P/E, P/B, P/S, dividend yield, earnings yield), 52-week range bar, company description with expand/collapse, data quality flags
+- **Historical data** — tabbed table/chart view for each statement source (FinancialStatements, IncomeStatement, BalanceSheet, CashflowStatement, PerShare_Metrics, ShareMetrics, Financial_Ratios, and their _Rolling variants), column visibility toggle, millions formatting toggle, metric search filter, hide-all/show-all/hide-empty controls
+- **Chart view** — Chart.js line charts with multi-series, auto colors, responsive sizing
+- **Price refresh** — update stock price for the current ticker via API
+- **Session persistence** — company selection and view state survive tab switches via `sessionStorage`
+- All API interaction via `fetchJson` to `/api/security/*` endpoints
 
 ---
 
