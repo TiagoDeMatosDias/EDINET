@@ -165,7 +165,7 @@ def _compute_rolling_dataframe(df, metric_columns):
 
     df = df.copy()
     df["periodEnd"] = pd.to_datetime(df["periodEnd"], errors="coerce")
-    df.sort_values(["edinetCode", "periodEnd", "docID"], inplace=True)
+    df.sort_values(["company_code", "periodEnd", "docID"], inplace=True)
 
     computed_columns = {
         "docID": df["docID"],
@@ -173,7 +173,7 @@ def _compute_rolling_dataframe(df, metric_columns):
 
     for metric_column in metric_columns:
         series = pd.to_numeric(df[metric_column], errors="coerce")
-        grouped = series.groupby(df["edinetCode"])
+        grouped = series.groupby(df["company_code"])
 
         for window in _ROLLING_WINDOWS:
             avg_col = f"{metric_column}_Average_{window}_Year"
@@ -293,13 +293,13 @@ def generate_rolling_metrics(
                 "Source table 'FinancialStatements' is missing a docID column; required for Generate Rolling Metrics."
             )
 
-        fs_edinet_column = _resolve_column_name_in_schema(
-            conn,
-            source_schema,
-            fs_actual,
-            "edinetCode",
-            helper=helper,
-        )
+        fs_code_column = None
+        for candidate in ("Company_Code", "edinetCode", "EdinetCode"):
+            fs_code_column = _resolve_column_name_in_schema(
+                conn, source_schema, fs_actual, candidate, helper=helper
+            )
+            if fs_code_column:
+                break
         fs_period_column = _resolve_column_name_in_schema(
             conn,
             source_schema,
@@ -307,13 +307,13 @@ def generate_rolling_metrics(
             "periodEnd",
             helper=helper,
         )
-        if not fs_edinet_column or not fs_period_column:
+        if not fs_code_column or not fs_period_column:
             raise RuntimeError(
-                "Source table 'FinancialStatements' must include edinetCode and periodEnd columns for Generate Rolling Metrics."
+                "Source table 'FinancialStatements' must include a company code column (Company_Code / edinetCode) and periodEnd column for Generate Rolling Metrics."
             )
 
         helper._create_index_if_not_exists(conn, source_schema, fs_actual, [fs_docid_column])
-        helper._create_index_if_not_exists(conn, source_schema, fs_actual, [fs_edinet_column, fs_period_column])
+        helper._create_index_if_not_exists(conn, source_schema, fs_actual, [fs_code_column, fs_period_column])
 
         processed_tables = []
         skipped_tables = []
@@ -388,12 +388,12 @@ def generate_rolling_metrics(
             )
 
             company_sql = (
-                f"SELECT DISTINCT fs.{helper._sql_ident(fs_edinet_column)} "
+                f"SELECT DISTINCT fs.{helper._sql_ident(fs_code_column)} "
                 f"FROM {source_ref} s "
                 f"INNER JOIN {fs_ref} fs "
                 f"ON fs.{helper._sql_ident(fs_docid_column)} = s.{helper._sql_ident(source_docid_column)} "
-                f"WHERE fs.{helper._sql_ident(fs_edinet_column)} IS NOT NULL "
-                f"ORDER BY fs.{helper._sql_ident(fs_edinet_column)}"
+                f"WHERE fs.{helper._sql_ident(fs_code_column)} IS NOT NULL "
+                f"ORDER BY fs.{helper._sql_ident(fs_code_column)}"
             )
             company_codes = [row[0] for row in conn.execute(company_sql).fetchall()]
             if not company_codes:
@@ -419,14 +419,14 @@ def generate_rolling_metrics(
                 select_sql = (
                     f"SELECT "
                     f"s.{helper._sql_ident(source_docid_column)} AS {helper._sql_ident('docID')}, "
-                    f"fs.{helper._sql_ident(fs_edinet_column)} AS {helper._sql_ident('edinetCode')}, "
+                    f"fs.{helper._sql_ident(fs_code_column)} AS {helper._sql_ident('company_code')}, "
                     f"fs.{helper._sql_ident(fs_period_column)} AS {helper._sql_ident('periodEnd')}, "
                     f"{metric_select_sql} "
                     f"FROM {source_ref} s "
                     f"INNER JOIN {fs_ref} fs "
                     f"ON fs.{helper._sql_ident(fs_docid_column)} = s.{helper._sql_ident(source_docid_column)} "
                     f"WHERE s.{helper._sql_ident(source_docid_column)} IS NOT NULL "
-                    f"AND fs.{helper._sql_ident(fs_edinet_column)} = ?"
+                    f"AND fs.{helper._sql_ident(fs_code_column)} = ?"
                     f"{numeric_not_null_predicate}"
                 )
 

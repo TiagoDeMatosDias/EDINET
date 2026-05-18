@@ -401,9 +401,11 @@ class OrchestratorProcessorBase:
         """Build ordered table specs for the FinancialStatements output table."""
         table_specs = {
             "FinancialStatements": [
-                ("edinetCode", "TEXT"),
+                ("Company_Code", "TEXT"),
                 ("docID", "TEXT"),
                 ("docTypeCode", "TEXT"),
+                ("Currency", "TEXT"),
+                ("Data_Source", "TEXT"),
                 ("periodStart", "TEXT"),
                 ("periodEnd", "TIMESTAMP"),
                 ("taxonomy_release_id", "INTEGER"),

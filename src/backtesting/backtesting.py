@@ -1076,6 +1076,43 @@ def _build_rolling_aggregate(
         all_results, durations, weighting_modes,
     )
 
+    # ── Excess-returns heatmap (portfolio − benchmark) ───────────────
+    if benchmark_ticker:
+        _dur_years_ex = {
+            "1yr": 1, "2yr": 2, "3yr": 3, "5yr": 5, "10yr": 10,
+        }
+
+        def _annualize_ex(total_return: float, dur: str) -> float:
+            yrs = _dur_years_ex.get(dur, 1)
+            if yrs <= 1:
+                return total_return
+            if total_return <= -1.0:
+                return -1.0
+            return (1.0 + total_return) ** (1.0 / yrs) - 1.0
+
+        excess_heatmap: dict[str, list[dict]] = {d: [] for d in durations}
+        for r in all_results:
+            period = r.get("period", "")
+            backtests = r.get("backtests", {})
+            for wm in weighting_modes:
+                wm_bt = backtests.get(wm, {})
+                for dur in durations:
+                    bt = wm_bt.get(dur)
+                    if bt is None:
+                        continue
+                    m = bt.get("metrics")
+                    if m is None:
+                        continue
+                    port_ret = m.get("total_return")
+                    bench_ret = m.get("benchmark_total_return")
+                    if port_ret is not None and bench_ret is not None:
+                        excess = port_ret - bench_ret
+                        excess_heatmap[dur].append({
+                            "period": period,
+                            "return": _annualize_ex(excess, dur),
+                        })
+        heatmap["excess"] = excess_heatmap
+
     return {
         "total_runs": successful,
         "successful": successful,

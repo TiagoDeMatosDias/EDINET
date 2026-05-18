@@ -31,7 +31,8 @@ SCREENING_TABLES: list[str] = [
     "Quality_Historical",
 ]
 
-COMPANYINFO_EDINET_CANDIDATES: list[str] = [
+COMPANYINFO_CODE_CANDIDATES: list[str] = [
+    "Company_Code",
     "edinetCode",
     "EdinetCode",
 ]
@@ -86,7 +87,7 @@ OPERATOR_MAP: dict[str, str] = {
 }
 
 DEFAULT_COLUMNS: list[str] = [
-    "CompanyInfo.edinetCode",
+    "CompanyInfo.Company_Code",
     "CompanyInfo.Company_Ticker",
     "CompanyInfo.Company_Name",    
     "CompanyInfo.Company_Industry",
@@ -145,6 +146,35 @@ def _get_table_alias(table: str) -> str:
     return _TABLE_ALIAS.get(table, table)
 
 
+def _resolve_column_ref_for_sql(
+    table: str,
+    column: str,
+    available_metrics: dict[str, list[str]] | None = None,
+) -> str:
+    """Resolve a column reference against the actual DB table schema.
+
+    Uses the candidate lists to find the actual column name when the user
+    specifies a canonical name that may not match the actual DB column.
+    """
+    if not available_metrics or table not in available_metrics:
+        return column
+    table_cols = available_metrics[table]
+    if table == "CompanyInfo":
+        resolved = _resolve_matching_column(table_cols, COMPANYINFO_CODE_CANDIDATES)
+        if resolved and column.lower() in {c.lower() for c in COMPANYINFO_CODE_CANDIDATES}:
+            return resolved
+        resolved = _resolve_matching_column(table_cols, COMPANYINFO_TICKER_CANDIDATES)
+        if resolved and column.lower() in {c.lower() for c in COMPANYINFO_TICKER_CANDIDATES}:
+            return resolved
+    # Generic: try to match the column name case-insensitively
+    col_lower = column.lower()
+    for actual_col in table_cols:
+        if actual_col.lower() == col_lower:
+            return actual_col
+    # If no match, return the original (SQLite will error if column doesn't exist)
+    return column
+
+
 # ---------------------------------------------------------------------------
 # SQL display helper
 # ---------------------------------------------------------------------------
@@ -190,13 +220,13 @@ def _resolve_matching_column(
 
 
 def _resolve_company_columns(db_path: str) -> tuple[str, str]:
-    """Return the actual edinetCode and ticker column names from CompanyInfo.
+    """Return the actual company-code and ticker column names from CompanyInfo.
 
     Introspects the database to find the real column names instead of
     relying on hardcoded assumptions.
 
     Returns:
-        (edinet_col, ticker_col) — the resolved column names.
+        (company_code_col, ticker_col) — the resolved column names.
     """
     conn = sqlite3.connect(db_path)
     try:
@@ -205,11 +235,11 @@ def _resolve_company_columns(db_path: str) -> tuple[str, str]:
             cursor.execute("PRAGMA table_info([CompanyInfo])")
             cols = [row[1] for row in cursor.fetchall()]
         except sqlite3.OperationalError:
-            return "edinetCode", "Company_Ticker"
+            return "Company_Code", "Company_Ticker"
 
-        edinet_col = _resolve_matching_column(cols, COMPANYINFO_EDINET_CANDIDATES) or "edinetCode"
+        company_code_col = _resolve_matching_column(cols, COMPANYINFO_CODE_CANDIDATES) or "Company_Code"
         ticker_col = _resolve_matching_column(cols, COMPANYINFO_TICKER_CANDIDATES) or "Company_Ticker"
-        return edinet_col, ticker_col
+        return company_code_col, ticker_col
     finally:
         conn.close()
 
@@ -219,15 +249,15 @@ def get_default_columns(
 ) -> list[str]:
     """Return the default screening result columns for the current schema."""
     company_cols = (available_metrics or {}).get("CompanyInfo", [])
-    edinet_col = _resolve_matching_column(
-        company_cols, COMPANYINFO_EDINET_CANDIDATES
-    ) or "edinetCode"
+    company_code_col = _resolve_matching_column(
+        company_cols, COMPANYINFO_CODE_CANDIDATES
+    ) or "Company_Code"
     ticker_col = _resolve_matching_column(
         company_cols, COMPANYINFO_TICKER_CANDIDATES
     ) or "Company_Ticker"
 
     columns = [
-        f"CompanyInfo.{edinet_col}",
+        f"CompanyInfo.{company_code_col}",
         f"CompanyInfo.{ticker_col}",
         "FinancialStatements.periodEnd",
     ]
@@ -255,8 +285,8 @@ def get_available_metrics(db_path: str) -> dict[str, list[str]]:
     """Return a dict of ``{table_name: [column_names]}`` for screening.
 
     Introspects **all** user tables in the database, not just a hardcoded
-    list. Columns named ``docID``, ``edinetCode``, or ``periodEnd`` are
-    excluded from known metric tables (PerShare, Valuation, etc.) but
+    list. Columns named ``docID``, ``Company_Code`` (or ``edinetCode``), or ``periodEnd``
+    are excluded from known metric tables (PerShare, Valuation, etc.) but
     kept for CompanyInfo, FinancialStatements, and Stock_Prices.
 
     Args:
@@ -266,7 +296,7 @@ def get_available_metrics(db_path: str) -> dict[str, list[str]]:
         Dict mapping table names to their column lists.
     """
     # Columns to strip from per-document metric tables
-    _METADATA_COLS = {"docID", "edinetCode", "periodEnd"}
+    _METADATA_COLS = {"docID", "Company_Code", "edinetCode", "periodEnd"}
     # Tables that should keep all columns (metadata cols are meaningful here)
     _KEEP_ALL_COLS = {"CompanyInfo", "FinancialStatements", "Stock_Prices"}
     # Internal/sqlite tables to skip
@@ -345,7 +375,7 @@ def _validate_column_ref(col: str, available: dict[str, list[str]]) -> bool:
         if any(column.lower() == actual.lower() for actual in available_cols):
             return True
         company_alias_groups = (
-            COMPANYINFO_EDINET_CANDIDATES,
+            COMPANYINFO_CODE_CANDIDATES,
             COMPANYINFO_TICKER_CANDIDATES,
             COMPANYINFO_NAME_CANDIDATES,
             COMPANYINFO_INDUSTRY_CANDIDATES,
@@ -560,11 +590,18 @@ def build_screening_query(
     # --- Resolve actual CompanyInfo column names ---
     if available_metrics and "CompanyInfo" in available_metrics:
         company_cols = available_metrics["CompanyInfo"]
-        _edinet_col = _resolve_matching_column(company_cols, COMPANYINFO_EDINET_CANDIDATES) or "edinetCode"
+        _company_code_col = _resolve_matching_column(company_cols, COMPANYINFO_CODE_CANDIDATES) or "Company_Code"
         _ticker_col = _resolve_matching_column(company_cols, COMPANYINFO_TICKER_CANDIDATES) or "Company_Ticker"
     else:
-        _edinet_col = "edinetCode"
+        _company_code_col = "Company_Code"
         _ticker_col = "Company_Ticker"
+
+    # --- Resolve FinancialStatements company-code column name ---
+    if available_metrics and "FinancialStatements" in available_metrics:
+        fs_cols = available_metrics["FinancialStatements"]
+        _fs_code_col = _resolve_matching_column(fs_cols, ["Company_Code", "edinetCode", "EdinetCode"]) or "Company_Code"
+    else:
+        _fs_code_col = "Company_Code"
 
     # Validate columns against available metrics
     if available_metrics is not None:
@@ -617,8 +654,9 @@ def build_screening_query(
         result_aliases.update(column_aliases)
     for col in columns:
         table, column = col.split(".", 1)
+        resolved_column = _resolve_column_ref_for_sql(table, column, available_metrics)
         alias = _get_table_alias(table)
-        safe_col = _safe_identifier(column)
+        safe_col = _safe_identifier(resolved_column)
         result_alias = result_aliases[col]
         select_parts.append(
             f"{alias}.[{safe_col}] AS {_quote_identifier(result_alias)}"
@@ -679,7 +717,7 @@ def build_screening_query(
     # The FinancialStatements subquery only projects join keys by default.
     # Any other column referenced in SELECT or WHERE must be added.
     _fs_extra_cols: set[str] = set()
-    _FS_BASE_COLS = {"edinetCode", "docID", "periodEnd"}
+    _FS_BASE_COLS = {"Company_Code", "edinetCode", "docID", "periodEnd"}
     for col in columns:
         parts = col.split(".", 1)
         if len(parts) == 2 and parts[0] == "FinancialStatements" and parts[1] not in _FS_BASE_COLS:
@@ -708,7 +746,7 @@ def build_screening_query(
     # screening.  When period is set, restrict to latest filing within that
     # year (used by historical backtest export).  Start with the three join
     # columns — extra columns referenced by SELECT/WHERE are added dynamically.
-    _sub_cols_parts = ["f.edinetCode", "f.docID", "f.periodEnd"]
+    _sub_cols_parts = [f"f.[{_safe_identifier(_fs_code_col)}]", "f.docID", "f.periodEnd"]
     for _ec in sorted(_fs_extra_cols):
         _sub_cols_parts.append(f"f.[{_safe_identifier(_ec)}]")
     _sub_cols = ", ".join(_sub_cols_parts)
@@ -726,18 +764,18 @@ def build_screening_query(
         "FROM ("
         f"SELECT {_sub_cols} FROM FinancialStatements f "
         "INNER JOIN ("
-        "SELECT edinetCode, MAX(periodEnd) AS max_period "
+        f"SELECT [{_safe_identifier(_fs_code_col)}], MAX(periodEnd) AS max_period "
         "FROM FinancialStatements "
         f"{_where} "
-        "GROUP BY edinetCode"
-        ") latest ON f.edinetCode = latest.edinetCode "
+        f"GROUP BY [{_safe_identifier(_fs_code_col)}]"
+        f") latest ON f.[{_safe_identifier(_fs_code_col)}] = latest.[{_safe_identifier(_fs_code_col)}] "
         "AND f.periodEnd = latest.max_period"
         ") f"
     ]
     params.extend(_extra_params)
 
     join_clauses.append(
-        f"LEFT JOIN CompanyInfo c ON c.[{_safe_identifier(_edinet_col)}] = f.edinetCode"
+        f"LEFT JOIN CompanyInfo c ON c.[{_safe_identifier(_company_code_col)}] = f.[{_safe_identifier(_fs_code_col)}]"
     )
 
     # Stock prices — latest price per company (via pre-aggregated subquery)
@@ -792,8 +830,9 @@ def build_screening_query(
         if comparison_mode != "full_expression":
             table = crit["table"]
             column = crit["column"]
+            resolved_column = _resolve_column_ref_for_sql(table, column, available_metrics)
             alias = _get_table_alias(table)
-            safe_col = _safe_identifier(column)
+            safe_col = _safe_identifier(resolved_column)
             col_ref = f"{alias}.[{safe_col}]"
 
         # IS / IS NOT — always appends NULL, no value needed
@@ -954,9 +993,13 @@ def run_screening(
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute("PRAGMA busy_timeout = 30000")
     # Ensure the screening performance index exists (no-op if already present)
+    # Resolve the actual company-code column name in FinancialStatements
+    fs_info = conn.execute("PRAGMA table_info(FinancialStatements)").fetchall()
+    fs_cols = [row[1] for row in fs_info]
+    fs_code_col = _resolve_matching_column(fs_cols, ["Company_Code", "edinetCode", "EdinetCode"]) or "Company_Code"
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_fin_edinet_period "
-        "ON FinancialStatements(edinetCode, periodEnd)"
+        f"CREATE INDEX IF NOT EXISTS idx_fin_company_period "
+        f"ON FinancialStatements({_safe_identifier(fs_code_col)}, periodEnd)"
     )
     logger.info("screening db connected (%.2fs)", _time.monotonic() - _connect_start)
     try:
@@ -1155,8 +1198,8 @@ def _resolve_backtest_export_frame(
     industry_col = _resolve_matching_column(
         list(df.columns), COMPANYINFO_INDUSTRY_CANDIDATES
     )
-    edinet_col = _resolve_matching_column(
-        list(df.columns), ["edinetCode", "EdinetCode"]
+    company_code_col = _resolve_matching_column(
+        list(df.columns), ["Company_Code", "edinetCode", "EdinetCode"]
     )
     period_end_col = _resolve_matching_column(list(df.columns), ["periodEnd"])
 
@@ -1186,8 +1229,8 @@ def _resolve_backtest_export_frame(
         }
     )
 
-    if edinet_col:
-        export_df["EdinetCode"] = selected[edinet_col].astype(str)
+    if company_code_col:
+        export_df["Company_Code"] = selected[company_code_col].astype(str)
     if company_name_col:
         export_df["CompanyName"] = selected[company_name_col].astype(str)
     if industry_col:

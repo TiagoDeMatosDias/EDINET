@@ -460,7 +460,7 @@ class TestGetTickersFromPrices:
 
         conn = sqlite3.connect(":memory:")
         try:
-            conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, CompanyName TEXT)")
+            conn.execute("CREATE TABLE CompanyInfo (Company_Code TEXT, CompanyName TEXT)")
             conn.commit()
             result = get_tickers_from_prices(conn, table_name="CompanyInfo")
             assert result == []
@@ -472,9 +472,9 @@ class TestGetTickersFromPrices:
 
         conn = sqlite3.connect(":memory:")
         try:
-            conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Company_Ticker TEXT)")
+            conn.execute("CREATE TABLE CompanyInfo (Company_Code TEXT, Company_Ticker TEXT)")
             conn.executemany(
-                "INSERT INTO CompanyInfo (edinetCode, Company_Ticker) VALUES (?, ?)",
+                "INSERT INTO CompanyInfo (Company_Code, Company_Ticker) VALUES (?, ?)",
                 [("E1", None), ("E2", ""), ("E3", "  "), ("E4", "   ")],
             )
             conn.commit()
@@ -488,9 +488,9 @@ class TestGetTickersFromPrices:
 
         conn = sqlite3.connect(":memory:")
         try:
-            conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Company_Ticker TEXT)")
+            conn.execute("CREATE TABLE CompanyInfo (Company_Code TEXT, Company_Ticker TEXT)")
             conn.executemany(
-                "INSERT INTO CompanyInfo (edinetCode, Company_Ticker) VALUES (?, ?)",
+                "INSERT INTO CompanyInfo (Company_Code, Company_Ticker) VALUES (?, ?)",
                 [
                     ("E1", "7203"),
                     ("E2", "7203"),  # duplicate ticker
@@ -532,9 +532,9 @@ class TestGetTickersFromPrices:
 
         conn = sqlite3.connect(":memory:")
         try:
-            conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Company_Ticker TEXT)")
+            conn.execute("CREATE TABLE CompanyInfo (Company_Code TEXT, Company_Ticker TEXT)")
             conn.executemany(
-                "INSERT INTO CompanyInfo (edinetCode, Company_Ticker) VALUES (?, ?)",
+                "INSERT INTO CompanyInfo (Company_Code, Company_Ticker) VALUES (?, ?)",
                 [("E1", " 7203 "), ("E2", "7203")],
             )
             conn.commit()
@@ -551,10 +551,10 @@ class TestGetTickersFromPrices:
         try:
             # Create the table with lowercase name (as pandas might do)
             conn.execute(
-                "CREATE TABLE companyinfo (edinetCode TEXT, Company_Ticker TEXT)"
+                "CREATE TABLE companyinfo (Company_Code TEXT, Company_Ticker TEXT)"
             )
             conn.execute(
-                "INSERT INTO companyinfo (edinetCode, Company_Ticker) VALUES (?, ?)",
+                "INSERT INTO companyinfo (Company_Code, Company_Ticker) VALUES (?, ?)",
                 ("E1", "7203"),
             )
             conn.commit()
@@ -570,9 +570,9 @@ class TestGetTickersFromPrices:
 
         conn = sqlite3.connect(":memory:")
         try:
-            conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Company_Ticker TEXT)")
+            conn.execute("CREATE TABLE CompanyInfo (Company_Code TEXT, Company_Ticker TEXT)")
             conn.execute(
-                "INSERT INTO CompanyInfo (edinetCode, Company_Ticker) VALUES (?, ?)",
+                "INSERT INTO CompanyInfo (Company_Code, Company_Ticker) VALUES (?, ?)",
                 ("E1", "7203"),
             )
             conn.commit()

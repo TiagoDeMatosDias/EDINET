@@ -129,13 +129,13 @@ function onSearchKeydown(e) {
   if (!open && e.key === 'Enter') {
     e.preventDefault(); const q = H.$('sa-search').value.trim(); if (!q) return;
     clearTimeout(state.searchTimer);
-    doSearch(q).then(() => { if (state.searchResults.length) { closeDropdown(); selectCompany(state.searchResults[0].edinet_code); } });
+    doSearch(q).then(() => { if (state.searchResults.length) { closeDropdown(); selectCompany(state.searchResults[0].company_code); } });
     return;
   }
   if (!open) return;
   if (e.key === 'ArrowDown') { e.preventDefault(); state.searchIdx = Math.min(state.searchIdx + 1, state.searchResults.length - 1); renderDropdown(); }
   else if (e.key === 'ArrowUp') { e.preventDefault(); state.searchIdx = Math.max(state.searchIdx - 1, 0); renderDropdown(); }
-  else if (e.key === 'Enter') { e.preventDefault(); if (state.searchIdx >= 0) { const r = state.searchResults[state.searchIdx]; closeDropdown(); selectCompany(r.edinet_code); } }
+  else if (e.key === 'Enter') { e.preventDefault(); if (state.searchIdx >= 0) { const r = state.searchResults[state.searchIdx]; closeDropdown(); selectCompany(r.company_code); } }
   else if (e.key === 'Escape') { closeDropdown(); }
 }
 
@@ -147,9 +147,9 @@ function renderDropdown() {
   state.searchResults.forEach((r, i) => {
     dd.appendChild(H.el('div', {
       class: `sa-search-item${i === state.searchIdx ? ' is-active' : ''}`,
-      onmousedown(e) { e.preventDefault(); closeDropdown(); selectCompany(r.edinet_code); },
+      onmousedown(e) { e.preventDefault(); closeDropdown(); selectCompany(r.company_code); },
     }, H.el('span', { class: 'sa-search-item-code', text: r.ticker || '-' }),
-       H.el('span', { class: 'sa-search-item-name', text: r.company_name || r.edinet_code }),
+       H.el('span', { class: 'sa-search-item-name', text: r.company_name || r.company_code }),
        r.latest_price != null ? H.el('span', { class: 'sa-search-item-price', text: `¥${Number(r.latest_price).toLocaleString()}` }) : null));
   });
 }
@@ -165,12 +165,12 @@ export async function selectCompany(code) {
   state.loading = true; state.error = null; state.company = null; render();
   try {
     const [overview, formulas, history] = await Promise.all([
-      fetchJson(`/api/security/overview?edinet_code=${encodeURIComponent(code)}`),
+      fetchJson(`/api/security/overview?company_code=${encodeURIComponent(code)}`),
       fetchJson('/api/security/formulas'),
-      fetchJson(`/api/security/history?edinet_code=${encodeURIComponent(code)}&periods=20`),
+      fetchJson(`/api/security/history?company_code=${encodeURIComponent(code)}&periods=20`),
     ]);
     state.company = overview; state.formulas = formulas.formulas || []; state.history = history;
-    sessionStorage.setItem('sa.lastEdinetCode', code);
+    sessionStorage.setItem('sa.lastCompanyCode', code);
     if (!state.activeTable || !history.tables?.[state.activeTable])
       state.activeTable = Object.keys(history.tables || {})[0] || null;
     state.loading = false; persist(); render();
@@ -192,9 +192,9 @@ function renderCompanyHeader() {
 
   // Identity
   const id = H.el('div', { class: 'sa-company-identity' },
-    H.el('div', { class: 'sa-company-name', text: co.company_name || co.edinet_code }),
+    H.el('div', { class: 'sa-company-name', text: co.company_name || co.company_code }),
     H.el('div', { class: 'sa-company-meta' },
-      ...[co.ticker, co.edinet_code, co.industry, co.market].filter(Boolean).map(v => H.el('span', { text: v }))));
+      ...[co.ticker, co.company_code, co.industry, co.market].filter(Boolean).map(v => H.el('span', { text: v }))));
   hdr.appendChild(id);
 
   // Metric tiles — price tile first, then formula-driven
@@ -209,7 +209,7 @@ function renderCompanyHeader() {
     pt.appendChild(H.el('button', { class: 'sa-update-price-btn', text: 'Update Price',
       onclick() { const b = this; b.disabled = true; b.textContent = 'Updating…';
         fetchJson('/api/security/update-price', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticker: co.ticker }) })
-          .then(r => { log('info', r.message || 'Updated'); selectCompany(co.edinet_code); })
+          .then(r => { log('info', r.message || 'Updated'); selectCompany(co.company_code); })
           .catch(e => { log('error', e.message); b.disabled = false; b.textContent = 'Update Price'; }); }}));
   }
   tiles.appendChild(pt);

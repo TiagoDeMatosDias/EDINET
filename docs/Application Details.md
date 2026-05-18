@@ -269,7 +269,28 @@ Responsibility: Step-owned workflow that decides which company tickers should be
 	- Purpose: Select eligible tickers from the configured company and financial-data tables, then call `load_ticker_data` for each one.
 	- Calls/Dependencies: `sqlite3.connect`, `stock_prices._create_prices_table`, `cursor.execute`, `stock_prices.load_ticker_data`, `conn.close`.
 
-### [src/orchestrator/import_stock_prices_csv/import_stock_prices_csv.py](src/orchestrator/import_stock_prices_csv/import_stock_prices_csv.py)
+### [src/orchestrator/update_fx_data/update_fx_data.py](../src/orchestrator/update_fx_data/update_fx_data.py)
+
+Responsibility: Step-owned workflow for importing ECB historical FX data and central-bank CPI/inflation data into the Stock_Prices table.
+
+**FX (ECB):**
+- `def _download_ecb_fx_csv(session=None) -> pd.DataFrame` — download eurofxref-hist ZIP, parse CSV.
+- `def _transform_ecb_fx_to_prices(df) -> pd.DataFrame` — melt wide CSV to long Stock_Prices format.
+- `def _fetch_ecb_fx_prices() -> pd.DataFrame` — download + transform in one call.
+
+**Inflation / CPI:**
+- `def _download_fred_cpi(series_id, session=None) -> pd.DataFrame` — download a FRED CPI series (USD/JPY/GBP/AUD/CAD). Returns Date/Price DataFrame.
+- `def _download_ecb_hicp(session=None) -> pd.DataFrame` — download ECB HICP (Euro area CPI) via SDMX API.
+- `def _fetch_all_inflation_prices() -> pd.DataFrame` — fetch all 6 inflation tickers (`Inflation_USD`, `Inflation_JPY`, `Inflation_GBP`, `Inflation_AUD`, `Inflation_CAD`, `Inflation_EUR`) and assemble into Stock_Prices format.
+
+**Shared:**
+- `def _insert_new_pairs(df, db_name, prices_table, *, label) -> int` — dedup on (Date, Ticker), insert, return count.
+- `def update_fx_data(db_name, prices_table="Stock_Prices") -> dict[str, int]` — run both FX and inflation imports. Returns `{"fx": int, "inflation": int}`.
+- `def run_update_fx_data(config, overwrite=False) -> None` — orchestrator handler.
+
+Data sources: ECB eurofxref-hist.zip (FX), FRED graph CSV (5 CPI series), ECB SDMX API (EUR HICP). All free, no API keys.
+
+### [src/orchestrator/import_stock_prices_csv/import_stock_prices_csv.py](../src/orchestrator/import_stock_prices_csv/import_stock_prices_csv.py)
 
 Responsibility: Step-owned workflow for importing user-supplied stock price CSV files into the stock prices table.
 
@@ -482,6 +503,7 @@ Responsibility: Unit tests covering core logic and UI helpers.
 - **[test_backtesting.py](../tests/test_backtesting.py)** - tests backtest data retrieval, calculations, report and chart generation, and end-to-end `run_backtest` flows.
 - **[test_edinet_api.py](../tests/test_edinet_api.py)** - tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
 - **[test_security_analysis.py](../tests/test_security_analysis.py)** - tests schema normalization, search ranking, overview payloads, price history, peer selection, and single-ticker price updates.
+- **[test_update_fx_data.py](../tests/test_update_fx_data.py)** - tests ECB FX data download, transform, and database ingestion with dedup.
 - **[test_stockprice_api.py](../tests/test_stockprice_api.py)** - tests CSV import and stock price ingestion logic.
 - **[test_screening.py](../tests/test_screening.py)** - Backend screening tests: query building, execution, persistence, formatting, SQL injection prevention.
 - **[test_screening_api.py](../tests/test_screening_api.py)** - Web API screening endpoint tests.

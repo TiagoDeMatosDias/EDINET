@@ -9,8 +9,8 @@ Data sources
 * ``stock_prices`` table  — daily prices (Date, Ticker, Currency, Price).
 * ``ShareMetrics`` table — per-share dividends (``Dividend paid per share``),
     linked via ``docID`` to
-    ``FinancialStatements`` for ``periodEnd`` and ``edinetCode``.
-* ``companyInfo`` table — maps ``edinetCode`` ↔ ``Company_Ticker``.
+    ``FinancialStatements`` for ``periodEnd`` and ``Company_Code``.
+* ``companyInfo`` table — maps ``Company_Code`` ↔ ``Company_Ticker``.
 
 The entry point :func:`run_backtest` is called from the orchestrator as a
 workflow step.
@@ -265,7 +265,7 @@ def get_dividend_data(
 
         * ``docID`` join key.
         * ``Dividend paid per share`` dividend column.
-        * ``FinancialStatements`` join for ``periodEnd`` and ``edinetCode``.
+        * ``FinancialStatements`` join for ``periodEnd`` and ``Company_Code``.
 
     Args:
         db_path: Path to the SQLite database file.
@@ -274,7 +274,7 @@ def get_dividend_data(
         tickers: List of ticker symbols.
         start_date: Start date (inclusive) ``YYYY-MM-DD``.
         end_date: End date (inclusive) ``YYYY-MM-DD``.
-        financial_statements_table: Table providing ``edinetCode`` and
+        financial_statements_table: Table providing ``Company_Code`` and
             ``periodEnd`` for the ``docID`` join path.
         dividend_column: Optional explicit dividend column name.
         conn: Optional existing database connection.
@@ -337,15 +337,40 @@ def get_dividend_data(
 
         placeholders = ",".join(["?"] * len(variants))
 
+        # Resolve company-code column names in FinancialStatements and CompanyInfo
+        fs_info = conn.execute(
+            f"PRAGMA table_info({_sql_ident(financial_statements_table)})"
+        ).fetchall()
+        fs_col_set = {row[1] for row in fs_info}
+        fs_code_col = None
+        for candidate in ("Company_Code", "edinetCode", "EdinetCode"):
+            if candidate in fs_col_set:
+                fs_code_col = candidate
+                break
+        if not fs_code_col:
+            fs_code_col = "Company_Code"
+
+        ci_info = conn.execute(
+            f"PRAGMA table_info({_sql_ident(company_table)})"
+        ).fetchall()
+        ci_col_set = {row[1] for row in ci_info}
+        ci_code_col = None
+        for candidate in ("Company_Code", "EdinetCode", "edinetCode"):
+            if candidate in ci_col_set:
+                ci_code_col = candidate
+                break
+        if not ci_code_col:
+            ci_code_col = "Company_Code"
+
         # ShareMetrics schema path: ShareMetrics(docID, Dividend paid per share) →
-        # FinancialStatements(docID, edinetCode, periodEnd) → companyInfo.
+        # FinancialStatements(docID, Company_Code, periodEnd) → companyInfo.
         if "docID" in col_names:
             query = (
                 f"SELECT c.Company_Ticker AS Ticker, fs.periodEnd, "
                 f"p.{_sql_ident(div_col)} AS PerShare_Dividends "
                 f"FROM {_sql_ident(per_share_table)} p "
                 f"JOIN {_sql_ident(financial_statements_table)} fs ON fs.docID = p.docID "
-                f"JOIN {_sql_ident(company_table)} c ON c.edinetCode = fs.edinetCode "
+                f"JOIN {_sql_ident(company_table)} c ON c.{_sql_ident(ci_code_col)} = fs.{_sql_ident(fs_code_col)} "
                 f"WHERE c.Company_Ticker IN ({placeholders}) "
                 f"AND fs.periodEnd >= ? AND fs.periodEnd <= ? "
                 f"ORDER BY fs.periodEnd"

@@ -45,7 +45,7 @@ def _create_sample_db(path: str) -> str:
 
     c.execute("""
         CREATE TABLE CompanyInfo (
-            edinetCode TEXT PRIMARY KEY,
+            Company_Code TEXT PRIMARY KEY,
             Company_Ticker TEXT,
             CompanyName TEXT,
             Industry TEXT
@@ -53,9 +53,10 @@ def _create_sample_db(path: str) -> str:
     """)
     c.execute("""
         CREATE TABLE FinancialStatements (
-            edinetCode TEXT,
+            Company_Code TEXT,
             docID TEXT UNIQUE,
             docTypeCode TEXT,
+            Currency TEXT,
             periodStart TEXT,
             periodEnd TIMESTAMP,
             SharesOutstanding REAL,
@@ -123,7 +124,10 @@ def _create_sample_db(path: str) -> str:
         ("E00001", "DOC004", "120", "2022-04-01", "2023-03-31", 1000000, 1200),
     ]
     for row in filings:
-        c.execute("INSERT INTO FinancialStatements VALUES (?,?,?,?,?,?,?)", row)
+        c.execute(
+            "INSERT INTO FinancialStatements (Company_Code, docID, docTypeCode, periodStart, periodEnd, SharesOutstanding, SharePrice) VALUES (?,?,?,?,?,?,?)",
+            row,
+        )
 
     prices = [
         ("2024-12-01", "10010", "JPY", 1600),
@@ -203,6 +207,7 @@ def sample_db_companyinfo_variant(tmp_path):
             edinetCode TEXT,
             docID TEXT UNIQUE,
             docTypeCode TEXT,
+            Currency TEXT,
             periodStart TEXT,
             periodEnd TIMESTAMP,
             SharesOutstanding REAL,
@@ -232,7 +237,7 @@ def sample_db_companyinfo_variant(tmp_path):
         ("E00001", "10010", "Alpha Corp", "Industrial"),
     )
     c.execute(
-        "INSERT INTO FinancialStatements VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO FinancialStatements (edinetCode, docID, docTypeCode, periodStart, periodEnd, SharesOutstanding, SharePrice) VALUES (?, ?, ?, ?, ?, ?, ?)",
         ("E00001", "DOC001", "120", "2023-04-01", "2024-03-31", 1000000, 1500),
     )
     c.execute(
@@ -295,7 +300,7 @@ def test_get_available_periods(sample_db):
 def test_build_screening_query_single_criterion():
     """Single > filter should produce valid SQL with one param."""
     criteria = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 5}]
-    columns = ["CompanyInfo.edinetCode", "Valuation.PERatio"]
+    columns = ["CompanyInfo.Company_Code", "Valuation.PERatio"]
     sql, params = build_screening_query(criteria, columns)
 
     assert "SELECT" in sql
@@ -309,7 +314,7 @@ def test_build_screening_query_multiple_criteria():
         {"table": "Valuation", "column": "PERatio", "operator": "<", "value": 15},
         {"table": "Quality", "column": "ReturnOnEquity", "operator": ">", "value": 0.1},
     ]
-    columns = ["CompanyInfo.edinetCode"]
+    columns = ["CompanyInfo.Company_Code"]
     sql, params = build_screening_query(criteria, columns)
 
     assert "v.[PERatio] < ?" in sql
@@ -323,7 +328,7 @@ def test_build_screening_query_between():
         "table": "Valuation", "column": "PERatio",
         "operator": "BETWEEN", "value": 5, "value2": 15,
     }]
-    columns = ["CompanyInfo.edinetCode"]
+    columns = ["CompanyInfo.Company_Code"]
     sql, params = build_screening_query(criteria, columns)
 
     assert "BETWEEN ? AND ?" in sql
@@ -333,7 +338,7 @@ def test_build_screening_query_between():
 def test_build_screening_query_with_period():
     """Period filter should be applied."""
     criteria = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 5}]
-    columns = ["CompanyInfo.edinetCode"]
+    columns = ["CompanyInfo.Company_Code"]
     sql, params = build_screening_query(criteria, columns, period="2024")
 
     assert "SUBSTR(f.periodEnd, 1, 4) = ?" in sql
@@ -383,7 +388,7 @@ def test_build_screening_query_validates_columns():
     """Invalid table/column names should raise ValueError."""
     available = {"Valuation": ["PERatio", "MarketCap"]}
     criteria = [{"table": "Valuation", "column": "FakeColumn", "operator": ">", "value": 5}]
-    columns = ["CompanyInfo.edinetCode"]
+    columns = ["CompanyInfo.Company_Code"]
 
     with pytest.raises(ValueError, match="Column"):
         build_screening_query(criteria, columns, available_metrics=available)
@@ -392,7 +397,7 @@ def test_build_screening_query_validates_columns():
 def test_build_screening_query_validates_operator():
     """Invalid operators should raise ValueError."""
     criteria = [{"table": "Valuation", "column": "PERatio", "operator": "DROP", "value": 5}]
-    columns = ["CompanyInfo.edinetCode"]
+    columns = ["CompanyInfo.Company_Code"]
 
     with pytest.raises(ValueError, match="Invalid operator"):
         build_screening_query(criteria, columns)
@@ -403,7 +408,7 @@ def test_build_screening_query_safe_from_injection():
     # Column names with special chars are now allowed (bracket-quoted),
     # but the column must exist in the schema — non-existent cols are rejected
     criteria = [{"table": "Valuation", "column": "PERatio; DROP TABLE", "operator": ">", "value": 5}]
-    columns = ["CompanyInfo.edinetCode"]
+    columns = ["CompanyInfo.Company_Code"]
 
     # Should not raise at identifier validation stage (bracket quoting handles it)
     # But should raise at schema validation if available_metrics is provided
@@ -420,7 +425,7 @@ def test_build_screening_query_allows_special_chars():
             "operator": ">",
             "value": 0.05,
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     # The column name should appear bracket-quoted
     assert "Net cash provided by (used in) operating activities_Growth_10_Year" in sql
@@ -434,7 +439,7 @@ def test_build_screening_query_allows_special_chars():
 def test_run_screening_returns_dataframe(sample_db):
     """End-to-end test: run_screening should return a DataFrame."""
     criteria = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 5}]
-    columns = ["CompanyInfo.edinetCode", "Valuation.PERatio"]
+    columns = ["CompanyInfo.Company_Code", "Valuation.PERatio"]
 
     df = run_screening(sample_db, criteria, columns, period="2024")
     assert isinstance(df, pd.DataFrame)
@@ -445,7 +450,7 @@ def test_run_screening_returns_dataframe(sample_db):
 def test_run_screening_empty_result(sample_db):
     """Query with impossible criteria should return empty DataFrame."""
     criteria = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 999999}]
-    columns = ["CompanyInfo.edinetCode"]
+    columns = ["CompanyInfo.Company_Code"]
 
     df = run_screening(sample_db, criteria, columns)
     assert isinstance(df, pd.DataFrame)
@@ -455,7 +460,7 @@ def test_run_screening_empty_result(sample_db):
 def test_run_screening_sort(sample_db):
     """sort_by and sort_order parameters should work correctly."""
     criteria = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 0}]
-    columns = ["CompanyInfo.edinetCode", "Valuation.PERatio"]
+    columns = ["CompanyInfo.Company_Code", "Valuation.PERatio"]
 
     df_asc = run_screening(sample_db, criteria, columns, sort_by="PERatio", sort_order="ASC")
     df_desc = run_screening(sample_db, criteria, columns, sort_by="PERatio", sort_order="DESC")
@@ -581,7 +586,7 @@ def test_run_screening_weighted_percentile_respects_lower_direction(sample_db):
 def test_export_screening_to_csv(tmp_path, sample_db):
     """CSV export should create a file with correct contents."""
     criteria = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 0}]
-    columns = ["CompanyInfo.edinetCode", "Valuation.PERatio"]
+    columns = ["CompanyInfo.Company_Code", "Valuation.PERatio"]
     df = run_screening(sample_db, criteria, columns)
 
     output = str(tmp_path / "results.csv")
@@ -701,7 +706,7 @@ def test_get_default_columns_includes_company_name_and_industry(sample_db):
 
     columns = get_default_columns(metrics)
 
-    assert "CompanyInfo.edinetCode" in columns
+    assert "CompanyInfo.Company_Code" in columns
     assert "CompanyInfo.Company_Ticker" in columns
     assert "FinancialStatements.periodEnd" in columns
     assert "CompanyInfo.CompanyName" in columns
@@ -733,7 +738,7 @@ def test_run_screening_accepts_companyinfo_column_aliases(sample_db_companyinfo_
 def test_save_and_load_criteria(tmp_path):
     """Round-trip: save, load, verify equality."""
     criteria = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 5}]
-    columns = ["CompanyInfo.edinetCode", "Valuation.PERatio"]
+    columns = ["CompanyInfo.Company_Code", "Valuation.PERatio"]
     period = "2024"
     ranking_rules = [{
         "table": "Valuation",
@@ -838,7 +843,7 @@ def test_build_query_with_screening_date():
     """screening_date should select latest filing per company before date."""
     sql, params = build_screening_query(
         criteria=[],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
         screening_date="2020-01-01",
     )
     assert "WHERE date(periodEnd) <= ?" in sql
@@ -853,7 +858,7 @@ def test_build_query_with_screening_date_and_period():
     """screening_date + period should both apply."""
     sql, params = build_screening_query(
         criteria=[],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
         period="2020",
         screening_date="2020-01-01",
     )
@@ -868,12 +873,12 @@ def test_run_screening_with_screening_date(sample_db):
     df = run_screening(
         sample_db,
         criteria=[],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
         screening_date="2023-06-01",
     )
     # Both companies are in CompanyInfo, but only E00001 has financials <= date
     assert len(df) >= 1
-    assert "E00001" in df["edinetCode"].values
+    assert "E00001" in df["Company_Code"].values
 
 
 def test_run_screening_date_without_results(sample_db):
@@ -881,7 +886,7 @@ def test_run_screening_date_without_results(sample_db):
     df = run_screening(
         sample_db,
         criteria=[],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
         screening_date="2010-01-01",
     )
     assert len(df) == 0
@@ -904,7 +909,7 @@ def test_column_comparison_with_offset():
             "compare_column": "Growth10Y",
             "offset": 0.02,
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     # Should contain (right_col + offset_param)
     assert "(vh.[Growth10Y] + ?)" in sql
@@ -922,7 +927,7 @@ def test_column_comparison_without_offset():
             "compare_table": "Valuation_Historical",
             "compare_column": "Growth10Y",
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "vh.[Growth5Y] > vh.[Growth10Y]" in sql
     # No offset param: " + ?" should NOT be in the column comparison part
@@ -941,7 +946,7 @@ def test_column_comparison_with_negative_offset():
             "compare_column": "BookValue",
             "offset": -0.5,
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "-0.5" in str(params) or any(p == -0.5 for p in params)
 
@@ -958,7 +963,7 @@ def test_column_comparison_between_rejected():
                 "compare_table": "PerShare",
                 "compare_column": "BookValue",
             }],
-            columns=["CompanyInfo.edinetCode"],
+            columns=["CompanyInfo.Company_Code"],
         )
 
 
@@ -971,7 +976,7 @@ def test_computed_price_ratio_column():
     """Price ratio formula should generate CASE WHEN division."""
     sql, params = build_screening_query(
         criteria=[],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
         computed_columns=[{
             "name": "P/E Ratio",
             "formula_type": "price_ratio",
@@ -991,7 +996,7 @@ def test_computed_custom_formula():
     """Custom formula should be injected directly."""
     sql, params = build_screening_query(
         criteria=[],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
         computed_columns=[{
             "name": "CustomScore",
             "formula_type": "custom",
@@ -1007,7 +1012,7 @@ def test_computed_column_appears_in_results(sample_db):
     df = run_screening(
         sample_db,
         criteria=[],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
         period="2024",
         computed_columns=[{
             "name": "PE_Ratio",
@@ -1026,7 +1031,7 @@ def test_computed_column_visible_in_output(sample_db):
     df = run_screening(
         sample_db,
         criteria=[],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
         computed_columns=[{
             "name": "TestFormula",
             "formula_type": "custom",
@@ -1056,7 +1061,7 @@ def test_screening_date_with_criteria_and_computed(sample_db):
             "compare_column": "EPS",
             "offset": -100,
         }],
-        columns=["CompanyInfo.edinetCode", "PerShare.BookValue", "PerShare.EPS"],
+        columns=["CompanyInfo.Company_Code", "PerShare.BookValue", "PerShare.EPS"],
         screening_date="2024-06-01",
         computed_columns=[{
             "name": "P/B",
@@ -1089,7 +1094,7 @@ def test_in_operator_with_values(sample_db):
             "comparison_mode": "in",
             "values": ["Industrial", "Technology"],
         }],
-        columns=["CompanyInfo.edinetCode", "CompanyInfo.Industry"],
+        columns=["CompanyInfo.Company_Code", "CompanyInfo.Industry"],
     )
     assert len(df) >= 1
     for _, row in df.iterrows():
@@ -1106,7 +1111,7 @@ def test_in_operator_query_building():
             "comparison_mode": "in",
             "values": ["Tech", "Finance"],
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "IN (?, ?)" in sql
     assert params == ["Tech", "Finance"]
@@ -1122,7 +1127,7 @@ def test_in_operator_falls_back_to_single_value():
             "value": "Tech",
             "comparison_mode": "in",
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "IN (?)" in sql
     assert params == ["Tech"]
@@ -1138,7 +1143,7 @@ def test_in_operator_empty_values_raises():
                 "operator": "IN",
                 "comparison_mode": "in",
             }],
-            columns=["CompanyInfo.edinetCode"],
+            columns=["CompanyInfo.Company_Code"],
         )
 
 
@@ -1157,7 +1162,7 @@ def test_like_operator():
             "value": "%Alpha%",
             "comparison_mode": "like",
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "LIKE ?" in sql
     assert params == ["%Alpha%"]
@@ -1236,7 +1241,7 @@ def test_full_expression_simple():
                 {"type": "column", "table": "Valuation", "column": "PERatio"},
             ],
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "(ps.[EPS] * ?) > (v.[PERatio])" in sql
     assert params == [8]
@@ -1259,7 +1264,7 @@ def test_full_expression_both_sides_complex():
                 {"type": "value", "value": 0.5},
             ],
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "(ps.[Sales] / ?) <= (s_p.[Price] * ?)" in sql
     assert params == [2, 0.5]
@@ -1276,7 +1281,7 @@ def test_full_expression_rejects_invalid_operators():
                     "left_side": [{"type": "value", "value": 1}],
                     "right_side": [{"type": "value", "value": 2}],
                 }],
-                columns=["CompanyInfo.edinetCode"],
+                columns=["CompanyInfo.Company_Code"],
             )
 
 
@@ -1289,7 +1294,7 @@ def test_full_expression_requires_both_sides():
                 "operator": ">",
                 "left_side": [{"type": "value", "value": 1}],
             }],
-            columns=["CompanyInfo.edinetCode"],
+            columns=["CompanyInfo.Company_Code"],
         )
 
 
@@ -1353,7 +1358,7 @@ def test_stock_price_mode_simple():
             "operator": "<",
             "comparison_mode": "stock_price",
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "ps.[BookValue] < s_p.[Price]" in sql
     assert params == []
@@ -1369,7 +1374,7 @@ def test_stock_price_mode_with_left_expression():
             "comparison_mode": "stock_price",
             "left_expression": "/ 2",
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "(ps.[Sales] / 2) <= s_p.[Price]" in sql
     assert params == []
@@ -1385,7 +1390,7 @@ def test_stock_price_mode_with_complex_expression():
             "comparison_mode": "stock_price",
             "left_expression": "* 15.5 + 100",
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "(ps.[EPS] * 15.5 + 100) > s_p.[Price]" in sql
 
@@ -1401,7 +1406,7 @@ def test_stock_price_rejects_injection():
                 "comparison_mode": "stock_price",
                 "left_expression": "; DROP TABLE x--",
             }],
-            columns=["CompanyInfo.edinetCode"],
+            columns=["CompanyInfo.Company_Code"],
         )
 
 
@@ -1415,7 +1420,7 @@ def test_stock_price_rejects_between():
                 "operator": "BETWEEN",
                 "comparison_mode": "stock_price",
             }],
-            columns=["CompanyInfo.edinetCode"],
+            columns=["CompanyInfo.Company_Code"],
         )
 
 
@@ -1435,7 +1440,7 @@ def test_stock_price_mode_end_to_end(sample_db):
             "operator": "<",
             "comparison_mode": "stock_price",
         }],
-        columns=["CompanyInfo.edinetCode", "CompanyInfo.CompanyName"],
+        columns=["CompanyInfo.Company_Code", "CompanyInfo.CompanyName"],
         period="2024",
     )
     assert len(df) >= 1
@@ -1476,7 +1481,7 @@ def test_is_null_operator():
             "operator": "IS",
             "comparison_mode": "fixed",
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "ps.[BookValue] IS NULL" in sql
     assert params == []
@@ -1491,7 +1496,7 @@ def test_is_not_null_operator():
             "operator": "IS NOT",
             "comparison_mode": "fixed",
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "ps.[BookValue] IS NOT NULL" in sql
     assert params == []
@@ -1539,7 +1544,7 @@ def test_like_operator_results(sample_db):
             "value": "%Alpha%",
             "comparison_mode": "like",
         }],
-        columns=["CompanyInfo.edinetCode", "CompanyInfo.CompanyName"],
+        columns=["CompanyInfo.Company_Code", "CompanyInfo.CompanyName"],
     )
     assert len(df) >= 1
     found = False
@@ -1568,7 +1573,7 @@ def test_expression_mode_simple():
                 {"type": "column", "table": "PerShare", "column": "EPS"},
             ],
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "0.75" in str(params) or any(p == 0.75 for p in params)
     assert "ps.[EPS]" in sql
@@ -1589,7 +1594,7 @@ def test_expression_mode_with_addition():
                 {"type": "value", "value": 1000},
             ],
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     assert "ps.[Sales]" in sql
     assert "+" in sql
@@ -1605,8 +1610,8 @@ def test_get_metrics_includes_arbitrary_table(tmp_path):
     """Tables with any name should appear in available metrics."""
     db_path = str(tmp_path / "custom.db")
     conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Ticker TEXT)")
-    conn.execute("CREATE TABLE FinancialStatements (edinetCode TEXT, docID TEXT, periodEnd TEXT)")
+    conn.execute("CREATE TABLE CompanyInfo (Company_Code TEXT, Ticker TEXT)")
+    conn.execute("CREATE TABLE FinancialStatements (Company_Code TEXT, docID TEXT, periodEnd TEXT)")
     conn.execute("CREATE TABLE Stock_Prices (Date TEXT, Ticker TEXT, Price REAL)")
     conn.execute("CREATE TABLE Financial_Ratios_Rolling (docID TEXT, Net_Margin_3Y REAL, ROA_10Y REAL)")
     conn.commit()
@@ -1631,7 +1636,7 @@ def test_build_query_with_arbitrary_table(tmp_path):
             "operator": ">",
             "value": 0.05,
         }],
-        columns=["CompanyInfo.edinetCode"],
+        columns=["CompanyInfo.Company_Code"],
     )
     # Should use table name as alias
     assert "[Financial_Ratios_Rolling]" in sql

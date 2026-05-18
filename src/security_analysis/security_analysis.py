@@ -123,14 +123,14 @@ class SecuritySchema:
     valuation_table: str | None
     quality_table: str | None
     document_list_table: str | None
-    company_edinet_col: str
+    company_code_col: str
     company_ticker_col: str
     company_name_col: str
     company_name_fallback_col: str | None
     company_industry_col: str | None
     company_market_col: str | None
     company_description_col: str | None
-    fs_edinet_col: str
+    fs_code_col: str
     fs_docid_col: str
     fs_period_end_col: str
     fs_description_col: str | None
@@ -368,14 +368,14 @@ def resolve_schema(db_path: str) -> SecuritySchema:
             valuation_table=valuation_table,
             quality_table=quality_table,
             document_list_table=document_list_table,
-            company_edinet_col=_resolve_column(company_cols, ["EdinetCode", "edinetCode"]),
+            company_code_col=_resolve_column(company_cols, ["Company_Code", "EdinetCode", "edinetCode"]),
             company_ticker_col=_resolve_column(company_cols, ["Company_Ticker", "Ticker", "ticker"]),
             company_name_col=company_name_col,
             company_name_fallback_col=company_name_fallback_col,
             company_industry_col=_pick_company_industry_col(company_cols),
             company_market_col=_pick_company_market_col(company_cols),
             company_description_col=_pick_company_description_col(company_cols),
-            fs_edinet_col=_resolve_column(fs_cols, ["edinetCode", "EdinetCode"]),
+            fs_code_col=_resolve_column(fs_cols, ["Company_Code", "edinetCode", "EdinetCode"]),
             fs_docid_col=_resolve_column(fs_cols, ["docID", "DocID"]),
             fs_period_end_col=_resolve_column(fs_cols, ["periodEnd", "PeriodEnd"]),
             fs_description_col=_pick_fs_description_col(fs_cols),
@@ -841,7 +841,7 @@ def _build_statement_source_specs(
 
         columns = _get_columns(conn, table_name)
         docid_col = _resolve_column(columns, ["docID", "DocID"], required=False)
-        edinet_col = _resolve_column(columns, ["edinetCode", "EdinetCode"], required=False)
+        company_code_col = _resolve_column(columns, ["Company_Code", "edinetCode", "EdinetCode"], required=False)
         period_col = _resolve_column(columns, ["periodEnd", "PeriodEnd"], required=False)
 
         join_clause: str | None = None
@@ -850,16 +850,16 @@ def _build_statement_source_specs(
                 f"LEFT JOIN {_quote_ident(table_name)} {alias} "
                 f"ON {alias}.{_quote_ident(docid_col)} = fs.{_quote_ident(schema.fs_docid_col)}"
             )
-        elif edinet_col and period_col:
+        elif company_code_col and period_col:
             join_clause = (
                 f"LEFT JOIN {_quote_ident(table_name)} {alias} "
-                f"ON {alias}.{_quote_ident(edinet_col)} = fs.{_quote_ident(schema.fs_edinet_col)} "
+                f"ON {alias}.{_quote_ident(company_code_col)} = fs.{_quote_ident(schema.fs_code_col)} "
                 f"AND {alias}.{_quote_ident(period_col)} = fs.{_quote_ident(schema.fs_period_end_col)}"
             )
 
         if not join_clause:
             logger.warning(
-                "Skipping statement source %s because %s has no docID or edinetCode+periodEnd join columns.",
+                "Skipping statement source %s because %s has no docID or Company_Code+periodEnd join columns.",
                 source_key,
                 table_name,
             )
@@ -902,7 +902,7 @@ def _score_security_match(record: dict[str, Any], tokens: list[str]) -> int | No
     """
     searchable = {
         "ticker": _safe_str(record.get("ticker")).lower(),
-        "edinet_code": _safe_str(record.get("edinet_code")).lower(),
+        "company_code": _safe_str(record.get("company_code")).lower(),
         "company_name": _safe_str(record.get("company_name")).lower(),
         "industry": _safe_str(record.get("industry")).lower(),
         "market": _safe_str(record.get("market")).lower(),
@@ -914,11 +914,11 @@ def _score_security_match(record: dict[str, Any], tokens: list[str]) -> int | No
             continue
         if searchable["ticker"] == token:
             token_score = max(token_score, 120)
-        if searchable["edinet_code"] == token:
+        if searchable["company_code"] == token:
             token_score = max(token_score, 115)
         if searchable["ticker"].startswith(token):
             token_score = max(token_score, 95)
-        if searchable["edinet_code"].startswith(token):
+        if searchable["company_code"].startswith(token):
             token_score = max(token_score, 90)
         if searchable["company_name"].startswith(token):
             token_score = max(token_score, 80)
@@ -934,7 +934,7 @@ def _score_security_match(record: dict[str, Any], tokens: list[str]) -> int | No
             token_score = max(token_score, 12)
         if token in searchable["ticker"]:
             token_score = max(token_score, 18)
-        if token in searchable["edinet_code"]:
+        if token in searchable["company_code"]:
             token_score = max(token_score, 18)
         if token_score == 0:
             return None
@@ -1263,7 +1263,7 @@ def _as_peer_row(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Project a latest security snapshot into a peer-table row."""
     ratios = _compute_ratio_payload(snapshot)
     return {
-        "edinet_code": _safe_str(snapshot.get("edinet_code")),
+        "company_code": _safe_str(snapshot.get("company_code")),
         "ticker": _safe_str(snapshot.get("ticker")),
         "company_name": _safe_str(snapshot.get("company_name")),
         "industry": _safe_str(snapshot.get("industry")),
@@ -1340,7 +1340,7 @@ def _load_company_frame(conn: sqlite3.Connection, schema: SecuritySchema) -> pd.
         )
 
     select_parts = [
-        f"c.{_quote_ident(schema.company_edinet_col)} AS edinet_code",
+        f"c.{_quote_ident(schema.company_code_col)} AS company_code",
         f"c.{_quote_ident(schema.company_ticker_col)} AS ticker",
         f"COALESCE({', '.join(company_name_parts)}) AS company_name",
     ]
@@ -1405,7 +1405,7 @@ def ensure_security_analysis_indexes(db_path: str) -> dict[str, Any]:
                 (
                     "idx_sa_company_edinet",
                     f"CREATE INDEX IF NOT EXISTS [idx_sa_company_edinet] "
-                    f"ON {_quote_ident(schema.company_table)} ({_quote_ident(schema.company_edinet_col)})",
+                    f"ON {_quote_ident(schema.company_table)} ({_quote_ident(schema.company_code_col)})",
                 ),
                 (
                     "idx_sa_company_ticker",
@@ -1416,7 +1416,7 @@ def ensure_security_analysis_indexes(db_path: str) -> dict[str, Any]:
                     "idx_sa_fs_edinet_period",
                     f"CREATE INDEX IF NOT EXISTS [idx_sa_fs_edinet_period] "
                     f"ON {_quote_ident(schema.financial_statements_table)} "
-                    f"({_quote_ident(schema.fs_edinet_col)}, {_quote_ident(schema.fs_period_end_col)})",
+                    f"({_quote_ident(schema.fs_code_col)}, {_quote_ident(schema.fs_period_end_col)})",
                 ),
             ]
             if schema.company_industry_col:
@@ -1444,10 +1444,10 @@ def ensure_security_analysis_indexes(db_path: str) -> dict[str, Any]:
         return {"ok": True, "created": created, "cached": False}
 
 
-def _load_company_record(db_path: str, edinet_code: str) -> dict[str, Any] | None:
+def _load_company_record(db_path: str, company_code: str) -> dict[str, Any] | None:
     """Return a single company record from the cached company snapshot."""
     company_df = _get_cached_company_frame(db_path)
-    matches = company_df[company_df["edinet_code"].astype(str) == str(edinet_code)]
+    matches = company_df[company_df["company_code"].astype(str) == str(company_code)]
     if matches.empty:
         return None
     return matches.iloc[0].to_dict()
@@ -1543,11 +1543,11 @@ def _load_price_range(conn: sqlite3.Connection, schema: SecuritySchema, ticker: 
     }
 
 
-def _load_latest_snapshot(conn: sqlite3.Connection, schema: SecuritySchema, edinet_code: str) -> dict[str, Any] | None:
+def _load_latest_snapshot(conn: sqlite3.Connection, schema: SecuritySchema, company_code: str) -> dict[str, Any] | None:
     """Load the latest filing snapshot for a company."""
     select_parts = [
         f"fs.{_quote_ident(schema.fs_docid_col)} AS docID",
-        f"fs.{_quote_ident(schema.fs_edinet_col)} AS edinet_code",
+        f"fs.{_quote_ident(schema.fs_code_col)} AS company_code",
         f"fs.{_quote_ident(schema.fs_period_end_col)} AS period_end",
     ]
 
@@ -1655,10 +1655,10 @@ def _load_latest_snapshot(conn: sqlite3.Connection, schema: SecuritySchema, edin
         f"SELECT {', '.join(select_parts)} "
         f"FROM {_quote_ident(schema.financial_statements_table)} fs "
         f"{' '.join(join_clauses)} "
-        f"WHERE fs.{_quote_ident(schema.fs_edinet_col)} = ? "
+        f"WHERE fs.{_quote_ident(schema.fs_code_col)} = ? "
         f"{order_clause} LIMIT 1"
     )
-    df = pd.read_sql_query(sql, conn, params=[edinet_code])
+    df = pd.read_sql_query(sql, conn, params=[company_code])
     if df.empty:
         return None
     row = df.iloc[0].to_dict()
@@ -1678,17 +1678,17 @@ def _load_latest_snapshot(conn: sqlite3.Connection, schema: SecuritySchema, edin
 def _latest_snapshots_for_codes(
     conn: sqlite3.Connection,
     schema: SecuritySchema,
-    edinet_codes: list[str],
+    company_codes: list[str],
 ) -> pd.DataFrame:
     """Load the latest filing snapshot for multiple companies."""
-    if not edinet_codes:
+    if not company_codes:
         return pd.DataFrame()
 
-    placeholders = ",".join(["?"] * len(edinet_codes))
+    placeholders = ",".join(["?"] * len(company_codes))
     join_clauses: list[str] = []
     select_parts = [
         f"fs.{_quote_ident(schema.fs_docid_col)} AS docID",
-        f"fs.{_quote_ident(schema.fs_edinet_col)} AS edinet_code",
+        f"fs.{_quote_ident(schema.fs_code_col)} AS company_code",
         f"fs.{_quote_ident(schema.fs_period_end_col)} AS period_end",
     ]
     if schema.fs_shares_outstanding_col:
@@ -1723,16 +1723,16 @@ def _latest_snapshots_for_codes(
         f"SELECT {', '.join(select_parts)} "
         f"FROM {_quote_ident(schema.financial_statements_table)} fs "
         f"{' '.join(join_clauses)} "
-        f"WHERE fs.{_quote_ident(schema.fs_edinet_col)} IN ({placeholders}) "
-        f"ORDER BY fs.{_quote_ident(schema.fs_edinet_col)}, "
+        f"WHERE fs.{_quote_ident(schema.fs_code_col)} IN ({placeholders}) "
+        f"ORDER BY fs.{_quote_ident(schema.fs_code_col)}, "
         f"fs.{_quote_ident(schema.fs_period_end_col)} DESC, "
         f"fs.{_quote_ident(schema.fs_docid_col)} DESC"
     )
-    df = pd.read_sql_query(sql, conn, params=edinet_codes)
+    df = pd.read_sql_query(sql, conn, params=company_codes)
     if df.empty:
         return df
     df["period_end"] = df["period_end"].astype(str).str[:10]
-    df = df.drop_duplicates(subset=["edinet_code"], keep="first").reset_index(drop=True)
+    df = df.drop_duplicates(subset=["company_code"], keep="first").reset_index(drop=True)
     return df
 
 
@@ -1805,7 +1805,7 @@ def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[st
         if score is None:
             continue
         scored.append((score, {
-            "edinet_code": _safe_str(record.get("edinet_code")),
+            "company_code": _safe_str(record.get("company_code")),
             "ticker": _safe_str(record.get("ticker")),
             "company_name": _safe_str(record.get("company_name")),
             "industry": _safe_str(record.get("industry")),
@@ -1825,27 +1825,27 @@ def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[st
     return [record for _, record in scored[:limit]]
 
 
-def get_security_overview(db_path: str, edinet_code: str) -> dict[str, Any]:
+def get_security_overview(db_path: str, company_code: str) -> dict[str, Any]:
     """Return a summary payload for a selected security.
 
     Args:
         db_path (str): Path to the SQLite database.
-        edinet_code (str): Selected company EDINET code.
+        company_code (str): Selected company EDINET code.
 
     Returns:
         dict[str, Any]: Company, market, fundamentals, valuation, and metadata.
     """
     ensure_security_analysis_indexes(db_path)
     schema = resolve_schema(db_path)
-    company = _load_company_record(db_path, edinet_code)
+    company = _load_company_record(db_path, company_code)
     if company is None:
-        raise ValueError(f"Security not found for EDINET code: {edinet_code}")
+        raise ValueError(f"Security not found for EDINET code: {company_code}")
 
     conn = _connect(db_path)
     try:
-        snapshot = _load_latest_snapshot(conn, schema, edinet_code)
+        snapshot = _load_latest_snapshot(conn, schema, company_code)
         if snapshot is None:
-            snapshot = {"edinet_code": edinet_code, "period_end": None}
+            snapshot = {"company_code": company_code, "period_end": None}
 
         ticker = _safe_str(company.get("ticker"))
         price_info = _load_price_range(conn, schema, ticker) if ticker else {
@@ -1887,7 +1887,7 @@ def get_security_overview(db_path: str, edinet_code: str) -> dict[str, Any]:
 
     return {
         "company": {
-            "edinet_code": _safe_str(edinet_code),
+            "company_code": _safe_str(company_code),
             "ticker": ticker,
             "company_name": _safe_str(company.get("company_name")),
             "industry": _safe_str(company.get("industry")),
@@ -1930,17 +1930,17 @@ def get_security_overview(db_path: str, edinet_code: str) -> dict[str, Any]:
     }
 
 
-def get_security_ratios(db_path: str, edinet_code: str) -> dict[str, Any]:
+def get_security_ratios(db_path: str, company_code: str) -> dict[str, Any]:
     """Return the latest valuation and quality ratios for a security.
 
     Args:
         db_path (str): Path to the SQLite database.
-        edinet_code (str): Selected company EDINET code.
+        company_code (str): Selected company EDINET code.
 
     Returns:
         dict[str, Any]: Latest ratio values and source metadata.
     """
-    overview = get_security_overview(db_path, edinet_code)
+    overview = get_security_overview(db_path, company_code)
     ratios = dict(overview.get("valuation_latest", {}))
     ratios.update(overview.get("quality_latest", {}))
     ratios["period_end"] = overview.get("metadata", {}).get("last_financial_period_end")
@@ -1950,7 +1950,7 @@ def get_security_ratios(db_path: str, edinet_code: str) -> dict[str, Any]:
 
 def get_security_statements(
     db_path: str,
-    edinet_code: str,
+    company_code: str,
     periods: int = 8,
     statement_sources: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -1958,7 +1958,7 @@ def get_security_statements(
 
     Args:
         db_path (str): Path to the SQLite database.
-        edinet_code (str): Selected company EDINET code.
+        company_code (str): Selected company EDINET code.
         periods (int): Maximum number of reporting periods to return.
         statement_sources (dict[str, str] | None): Ordered map of UI labels to
             statement source identifiers or table names.
@@ -1992,11 +1992,11 @@ def get_security_statements(
             f"SELECT {', '.join(select_parts)} "
             f"FROM {_quote_ident(schema.financial_statements_table)} fs "
             f"{' '.join(join_clauses)} "
-            f"WHERE fs.{_quote_ident(schema.fs_edinet_col)} = ? "
+            f"WHERE fs.{_quote_ident(schema.fs_code_col)} = ? "
             f"ORDER BY fs.{_quote_ident(schema.fs_period_end_col)} DESC, "
             f"fs.{_quote_ident(schema.fs_docid_col)} DESC LIMIT ?"
         )
-        df = pd.read_sql_query(sql, conn, params=[edinet_code, max(1, int(periods))])
+        df = pd.read_sql_query(sql, conn, params=[company_code, max(1, int(periods))])
 
         taxonomy_rows_by_source: dict[str, list[dict[str, Any]]] = {}
         if not df.empty:
@@ -2090,7 +2090,7 @@ def get_security_price_history(
 
 def get_security_peers(
     db_path: str,
-    edinet_code: str,
+    company_code: str,
     industry: str | None = None,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
@@ -2098,7 +2098,7 @@ def get_security_peers(
 
     Args:
         db_path (str): Path to the SQLite database.
-        edinet_code (str): Selected company EDINET code.
+        company_code (str): Selected company EDINET code.
         industry (str | None): Optional industry override.
         limit (int): Maximum number of peer rows.
 
@@ -2108,7 +2108,7 @@ def get_security_peers(
     ensure_security_analysis_indexes(db_path)
     schema = resolve_schema(db_path)
     companies = _get_cached_company_frame(db_path)
-    selected_df = companies[companies["edinet_code"].astype(str) == str(edinet_code)]
+    selected_df = companies[companies["company_code"].astype(str) == str(company_code)]
     if selected_df.empty:
         return []
     selected = selected_df.iloc[0].to_dict()
@@ -2117,7 +2117,7 @@ def get_security_peers(
         return []
 
     peer_companies = companies[
-        (companies["edinet_code"].astype(str) != str(edinet_code))
+        (companies["company_code"].astype(str) != str(company_code))
         & (companies["industry"].fillna("").astype(str) == industry_value)
         & (companies["ticker"].fillna("").astype(str) != "")
     ].copy()
@@ -2126,7 +2126,7 @@ def get_security_peers(
 
     conn = _connect(db_path)
     try:
-        selected_snapshot = _load_latest_snapshot(conn, schema, edinet_code)
+        selected_snapshot = _load_latest_snapshot(conn, schema, company_code)
         selected_price_info = _load_price_range(conn, schema, _safe_str(selected.get("ticker")))
         selected_market_cap = _safe_float(
             _compute_ratio_payload({
@@ -2135,8 +2135,8 @@ def get_security_peers(
             }).get("MarketCap")
         )
 
-        edinet_codes = peer_companies["edinet_code"].astype(str).tolist()
-        snapshots_df = _latest_snapshots_for_codes(conn, schema, edinet_codes)
+        company_codes = peer_companies["company_code"].astype(str).tolist()
+        snapshots_df = _latest_snapshots_for_codes(conn, schema, company_codes)
         if snapshots_df.empty:
             return []
 
@@ -2146,7 +2146,7 @@ def get_security_peers(
     finally:
         conn.close()
 
-    merged = peer_companies.merge(snapshots_df, on="edinet_code", how="inner")
+    merged = peer_companies.merge(snapshots_df, on="company_code", how="inner")
     merged = merged.merge(latest_prices_df, on="ticker", how="left")
     merged = merged.merge(returns_df, on="ticker", how="left")
 

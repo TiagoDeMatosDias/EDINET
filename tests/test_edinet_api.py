@@ -266,7 +266,7 @@ class TestEdinet(unittest.TestCase):
         df = self.edinet._load_edinet_code_dataframe_from_path(csv_path)
 
         self.assertEqual(df.columns.tolist(), list(self.edinet.EDINET_CODE_LIST_TARGET_COLUMNS))
-        self.assertEqual(df.iloc[0]["EdinetCode"], "E00004")
+        self.assertEqual(df.iloc[0]["Company_Code"], "E00004")
         self.assertEqual(df.iloc[0]["Company_Name"], "KANEKO SEEDS CO., LTD.")
         self.assertEqual(df.iloc[0]["Company_Ticker"], "13760")
 
@@ -323,7 +323,7 @@ class TestEdinet(unittest.TestCase):
         self.assertEqual(headers["Referer"], self.edinet.EDINET_CODE_LIST_PAGE_URLS["en"])
 
         self.assertEqual(df.columns.tolist(), list(self.edinet.EDINET_CODE_LIST_TARGET_COLUMNS))
-        self.assertEqual(df.iloc[0]["EdinetCode"], "E00004")
+        self.assertEqual(df.iloc[0]["Company_Code"], "E00004")
         self.assertEqual(df.iloc[0]["Company_Name"], "KANEKO SEEDS CO., LTD.")
         self.assertEqual(df.iloc[0]["Company_Ticker"], "13760")
         self.assertEqual(df.iloc[0]["Company_Industry"], "Fishery, Agriculture & Forestry")

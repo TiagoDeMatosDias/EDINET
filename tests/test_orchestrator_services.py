@@ -115,7 +115,7 @@ class TestGenerateFinancialStatementsService(unittest.TestCase):
                 for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
             }
             fs_rows = conn.execute(
-                "SELECT docID, edinetCode, docTypeCode, submitDateTime, periodStart, periodEnd, release_id FROM FinancialStatements"
+                "SELECT docID, Company_Code, Currency, docTypeCode, submitDateTime, periodStart, periodEnd, release_id FROM FinancialStatements"
             ).fetchall()
             income_row = conn.execute(
                 'SELECT docID, [Net Sales], [Non-operating income] FROM IncomeStatement WHERE docID = ?',
@@ -134,7 +134,7 @@ class TestGenerateFinancialStatementsService(unittest.TestCase):
         self.assertTrue({"FinancialStatements", "IncomeStatement", "BalanceSheet", "CashflowStatement"}.issubset(tables))
         self.assertEqual(
             fs_rows,
-            [("DOC1", "E00001", "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31", "2024-01-31")],
+            [("DOC1", "E00001", None, "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31", "2024-01-31")],
         )
         self.assertEqual(income_row, ("DOC1", 1000.0, 60.0))
         self.assertEqual(balance_row, ("DOC1", 250.0))
@@ -314,7 +314,7 @@ class TestGenerateRollingMetricsService(unittest.TestCase):
             """
             CREATE TABLE FinancialStatements (
                 docID TEXT PRIMARY KEY,
-                edinetCode TEXT,
+                Company_Code TEXT,
                 periodEnd TEXT
             );
 
@@ -324,13 +324,13 @@ class TestGenerateRollingMetricsService(unittest.TestCase):
             );
 
             CREATE TABLE CompanyInfo (
-                edinetCode TEXT PRIMARY KEY,
+                Company_Code TEXT PRIMARY KEY,
                 CompanyName TEXT
             );
             """
         )
         conn.executemany(
-            "INSERT INTO FinancialStatements (docID, edinetCode, periodEnd) VALUES (?, ?, ?)",
+            "INSERT INTO FinancialStatements (docID, Company_Code, periodEnd) VALUES (?, ?, ?)",
             [
                 ("A1", "E00001", "2020-03-31"),
                 ("A2", "E00001", "2021-03-31"),

@@ -33,7 +33,7 @@ def _create_security_db(path: str) -> str:
     cur.execute(
         """
         CREATE TABLE CompanyInfo (
-            EdinetCode TEXT PRIMARY KEY,
+            Company_Code TEXT PRIMARY KEY,
             Company_Name TEXT,
             [Submitter Name] TEXT,
             Company_Industry TEXT,
@@ -45,7 +45,7 @@ def _create_security_db(path: str) -> str:
     cur.execute(
         """
         CREATE TABLE FinancialStatements (
-            edinetCode TEXT,
+            Company_Code TEXT,
             docID TEXT UNIQUE,
             periodEnd TEXT,
             DescriptionOfBusiness TEXT,
@@ -373,7 +373,7 @@ def taxonomy_security_db(tmp_path):
 def test_search_securities_matches_name_and_ticker(security_db):
     results = search_securities(security_db, "alpha 1001")
     assert results
-    assert results[0]["edinet_code"] == "E00001"
+    assert results[0]["company_code"] == "E00001"
     assert results[0]["company_name"] == "Alpha Corp"
     assert results[0]["ticker"] == "1001"
 
@@ -381,7 +381,7 @@ def test_search_securities_matches_name_and_ticker(security_db):
 def test_search_securities_uses_submitter_name_fallback(security_db):
     results = search_securities(security_db, "delta 1004")
     assert results
-    assert results[0]["edinet_code"] == "E00004"
+    assert results[0]["company_code"] == "E00004"
     assert results[0]["company_name"] == "Delta Seeds KK"
 
 
@@ -473,7 +473,7 @@ def test_get_security_overview_summarizes_english_description_column(security_db
         "company_name",
         "description",
         "description_summary",
-        "edinet_code",
+        "company_code",
         "filing_description",
         "filing_description_en",
         "industry",
@@ -569,15 +569,15 @@ def test_get_security_price_history_returns_sorted_rows(security_db):
 def test_get_security_peers_uses_same_industry(security_db):
     peers = get_security_peers(security_db, "E00001")
     assert len(peers) == 2
-    assert [peer["edinet_code"] for peer in peers] == ["E00004", "E00002"]
+    assert [peer["company_code"] for peer in peers] == ["E00004", "E00002"]
     assert peers[0]["company_name"] == "Delta Seeds KK"
 
 
 def test_get_security_peers_handles_missing_company_names(security_db):
     peers = get_security_peers(security_db, "E00001")
-    peer_codes = {peer["edinet_code"] for peer in peers}
+    peer_codes = {peer["company_code"] for peer in peers}
     assert peer_codes == {"E00002", "E00004"}
-    sparse_peer = next(peer for peer in peers if peer["edinet_code"] == "E00004")
+    sparse_peer = next(peer for peer in peers if peer["company_code"] == "E00004")
     assert sparse_peer["company_name"] == "Delta Seeds KK"
 
 

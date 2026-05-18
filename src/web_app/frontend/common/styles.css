@@ -2071,15 +2071,15 @@ th .bt-ticker-link:hover {
 /* ── Rolling screening ────────────────────────────────────────── */
 
 .bt-heatmap-container {
-  min-height: 400px;
   width: 100%;
   max-width: 100%;
   margin: 16px 0;
+  overflow-x: auto;
 }
 
 .bt-heatmap-container canvas {
   display: block;
-  width: 100%;
+  max-width: none;
 }
 
 .bt-rolling-summary {

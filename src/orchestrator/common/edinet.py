@@ -50,7 +50,7 @@ class Edinet:
     }
     EDINET_CODE_LIST_DOWNLOAD_EVENT = "'DODOWNLOADEDINET'"
     EDINET_CODE_LIST_TARGET_COLUMNS = (
-        "EdinetCode",
+        "Company_Code",
         "Type of Submitter",
         "Listed",
         "Consolidated",
@@ -65,7 +65,7 @@ class Edinet:
         "Company_Number",
     )
     EDINET_CODE_LIST_COLUMN_ALIASES = {
-        "EdinetCode": ("EdinetCode", "EDINET Code", "edinetCode"),
+        "Company_Code": ("EdinetCode", "EDINET Code", "edinetCode"),
         "Type of Submitter": ("Type of Submitter",),
         "Listed": ("Listed", "Listed company / Unlisted company"),
         "Consolidated": ("Consolidated", "Consolidated / NonConsolidated"),
@@ -753,7 +753,7 @@ class Edinet:
         columns = list(df.columns)
         has_edinet_code = self._find_company_info_column(
             columns,
-            self.EDINET_CODE_LIST_COLUMN_ALIASES["EdinetCode"],
+            self.EDINET_CODE_LIST_COLUMN_ALIASES["Company_Code"],
         )
         has_company_name = self._find_company_info_column(
             columns,

@@ -231,7 +231,7 @@ function tickerLink(ticker) {
         );
         if (data.results && data.results.length) {
           window.open(
-            '/security?edinet_code=' + encodeURIComponent(data.results[0].edinet_code),
+            '/security?company_code=' + encodeURIComponent(data.results[0].company_code),
             '_blank'
           );
         } else {
@@ -1168,6 +1168,7 @@ function renderRollingResults() {
   const header = el('div', { class: 'bt-results-header' },
     el('span', { class: 'bt-results-header-title', text: 'Rolling Screening Results' }),
     el('div', { class: 'bt-results-actions' },
+      el('button', { class: 'bt-export-btn', text: 'Export XLSX', title: 'Download as Excel spreadsheet', onclick: () => exportRollingXLSX() }),
       el('button', { class: 'bt-export-btn', text: 'Save', title: 'Save this rolling backtest', onclick: () => saveRollingBacktest() }),
     ),
   );
@@ -1294,20 +1295,27 @@ function renderRollingHeatmapTabs(agg) {
   const wmKeys = Object.keys(agg.heatmap || {});
   if (!wmKeys.length) return container;
 
-  // Use active weighting or first
+  // Use active weighting or first; treat "excess" as a weighting option
   const activeWM = ST.rollingActive.weighting && wmKeys.includes(ST.rollingActive.weighting)
     ? ST.rollingActive.weighting
     : wmKeys[0];
 
-  // Weighting selector
+  // Weighting selector (include "Excess" tab if benchmark data exists)
+  const tabLabels = wmKeys.map(wm => {
+    if (wm === 'equal') return { key: wm, label: 'Equal Weight' };
+    if (wm === 'market_cap') return { key: wm, label: 'Market Cap' };
+    if (wm === 'excess') return { key: wm, label: 'Excess vs Benchmark' };
+    return { key: wm, label: wm };
+  });
+
   container.append(
     el('div', { class: 'bt-duration-selector', style: 'margin-bottom:8px' },
-      ...wmKeys.map(wm =>
+      ...tabLabels.map(t =>
         el('button', {
-          class: 'bt-duration-tab' + (wm === activeWM ? ' is-active' : ''),
-          text: wm === 'equal' ? 'Equal Weight' : wm === 'market_cap' ? 'Market Cap' : wm,
+          class: 'bt-duration-tab' + (t.key === activeWM ? ' is-active' : ''),
+          text: t.label,
           onclick: () => {
-            ST.rollingActive.weighting = wm;
+            ST.rollingActive.weighting = t.key;
             drillDownRefresh();
           },
         }),
@@ -1366,45 +1374,51 @@ function createRollingHeatmapChart(canvasId, hmData, agg) {
     if (!periods.length) return;
 
     // Collect all non-null values for color range
-    const allVals = [];
+    // Collect all non-null percentage values
+    const allPcts = [];
     for (const period of periods) {
       for (const dur of durations) {
         const v = returnMap[period + '|' + dur];
-        if (v != null) allVals.push(v * 100);
+        if (v != null) allPcts.push(v * 100);
       }
     }
-    const minV = Math.min(...allVals, 0);
-    const maxV = Math.max(...allVals, 0);
-    const range = maxV - minV || 1;
+    const minPct = Math.min(...allPcts);
+    const maxPct = Math.max(...allPcts);
 
-    function heatColor(t) {
-      if (t >= 0) {
-        const g = Math.round(150 + 105 * Math.min(t, 1));
-        return `rgb(68,${g},123)`;
+    function heatColor(rawPct) {
+      // rawPct: the actual percentage value (can be negative)
+      if (rawPct >= 0) {
+        // Green scale — intensity proportional to how positive
+        const t = maxPct > 0 ? Math.min(rawPct / maxPct, 1) : 0;
+        const g = Math.round(130 + 125 * t);
+        return `rgb(48,${g},98)`;
+      } else {
+        // Red scale — intensity proportional to how negative
+        const t = minPct < 0 ? Math.min(rawPct / minPct, 1) : 0;
+        const r = Math.round(180 + 75 * t);
+        return `rgb(${r},58,58)`;
       }
-      const r = Math.round(200 + 55 * Math.min(Math.abs(t), 1));
-      return `rgb(${r},68,68)`;
     }
 
     // Layout: X=periods, Y=durations
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.parentElement.getBoundingClientRect();
-    const W = Math.max(rect.width, 600);
+    // Fixed pixel sizing — no DPR scaling avoids coordinate mismatch
+    const W = Math.max(canvas.parentElement.clientWidth || 600, 400);
     const leftPad = 50, rightPad = 100, topPad = 8, bottomPad = 30;
     const cellW = Math.min(60, Math.max(14, (W - leftPad - rightPad) / periods.length));
     const cellH = 24;
     const H = topPad + durations.length * cellH + bottomPad;
 
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
+    // Set bitmap and CSS to identical dimensions (1:1 mapping, no DPR)
+    canvas.width = W;
+    canvas.height = H;
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
 
     const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, W, H);
 
     // Draw cells — row=duration, col=period
+    const cellRects = [];  // [{x, y, w, h, pi, di}] for hit-testing
     for (let di = 0; di < durations.length; di++) {
       const dur = durations[di];
       const y = topPad + di * cellH;
@@ -1412,14 +1426,18 @@ function createRollingHeatmapChart(canvasId, hmData, agg) {
         const period = periods[pi];
         const ret = returnMap[period + '|' + dur];
         const x = leftPad + pi * cellW;
+        const cx = x + 1, cy = y + 1, cw = cellW - 2, ch = cellH - 2;
 
         if (ret == null) {
           ctx.fillStyle = 'rgba(255,255,255,0.03)';
         } else {
-          const t = (ret * 100 - minV) / range;
-          ctx.fillStyle = heatColor(t);
+          ctx.fillStyle = heatColor(ret * 100);
         }
-        ctx.fillRect(x + 1, y + 1, cellW - 2, cellH - 2);
+        ctx.fillRect(cx, cy, cw, ch);
+        ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(cx, cy, cw, ch);
+        cellRects.push({ x: cx, y: cy, w: cw, h: ch, pi, di });
       }
     }
 
@@ -1454,51 +1472,102 @@ function createRollingHeatmapChart(canvasId, hmData, agg) {
       }
     }
 
-    // Mouse interaction
+    // Hit-test using exact cell rectangles (not computed from offsets)
+    function hitCell(mx, my) {
+      for (const cr of cellRects) {
+        if (mx >= cr.x && mx <= cr.x + cr.w && my >= cr.y && my <= cr.y + cr.h) {
+          return cr;
+        }
+      }
+      return null;
+    }
+
+    let highlight = null;
+
+    // Redraw function for hover highlight
+    function redrawWithHighlight() {
+      ctx.clearRect(0, 0, W, H);
+      for (const cr of cellRects) {
+        const ret = returnMap[periods[cr.pi] + '|' + durations[cr.di]];
+        ctx.fillStyle = ret == null ? 'rgba(255,255,255,0.03)' : heatColor(ret * 100);
+        ctx.fillRect(cr.x, cr.y, cr.w, cr.h);
+        const isHL = highlight && cr.pi === highlight.pi && cr.di === highlight.di;
+        ctx.strokeStyle = isHL ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.04)';
+        ctx.lineWidth = isHL ? 1.5 : 0.5;
+        ctx.strokeRect(cr.x, cr.y, cr.w, cr.h);
+        if (isHL) canvas.title = `${periods[cr.pi]} / ${durations[cr.di]}: ${fmtPct(ret)}`;
+      }
+      // Redraw labels
+      ctx.fillStyle = '#8ea0b8';
+      ctx.font = '11px "IBM Plex Mono", monospace';
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      for (let di = 0; di < durations.length; di++) {
+        ctx.fillText(durations[di], leftPad - 6, topPad + di * cellH + cellH / 2);
+      }
+      _drawLegend();
+    }
+
+    function canvasPos(e) {
+      const r = canvas.getBoundingClientRect();
+      return { mx: e.clientX - r.left, my: e.clientY - r.top };
+    }
+
     canvas.onmousemove = (e) => {
-      const mx = e.offsetX, my = e.offsetY;
-      const pi = Math.floor((mx - leftPad) / cellW);
-      const di = Math.floor((my - topPad) / cellH);
-      if (pi >= 0 && pi < periods.length && di >= 0 && di < durations.length) {
-        canvas.style.cursor = 'pointer';
-        canvas.title = `${periods[pi]} / ${durations[di]}: ${fmtPct(returnMap[periods[pi] + '|' + durations[di]])}`;
-      } else {
-        canvas.style.cursor = 'default';
-        canvas.title = '';
+      const { mx, my } = canvasPos(e);
+      const cr = hitCell(mx, my);
+      if (cr && (cr.pi !== highlight?.pi || cr.di !== highlight?.di)) {
+        highlight = cr;
+        redrawWithHighlight();
+      } else if (!cr && highlight) {
+        highlight = null;
+        redrawWithHighlight();
       }
     };
 
+    canvas.onmouseleave = () => { if (highlight) { highlight = null; redrawWithHighlight(); } };
+
     canvas.onclick = (e) => {
-      const mx = e.offsetX, my = e.offsetY;
-      const pi = Math.floor((mx - leftPad) / cellW);
-      const di = Math.floor((my - topPad) / cellH);
-      if (pi >= 0 && pi < periods.length && di >= 0 && di < durations.length) {
-        ST.rollingActive.period = periods[pi];
-        ST.rollingActive.duration = durations[di];
+      const { mx, my } = canvasPos(e);
+      const cr = hitCell(mx, my);
+      if (cr) {
+        ST.rollingActive.period = periods[cr.pi];
+        ST.rollingActive.duration = durations[cr.di];
         drillDownRefresh();
         const panel = document.querySelector('.bt-rolling-drilldown');
         if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
     };
 
-    // Color legend (horizontal gradient at bottom-right)
-    const legendH = 10;
-    const legendY = topPad + durations.length * cellH + bottomPad - legendH - 2;
-    const legendW = Math.min(140, rightPad - 10);
-    const legendX = W - legendW - 8;
-    const grad = ctx.createLinearGradient(legendX, 0, legendX + legendW, 0);
-    grad.addColorStop(0, heatColor(0));
-    grad.addColorStop(0.3, heatColor(0.3));
-    grad.addColorStop(0.7, heatColor(0.7));
-    grad.addColorStop(1, heatColor(1));
-    ctx.fillStyle = grad;
-    ctx.fillRect(legendX, legendY, legendW, legendH);
-    ctx.fillStyle = '#8ea0b8';
-    ctx.font = '8px "IBM Plex Mono", monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText(minV.toFixed(1) + '%', legendX - 4, legendY + legendH - 1);
-    ctx.textAlign = 'left';
-    ctx.fillText(maxV.toFixed(1) + '%', legendX + legendW + 4, legendY + legendH - 1);
+    // Color legend draw function (called on initial draw and hover redraw)
+    function _drawLegend() {
+      const lh = 10;
+      const ly = topPad + durations.length * cellH + bottomPad - lh - 2;
+      const lw = Math.min(160, rightPad - 10);
+      const lx = W - lw - 8;
+      const grad = ctx.createLinearGradient(lx, 0, lx + lw, 0);
+      if (minPct < 0 && maxPct > 0) {
+        const zeroStop = Math.abs(minPct) / (maxPct - minPct);
+        grad.addColorStop(0, heatColor(minPct));
+        grad.addColorStop(zeroStop * 0.5, heatColor(minPct * 0.5));
+        grad.addColorStop(zeroStop, 'rgb(68,68,68)');
+        grad.addColorStop(zeroStop + (1 - zeroStop) * 0.5, heatColor(maxPct * 0.5));
+        grad.addColorStop(1, heatColor(maxPct));
+      } else if (minPct >= 0) {
+        grad.addColorStop(0, heatColor(0));
+        grad.addColorStop(1, heatColor(maxPct));
+      } else {
+        grad.addColorStop(0, heatColor(minPct));
+        grad.addColorStop(1, heatColor(0));
+      }
+      ctx.fillStyle = grad;
+      ctx.fillRect(lx, ly, lw, lh);
+      ctx.fillStyle = '#8ea0b8';
+      ctx.font = '8px "IBM Plex Mono", monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(minPct.toFixed(1) + '%', lx - 4, ly + lh - 1);
+      ctx.textAlign = 'left';
+      ctx.fillText(maxPct.toFixed(1) + '%', lx + lw + 4, ly + lh - 1);
+    }
 
     // Store canvas ref for export
     ST.charts[canvasId] = { canvas, destroy: () => { delete ST.charts[canvasId]; } };
@@ -1520,7 +1589,8 @@ function renderRollingDistribution(agg) {
     let attempts = 0;
     const canvas = distCanvas;
     const tryCreate = () => {
-      if (!canvas.offsetParent && attempts < 20) {
+      const pw = canvas.parentElement.clientWidth;
+      if ((!canvas.offsetParent || pw < 50) && attempts < 20) {
         attempts++;
         requestAnimationFrame(tryCreate);
         return;
@@ -1783,6 +1853,31 @@ function renderRollingDrilldown(result) {
   }
 
   return container;
+}
+
+async function exportRollingXLSX() {
+  if (!ST.rollingResult) return;
+  try {
+    const resp = await fetch('/api/backtesting/export-rolling-xlsx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rolling_result: ST.rollingResult }),
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(err || `HTTP ${resp.status}`);
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'rolling_backtest.xlsx';
+    a.click();
+    URL.revokeObjectURL(url);
+    log('info', 'Exported rolling backtest to XLSX.');
+  } catch (e) {
+    log('error', 'XLSX export failed: ' + e.message);
+  }
 }
 
 function saveRollingBacktest() {

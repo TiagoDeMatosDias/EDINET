@@ -16,8 +16,10 @@ _DB_HELPER = OrchestratorProcessorBase()
 _SOURCE_TABLE_NAME = "financialData_full"
 _FINANCIAL_STATEMENTS_COLUMNS = [
     ("docID", "TEXT PRIMARY KEY"),
-    ("edinetCode", "TEXT"),
+    ("Company_Code", "TEXT"),
     ("docTypeCode", "TEXT"),
+    ("Currency", "TEXT"),
+    ("Data_Source", "TEXT"),
     ("submitDateTime", "TEXT"),
     ("periodStart", "TEXT"),
     ("periodEnd", "TEXT"),
@@ -254,8 +256,10 @@ def _load_metadata_batch(helper, conn, source_schema, source_table, doc_ids):
         return pd.DataFrame(
             columns=[
                 "docID",
-                "edinetCode",
+                "Company_Code",
                 "docTypeCode",
+                "Currency",
+                "Data_Source",
                 "submitDateTime",
                 "periodStart",
                 "periodEnd",
@@ -271,8 +275,10 @@ def _load_metadata_batch(helper, conn, source_schema, source_table, doc_ids):
         f"""
         SELECT
             CAST(s.{helper._sql_ident(doc_col)} AS TEXT) AS docID,
-            MAX(CAST({helper._source_column_expr('s', col_names.get('edinetCode'))} AS TEXT)) AS edinetCode,
+            MAX(CAST({helper._source_column_expr('s', col_names.get('edinetCode'))} AS TEXT)) AS Company_Code,
             MAX(CAST({helper._source_column_expr('s', col_names.get('docTypeCode'))} AS TEXT)) AS docTypeCode,
+            MAX(CAST({helper._source_column_expr('s', col_names.get('Currency'))} AS TEXT)) AS Currency,
+            'Edinet' AS Data_Source,
             MAX(CAST({helper._source_column_expr('s', col_names.get('submitDateTime'))} AS TEXT)) AS submitDateTime,
             MIN(CAST({helper._source_column_expr('s', col_names.get('periodStart'))} AS TEXT)) AS periodStart,
             MAX(CAST({helper._source_column_expr('s', col_names.get('periodEnd'))} AS TEXT)) AS periodEnd
@@ -630,8 +636,10 @@ def generate_financial_statements(
                     release_metadata_df[
                         [
                             "docID",
-                            "edinetCode",
+                            "Company_Code",
                             "docTypeCode",
+                            "Currency",
+                            "Data_Source",
                             "submitDateTime",
                             "periodStart",
                             "periodEnd",
@@ -695,8 +703,8 @@ def generate_financial_statements(
         conn.commit()
         # Ensure screening performance index exists
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_fin_edinet_period "
-            "ON FinancialStatements(edinetCode, periodEnd)"
+            "CREATE INDEX IF NOT EXISTS idx_fin_company_period "
+            "ON FinancialStatements(Company_Code, periodEnd)"
         )
         conn.commit()
         logger.info(

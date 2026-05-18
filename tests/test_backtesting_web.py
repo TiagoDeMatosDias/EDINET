@@ -73,7 +73,7 @@ def _build_in_memory_db() -> sqlite3.Connection:
 
     # ── CompanyInfo ───────────────────────────────────────────────────
     company = pd.DataFrame({
-        "edinetCode": ["E00001", "E00002", "E00003", "E_BENCH"],
+        "Company_Code": ["E00001", "E00002", "E00003", "E_BENCH"],
         "Company_Ticker": ["A", "B", "C", "BENCH"],
     })
     company.to_sql("CompanyInfo", conn, if_exists="replace", index=False)
@@ -81,7 +81,7 @@ def _build_in_memory_db() -> sqlite3.Connection:
     # ── FinancialStatements ───────────────────────────────────────────
     fs = pd.DataFrame({
         "docID": [1, 2, 3, 4],
-        "edinetCode": ["E00001", "E00002", "E00001", "E_BENCH"],
+        "Company_Code": ["E00001", "E00002", "E00001", "E_BENCH"],
         "periodEnd": ["2023-03-31", "2023-03-31", "2023-09-30", "2023-06-30"],
     })
     fs.to_sql("FinancialStatements", conn, if_exists="replace", index=False)
@@ -94,7 +94,7 @@ def _build_in_memory_db() -> sqlite3.Connection:
     share.to_sql("ShareMetrics", conn, if_exists="replace", index=False)
 
     # ── Screening-related tables (minimal for run_screening path) ─────
-    # CompanyInfo already has edinetCode + Company_Ticker.
+    # CompanyInfo already has Company_Code + Company_Ticker.
     # FinancialStatements — add periodEnd for screening join path.
     # PerShare table for screening columns
     per_share = pd.DataFrame({
@@ -106,8 +106,8 @@ def _build_in_memory_db() -> sqlite3.Connection:
 
     # Ensure screening index
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_fin_edinet_period "
-        "ON FinancialStatements(edinetCode, periodEnd)"
+        "CREATE INDEX IF NOT EXISTS idx_fin_company_period "
+        "ON FinancialStatements(Company_Code, periodEnd)"
     )
 
     return conn

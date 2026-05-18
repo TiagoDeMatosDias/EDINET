@@ -353,14 +353,25 @@ async function init() {
 
 function setDefaultColumns() {
   const ci = ST.availableMetrics.CompanyInfo || [];
+  const ciLower = ci.map(c => c.toLowerCase());
+
+  // Resolve a column by trying each candidate in priority order (matches backend logic)
+  function resolveCol(candidates) {
+    for (const cand of candidates) {
+      const idx = ciLower.indexOf(cand.toLowerCase());
+      if (idx !== -1) return ci[idx];
+    }
+    return null;
+  }
+
   const refs = [];
-  const ec = ci.find(c => /edinetcode/i.test(c)) || (ci.includes('edinetCode') ? 'edinetCode' : null);
+  const ec = resolveCol(['Company_Code', 'edinetCode', 'EdinetCode']);
   if (ec) refs.push(`CompanyInfo.${ec}`);
-  const tc = ci.find(c => /company_ticker/i.test(c)) || ci.find(c => c === 'Ticker');
+  const tc = resolveCol(['Company_Ticker', 'Ticker', 'ticker']);
   if (tc) refs.push(`CompanyInfo.${tc}`);
-  const nc = ci.find(c => /name|submitter|filer/i.test(c));
+  const nc = resolveCol(['Company_Name', 'CompanyName', 'Submitter Name', 'FilerName', 'Name']);
   if (nc) refs.push(`CompanyInfo.${nc}`);
-  const ic = ci.find(c => /industry|sector/i.test(c));
+  const ic = resolveCol(['Company_Industry', 'Industry', 'Sector', 'Business_Industry']);
   if (ic) refs.push(`CompanyInfo.${ic}`);
   ST.columns = refs.map(r => ({ id: uid(), kind: 'col', ref: r }));
 }
@@ -1665,10 +1676,10 @@ function drill(row) {
     if (/company_ticker|^ticker$/.test(c)) ti = i;
   }
   const p = new URLSearchParams();
-  if (ei >= 0 && row[ei]) p.set('edinet_code', String(row[ei]));
+  if (ei >= 0 && row[ei]) p.set( 'company_code', String(row[ei]));
   if (ti >= 0 && row[ti]) p.set('ticker', String(row[ti]));
   // Store in sessionStorage for the security page to pick up (avoids exposing db_path in URL)
-  if (ei >= 0 && row[ei]) sessionStorage.setItem('sa.lastEdinetCode', String(row[ei]));
+  if (ei >= 0 && row[ei]) sessionStorage.setItem('sa.lastCompanyCode', String(row[ei]));
   if (p.toString()) window.location.href = `/security?${p.toString()}`;
 }
 
@@ -1933,7 +1944,7 @@ async function exportBacktest() {
 
     // Build header
     const header = ['Year', 'Tickers', 'Type', 'Amount'];
-    if (edinetIdx >= 0) header.push('EdinetCode');
+    if (edinetIdx >= 0) header.push('Company_Code');
     if (nameIdx >= 0) header.push('CompanyName');
     if (industryIdx >= 0) header.push('Industry');
     if (periodIdx >= 0) header.push('PeriodEnd');

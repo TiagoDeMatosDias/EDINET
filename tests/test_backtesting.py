@@ -76,7 +76,7 @@ def _seed_prices(conn: sqlite3.Connection, table: str = "stock_prices") -> None:
 def _seed_company_info(conn: sqlite3.Connection, table: str = "companyInfo") -> None:
     df = pd.DataFrame(
         {
-            "edinetCode": ["E00001", "E00002"],
+            "Company_Code": ["E00001", "E00002"],
             "Company_Ticker": ["1001", "2002"],
         }
     )
@@ -90,7 +90,7 @@ def _seed_financial_statements(
     df = pd.DataFrame(
         {
             "docID": ["D1", "D2"],
-            "edinetCode": ["E00001", "E00002"],
+            "Company_Code": ["E00001", "E00002"],
             "periodEnd": ["2024-01-03", "2024-01-04"],
         }
     )

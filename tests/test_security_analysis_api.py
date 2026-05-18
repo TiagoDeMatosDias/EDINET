@@ -16,8 +16,8 @@ client = TestClient(app)
 
 def _create_db(path: str) -> str:
     conn = sqlite3.connect(path); cur = conn.cursor()
-    cur.execute("CREATE TABLE CompanyInfo(EdinetCode TEXT PRIMARY KEY, Company_Name TEXT, [Submitter Name] TEXT, Company_Industry TEXT, Company_Ticker TEXT, Listed TEXT)")
-    cur.execute("CREATE TABLE FinancialStatements(edinetCode TEXT, docID TEXT UNIQUE, periodEnd TEXT, SharesOutstanding REAL, SharePrice REAL)")
+    cur.execute("CREATE TABLE CompanyInfo(Company_Code TEXT PRIMARY KEY, Company_Name TEXT, [Submitter Name] TEXT, Company_Industry TEXT, Company_Ticker TEXT, Listed TEXT)")
+    cur.execute("CREATE TABLE FinancialStatements(Company_Code TEXT, docID TEXT UNIQUE, periodEnd TEXT, SharesOutstanding REAL, SharePrice REAL)")
     cur.execute("CREATE TABLE Stock_Prices(Date TEXT, Ticker TEXT, Currency TEXT, Price REAL, PRIMARY KEY(Date, Ticker))")
     cur.execute("CREATE TABLE IncomeStatement(docID TEXT UNIQUE, [Net sales] REAL, [Operating income] REAL, [Net income (loss)] REAL)")
     cur.execute("CREATE TABLE BalanceSheet(docID TEXT UNIQUE, [Net assets] REAL)")
@@ -76,13 +76,13 @@ def test_search_limit(db):
 # ---------------------------------------------------------------------------
 
 def test_overview_basic(db):
-    data = client.get("/api/security/overview", params={"edinet_code": "E00001"}).json()
-    assert data["company"]["edinet_code"] == "E00001"
+    data = client.get("/api/security/overview", params={"company_code": "E00001"}).json()
+    assert data["company"]["company_code"] == "E00001"
     assert data["market"]["latest_price"] == 1520.0
     assert "metrics" in data
 
 def test_overview_metrics_computed(db):
-    data = client.get("/api/security/overview", params={"edinet_code": "E00001"}).json()
+    data = client.get("/api/security/overview", params={"company_code": "E00001"}).json()
     m = data["metrics"]
     # Price * shares = 1520 * 5M = 7.6B
     assert m["MarketCap"] == pytest.approx(7600000000, rel=1e-4)
@@ -106,7 +106,7 @@ def test_overview_metrics_computed(db):
     assert m["LatestPrice"] == 1520.0
 
 def test_overview_404(db):
-    assert client.get("/api/security/overview", params={"edinet_code": "E99999"}).status_code == 404
+    assert client.get("/api/security/overview", params={"company_code": "E99999"}).status_code == 404
 
 # ---------------------------------------------------------------------------
 # Formulas
@@ -157,7 +157,7 @@ def test_update_price_requires_ticker(db):
 # ---------------------------------------------------------------------------
 
 def test_history_table_groups(db):
-    data = client.get("/api/security/history", params={"edinet_code": "E00001"}).json()
+    data = client.get("/api/security/history", params={"company_code": "E00001"}).json()
     assert "tables" in data and "periods" in data
     tables = data["tables"]
     assert "ShareMetrics" in tables
@@ -165,11 +165,11 @@ def test_history_table_groups(db):
     assert len(tables["ShareMetrics"]["metrics"]) >= 3
 
 def test_history_periods(db):
-    data = client.get("/api/security/history", params={"edinet_code": "E00001"}).json()
+    data = client.get("/api/security/history", params={"company_code": "E00001"}).json()
     assert data["periods"] == sorted(data["periods"])
 
 def test_history_empty(db):
-    data = client.get("/api/security/history", params={"edinet_code": "E99999"}).json()
+    data = client.get("/api/security/history", params={"company_code": "E99999"}).json()
     assert data["periods"] == [] and data["tables"] == {}
 
 # ---------------------------------------------------------------------------

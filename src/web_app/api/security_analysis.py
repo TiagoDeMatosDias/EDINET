@@ -74,14 +74,14 @@ def search_securities(
 # ---------------------------------------------------------------------------
 
 @router.get("/overview")
-def get_overview(edinet_code: str = Query(..., description="Company EDINET code")) -> dict:
+def get_overview(company_code: str = Query(..., description="Company code")) -> dict:
     """Company summary with metrics computed from the actual DB tables."""
-    if not edinet_code.strip():
-        raise HTTPException(status_code=400, detail="edinet_code is required")
+    if not company_code.strip():
+        raise HTTPException(status_code=400, detail="company_code is required")
     try:
         db = _resolve_db()
-        result = _security.get_security_overview(db, edinet_code.strip())
-        result["metrics"] = _compute_metrics(db, edinet_code.strip(),
+        result = _security.get_security_overview(db, company_code.strip())
+        result["metrics"] = _compute_metrics(db, company_code.strip(),
                                               result.get("market", {}),
                                               result.get("company", {}))
         return result
@@ -155,13 +155,24 @@ def _compute_metrics(db: str, code: str, market: dict, company: dict) -> dict:
 
 def _find_doc_with_data(conn, tables, code, table_names):
     """Find the latest docID where at least one of the given tables has data."""
+    # Resolve the actual edinet/company code column in FinancialStatements
+    fs_info = conn.execute("PRAGMA table_info(FinancialStatements)").fetchall()
+    fs_cols = {row[1] for row in fs_info}
+    fs_code_col = None
+    for candidate in ("Company_Code", "edinetCode", "EdinetCode"):
+        if candidate in fs_cols:
+            fs_code_col = candidate
+            break
+    if not fs_code_col:
+        fs_code_col = "Company_Code"
+
     for tname in table_names:
         actual = tables.get(tname.lower())
         if not actual: continue
         rows = conn.execute(
             f'SELECT fs.docID FROM FinancialStatements fs '
             f'JOIN "{actual}" m ON m.docID = fs.docID '
-            f'WHERE fs.edinetCode=? ORDER BY fs.periodEnd DESC LIMIT 5',
+            f'WHERE fs."{fs_code_col}"=? ORDER BY fs.periodEnd DESC LIMIT 5',
             (code,)
         ).fetchall()
         for r in rows:
@@ -174,8 +185,8 @@ def _find_doc_with_data(conn, tables, code, table_names):
                 if nn > 0: return r["docID"]
     # Fallback: latest docID
     r = conn.execute(
-        "SELECT docID FROM FinancialStatements "
-        "WHERE edinetCode=? ORDER BY periodEnd DESC LIMIT 1", (code,)
+        f"SELECT docID FROM FinancialStatements "
+        f"WHERE \"{fs_code_col}\"=? ORDER BY periodEnd DESC LIMIT 1", (code,)
     ).fetchone()
     return r["docID"] if r else None
 
@@ -264,12 +275,12 @@ def update_price(request: UpdatePriceRequest = Body(...)) -> dict:
 
 @router.get("/history")
 def get_history(
-    edinet_code: str = Query(...),
+    company_code: str = Query(...),
     periods: int = Query(default=20),
 ) -> dict:
     """All historical statement data as metric-rows grouped by table."""
-    if not edinet_code.strip():
-        raise HTTPException(status_code=400, detail="edinet_code is required")
+    if not company_code.strip():
+        raise HTTPException(status_code=400, detail="company_code is required")
     try:
         db = _resolve_db()
 
@@ -284,14 +295,14 @@ def get_history(
                     continue
                 cols = [c[1] for c in conn.execute(f'PRAGMA table_info("{name}")')]
                 cl = {c.lower() for c in cols}
-                if "docid" in cl or ("edinetcode" in cl and "periodend" in cl):
+                if "docid" in cl or ("company_code" in cl or "edinetcode" in cl) and "periodend" in cl:
                     table_map[name] = name
         finally:
             conn.close()
 
         sources = {name: name for name in table_map.values()}
         statements = _security.get_security_statements(
-            db, edinet_code.strip(),
+            db, company_code.strip(),
             periods=max(1, int(periods)),
             statement_sources=sources if sources else None,
         )

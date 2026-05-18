@@ -28,13 +28,13 @@ def _create_test_db(path: str) -> str:
     c = conn.cursor()
 
     c.execute("""CREATE TABLE CompanyInfo (
-        edinetCode TEXT PRIMARY KEY,
+        Company_Code TEXT PRIMARY KEY,
         Company_Ticker TEXT,
         Company_Name TEXT,
         Company_Industry TEXT
     )""")
     c.execute("""CREATE TABLE FinancialStatements (
-        edinetCode TEXT,
+        Company_Code TEXT,
         docID TEXT UNIQUE,
         periodEnd TEXT,
         SharesOutstanding REAL,
@@ -231,12 +231,12 @@ def test_run_screening_basic(test_db_path):
     resp = client.post("/api/screening/run", json={
         "db_path": test_db_path,
         "criteria": [],
-        "columns": ["CompanyInfo.edinetCode", "CompanyInfo.Company_Name"],
+        "columns": ["CompanyInfo.Company_Code", "CompanyInfo.Company_Name"],
     })
     assert resp.status_code == 200
     data = resp.json()
     assert data["row_count"] >= 1
-    assert "edinetCode" in data["columns"] or "Company_Name" in data["columns"]
+    assert "Company_Code" in data["columns"] or "Company_Name" in data["columns"]
     # SQL display should be included
     assert "sql_display" in data
     assert "SELECT" in data["sql_display"]
@@ -254,7 +254,7 @@ def test_run_screening_with_criteria(test_db_path):
             "value": "Technology",
             "field_type": "text",
         }],
-        "columns": ["CompanyInfo.edinetCode", "CompanyInfo.Company_Name"],
+        "columns": ["CompanyInfo.Company_Code", "CompanyInfo.Company_Name"],
     })
     assert resp.status_code == 200
     data = resp.json()
@@ -280,7 +280,7 @@ def test_run_screening_with_column_compare_and_offset(test_db_path):
             "compare_column": "EPS",
             "offset": -5000,
         }],
-        "columns": ["CompanyInfo.edinetCode", "PerShare.BookValue", "PerShare.EPS"],
+        "columns": ["CompanyInfo.Company_Code", "PerShare.BookValue", "PerShare.EPS"],
     })
     assert resp.status_code == 200
     data = resp.json()
@@ -292,7 +292,7 @@ def test_run_screening_with_computed_columns(test_db_path):
     resp = client.post("/api/screening/run", json={
         "db_path": test_db_path,
         "criteria": [],
-        "columns": ["CompanyInfo.edinetCode"],
+        "columns": ["CompanyInfo.Company_Code"],
         "computed_columns": [{
             "name": "PE_Ratio",
             "formula_type": "price_ratio",
@@ -316,7 +316,7 @@ def test_run_screening_with_period(test_db_path):
     resp = client.post("/api/screening/run", json={
         "db_path": test_db_path,
         "criteria": [],
-        "columns": ["CompanyInfo.edinetCode", "FinancialStatements.periodEnd"],
+        "columns": ["CompanyInfo.Company_Code", "FinancialStatements.periodEnd"],
         "period": "2023",
     })
     assert resp.status_code == 200
@@ -339,7 +339,7 @@ def test_run_screening_with_screening_date(test_db_path):
     resp = client.post("/api/screening/run", json={
         "db_path": test_db_path,
         "criteria": [],
-        "columns": ["CompanyInfo.edinetCode", "FinancialStatements.periodEnd"],
+        "columns": ["CompanyInfo.Company_Code", "FinancialStatements.periodEnd"],
         "screening_date": "2023-06-01",
     })
     assert resp.status_code == 200
@@ -401,7 +401,7 @@ def test_save_list_load_delete_screening():
             "value": 15,
             "field_type": "num",
         }],
-        "columns": ["CompanyInfo.edinetCode", "Valuation.PERatio"],
+        "columns": ["CompanyInfo.Company_Code", "Valuation.PERatio"],
         "period": "2024",
         "ranking_algorithm": "weighted_minmax",
         "ranking_rules": [{
@@ -486,13 +486,13 @@ def test_export_csv(test_db_path):
     resp = client.post("/api/screening/export", json={
         "db_path": test_db_path,
         "criteria": [],
-        "columns": ["CompanyInfo.edinetCode"],
+        "columns": ["CompanyInfo.Company_Code"],
         "format": "csv",
     })
     assert resp.status_code == 200
     assert "text/csv" in resp.headers.get("content-type", "")
     content = resp.text
-    assert "edinetCode" in content
+    assert "Company_Code" in content
     assert "E00001" in content
 
 
@@ -540,8 +540,8 @@ def test_metrics_includes_custom_tables(tmp_path):
     import sqlite3
     db_path = str(tmp_path / "custom.db")
     conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Company_Ticker TEXT)")
-    conn.execute("CREATE TABLE FinancialStatements (edinetCode TEXT, docID TEXT, periodEnd TEXT)")
+    conn.execute("CREATE TABLE CompanyInfo (Company_Code TEXT, Company_Ticker TEXT)")
+    conn.execute("CREATE TABLE FinancialStatements (Company_Code TEXT, docID TEXT, periodEnd TEXT)")
     conn.execute("CREATE TABLE Stock_Prices (Date TEXT, Ticker TEXT, Price REAL)")
     conn.execute("CREATE TABLE Financial_Ratios_Rolling (docID TEXT, Net_Margin_Avg_3Y REAL, ROA_Avg_10Y REAL)")
     conn.execute("CREATE TABLE Custom_Metrics (docID TEXT, Score REAL, Rank INTEGER)")
@@ -574,8 +574,8 @@ def _create_db_for_update_prices(path: str) -> str:
     """Create a minimal DB with Stock_Prices so update-prices can write."""
     conn = sqlite3.connect(path)
     c = conn.cursor()
-    c.execute("CREATE TABLE CompanyInfo (edinetCode TEXT, Company_Ticker TEXT, Company_Name TEXT)")
-    c.execute("CREATE TABLE FinancialStatements (edinetCode TEXT, docID TEXT, periodEnd TEXT)")
+    c.execute("CREATE TABLE CompanyInfo (Company_Code TEXT, Company_Ticker TEXT, Company_Name TEXT)")
+    c.execute("CREATE TABLE FinancialStatements (Company_Code TEXT, docID TEXT, periodEnd TEXT)")
     c.execute("""CREATE TABLE Stock_Prices (
         Date TEXT, Ticker TEXT, Currency TEXT, Price REAL
     )""")

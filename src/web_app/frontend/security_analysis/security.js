@@ -20,8 +20,8 @@ async function bootstrap() {
 
   // Check URL params first, then fall back to sessionStorage
   const params = new URLSearchParams(window.location.search);
-  const urlCode = params.get('edinet_code');
-  const lastCode = urlCode || sessionStorage.getItem('sa.lastEdinetCode');
+  const urlCode = params.get('company_code');
+  const lastCode = urlCode || sessionStorage.getItem('sa.lastCompanyCode');
   if (lastCode) {
     try { await selectCompany(lastCode); } catch (e) { log('warn', e.message); }
   }
