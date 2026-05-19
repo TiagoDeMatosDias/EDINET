@@ -447,3 +447,40 @@
 }
 .sa-update-price-btn:hover { background: var(--accent-soft); }
 .sa-update-price-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Period filter pills ── */
+.sa-period-pill {
+  font-size: 10px; padding: 2px 7px; border: 1px solid var(--line);
+  background: transparent; color: var(--muted); cursor: pointer;
+  font-family: var(--font); border-radius: 3px;
+  transition: all 0.15s;
+}
+.sa-period-pill:hover { border-color: var(--accent); color: var(--text); }
+.sa-period-pill.is-active {
+  border-color: var(--accent); color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ── Zoom bar ── */
+.sa-zoom-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px; border-bottom: 1px solid var(--line); flex-shrink: 0;
+  background: var(--bg);
+}
+
+/* ── Price summary bar ── */
+.sa-price-summary {
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 10px; font-size: 11px; color: var(--muted);
+  border-bottom: 1px solid var(--line); flex-shrink: 0;
+  background: var(--panel2); flex-wrap: wrap;
+}
+
+/* ── Sortable header ── */
+.sa-sort-th:hover { color: var(--accent) !important; }
+
+/* ── Load more ── */
+.sa-load-more-wrap {
+  display: flex; justify-content: center;
+  padding: 10px 8px; flex-shrink: 0;
+}

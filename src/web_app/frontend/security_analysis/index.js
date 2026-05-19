@@ -10,6 +10,9 @@ const state = {
   activeTable: null, viewMode: 'table', searchFilter: '',
   hiddenMetrics: {}, millions: false,
   chartInstances: [], loading: false, error: null,
+  priceHistory: null, priceLoading: false, priceViewMode: 'chart',
+  priceSortField: 'trade_date', priceSortDir: 'desc',
+  priceTablePage: 60, pricePeriod: 'all',
   searchResults: [], searchIdx: -1, searchTimer: null, eventBound: false,
 };
 
@@ -173,6 +176,7 @@ export async function selectCompany(code) {
     sessionStorage.setItem('sa.lastCompanyCode', code);
     if (!state.activeTable || !history.tables?.[state.activeTable])
       state.activeTable = Object.keys(history.tables || {})[0] || null;
+    state.priceHistory = null; state.priceLoading = false;
     state.loading = false; persist(); render();
     log('info', `Loaded: ${overview.company?.company_name || code}`);
   } catch (e) {
@@ -293,11 +297,21 @@ function renderHistorySection() {
   const tv = H.$('sa-table-view'); tv.classList.add('is-active');
   const tables = state.history?.tables || {}, periods = state.history?.periods || [];
   const keys = Object.keys(tables);
-  if (!keys.length) { tv.innerHTML = '<div class="sa-empty"><div class="sa-empty-title">No historical data</div></div>'; return; }
+  const ticker = state.company?.company?.ticker;
+  const hasPriceData = !!ticker;
 
-  if (!state.activeTable || !tables[state.activeTable]) state.activeTable = keys[0];
+  if (!keys.length && !hasPriceData) { tv.innerHTML = '<div class="sa-empty"><div class="sa-empty-title">No historical data</div></div>'; return; }
+
+  if (!state.activeTable || (state.activeTable !== '__stock_price__' && !tables[state.activeTable])) {
+    state.activeTable = hasPriceData ? '__stock_price__' : keys[0];
+  }
 
   tabbar.innerHTML = '';
+  // Stock Price tab (always first)
+  if (hasPriceData) {
+    tabbar.appendChild(H.el('button', { class: `tab sa-tab${state.activeTable === '__stock_price__' ? ' is-active' : ''}`, text: 'Stock Price',
+      onclick() { state.activeTable = '__stock_price__'; persist(); renderHistorySection(); } }));
+  }
   for (const key of keys) {
     const t = tables[key];
     tabbar.appendChild(H.el('button', { class: `tab sa-tab${key === state.activeTable ? ' is-active' : ''}`, text: t.display_name,
@@ -305,6 +319,9 @@ function renderHistorySection() {
   }
 
   tv.innerHTML = '';
+
+  if (state.activeTable === '__stock_price__') { renderPriceSection(); return; }
+
   const ctrl = H.el('div', { class: 'sa-history-controls' },
     H.el('button', { class: `scr-btn-soft${state.viewMode === 'table' ? ' scr-btn-active' : ''}`, text: 'Table',
       onclick() { state.viewMode = 'table'; persist(); renderHistoryBody(); } }),
@@ -417,6 +434,275 @@ function fmtY(v) {
 }
 
 function destroyCharts() { state.chartInstances.forEach(c => { try { c.destroy(); } catch (e) {} }); state.chartInstances = []; }
+
+// ---------------------------------------------------------------------------
+// Stock Price tab
+// ---------------------------------------------------------------------------
+
+async function loadPriceHistory() {
+  const ticker = state.company?.company?.ticker;
+  if (!ticker) return;
+  state.priceLoading = true;
+  renderPriceSection();
+  try {
+    const d = await fetchJson(`/api/security/price-history?ticker=${encodeURIComponent(ticker)}`);
+    state.priceHistory = d.prices || [];
+    state.priceLoading = false;
+    renderPriceSection();
+  } catch (e) {
+    state.priceHistory = null; state.priceLoading = false;
+    log('error', `Price history: ${e.message}`);
+    renderPriceSection();
+  }
+}
+
+function renderPriceSection() {
+  const tv = H.$('sa-table-view'); tv.classList.add('is-active');
+  tv.innerHTML = '';
+
+  const ctrl = H.el('div', { class: 'sa-history-controls' },
+    H.el('button', { class: `scr-btn-soft${state.priceViewMode === 'chart' ? ' scr-btn-active' : ''}`, text: 'Chart',
+      onclick() { state.priceViewMode = 'chart'; persist(); renderPriceSection(); } }),
+    H.el('button', { class: `scr-btn-soft${state.priceViewMode === 'table' ? ' scr-btn-active' : ''}`, text: 'Table',
+      onclick() { state.priceViewMode = 'table'; persist(); renderPriceSection(); } }));
+
+  // Period filter pills for chart view
+  if (state.priceViewMode === 'chart') {
+    const periods = [
+      { id: '1w', label: '1W' }, { id: '1m', label: '1M' }, { id: 'mtd', label: 'MTD' },
+      { id: 'ytd', label: 'YTD' }, { id: '1y', label: '1Y' }, { id: '2y', label: '2Y' },
+      { id: '3y', label: '3Y' }, { id: '5y', label: '5Y' }, { id: '10y', label: '10Y' },
+      { id: '15y', label: '15Y' }, { id: 'all', label: 'All' },
+    ];
+    for (const p of periods) {
+      ctrl.appendChild(H.el('button', {
+        class: `sa-period-pill${state.pricePeriod === p.id ? ' is-active' : ''}`,
+        text: p.label,
+        onclick() { state.pricePeriod = p.id; persist(); renderPriceChart(); },
+      }));
+    }
+  }
+
+  tv.appendChild(ctrl);
+  tv.appendChild(H.el('div', { id: 'sa-history-body' }));
+
+  if (state.priceLoading) {
+    H.$('sa-history-body').innerHTML = '<div class="sa-loading">Loading price data…</div>';
+    return;
+  }
+
+  if (!state.priceHistory) {
+    loadPriceHistory();
+    return;
+  }
+
+  if (!state.priceHistory.length) {
+    H.$('sa-history-body').innerHTML = '<div class="sa-empty"><div class="sa-empty-title">No price data available</div></div>';
+    return;
+  }
+
+  if (state.priceViewMode === 'chart') renderPriceChart();
+  else renderPriceTable();
+}
+
+function filterPriceData(data, period) {
+  if (period === 'all' || !data.length) return data;
+  const lastDate = new Date(data[data.length - 1].trade_date);
+  let cutoff = new Date(lastDate);
+  switch (period) {
+    case '1w': cutoff.setDate(cutoff.getDate() - 7); break;
+    case '1m': cutoff.setMonth(cutoff.getMonth() - 1); break;
+    case 'mtd': cutoff = new Date(lastDate.getFullYear(), lastDate.getMonth(), 1); break;
+    case 'ytd': cutoff = new Date(lastDate.getFullYear(), 0, 1); break;
+    case '1y': cutoff.setFullYear(cutoff.getFullYear() - 1); break;
+    case '2y': cutoff.setFullYear(cutoff.getFullYear() - 2); break;
+    case '3y': cutoff.setFullYear(cutoff.getFullYear() - 3); break;
+    case '5y': cutoff.setFullYear(cutoff.getFullYear() - 5); break;
+    case '10y': cutoff.setFullYear(cutoff.getFullYear() - 10); break;
+    case '15y': cutoff.setFullYear(cutoff.getFullYear() - 15); break;
+    default: return data;
+  }
+  const cs = cutoff.toISOString().slice(0, 10);
+  return data.filter(d => d.trade_date >= cs);
+}
+
+function renderPriceChart() {
+  const body = H.$('sa-history-body'); body.innerHTML = '';
+  const rawData = state.priceHistory;
+  if (!rawData.length) return;
+
+  const filtered = filterPriceData(rawData, state.pricePeriod);
+  if (!filtered.length) { body.innerHTML = '<div class="sa-empty"><div class="sa-empty-title">No data in selected period</div></div>'; return; }
+
+  destroyCharts();
+
+  // Zoom reset button
+  const zoomBar = H.el('div', { class: 'sa-zoom-bar' },
+    H.el('button', { class: 'scr-btn-soft', text: '↺ Reset Zoom',
+      onclick() { if (state.chartInstances.length) state.chartInstances[0].resetZoom(); } }));
+  body.appendChild(zoomBar);
+
+  const wrap = H.el('div', { class: 'sa-chart-canvas-wrap', style: { height: '420px' } });
+  const canvas = H.el('canvas'); wrap.appendChild(canvas); body.appendChild(wrap);
+
+  if (typeof Chart === 'undefined') { body.textContent = 'Chart.js N/A.'; return; }
+
+  const labels = filtered.map(d => d.trade_date);
+  const prices = filtered.map(d => d.price);
+
+  // Compute moving averages
+  const sma20 = calcSMA(prices, 20);
+  const sma50 = calcSMA(prices, 50);
+  const sma200 = calcSMA(prices, 200);
+
+  const datasets = [
+    { label: 'Close', data: prices, borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.08)', borderWidth: 1.5, tension: 0, pointRadius: 0, spanGaps: false, fill: true },
+  ];
+  if (sma20.some(v => v != null)) datasets.push({ label: 'SMA 20', data: sma20, borderColor: '#e0af4f', borderWidth: 1, tension: 0, pointRadius: 0, spanGaps: true });
+  if (sma50.some(v => v != null)) datasets.push({ label: 'SMA 50', data: sma50, borderColor: '#ff6b6b', borderWidth: 1, tension: 0, pointRadius: 0, spanGaps: true });
+  if (sma200.some(v => v != null)) datasets.push({ label: 'SMA 200', data: sma200, borderColor: '#b794f4', borderWidth: 1, tension: 0, pointRadius: 0, spanGaps: true });
+
+  const hasZoom = typeof window !== 'undefined' && window.chartjsPluginZoom;
+
+  state.chartInstances.push(new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        title: { display: true, text: `${state.company?.company?.ticker || ''} — Stock Price`, color: '#8ea0b8', font: { size: 12 } },
+        legend: { position: 'top', labels: { color: '#8ea0b8', font: { size: 10 }, boxWidth: 10, padding: 8, usePointStyle: true } },
+        tooltip: { backgroundColor: '#111c2a', borderColor: '#243244', borderWidth: 1, callbacks: { label: ctx => `¥${Number(ctx.raw).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` } },
+        zoom: hasZoom ? {
+          pan: { enabled: true, mode: 'x', modifierKey: 'ctrl' },
+          zoom: {
+            wheel: { enabled: true, modifierKey: 'ctrl' },
+            pinch: { enabled: true },
+            drag: { enabled: true, backgroundColor: 'rgba(88,166,255,0.15)', borderColor: '#58a6ff', borderWidth: 1 },
+            mode: 'x',
+          },
+          limits: { x: { min: 'original', max: 'original' } },
+        } : undefined,
+      },
+      scales: {
+        x: { ticks: { color: '#8ea0b8', font: { size: 10 }, maxTicksLimit: 15, autoSkip: true }, grid: { color: 'rgba(48,63,82,0.4)' } },
+        y: { ticks: { color: '#8ea0b8', font: { size: 10 }, callback: v => typeof v === 'number' ? `¥${Number(v).toLocaleString()}` : v }, grid: { color: 'rgba(48,63,82,0.3)' } },
+      },
+    },
+  }));
+}
+
+function calcSMA(data, period) {
+  const result = new Array(data.length).fill(null);
+  if (data.length < period) return result;
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += (data[i] || 0);
+  result[period - 1] = sum / period;
+  for (let i = period; i < data.length; i++) {
+    sum += (data[i] || 0) - (data[i - period] || 0);
+    result[i] = sum / period;
+  }
+  return result;
+}
+
+function makeSortHeader(field, label, opts = {}) {
+  const active = state.priceSortField === field;
+  const arrow = active ? (state.priceSortDir === 'asc' ? ' ▲' : ' ▼') : '';
+  return H.el('th', {
+    class: 'sa-sort-th',
+    style: (opts.alignLeft ? 'text-align:left;' : '') + 'cursor:pointer;user-select:none;',
+    text: label + arrow,
+    onclick() {
+      if (state.priceSortField === field) {
+        state.priceSortDir = state.priceSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.priceSortField = field; state.priceSortDir = 'asc';
+      }
+      persist(); renderPriceTable();
+    },
+  });
+}
+
+function renderPriceTable() {
+  const body = H.$('sa-history-body'); body.innerHTML = '';
+  const data = state.priceHistory;
+  if (!data.length) return;
+
+  destroyCharts();
+
+  // Compute day-over-day change for each row
+  const withChange = [];
+  for (let i = 0; i < data.length; i++) {
+    const d = data[i];
+    const prevPrice = i > 0 ? data[i - 1].price : null;
+    const dayChange = (prevPrice != null && d.price != null) ? d.price - prevPrice : null;
+    withChange.push({ ...d, _change: dayChange });
+  }
+
+  // Sort
+  const sf = state.priceSortField;
+  const sd = state.priceSortDir === 'asc' ? 1 : -1;
+  const sorted = [...withChange].sort((a, b) => {
+    let va, vb;
+    if (sf === 'price') { va = a.price ?? -Infinity; vb = b.price ?? -Infinity; }
+    else if (sf === '_change') { va = a._change ?? -Infinity; vb = b._change ?? -Infinity; }
+    else { va = a.trade_date || ''; vb = b.trade_date || ''; }
+    if (va < vb) return -1 * sd; if (va > vb) return 1 * sd; return 0;
+  });
+
+  // Compute summary stats
+  const allPrices = data.filter(d => d.price != null).map(d => d.price);
+  const minPrice = allPrices.length ? Math.min(...allPrices) : null;
+  const maxPrice = allPrices.length ? Math.max(...allPrices) : null;
+  const firstPrice = data[0]?.price, lastPrice = data[data.length - 1]?.price;
+  const change = (firstPrice && lastPrice) ? lastPrice - firstPrice : null;
+  const changePct = (change != null && firstPrice) ? (change / firstPrice) : null;
+
+  // Summary bar
+  const summary = H.el('div', { class: 'sa-price-summary' },
+    H.el('span', { text: `${data[0]?.trade_date || ''} → ${data[data.length - 1]?.trade_date || ''}` }),
+    H.el('span', { text: `| ${data.length} days` }),
+    minPrice != null ? H.el('span', { text: `| Low ¥${Number(minPrice).toLocaleString()}` }) : null,
+    maxPrice != null ? H.el('span', { text: `| High ¥${Number(maxPrice).toLocaleString()}` }) : null,
+    changePct != null ? H.el('span', { style: change >= 0 ? 'color:var(--success);' : 'color:var(--danger);', text: `| ${change >= 0 ? '+' : ''}${(changePct * 100).toFixed(1)}% total` }) : null);
+  body.appendChild(summary);
+
+  const wrap = H.el('div', { class: 'sa-table-wrap' });
+  const tbl = H.el('table', { class: 'sa-table' });
+
+  const thead = H.el('thead', {},
+    H.el('tr', {},
+      makeSortHeader('trade_date', 'Date', { alignLeft: true }),
+      makeSortHeader('price', 'Price'),
+      makeSortHeader('_change', 'Change')));
+  tbl.appendChild(thead);
+
+  const tbody = H.el('tbody');
+
+  const pageSize = state.priceTablePage;
+  const shown = sorted.slice(0, pageSize);
+  for (const d of shown) {
+    const p = d.price;
+    const dayChange = d._change;
+    tbody.appendChild(H.el('tr', {},
+      H.el('td', { style: 'text-align:left;', text: d.trade_date }),
+      H.el('td', { text: p != null ? `¥${Number(p).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : '—' }),
+      H.el('td', { style: dayChange != null ? (dayChange >= 0 ? 'color:var(--success);' : 'color:var(--danger);') : '', text: dayChange != null ? `${dayChange >= 0 ? '+' : ''}${Number(dayChange).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : '—' })));
+  }
+
+  tbl.appendChild(tbody);
+  wrap.appendChild(tbl);
+  body.appendChild(wrap);
+
+  // Load More
+  if (pageSize < sorted.length) {
+    const remaining = sorted.length - pageSize;
+    body.appendChild(H.el('div', { class: 'sa-load-more-wrap' },
+      H.el('button', { class: 'scr-btn-soft', text: `Load More (${remaining} remaining)`,
+        onclick() { state.priceTablePage = Math.min(state.priceTablePage + 60, sorted.length); persist(); renderPriceTable(); } })));
+  }
+}
 
 // ---------------------------------------------------------------------------
 // DOM helpers
