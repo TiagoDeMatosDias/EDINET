@@ -132,13 +132,13 @@ function onSearchKeydown(e) {
   if (!open && e.key === 'Enter') {
     e.preventDefault(); const q = H.$('sa-search').value.trim(); if (!q) return;
     clearTimeout(state.searchTimer);
-    doSearch(q).then(() => { if (state.searchResults.length) { closeDropdown(); selectCompany(state.searchResults[0].company_code); } });
+    doSearch(q).then(() => { if (state.searchResults.length) { closeDropdown(); const r = state.searchResults[0]; if (r.company_code) selectCompany(r.company_code); else selectTicker(r.ticker); } });
     return;
   }
   if (!open) return;
   if (e.key === 'ArrowDown') { e.preventDefault(); state.searchIdx = Math.min(state.searchIdx + 1, state.searchResults.length - 1); renderDropdown(); }
   else if (e.key === 'ArrowUp') { e.preventDefault(); state.searchIdx = Math.max(state.searchIdx - 1, 0); renderDropdown(); }
-  else if (e.key === 'Enter') { e.preventDefault(); if (state.searchIdx >= 0) { const r = state.searchResults[state.searchIdx]; closeDropdown(); selectCompany(r.company_code); } }
+  else if (e.key === 'Enter') { e.preventDefault(); if (state.searchIdx >= 0) { const r = state.searchResults[state.searchIdx]; closeDropdown(); if (r.company_code) selectCompany(r.company_code); else selectTicker(r.ticker); } }
   else if (e.key === 'Escape') { closeDropdown(); }
 }
 
@@ -148,11 +148,13 @@ function renderDropdown() {
   const dd = H.$('sa-search-dropdown'); dd.innerHTML = '';
   if (!state.searchResults.length) { dd.appendChild(H.el('div', { class: 'sa-search-empty', text: 'No results' })); return; }
   state.searchResults.forEach((r, i) => {
+    const hasCompany = !!r.company_code;
     dd.appendChild(H.el('div', {
-      class: `sa-search-item${i === state.searchIdx ? ' is-active' : ''}`,
-      onmousedown(e) { e.preventDefault(); closeDropdown(); selectCompany(r.company_code); },
+      class: `sa-search-item${i === state.searchIdx ? ' is-active' : ''}${!hasCompany ? ' sa-search-item-ticker-only' : ''}`,
+      onmousedown(e) { e.preventDefault(); closeDropdown();
+        if (hasCompany) selectCompany(r.company_code); else selectTicker(r.ticker); },
     }, H.el('span', { class: 'sa-search-item-code', text: r.ticker || '-' }),
-       H.el('span', { class: 'sa-search-item-name', text: r.company_name || r.company_code }),
+       H.el('span', { class: 'sa-search-item-name', text: r.company_name || r.company_code || r.ticker }),
        r.latest_price != null ? H.el('span', { class: 'sa-search-item-price', text: `¥${Number(r.latest_price).toLocaleString()}` }) : null));
   });
 }
@@ -175,10 +177,30 @@ export async function selectCompany(code) {
     state.company = overview; state.formulas = formulas.formulas || []; state.history = history;
     sessionStorage.setItem('sa.lastCompanyCode', code);
     if (!state.activeTable || !history.tables?.[state.activeTable])
-      state.activeTable = Object.keys(history.tables || {})[0] || null;
+      state.activeTable = history.tables && Object.keys(history.tables).length > 0 ? Object.keys(history.tables)[0] : '__stock_price__';
     state.priceHistory = null; state.priceLoading = false;
     state.loading = false; persist(); render();
     log('info', `Loaded: ${overview.company?.company_name || code}`);
+  } catch (e) {
+    state.loading = false; state.company = null; state.error = `Failed: ${e.message}`;
+    log('error', state.error); render();
+  }
+}
+
+export async function selectTicker(ticker) {
+  ticker = String(ticker).trim(); if (!ticker) return;
+  state.loading = true; state.error = null; state.company = null; render();
+  try {
+    const [overview, formulas] = await Promise.all([
+      fetchJson(`/api/security/overview?ticker=${encodeURIComponent(ticker)}`),
+      fetchJson('/api/security/formulas'),
+    ]);
+    state.company = overview; state.formulas = formulas.formulas || [];
+    state.history = { periods: [], tables: {} };
+    state.activeTable = '__stock_price__';
+    state.priceHistory = null; state.priceLoading = false;
+    state.loading = false; persist(); render();
+    log('info', `Loaded ticker: ${ticker}`);
   } catch (e) {
     state.loading = false; state.company = null; state.error = `Failed: ${e.message}`;
     log('error', state.error); render();
@@ -285,7 +307,12 @@ function renderBanner() {
   const flags = state.company?.metadata?.data_quality_flags || [];
   if (!flags.length) { b.style.display = 'none'; return; }
   b.style.display = 'flex';
-  b.textContent = '⚠ ' + flags.map(f => f === 'missing_latest_price' ? 'No price data.' : 'No financials.').join(' ');
+  b.textContent = '⚠ ' + flags.map(f => {
+    if (f === 'missing_latest_price') return 'No price data.';
+    if (f === 'missing_financial_statements') return 'No financials.';
+    if (f === 'ticker_only_no_company_record') return 'Ticker-only — no company record.';
+    return f;
+  }).join(' ');
 }
 
 // ---------------------------------------------------------------------------

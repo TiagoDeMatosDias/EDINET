@@ -1786,6 +1786,8 @@ def _price_return_1y(conn: sqlite3.Connection, schema: SecuritySchema, tickers: 
 def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[str, Any]]:
     """Search companies by name, ticker, EDINET code, or industry.
 
+    Also searches the Stock_Prices table for tickers not found in CompanyInfo.
+
     Args:
         db_path (str): Path to the SQLite database.
         query (str): Free-text search query.
@@ -1800,19 +1802,69 @@ def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[st
 
     company_df = _get_cached_company_frame(db_path)
     scored: list[tuple[int, dict[str, Any]]] = []
+    seen_tickers: set[str] = set()
     for record in company_df.to_dict(orient="records"):
         score = _score_security_match(record, tokens)
         if score is None:
             continue
+        ticker = _safe_str(record.get("ticker"))
+        if ticker:
+            seen_tickers.add(ticker.lower())
         scored.append((score, {
             "company_code": _safe_str(record.get("company_code")),
-            "ticker": _safe_str(record.get("ticker")),
+            "ticker": ticker,
             "company_name": _safe_str(record.get("company_name")),
             "industry": _safe_str(record.get("industry")),
             "market": _safe_str(record.get("market")),
             "latest_price": None,
             "latest_price_date": None,
         }))
+
+    # Also search Stock_Prices for ticker matches not already covered by CompanyInfo
+    schema = resolve_schema(db_path)
+    conn = _connect(db_path)
+    try:
+        # Build ticker search: match any ticker containing the query as substring
+        price_tickers_df = pd.read_sql_query(
+            f"SELECT DISTINCT Ticker FROM {_quote_ident(schema.prices_table)}",
+            conn,
+        )
+        for _, row in price_tickers_df.iterrows():
+            pticker = _safe_str(row.get("Ticker"))
+            if not pticker or pticker.lower() in seen_tickers:
+                continue
+            # Check if the ticker matches any token
+            pt_lower = pticker.lower()
+            matched = False
+            for token in tokens:
+                if token in pt_lower:
+                    matched = True
+                    break
+            if not matched:
+                continue
+            # Get latest price for this ticker
+            lpr = pd.read_sql_query(
+                f"SELECT [Date], Price FROM {_quote_ident(schema.prices_table)} "
+                f"WHERE Ticker = ? ORDER BY [Date] DESC LIMIT 1",
+                conn,
+                params=[pticker],
+            )
+            latest_price = None
+            latest_price_date = None
+            if not lpr.empty:
+                latest_price = _safe_float(lpr.iloc[0]["Price"])
+                latest_price_date = _safe_date_str(lpr.iloc[0]["Date"])
+            scored.append((1, {  # score=1 for direct ticker match
+                "company_code": None,
+                "ticker": pticker,
+                "company_name": pticker,
+                "industry": None,
+                "market": None,
+                "latest_price": latest_price,
+                "latest_price_date": latest_price_date,
+            }))
+    finally:
+        conn.close()
 
     scored.sort(
         key=lambda item: (
@@ -1825,27 +1877,73 @@ def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[st
     return [record for _, record in scored[:limit]]
 
 
-def get_security_overview(db_path: str, company_code: str) -> dict[str, Any]:
+def get_security_overview(db_path: str, company_code: str = "", ticker: str = "") -> dict[str, Any]:
     """Return a summary payload for a selected security.
 
     Args:
         db_path (str): Path to the SQLite database.
-        company_code (str): Selected company EDINET code.
+        company_code (str): Selected company EDINET code (preferred).
+        ticker (str): Ticker to look up when company_code is empty.
 
     Returns:
         dict[str, Any]: Company, market, fundamentals, valuation, and metadata.
     """
+    code = _safe_str(company_code)
+    tkr = _safe_str(ticker)
+    if not code and not tkr:
+        raise ValueError("Either company_code or ticker is required")
+
     ensure_security_analysis_indexes(db_path)
     schema = resolve_schema(db_path)
-    company = _load_company_record(db_path, company_code)
+
+    # Ticker-only lookup: no CompanyInfo record, just price data
+    if not code and tkr:
+        conn = _connect(db_path)
+        try:
+            price_info = _load_price_range(conn, schema, tkr)
+        finally:
+            conn.close()
+        return {
+            "company": {
+                "company_code": None,
+                "ticker": tkr,
+                "company_name": tkr,
+                "industry": None,
+                "market": None,
+                "description": "",
+                "company_info_description": "",
+                "filing_description": "",
+                "filing_description_en": "",
+                "description_summary": "",
+            },
+            "market": {
+                "latest_price": price_info.get("latest_price"),
+                "latest_price_date": price_info.get("latest_price_date"),
+                "previous_price": price_info.get("previous_price"),
+                "change_pct_1d": price_info.get("change_pct_1d"),
+                "range_52w_low": price_info.get("range_52w_low"),
+                "range_52w_high": price_info.get("range_52w_high"),
+            },
+            "fundamentals_latest": {},
+            "valuation_latest": {},
+            "quality_latest": {},
+            "metadata": {
+                "last_financial_period_end": None,
+                "last_price_date": price_info.get("latest_price_date"),
+                "doc_id": None,
+                "data_quality_flags": ["ticker_only_no_company_record"],
+            },
+        }
+
+    company = _load_company_record(db_path, code)
     if company is None:
-        raise ValueError(f"Security not found for EDINET code: {company_code}")
+        raise ValueError(f"Security not found for EDINET code: {code}")
 
     conn = _connect(db_path)
     try:
-        snapshot = _load_latest_snapshot(conn, schema, company_code)
+        snapshot = _load_latest_snapshot(conn, schema, code)
         if snapshot is None:
-            snapshot = {"company_code": company_code, "period_end": None}
+            snapshot = {"company_code": code, "period_end": None}
 
         ticker = _safe_str(company.get("ticker"))
         price_info = _load_price_range(conn, schema, ticker) if ticker else {
@@ -1887,7 +1985,7 @@ def get_security_overview(db_path: str, company_code: str) -> dict[str, Any]:
 
     return {
         "company": {
-            "company_code": _safe_str(company_code),
+            "company_code": _safe_str(code),
             "ticker": ticker,
             "company_name": _safe_str(company.get("company_name")),
             "industry": _safe_str(company.get("industry")),

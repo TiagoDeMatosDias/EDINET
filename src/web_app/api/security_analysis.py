@@ -74,14 +74,19 @@ def search_securities(
 # ---------------------------------------------------------------------------
 
 @router.get("/overview")
-def get_overview(company_code: str = Query(..., description="Company code")) -> dict:
+def get_overview(
+    company_code: str = Query(default="", description="Company code"),
+    ticker: str = Query(default="", description="Ticker (when no company_code)"),
+) -> dict:
     """Company summary with metrics computed from the actual DB tables."""
-    if not company_code.strip():
-        raise HTTPException(status_code=400, detail="company_code is required")
+    code = company_code.strip()
+    tkr = ticker.strip()
+    if not code and not tkr:
+        raise HTTPException(status_code=400, detail="Either company_code or ticker is required")
     try:
         db = _resolve_db()
-        result = _security.get_security_overview(db, company_code.strip())
-        result["metrics"] = _compute_metrics(db, company_code.strip(),
+        result = _security.get_security_overview(db, company_code=code, ticker=tkr)
+        result["metrics"] = _compute_metrics(db, code or tkr,
                                               result.get("market", {}),
                                               result.get("company", {}))
         return result

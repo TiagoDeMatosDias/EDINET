@@ -102,6 +102,12 @@
   min-width: 60px;
   text-align: right;
 }
+.sa-search-item-ticker-only {
+  border-left: 2px solid var(--warning);
+}
+.sa-search-item-ticker-only .sa-search-item-code {
+  color: var(--warning);
+}
 .sa-search-empty {
   padding: 12px 10px;
   color: var(--muted);
