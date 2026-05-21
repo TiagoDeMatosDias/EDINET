@@ -64,10 +64,11 @@
 
             <!-- Tab bar -->
             <nav class="tab-bar" id="pf-tabs">
-              <button class="tab-btn is-active" data-tab="upload">📤 Upload</button>
+              <button class="tab-btn is-active" data-tab="upload">📤 File Upload</button>
               <button class="tab-btn" data-tab="holdings">📊 Holdings</button>
               <button class="tab-btn" data-tab="transactions">📋 Transactions</button>
-              <button class="tab-btn" data-tab="performance">📈 Performance</button>
+              <button class="tab-btn" data-tab="charts">📈 Charts</button>
+              <button class="tab-btn" data-tab="performance">⚡ Performance Metrics</button>
             </nav>
 
             <!-- ======================================================== -->
@@ -116,29 +117,18 @@
             <div class="tab-panel" data-panel="holdings">
               <div class="panel" style="margin-top:12px;">
                 <div class="panel-head">
-                  <div class="panel-title">Current Holdings</div>
+                  <div class="panel-title" id="pf-holdings-title">Current Holdings</div>
                   <div class="panel-actions">
+                    <span class="pf-view-toggle">
+                      <button class="pf-view-btn is-active" data-view="current">Current</button>
+                      <button class="pf-view-btn" data-view="closed">Closed</button>
+                      <button class="pf-view-btn" data-view="all">All</button>
+                    </span>
                     <span style="font-size:11px;color:var(--muted);" id="pf-holdings-count"></span>
                   </div>
                 </div>
                 <div class="panel-body" style="overflow-x:auto;">
                   <div id="pf-holdings-table">Loading…</div>
-                </div>
-              </div>
-
-              <!-- Charts row -->
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
-                <div class="panel">
-                  <div class="panel-head"><div class="panel-title">Portfolio Value</div></div>
-                  <div class="panel-body" style="height:280px;">
-                    <canvas id="pf-value-chart"></canvas>
-                  </div>
-                </div>
-                <div class="panel">
-                  <div class="panel-head"><div class="panel-title">Allocation</div></div>
-                  <div class="panel-body" style="height:280px;">
-                    <canvas id="pf-allocation-chart"></canvas>
-                  </div>
                 </div>
               </div>
             </div>
@@ -180,7 +170,33 @@
             </div>
 
             <!-- ======================================================== -->
-            <!-- Performance Tab -->
+            <!-- Charts Tab -->
+            <!-- ======================================================== -->
+            <div class="tab-panel" data-panel="charts">
+              <div class="panel" style="margin-top:12px;">
+                <div class="panel-head"><div class="panel-title">Cumulative Returns</div></div>
+                <div class="panel-body" style="height:320px;">
+                  <canvas id="pf-equity-chart"></canvas>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
+                <div class="panel">
+                  <div class="panel-head"><div class="panel-title">Portfolio Value</div></div>
+                  <div class="panel-body" style="height:300px;">
+                    <canvas id="pf-value-chart"></canvas>
+                  </div>
+                </div>
+                <div class="panel">
+                  <div class="panel-head"><div class="panel-title">Allocation</div></div>
+                  <div class="panel-body" style="height:300px;">
+                    <canvas id="pf-allocation-chart"></canvas>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ======================================================== -->
+            <!-- Performance Metrics Tab -->
             <!-- ======================================================== -->
             <div class="tab-panel" data-panel="performance">
               <div class="panel" style="margin-top:12px;">
@@ -205,8 +221,6 @@
                 </div>
                 <div class="panel-body">
                   <div id="pf-metrics-grid">Click Compute to calculate metrics, or switch to this tab to auto-compute.</div>
-                  <!-- Allocation pie chart in performance tab -->
-                  <canvas id="pf-equity-chart" style="margin-top:16px;max-height:300px;"></canvas>
                 </div>
               </div>
             </div>

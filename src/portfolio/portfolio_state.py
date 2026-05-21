@@ -611,6 +611,69 @@ def get_holdings_at_date(
     return [dict(r) for r in rows]
 
 
+def get_closed_positions(db3_path: str | None = None) -> list[dict]:
+    """Return positions that were fully closed (sold/expired) and are no
+    longer in the current portfolio.
+
+    Computes realized P&L from buy/sell trades for each symbol that appears
+    in ``Transactions`` but not in ``Portfolio_Holdings``.
+    """
+    db3_path = db3_path or get_db3()
+    create_tables(db3_path)
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        cur_syms = {r["symbol"] for r in conn.execute(
+            "SELECT DISTINCT symbol FROM Portfolio_Holdings"
+        ).fetchall()}
+        closed_syms = [r["symbol"] for r in conn.execute(
+            "SELECT DISTINCT symbol, asset_category FROM Transactions WHERE activity_type = 'TRADE'"
+        ).fetchall() if r["symbol"] not in cur_syms and r["asset_category"] != 'CASH']
+
+        if not closed_syms:
+            return []
+
+        placeholders = ",".join("?" for _ in closed_syms)
+        rows = conn.execute(f"""
+            SELECT
+                symbol,
+                asset_category,
+                description,
+                currency,
+                SUM(CASE WHEN buy_sell = 'BUY' THEN ABS(quantity) ELSE 0 END) AS total_bought,
+                SUM(CASE WHEN buy_sell = 'SELL' THEN ABS(quantity) ELSE 0 END) AS total_sold,
+                SUM(CASE WHEN buy_sell = 'SELL' THEN proceeds ELSE 0 END) AS total_proceeds,
+                SUM(CASE WHEN buy_sell = 'BUY' THEN ABS(trade_money) ELSE 0 END) AS total_cost,
+                MAX(trade_date) AS last_trade_date,
+                MIN(trade_date) AS first_trade_date
+            FROM Transactions
+            WHERE symbol IN ({placeholders})
+              AND activity_type = 'TRADE'
+            GROUP BY symbol, asset_category
+        """, closed_syms).fetchall()
+
+        result = []
+        for row in rows:
+            r = dict(row)
+            realized_pnl = r["total_proceeds"] - r["total_cost"]
+            result.append({
+                "symbol": r["symbol"],
+                "asset_category": r["asset_category"],
+                "description": r["description"],
+                "currency": r["currency"],
+                "total_bought": round(r["total_bought"] or 0, 6),
+                "total_sold": round(r["total_sold"] or 0, 6),
+                "realized_pnl": round(realized_pnl, 2),
+                "total_cost": round(r["total_cost"] or 0, 2),
+                "total_proceeds": round(r["total_proceeds"] or 0, 2),
+                "first_trade_date": r["first_trade_date"],
+                "last_trade_date": r["last_trade_date"],
+            })
+        return result
+    finally:
+        conn.close()
+
+
 def get_holding_performance(
     symbol: str,
     db3_path: str | None = None,

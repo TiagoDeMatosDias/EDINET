@@ -25,7 +25,7 @@ from src.portfolio.transactions import (
 from src.portfolio.price_fetcher import ensure_prices_for_tickers, _build_currency_map
 from src.portfolio.portfolio_state import (
     build_portfolio_state, get_daily_values, get_current_holdings,
-    get_holdings_at_date, get_holding_performance,
+    get_holdings_at_date, get_holding_performance, get_closed_positions,
 )
 from src.portfolio.performance import calculate_metrics, get_risk_free_rate
 from src.orchestrator.common.db_config import get_db2, get_db3
@@ -146,6 +146,12 @@ async def activity_summary():
 async def holdings():
     """Current portfolio holdings with market values."""
     return await asyncio.to_thread(get_current_holdings, get_db3())
+
+
+@router.get("/holdings/closed")
+async def holdings_closed():
+    """Positions that were fully closed and are no longer held."""
+    return await asyncio.to_thread(get_closed_positions, get_db3())
 
 
 @router.get("/holdings/history")

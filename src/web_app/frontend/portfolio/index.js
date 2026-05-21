@@ -1,16 +1,17 @@
 /**
- * Portfolio Management — four-tab interface.
+ * Portfolio Management — five-tab interface.
  *
  * Features:
  *   - Multi-file upload with progress queue
  *   - Summary stats bar (always visible)
- *   - Holdings with value chart + allocation pie
+ *   - Holdings table with inline detail panels
  *   - Transactions with filters + scrollable table
- *   - Performance auto-compute on tab switch
- *   - Scrolling enabled on all tabs
+ *   - Charts: cumulative returns, portfolio value, allocation
+ *   - Performance Metrics auto-compute on tab switch
  */
 
 import { $, el, fetchJson } from '../common/utils.js';
+import { log } from '../common/console.js';
 
 // ---------------------------------------------------------------------------
 // Ticker mapping: IBKR format (5984.T) → db2 format (59840)
@@ -31,6 +32,8 @@ function normalizeTicker(symbol) {
 // ---------------------------------------------------------------------------
 const state = {
   holdings: [],
+  closedPositions: [],
+  holdingsView: 'current',   // 'current' | 'closed' | 'all'
   transactions: [],
   activitySummary: {},
   performance: null,
@@ -46,6 +49,7 @@ const state = {
 async function init() {
   wireTabs();
   wireUpload();
+  wireClosedToggle();
   await refreshSummary();
   await refreshSymbols();
   await loadHoldings();
@@ -144,6 +148,7 @@ function wireTabs() {
     // Auto-render on switch
     if (tab === 'holdings') renderHoldingsTab();
     if (tab === 'transactions') loadTransactions();
+    if (tab === 'charts') renderChartsTab();
     if (tab === 'performance') renderPerformanceTab();
   });
 }
@@ -242,6 +247,33 @@ function wireUpload() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// View toggle (Current / Closed / All)
+// ---------------------------------------------------------------------------
+function wireClosedToggle() {
+  $$('.pf-view-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const view = btn.dataset.view;
+      if (view === state.holdingsView) return;
+      state.holdingsView = view;
+
+      // Load closed positions on first need
+      if (view !== 'current' && !state.closedPositions.length) {
+        try {
+          state.closedPositions = await fetchJson('/api/portfolio/holdings/closed');
+        } catch (e) {
+          log('warn', 'Failed to load closed positions: ' + e.message);
+          state.closedPositions = [];
+        }
+      }
+
+      // Update active button
+      $$('.pf-view-btn').forEach(b => b.classList.toggle('is-active', b.dataset.view === view));
+      renderHoldingsTable();
+    });
+  });
+}
+
 // ================================================================
 // HOLDINGS
 // ================================================================
@@ -266,19 +298,60 @@ async function loadHoldings() {
 
 function renderHoldingsTab() {
   renderHoldingsTable();
-  renderValueChart();
-  renderAllocationChart();
 }
 
 function renderHoldingsTable() {
   const div = $('#pf-holdings-table');
   const hh = state.holdings;
-  if (!hh.length) {
-    div.innerHTML = '<span class="muted">No holdings. Upload transactions and rebuild.</span>';
+  const view = state.holdingsView;
+
+  // Load closed positions if needed
+  const includeClosed = view === 'closed' || view === 'all';
+  const includeCurrent = view === 'current' || view === 'all';
+
+  if (includeClosed && !state.closedPositions.length) {
+    // Lazy-load not yet triggered; render empty with message
+    if (view === 'closed') {
+      div.innerHTML = '<span class="muted">No closed positions loaded. Switch tab to trigger load.</span>';
+      return;
+    }
+  }
+
+  // Build displayed list
+  const allPositions = [];
+  if (includeCurrent) {
+    for (const h of hh) allPositions.push({ ...h });
+  }
+  if (includeClosed) {
+    for (const cp of state.closedPositions) {
+      if (!allPositions.find(h => h.symbol === cp.symbol)) {
+        allPositions.push({
+          ...cp,
+          _is_closed: true,
+          market_value: 0,
+          market_value_native: 0,
+          market_price: null,
+          avg_cost: cp.total_cost / (cp.total_sold || 1),
+          quantity: 0,
+          performance: cp,
+        });
+      }
+    }
+  }
+
+  if (!allPositions.length) {
+    div.innerHTML = '<span class="muted">No positions to show.</span>';
     return;
   }
-  const stocks = hh.filter(h => h.asset_category !== 'CASH' && !h.symbol.startsWith('CASH'));
-  $('#pf-holdings-count').textContent = `${stocks.length} positions`;
+
+  const stocks = allPositions.filter(h => h.asset_category !== 'CASH' && !h.symbol.startsWith('CASH'));
+  const closedCount = allPositions.filter(h => h._is_closed).length;
+  const titles = { current: 'Current Holdings', closed: 'Closed Positions', all: 'All Positions' };
+  $('#pf-holdings-title').textContent = titles[view] || 'Holdings';
+  const countLabel = view === 'all'
+    ? `${stocks.length} positions (${closedCount} closed)`
+    : `${stocks.length} positions`;
+  $('#pf-holdings-count').textContent = countLabel;
 
   let totalBase = 0;
   for (const h of hh) totalBase += h.market_value || 0;
@@ -291,7 +364,7 @@ function renderHoldingsTable() {
     { key: 'price',      label: 'Price',        get: h => h.market_price, num: true },
     { key: 'val_native', label: 'Value (Nat.)', get: h => h.market_value_native, num: true },
     { key: 'val_eur',    label: 'Value (EUR)',  get: h => h.market_value, num: true },
-    { key: 'pnl',        label: 'P&L',          get: h => h.performance?.unrealized_pnl, num: true },
+    { key: 'pnl',        label: 'P&L',          get: h => h._is_closed ? (h.performance?.realized_pnl || 0) : (h.performance?.unrealized_pnl || 0), num: true },
     { key: 'dividends',  label: 'Div',          get: h => h.performance?.dividend_income, num: true },
     { key: 'pct_ret',    label: '% Return',     get: h => h.performance?.total_return, num: true },
     { key: 'ann_ret',    label: 'Ann. Ret',     get: h => h.performance?.annualized_return, num: true },
@@ -299,11 +372,12 @@ function renderHoldingsTable() {
   ];
 
   // ── Sort ──
-  let sorted = [...hh];
+  let sorted = [...allPositions];
   if (state.sortColumn) {
     const colDef = cols.find(c => c.key === state.sortColumn);
     if (colDef) {
       sorted.sort((a, b) => {
+        // Push closed positions to bottom on first load
         const va = colDef.get(a) ?? (colDef.num ? -Infinity : '');
         const vb = colDef.get(b) ?? (colDef.num ? -Infinity : '');
         if (colDef.num) {
@@ -327,15 +401,29 @@ function renderHoldingsTable() {
   // ── Render rows ──
   for (const h of sorted) {
     const isCash = h.asset_category === 'CASH' || h.symbol.startsWith('CASH');
+    const isClosed = !!h._is_closed;
+    const isOption = h.asset_category === 'OPT';
     const wt = totalBase ? ((Math.abs(h.market_value || 0) / Math.abs(totalBase)) * 100).toFixed(1) : '—';
     const mvNative = h.market_value_native != null ? formatMoney(h.market_value_native) : '—';
     const mvBase = h.market_value != null ? formatMoney(h.market_value) : '—';
     const cashStyle = isCash ? (h.market_value < 0 ? 'color:var(--danger);' : 'color:var(--success);') : '';
-    const rowClick = isCash ? '' : `data-holding="${encodeURIComponent(h.symbol)}"`;
+    const closedStyle = isClosed ? 'opacity:0.55;' : '';
+    // All non-cash rows are clickable for detail panel
+    const clickable = !isCash;
+    const rowClick = clickable ? `data-holding="${encodeURIComponent(h.symbol)}"` : '';
 
     let capGain = '—', dividends = '—', pctRet = '—', annRet = '—';
     let capColor = '', retColor = '';
-    if (!isCash && h.performance) {
+    if (isClosed) {
+      const rpnl = h.performance?.realized_pnl || 0;
+      capGain = formatMoney(rpnl);
+      capColor = rpnl >= 0 ? 'color:var(--success);' : 'color:var(--danger);';
+      const cost = h.performance?.total_cost || 0;
+      if (cost > 0) {
+        pctRet = ((rpnl / cost) * 100).toFixed(1) + '%';
+        retColor = rpnl >= 0 ? 'color:var(--success);' : 'color:var(--danger);';
+      }
+    } else if (!isCash && h.performance) {
       const p = h.performance;
       capGain = formatMoney(p.unrealized_pnl || 0);
       capColor = (p.unrealized_pnl || 0) >= 0 ? 'color:var(--success);' : 'color:var(--danger);';
@@ -345,17 +433,25 @@ function renderHoldingsTable() {
       annRet = p.annualized_return != null ? (p.annualized_return * 100).toFixed(1) + '%' : '—';
     }
 
-    html += `<tr class="pf-holding-row" ${rowClick} data-symbol="${encodeURIComponent(h.symbol)}" style="cursor:${isCash ? 'default' : 'pointer'};">
-      <td><a class="pf-sym-link" href="/security?symbol=${encodeURIComponent(normalizeTicker(h.symbol))}" onclick="event.stopPropagation();"><strong style="${cashStyle}">${h.symbol}</strong></a></td>
+    const normalizedSym = normalizeTicker(h.symbol);
+    const canLink = !isOption && !isCash;
+    const symLabel = isClosed
+      ? (canLink
+          ? `<a class="pf-sym-link" href="/security?symbol=${encodeURIComponent(normalizedSym)}" onclick="event.stopPropagation();"><span style="${closedStyle}">${h.symbol}</span></a> <span class="pf-closed-badge">CLOSED</span>`
+          : `<span style="${closedStyle}">${h.symbol}</span> <span class="pf-closed-badge">CLOSED</span>`)
+      : `<a class="pf-sym-link" href="/security?symbol=${encodeURIComponent(normalizedSym)}" onclick="event.stopPropagation();"><strong style="${cashStyle}">${h.symbol}</strong></a>`;
+
+    html += `<tr class="pf-holding-row" ${rowClick} data-symbol="${encodeURIComponent(h.symbol)}" style="cursor:${clickable ? 'pointer' : 'default'}; ${closedStyle}">
+      <td>${symLabel}</td>
       <td>${isCash ? '' : h.quantity}</td>
       <td>${h.avg_cost != null ? formatMoney(h.avg_cost) : '—'}</td>
-      <td>${h.market_price != null ? formatMoney(h.market_price) : '—'}</td>
-      <td>${mvNative} ${isCash ? '' : h.currency}</td>
-      <td style="${cashStyle}">${mvBase}</td>
-      <td style="${capColor}">${capGain}</td>
-      <td style="${dividends !== '—' ? 'color:var(--success);' : ''}">${dividends}</td>
-      <td style="${retColor}">${pctRet}</td>
-      <td style="${retColor}">${annRet}</td>
+      <td>${isClosed ? '—' : (h.market_price != null ? formatMoney(h.market_price) : '—')}</td>
+      <td>${isClosed ? '—' : (mvNative + ' ' + (isCash ? '' : (h.currency || '')))}</td>
+      <td style="${cashStyle}${closedStyle}">${isClosed ? '—' : mvBase}</td>
+      <td style="${capColor}${closedStyle}">${capGain}</td>
+      <td style="${dividends !== '—' ? 'color:var(--success);' : ''}${closedStyle}">${dividends}</td>
+      <td style="${retColor}${closedStyle}">${pctRet}</td>
+      <td style="${retColor}${closedStyle}">${annRet}</td>
       <td>${wt}%</td>
     </tr>`;
   }
@@ -387,46 +483,82 @@ function renderHoldingsTable() {
 }
 
 function toggleHoldingDetail(row) {
-  const symbol = decodeURIComponent(row.dataset.symbol || row.dataset.holding);
+  const raw = row.dataset.symbol || row.dataset.holding;
+  if (!raw) return;
+  const symbol = decodeURIComponent(raw);
   const existing = row.nextElementSibling;
-  // If detail row already open, close it
   if (existing && existing.classList.contains('pf-holding-detail-row')) {
     existing.remove();
     return;
   }
-  // Close any other open detail rows
   $$('.pf-holding-detail-row').forEach(r => r.remove());
 
-  // Find performance data from state
+  // Find in current holdings first, then closed
   const h = state.holdings.find(x => x.symbol === symbol);
-  if (!h || !h.performance) {
-    // Fetch on demand
-    fetchJson(`/api/portfolio/holdings/${encodeURIComponent(symbol)}/performance`)
-      .then(p => insertDetailRow(row, symbol, p))
-      .catch(() => {});
+  if (h && h.performance) {
+    insertDetailRow(row, symbol, h.performance, false);
     return;
   }
-  insertDetailRow(row, symbol, h.performance);
+  // Check closed positions
+  const cp = state.closedPositions.find(x => x.symbol === symbol);
+  if (cp) {
+    insertDetailRow(row, symbol, cp, true);
+    return;
+  }
+  // Fetch on demand
+  fetchJson(`/api/portfolio/holdings/${encodeURIComponent(symbol)}/performance`)
+    .then(p => insertDetailRow(row, symbol, p, false))
+    .catch(err => log('warn', `Detail error for ${symbol}: ` + (err && err.message || err)));
 }
 
-function insertDetailRow(row, symbol, p) {
+function insertDetailRow(row, symbol, p, isClosed) {
   const cols = row.querySelectorAll('td').length;
   const pct = v => v != null ? (v * 100).toFixed(2) + '%' : '—';
-  const pnlColor = (p.unrealized_pnl || 0) >= 0 ? 'var(--success)' : 'var(--danger)';
-  const retColor = (p.total_return || 0) >= 0 ? 'var(--success)' : 'var(--danger)';
   const detailTr = document.createElement('tr');
   detailTr.className = 'pf-holding-detail-row';
-  const chartId = 'pf-detail-chart-' + symbol.replace(/[^a-zA-Z0-9]/g, '_');
-  detailTr.innerHTML = `<td colspan="${cols}" style="padding:12px 16px;background:rgba(88,166,255,0.04);border-left:3px solid var(--accent);">
+
+  if (isClosed) {
+    // ── Closed position detail ──
+    const rpnl = p.realized_pnl || 0;
+    const pnlColor = rpnl >= 0 ? 'var(--success)' : 'var(--danger)';
+    const cost = p.total_cost || 0;
+    const pnlPct = cost > 0 ? ((rpnl / cost) * 100).toFixed(2) + '%' : '—';
+    const retColor = rpnl >= 0 ? 'var(--success)' : 'var(--danger)';
+    const normSym = normalizeTicker(p.symbol);
+    const isStock = p.asset_category === 'STK';
+    detailTr.innerHTML = `<td colspan="${cols}" style="padding:12px 16px;background:rgba(88,166,255,0.04);border-left:3px solid var(--warning);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <strong>${p.symbol} — Closed Position  <span class="pf-closed-badge" style="margin-left:6px;">CLOSED</span></strong>
+      <button class="btn-ghost btn-sm" onclick="this.closest('tr').remove();">✕</button>
+    </div>
+    <div class="metric-grid" style="gap:8px;">
+      <div class="metric-tile"><div class="metric-label">Realized P&L</div><div class="metric-value" style="color:${pnlColor};">${formatMoney(rpnl)}</div></div>
+      <div class="metric-tile"><div class="metric-label">Return %</div><div class="metric-value" style="color:${retColor};">${pnlPct}</div></div>
+      <div class="metric-tile"><div class="metric-label">Total Cost</div><div class="metric-value">${formatMoney(p.total_cost)}</div></div>
+      <div class="metric-tile"><div class="metric-label">Total Proceeds</div><div class="metric-value">${formatMoney(p.total_proceeds)}</div></div>
+      <div class="metric-tile"><div class="metric-label">Total Bought</div><div class="metric-value">${p.total_bought || 0}</div></div>
+      <div class="metric-tile"><div class="metric-label">Total Sold</div><div class="metric-value">${p.total_sold || 0}</div></div>
+      <div class="metric-tile"><div class="metric-label">First Trade</div><div class="metric-value">${p.first_trade_date || '—'}</div></div>
+      <div class="metric-tile"><div class="metric-label">Last Trade</div><div class="metric-value">${p.last_trade_date || '—'}</div></div>
+      <div class="metric-tile"><div class="metric-label">Category</div><div class="metric-value">${p.asset_category || '—'}</div></div>
+      ${isStock ? `<div class="metric-tile"><a href="/security?symbol=${encodeURIComponent(normSym)}" class="btn-ghost btn-sm">Open Security Analysis →</a></div>` : ''}
+    </div>
+  </td>`;
+  } else {
+    // ── Current holding detail ──
+    const pnlColor2 = (p.unrealized_pnl || 0) >= 0 ? 'var(--success)' : 'var(--danger)';
+    const retColor2 = (p.total_return || 0) >= 0 ? 'var(--success)' : 'var(--danger)';
+    const chartId = 'pf-detail-chart-' + symbol.replace(/[^a-zA-Z0-9]/g, '_');
+    detailTr.innerHTML = `<td colspan="${cols}" style="padding:12px 16px;background:rgba(88,166,255,0.04);border-left:3px solid var(--accent);">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
       <strong>${p.symbol} — Performance Details</strong>
       <button class="btn-ghost btn-sm" onclick="this.closest('tr').remove();">✕</button>
     </div>
     <div class="metric-grid" style="gap:8px;margin-bottom:12px;">
-      <div class="metric-tile"><div class="metric-label">Total Return</div><div class="metric-value" style="color:${retColor};">${pct(p.total_return)}</div></div>
-      <div class="metric-tile"><div class="metric-label">Ann. Return</div><div class="metric-value" style="color:${retColor};">${pct(p.annualized_return)}</div></div>
+      <div class="metric-tile"><div class="metric-label">Total Return</div><div class="metric-value" style="color:${retColor2};">${pct(p.total_return)}</div></div>
+      <div class="metric-tile"><div class="metric-label">Ann. Return</div><div class="metric-value" style="color:${retColor2};">${pct(p.annualized_return)}</div></div>
       <div class="metric-tile"><div class="metric-label">Volatility</div><div class="metric-value">${pct(p.volatility)}</div></div>
-      <div class="metric-tile"><div class="metric-label">Unrealized P&L</div><div class="metric-value" style="color:${pnlColor};">${formatMoney(p.unrealized_pnl)}</div></div>
+      <div class="metric-tile"><div class="metric-label">Unrealized P&L</div><div class="metric-value" style="color:${pnlColor2};">${formatMoney(p.unrealized_pnl)}</div></div>
       <div class="metric-tile"><div class="metric-label">Dividend Income</div><div class="metric-value" style="color:var(--success);">${formatMoney(p.dividend_income)}</div></div>
       <div class="metric-tile"><div class="metric-label">Dividend Yield</div><div class="metric-value">${pct(p.dividend_yield)}</div></div>
       <div class="metric-tile"><div class="metric-label">Avg Cost</div><div class="metric-value">${formatMoney(p.avg_cost)}</div></div>
@@ -445,11 +577,13 @@ function insertDetailRow(row, symbol, p) {
       <a href="/security?symbol=${encodeURIComponent(normalizeTicker(p.symbol))}" class="btn-ghost btn-sm">Open Security Analysis →</a>
     </div>
   </td>`;
+  }
   row.after(detailTr);
 
-  // Fetch history and render chart
-  destroyDetailChart();
-  fetchJson(`/api/portfolio/holdings/${encodeURIComponent(symbol)}/history`)
+  // Fetch history and render chart (current holdings only)
+  if (!isClosed) {
+    destroyDetailChart();
+    fetchJson(`/api/portfolio/holdings/${encodeURIComponent(symbol)}/history`)
     .then(history => {
       const ctx = document.getElementById(chartId);
       if (!ctx || !history || !history.length) return;
@@ -488,6 +622,22 @@ function insertDetailRow(row, symbol, p) {
       });
     })
     .catch(() => {});
+  }  // end if (!isClosed)
+}  // end insertDetailRow
+
+function renderChartsTab() {
+  // Compute performance if needed (for benchmark/inflation data on equity chart)
+  if (!state.performance || (!state.performance.sharpe_ratio && !state.performance.total_return)) {
+    computePerformance().then(() => {
+      renderEquityChart();
+      renderValueChart();
+      renderAllocationChart();
+    }).catch(() => {});
+  } else {
+    renderEquityChart();
+    renderValueChart();
+    renderAllocationChart();
+  }
 }
 
 function renderValueChart() {
@@ -682,7 +832,6 @@ function renderPerformanceTab() {
     computePerformance().catch(() => {});
   } else {
     renderMetrics();
-    renderEquityChart();
   }
 }
 
