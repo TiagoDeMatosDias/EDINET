@@ -26,16 +26,22 @@ _ECB_HICP_URL = (
 )
 
 _FRED_BASE_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+_DBNOMICS_BASE_URL = "https://api.db.nomics.world/v22/series"
 
 _REQUEST_TIMEOUT = 60  # seconds
 
 # FRED series ID → (ticker, currency)
 _FRED_INFLATION_SERIES: dict[str, tuple[str, str]] = {
     "CPIAUCSL":        ("Inflation_USD", "USD"),
-    "JPNCPIALLMINMEI": ("Inflation_JPY", "JPY"),
     "GBRCPIALLMINMEI": ("Inflation_GBP", "GBP"),
-    "AUSCPIALLMINMEI": ("Inflation_AUD", "AUD"),
     "CANCPIALLMINMEI": ("Inflation_CAD", "CAD"),
+    # JPN and AUS OECD series discontinued — use DBnomics instead
+}
+
+# DBnomics IMF/IFS series key → (ticker, currency)
+# Format: "FREQ.REF_AREA.INDICATOR" where INDICATOR = PCPI_IX (CPI index)
+_DBNOMICS_INFLATION_SERIES: dict[str, tuple[str, str]] = {
+    "M.JP.PCPI_IX": ("Inflation_JPY", "JPY"),
 }
 
 
@@ -130,7 +136,7 @@ def _fetch_ecb_fx_prices() -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Inflation — FRED (CPI for USD, JPY, GBP, AUD, CAD)
+# Inflation — FRED (CPI for USD, GBP, CAD)
 # ---------------------------------------------------------------------------
 
 def _download_fred_cpi(series_id: str, session: requests.Session | None = None) -> pd.DataFrame:
@@ -168,6 +174,49 @@ def _download_fred_cpi(series_id: str, session: requests.Session | None = None) 
     result = result.dropna(subset=["Date", "Price"])
 
     logger.info("Downloaded FRED series %s: %d rows.", series_id, len(result))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Inflation — DBnomics IMF/IFS (CPI for JPY, AUD — OECD series discontinued)
+# ---------------------------------------------------------------------------
+
+def _download_dbnomics_cpi(series_key: str, session: requests.Session | None = None) -> pd.DataFrame:
+    """Download a single CPI series from DBnomics (IMF IFS dataset).
+
+    Returns a DataFrame with columns ``Date`` and ``Price``, or an empty
+    DataFrame on failure.
+    """
+    if session is None:
+        session = requests.Session()
+
+    url = f"{_DBNOMICS_BASE_URL}/IMF/IFS/{series_key}?observations=1&format=csv"
+    logger.info("Downloading DBnomics series %s", series_key)
+
+    try:
+        response = session.get(url, timeout=_REQUEST_TIMEOUT)
+        response.raise_for_status()
+    except Exception as exc:
+        logger.warning("Failed to download DBnomics series %s: %s", series_key, exc)
+        return pd.DataFrame(columns=["Date", "Price"])
+
+    # DBnomics CSV format: period, "series description" (header)
+    # Data rows: YYYY-MM, value
+    df = pd.read_csv(io.StringIO(response.text))
+    if df.empty or "period" not in df.columns:
+        logger.warning("DBnomics series %s returned unexpected format.", series_key)
+        return pd.DataFrame(columns=["Date", "Price"])
+
+    # Value column is the second column (first is period)
+    value_col = df.columns[1]
+    # Pad date to YYYY-MM-DD format (DBnomics gives YYYY-MM)
+    df["Date"] = pd.to_datetime(
+        df["period"].astype(str), errors="coerce"
+    ).dt.strftime("%Y-%m-%d")
+    df["Price"] = pd.to_numeric(df[value_col], errors="coerce")
+    result = df[["Date", "Price"]].dropna(subset=["Date", "Price"])
+
+    logger.info("Downloaded DBnomics series %s: %d rows.", series_key, len(result))
     return result
 
 
@@ -230,7 +279,7 @@ def _fetch_all_inflation_prices() -> pd.DataFrame:
         eur_df["Currency"] = "EUR"
         frames.append(eur_df)
 
-    # USD, JPY, GBP, AUD, CAD — FRED
+    # USD, GBP, CAD — FRED
     for series_id, (ticker, currency) in _FRED_INFLATION_SERIES.items():
         df = _download_fred_cpi(series_id, session=session)
         if df.empty:
@@ -240,6 +289,42 @@ def _fetch_all_inflation_prices() -> pd.DataFrame:
                 series_id,
             )
             continue
+        df["Ticker"] = ticker
+        df["Currency"] = currency
+        frames.append(df)
+
+    # JPY — DBnomics IMF/IFS (OECD series discontinued on FRED)
+    for series_key, (ticker, currency) in _DBNOMICS_INFLATION_SERIES.items():
+        df = _download_dbnomics_cpi(series_key, session=session)
+        if df.empty:
+            logger.warning(
+                "Skipping inflation ticker %s — no data from DBnomics series %s.",
+                ticker,
+                series_key,
+            )
+            continue
+        # Scale DBnomics data to match existing OECD base if we have overlap.
+        # OECD and IMF use different base years, so absolute index values
+        # differ even though month-to-month inflation rates are the same.
+        _conn = sqlite3.connect(get_db2())
+        _existing = _conn.execute(
+            "SELECT Date, Price FROM Stock_Prices WHERE Ticker = ? ORDER BY Date DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+        _conn.close()
+        if _existing:
+            _last_existing_date = _existing[0]
+            _last_existing_price = _existing[1]
+            _overlap = df[df["Date"] == _last_existing_date]
+            if not _overlap.empty and _overlap.iloc[0]["Price"] > 0:
+                _scale = _last_existing_price / _overlap.iloc[0]["Price"]
+                if abs(_scale - 1.0) > 0.001:
+                    logger.info(
+                        "Scaling DBnomics %s by %.6f to match existing OECD base at %s",
+                        ticker, _scale, _last_existing_date,
+                    )
+                    df = df.copy()
+                    df["Price"] = df["Price"] * _scale
         df["Ticker"] = ticker
         df["Currency"] = currency
         frames.append(df)

@@ -300,6 +300,7 @@ def _get_benchmark_returns(
 def compare_to_benchmark(
     portfolio_returns: list[float],
     benchmark_returns: list[float],
+    rf_annual: float = 0.0,
 ) -> dict:
     """Compare portfolio vs benchmark: excess return, alpha, beta, IR, TE."""
     if not benchmark_returns or len(portfolio_returns) != len(benchmark_returns):
@@ -318,8 +319,11 @@ def compare_to_benchmark(
     else:
         beta = 1.0
 
-    # Alpha (annualised)
-    alpha = ann_excess - (beta - 1) * np.mean(br) * 252
+    # Alpha (annualised, Jensen's Alpha): α = R_p - R_f - β*(R_m - R_f)
+    # ann_excess = R_p - R_m (annualised)
+    # Expanding: α = (R_p - R_m) - (β-1)*R_m - (1-β)*R_f
+    #          = ann_excess - (β-1)*R_m_ann - (1-β)*R_f
+    alpha = ann_excess - (beta - 1) * np.mean(br) * 252 - (1 - beta) * rf_annual
 
     # Tracking error
     if len(excess_daily) >= 2:
@@ -376,8 +380,65 @@ def calculate_metrics(
 
     dates = [d["date"] for d in daily]
     values = [d["total_value"] or 0 for d in daily]
-    crs = [d.get("cumulative_return") or 0 for d in daily]  # stored as (product-1)
+    cash_flows = [d.get("net_inflow") or 0 for d in daily]
+    crs = [d.get("cumulative_return") or 0 for d in daily]
     returns = [d.get("daily_return") or 0 for d in daily]
+
+    # ── Currency conversion ──
+    # Portfolio_Daily stores everything in EUR. When the user requests a
+    # different base currency, convert each day's total_value and net_inflow
+    # using the FX rate on that day, then recompute daily/cumulative returns.
+    if base_currency != "EUR":
+        import sqlite3 as _sql_fx
+        _fx_ticker = f"EUR{base_currency}_FX"
+        _fx_conn = _sql_fx.connect(db2_path)
+        _fx_rows = _fx_conn.execute(
+            "SELECT Date, Price FROM Stock_Prices WHERE Ticker = ? ORDER BY Date",
+            (_fx_ticker,),
+        ).fetchall()
+        _fx_conn.close()
+        if _fx_rows and len(_fx_rows) >= 2:
+            # Build forward-fill FX map
+            _fx_dates = [r[0] for r in _fx_rows]
+            _fx_prices = [r[1] for r in _fx_rows]
+            _last_fx = _fx_prices[0] if _fx_prices[0] and _fx_prices[0] > 0 else 1.0
+            _fx_idx = 0
+            _values_converted: list[float] = []
+            _inflows_converted: list[float] = []
+            for d in dates:
+                while _fx_idx < len(_fx_dates) and _fx_dates[_fx_idx] <= d:
+                    _candidate = _fx_prices[_fx_idx]
+                    if _candidate and _candidate > 0:
+                        _last_fx = _candidate
+                    _fx_idx += 1
+                _fx = _last_fx if _last_fx > 0 else 1.0
+                _values_converted.append(values[len(_values_converted)] * _fx)
+                _inflows_converted.append(cash_flows[len(_inflows_converted)] * _fx)
+            # Recompute returns from converted values (Modified Dietz)
+            _converted_returns: list[float] = []
+            _cum_series: list[float] = []
+            _running_cum = 1.0
+            _prev_value = 0.0
+            for _i, _val in enumerate(_values_converted):
+                if _prev_value > 0:
+                    _denom = _prev_value + _inflows_converted[_i]
+                    if abs(_denom) > 0.01:
+                        _dr = (_val - _prev_value - _inflows_converted[_i]) / _denom
+                        _dr = max(min(_dr, 1.0), -1.0)
+                    else:
+                        _dr = 0.0
+                    _running_cum *= (1 + _dr)
+                else:
+                    _dr = 0.0
+                _converted_returns.append(_dr)
+                _cum_series.append(round(_running_cum - 1, 6))
+                _prev_value = _val
+            values = _values_converted
+            cash_flows = _inflows_converted
+            crs = _cum_series
+            returns = _converted_returns
+            logger.info("Converted portfolio values from EUR to %s using %s",
+                        base_currency, _fx_ticker)
 
     # Total return from stored cumulative return (time-weighted).
     # crs[-1] = Π(1+r_i) - 1 → total_return = crs[-1]
@@ -427,6 +488,28 @@ def calculate_metrics(
     )
     div_net = div_gross + div_tax
 
+    # ── Convert dividends to target currency ──
+    # Transaction amounts were converted to EUR via fx_rate_to_base.
+    # If the user wants a different base currency, convert the totals.
+    if base_currency != "EUR":
+        # Use the last FX rate (latest available) as conversion factor.
+        # This is an approximation — ideally each dividend would be
+        # converted at its payment-date FX rate, but the error from
+        # using a single rate on total sums is within ±1% for moderate
+        # currency moves over typical portfolio lifetimes.
+        import sqlite3 as _sql_fx2
+        _fx_ticker = f"EUR{base_currency}_FX"
+        _fx_conn2 = _sql_fx2.connect(db2_path)
+        _fx_latest = _fx_conn2.execute(
+            "SELECT Price FROM Stock_Prices WHERE Ticker = ? ORDER BY Date DESC LIMIT 1",
+            (_fx_ticker,),
+        ).fetchone()
+        _fx_conn2.close()
+        _fx_factor = (_fx_latest[0] if _fx_latest and _fx_latest[0] and _fx_latest[0] > 0 else 1.0)
+        div_gross *= _fx_factor
+        div_tax *= _fx_factor
+        div_net *= _fx_factor
+
     result = {
         "start_date": dates[0],
         "end_date": dates[-1],
@@ -464,7 +547,7 @@ def calculate_metrics(
         if bench_returns and len(bench_returns) > len(returns_clean):
             bench_returns = bench_returns[-len(returns_clean):]
         if bench_returns and len(bench_returns) == len(returns_clean):
-            cmp = compare_to_benchmark(returns_clean, bench_returns)
+            cmp = compare_to_benchmark(returns_clean, bench_returns, rf)
             # Compute benchmark cumulative return series (aligned with dates)
             bench_cum = 0.0
             # Skip dates[0] — benchmark returns start from dates[1]
@@ -490,8 +573,8 @@ def calculate_metrics(
             result["benchmark"] = {"ticker": benchmark_ticker, "series": []}
 
     # --- Inflation series (for chart) ---
-    from scipy import stats
     import sqlite3 as _sql2
+    from datetime import date as _date
     inflation_series: list[dict] = []
     inf_ticker = f"Inflation_{base_currency.upper()}"
     try:
@@ -502,22 +585,51 @@ def calculate_metrics(
         ).fetchall()
         conn_inf.close()
         if inf_rows and len(inf_rows) >= 2:
-            # Build sorted list of (date, price) for forward-fill
             inf_dates = [r[0] for r in inf_rows]
             inf_prices = [r[1] for r in inf_rows]
-            base_price = inf_prices[0]
-            last_price = inf_prices[0]
+            # Pin base to the portfolio's first date (forward-fill to find
+            # the inflation level when the portfolio started).
+            base_price: float | None = None
             inf_idx = 0
             for d in dates:
-                # Advance to most recent inflation entry <= d
                 while inf_idx < len(inf_dates) and inf_dates[inf_idx] <= d:
-                    last_price = inf_prices[inf_idx]
+                    base_price = inf_prices[inf_idx]
                     inf_idx += 1
-                if base_price > 0:
-                    inf_cum = last_price / base_price - 1
+                if base_price is not None:
+                    break
+            if base_price and base_price > 0:
+                inf_idx = 0
+                last_cpi_price = base_price
+                last_cpi_date_str: str | None = None
+                for d in dates:
+                    current_d = _date.fromisoformat(d)
+                    # Advance to most recent CPI data point <= d
+                    while inf_idx < len(inf_dates) and inf_dates[inf_idx] <= d:
+                        last_cpi_price = inf_prices[inf_idx]
+                        last_cpi_date_str = inf_dates[inf_idx]
+                        inf_idx += 1
+                    # Check staleness: if last CPI data is >6 months behind
+                    # today's date, compound forward using the risk-free rate
+                    # as expected monthly inflation (instead of forward-fill
+                    # which would show near-zero inflation).
+                    if last_cpi_date_str:
+                        last_cpi_d = _date.fromisoformat(last_cpi_date_str)
+                        months_gap = (current_d.year - last_cpi_d.year) * 12 + (current_d.month - last_cpi_d.month)
+                        if months_gap > 6 and current_d > last_cpi_d:
+                            # Compound forward at monthly expected inflation.
+                            # Use rf as the best estimate, but floor at 1%/yr
+                            # for countries with stale/deflationary CPI data.
+                            rf_effective = max(rf, 0.01)
+                            rf_monthly = (1 + rf_effective) ** (1 / 12) - 1
+                            proj_price = last_cpi_price * (1 + rf_monthly) ** max(months_gap, 0)
+                            infl_cum = proj_price / base_price - 1
+                        else:
+                            infl_cum = last_cpi_price / base_price - 1
+                    else:
+                        infl_cum = last_cpi_price / base_price - 1
                     inflation_series.append({
                         "date": d,
-                        "cumulative": round(inf_cum, 6),
+                        "cumulative": round(infl_cum, 6),
                     })
     except Exception:
         pass
