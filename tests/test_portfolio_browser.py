@@ -247,12 +247,12 @@ class TestUIElements:
         opacity = file_input.evaluate("el => window.getComputedStyle(el).opacity")
         assert float(opacity) < 0.1, f"File input opacity={opacity}, should be hidden"
 
-    def test_all_four_tabs(self, page):
+    def test_all_five_tabs(self, page):
         page.goto(f"{BASE_URL}/portfolio")
         tabs = page.locator("#pf-tabs .tab-btn")
-        assert tabs.count() == 4
+        assert tabs.count() == 5
         labels = [t.inner_text() for t in tabs.all()]
-        assert labels == ["Upload", "Holdings", "Transactions", "Performance"]
+        assert labels == ["\U0001f4e4 File Upload", "\U0001f4ca Holdings", "\U0001f4cb Transactions", "\U0001f4c8 Charts", "\u26a1 Performance Metrics"]
 
     def test_drop_zone_clickable(self, page):
         page.goto(f"{BASE_URL}/portfolio")
@@ -296,6 +296,473 @@ class TestCorporateActions:
         symbols = {h["symbol"] for h in resp if h.get("quantity", 0) > 0}
         assert "SOLV" in symbols or "ONL" in symbols, \
             f"Expected spinoff symbol in holdings at 2024-04-15, got: {symbols}"
+
+
+# ============================================================
+# Holding Detail Chart
+# ============================================================
+
+class TestHoldingDetailChart:
+    """Click a holding row and verify the inline detail chart renders."""
+
+    def test_click_holding_shows_chart(self, page):
+        """Upload, rebuild, click a holding row — detail chart must be visible with data."""
+        # 1. Ensure data exists
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        # 2. Navigate to holdings tab
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="holdings"]').click()
+        page.wait_for_timeout(2000)
+
+        # 3. Verify holdings table is present with data rows
+        table = page.locator("#pf-holdings-table")
+        table.wait_for(state="visible", timeout=5000)
+        assert "VWCE" in table.inner_text(), "Expected VWCE in holdings table"
+
+        # 4. Click the first non-CASH holding row (has data-holding attribute)
+        rows = page.locator(".pf-holding-row[data-holding]")
+        row_count = rows.count()
+        assert row_count > 0, "No clickable holding rows found"
+        first_row = rows.first
+        first_row.click()
+        page.wait_for_timeout(3000)  # Wait for fetch + chart render
+
+        # 5. Verify detail row appeared
+        detail_row = page.locator(".pf-holding-detail-row")
+        assert detail_row.is_visible(), "Detail row not visible after clicking holding"
+
+        # 6. Verify detail row contains a canvas for the chart
+        detail_canvas = detail_row.locator("canvas")
+        assert detail_canvas.is_visible(), "Chart canvas not visible in detail row"
+
+        # 7. Verify canvas has been drawn on (Chart.js rendered data)
+        canvas_has_content = detail_canvas.evaluate("""
+            (el) => {
+                const ctx = el.getContext('2d');
+                if (!ctx) return false;
+                // Check if canvas has non-empty pixels
+                const imageData = ctx.getImageData(0, 0, el.width, el.height);
+                if (!imageData || !imageData.data) return false;
+                // Check at least some non-zero alpha pixels exist
+                for (let i = 3; i < imageData.data.length; i += 4) {
+                    if (imageData.data[i] > 0) return true;
+                }
+                return false;
+            }
+        """)
+        assert canvas_has_content, "Chart canvas has no rendered content (Chart.js may not have drawn data)"
+
+    def test_click_holding_then_another_replaces_chart(self, page):
+        """Clicking a second holding should replace the detail chart."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="holdings"]').click()
+        page.wait_for_timeout(2000)
+
+        rows = page.locator(".pf-holding-row[data-holding]")
+        row_count = rows.count()
+        assert row_count >= 2, f"Need at least 2 holding rows, got {row_count}"
+
+        # Click first row
+        rows.nth(0).click()
+        page.wait_for_timeout(2500)
+        detail_rows = page.locator(".pf-holding-detail-row")
+        assert detail_rows.count() == 1, "Expected exactly 1 detail row after first click"
+
+        # Click second row — should replace, not duplicate
+        rows.nth(1).click()
+        page.wait_for_timeout(2500)
+        detail_rows = page.locator(".pf-holding-detail-row")
+        assert detail_rows.count() == 1, "Expected exactly 1 detail row after second click (should replace)"
+
+        # Second click on same row should close it
+        rows.nth(1).click()
+        page.wait_for_timeout(500)
+        detail_rows = page.locator(".pf-holding-detail-row")
+        assert detail_rows.count() == 0, "Expected 0 detail rows after clicking same row again (toggle close)"
+
+
+# ============================================================
+# Chart Controls Independence
+# ============================================================
+
+class TestChartIndependence:
+    """Charts tab has its own currency, benchmark, and inflation controls."""
+
+    def test_chart_controls_exist(self, page):
+        """Charts tab has independent currency, benchmark, inflation, update controls."""
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_timeout(500)
+
+        assert page.locator("#pf-chart-currency").is_visible(), "Chart currency selector not found"
+        assert page.locator("#pf-chart-benchmark").is_visible(), "Chart benchmark input not found"
+        assert page.locator("#pf-chart-inflation").is_visible(), "Chart inflation checkbox not found"
+        assert page.locator("#pf-chart-update").is_visible(), "Chart update button not found"
+
+    def test_chart_controls_independent_from_performance(self, page):
+        """Chart currency and benchmark are separate from performance tab."""
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+
+        # Set chart controls
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_timeout(300)
+        page.locator("#pf-chart-currency").select_option("USD")
+        page.locator("#pf-chart-benchmark").fill("SPY")
+
+        # Switch to performance tab — different elements
+        page.locator('[data-tab="performance"]').click()
+        page.wait_for_timeout(300)
+
+        # Performance tab should still have default EUR, not USD
+        perf_currency = page.locator("#pf-perf-currency").input_value()
+        assert perf_currency == "EUR", \
+            f"Performance currency should remain EUR, got {perf_currency}"
+
+        # Performance benchmark should be empty, not SPY
+        perf_bench = page.locator("#pf-perf-benchmark").input_value()
+        assert perf_bench == "", \
+            f"Performance benchmark should remain empty, got {perf_bench}"
+
+    def test_chart_update_button_triggers_api_call(self, page):
+        """Clicking Update Charts calls the performance API with chart-specific params."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_timeout(500)
+
+        # Set chart-specific benchmark
+        page.locator("#pf-chart-benchmark").fill("SPY")
+
+        # Intercept API call to verify correct params
+        api_called = page.evaluate("""
+            () => {
+                return new Promise((resolve) => {
+                    const origFetch = window.fetch;
+                    window.fetch = function(url, opts) {
+                        if (url.includes('/api/portfolio/performance')) {
+                            resolve(url);
+                        }
+                        return origFetch.apply(this, arguments);
+                    };
+                    // Click the update button
+                    document.getElementById('pf-chart-update').click();
+                });
+            }
+        """)
+        assert api_called, "Performance API was not called"
+        assert "benchmark_ticker=SPY" in api_called, \
+            f"Expected benchmark_ticker=SPY in API call, got: {api_called}"
+        assert "base_currency=EUR" in api_called, \
+            f"Expected base_currency=EUR in API call, got: {api_called}"
+
+    def test_equity_chart_renders_with_benchmark(self, page):
+        """After update, equity chart canvas is visible and has benchmark data."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_timeout(500)
+
+        # Set benchmark and click update
+        page.locator("#pf-chart-benchmark").fill("SPY")
+        page.locator("#pf-chart-update").click()
+        page.wait_for_timeout(5000)  # Wait for API + chart render
+
+        # Verify equity chart canvas is visible
+        canvas = page.locator("#pf-equity-chart")
+        assert canvas.is_visible(), "Equity chart not visible after update"
+
+        # Verify chart has rendered content (pixels drawn)
+        canvas_has_content = canvas.evaluate("""
+            (el) => {
+                const ctx = el.getContext('2d');
+                if (!ctx) return false;
+                const imageData = ctx.getImageData(0, 0, el.width, el.height);
+                if (!imageData || !imageData.data) return false;
+                for (let i = 3; i < imageData.data.length; i += 4) {
+                    if (imageData.data[i] > 0) return true;
+                }
+                return false;
+            }
+        """)
+        assert canvas_has_content, "Equity chart has no rendered content"
+
+    def test_inflation_toggle_controls_line_visibility(self, page):
+        """Unchecking inflation checkbox removes the inflation line."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_timeout(500)
+
+        # First click update with inflation ON (default)
+        page.locator("#pf-chart-update").click()
+        page.wait_for_timeout(5000)
+
+        # Check legend contains "Inflation"
+        legend_text = page.locator("#pf-equity-chart").evaluate("""
+            (el) => {
+                const chart = Chart.getChart(el);
+                if (!chart) return '';
+                return chart.legend.legendItems.map(i => i.text).join('|');
+            }
+        """)
+        assert "Inflation" in legend_text, \
+            f"Expected 'Inflation' in chart legend, got: {legend_text}"
+
+        # Uncheck inflation and update
+        page.locator("#pf-chart-inflation").uncheck()
+        page.locator("#pf-chart-update").click()
+        page.wait_for_timeout(5000)
+
+        # Check legend no longer contains "Inflation"
+        legend_text2 = page.locator("#pf-equity-chart").evaluate("""
+            (el) => {
+                const chart = Chart.getChart(el);
+                if (!chart) return '';
+                return chart.legend.legendItems.map(i => i.text).join('|');
+            }
+        """)
+        assert "Inflation" not in legend_text2, \
+            f"Expected no 'Inflation' in chart legend after uncheck, got: {legend_text2}"
+
+
+# ============================================================
+# Portfolio Value — full-width & constituent breakdown
+# ============================================================
+
+class TestPortfolioValueChart:
+    """Portfolio Value chart is full-width with breakdown-by-holding toggle."""
+
+    def test_value_chart_full_width(self, page):
+        """Portfolio Value chart spans full width (not in 2-col grid)."""
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_timeout(500)
+
+        canvas = page.locator("#pf-value-chart")
+        assert canvas.is_visible(), "Value chart canvas not visible"
+
+        # Check it's wider than half the viewport (full-width panel)
+        width = canvas.evaluate("el => el.getBoundingClientRect().width")
+        vw = page.evaluate("() => window.innerWidth")
+        assert width > vw * 0.7, \
+            f"Value chart width {width:.0f}px should be >70% of viewport {vw}px"
+
+    def test_breakdown_toggle_exists(self, page):
+        """Breakdown by Holding checkbox is present."""
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_timeout(500)
+
+        cb = page.locator("#pf-value-breakdown")
+        assert cb.is_visible(), "Breakdown checkbox not visible"
+        assert not cb.is_checked(), "Breakdown should default to unchecked"
+
+    def test_breakdown_shows_stacked_chart(self, page):
+        """Checking breakdown fetches constituents and renders stacked area."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_timeout(1000)
+
+        # Check breakdown
+        page.locator("#pf-value-breakdown").check()
+        page.wait_for_timeout(3000)  # Wait for API + render
+
+        canvas = page.locator("#pf-value-chart")
+        assert canvas.is_visible(), "Value chart not visible with breakdown"
+
+        # Verify chart has rendered content
+        has_content = canvas.evaluate("""
+            (el) => {
+                const ctx = el.getContext('2d');
+                if (!ctx) return false;
+                const d = ctx.getImageData(0, 0, el.width, el.height);
+                if (!d || !d.data) return false;
+                for (let i = 3; i < d.data.length; i += 4) {
+                    if (d.data[i] > 0) return true;
+                }
+                return false;
+            }
+        """)
+        assert has_content, "Breakdown chart has no rendered content"
+
+        # Legend should contain holding symbols (not just "Total Value")
+        legend = canvas.evaluate("""
+            (el) => {
+                const chart = Chart.getChart(el);
+                if (!chart) return '';
+                return chart.legend.legendItems.map(i => i.text).join('|');
+            }
+        """)
+        assert "Cash" in legend, f"Expected 'Cash' in breakdown legend, got: {legend}"
+        # Should have at least one stock symbol beyond Cash
+        assert len(legend.split('|')) >= 2, \
+            f"Expected multiple legend items, got: {legend}"
+
+    def test_constituents_excludes_closed_positions_after_rebuild(self, page):
+        """After rebuild, constituents API only returns currently-held symbols."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+
+        # Fetch both APIs
+        result = page.evaluate("""
+            async () => {
+                const [constituents, holdings] = await Promise.all([
+                    fetch('/api/portfolio/holdings/history/constituents').then(r => r.json()),
+                    fetch('/api/portfolio/holdings').then(r => r.json()),
+                ]);
+                return {constituents, holdings};
+            }
+        """)
+
+        constituents = result["constituents"]
+        holdings = result["holdings"]
+
+        # Current non-cash symbols
+        current_syms = {
+            h["symbol"] for h in holdings
+            if h.get("asset_category") != "CASH" and not (h.get("symbol") or "").startswith("CASH")
+        }
+
+        # Constituents symbols
+        const_syms = set(constituents.get("series", {}).keys())
+
+        # Every constituent symbol must have a non-zero-quantity current holding
+        missing_from_current = const_syms - current_syms
+        assert not missing_from_current, \
+            f"Constituents has symbols NOT in current holdings: {missing_from_current}"
+
+
+# ============================================================
+# Dividends over time chart
+# ============================================================
+
+class TestDividendsChart:
+    """Dividends chart with monthly / quarterly / yearly aggregation."""
+
+    def test_dividends_chart_exists(self, page):
+        """Dividends chart and period selector are present."""
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_timeout(500)
+
+        assert page.locator("#pf-dividends-chart").is_visible(), "Dividends chart not visible"
+        assert page.locator("#pf-div-period").is_visible(), "Period selector not visible"
+        period_val = page.locator("#pf-div-period").input_value()
+        assert period_val == "monthly", f"Default period should be monthly, got {period_val}"
+
+    def test_dividends_renders_with_data(self, page):
+        """After upload+rebuild, dividends chart renders with bars."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_timeout(2000)
+
+        canvas = page.locator("#pf-dividends-chart")
+        assert canvas.is_visible(), "Dividends canvas not visible"
+
+        has_content = canvas.evaluate("""
+            (el) => {
+                const ctx = el.getContext('2d');
+                if (!ctx) return false;
+                const d = ctx.getImageData(0, 0, el.width, el.height);
+                if (!d || !d.data) return false;
+                for (let i = 3; i < d.data.length; i += 4) {
+                    if (d.data[i] > 0) return true;
+                }
+                return false;
+            }
+        """)
+        assert has_content, "Dividends chart has no rendered content"
+
+    def test_period_selector_changes_chart(self, page):
+        """Switching period re-renders the dividends chart."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_timeout(2000)
+
+        # Switch to yearly
+        page.locator("#pf-div-period").select_option("yearly")
+        page.wait_for_timeout(2000)
+
+        canvas = page.locator("#pf-dividends-chart")
+        assert canvas.is_visible(), "Dividends chart not visible after period change"
+
+        has_content = canvas.evaluate("""
+            (el) => {
+                const ctx = el.getContext('2d');
+                if (!ctx) return false;
+                const d = ctx.getImageData(0, 0, el.width, el.height);
+                if (!d || !d.data) return false;
+                for (let i = 3; i < d.data.length; i += 4) {
+                    if (d.data[i] > 0) return true;
+                }
+                return false;
+            }
+        """)
+        assert has_content, "Dividends chart has no content after yearly switch"
+
+    def test_quarterly_period_renders(self, page):
+        """Quarterly period also renders correctly."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        page.wait_for_selector("#pf-tabs", timeout=5000)
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_timeout(2000)
+
+        page.locator("#pf-div-period").select_option("quarterly")
+        page.wait_for_timeout(2000)
+
+        canvas = page.locator("#pf-dividends-chart")
+        has_content = canvas.evaluate("""
+            (el) => {
+                const ctx = el.getContext('2d');
+                if (!ctx) return false;
+                const d = ctx.getImageData(0, 0, el.width, el.height);
+                if (!d || !d.data) return false;
+                for (let i = 3; i < d.data.length; i += 4) {
+                    if (d.data[i] > 0) return true;
+                }
+                return false;
+            }
+        """)
+        assert has_content, "Dividends chart has no content for quarterly"
 
 
 # ============================================================

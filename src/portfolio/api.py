@@ -165,6 +165,129 @@ async def holdings_history(
     )
 
 
+@router.get("/holdings/history/constituents")
+async def holdings_constituents():
+    """Daily market value per holding (for stacked breakdown chart).
+
+    Returns a dict with ``dates`` (ordered list) and ``series`` (symbol → value
+    array).  Non-stock items (cash, options) are excluded.
+    """
+    import sqlite3
+    from collections import defaultdict
+    db3_path = get_db3()
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """SELECT date, symbol, market_value
+           FROM Holdings_History
+           WHERE is_option = 0
+             AND symbol NOT LIKE 'CASH%'
+             AND market_value IS NOT NULL
+           ORDER BY date, symbol"""
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return {"dates": [], "series": {}}
+    # Group: find all unique dates, then build per-symbol arrays
+    date_list: list[str] = []
+    seen_dates: set[str] = set()
+    series_by_symbol: dict[str, dict[str, float]] = defaultdict(dict)
+    for r in rows:
+        d = r["date"]
+        sym = r["symbol"]
+        val = r["market_value"] or 0
+        if d not in seen_dates:
+            seen_dates.add(d)
+            date_list.append(d)
+        series_by_symbol[sym][d] = val
+    # Build aligned arrays
+    result_series: dict[str, list[float | None]] = {}
+    for sym, day_map in series_by_symbol.items():
+        result_series[sym] = [day_map.get(d) for d in date_list]
+    return {"dates": date_list, "series": result_series}
+
+
+@router.get("/dividends/history")
+async def dividends_history(
+    period: str = Query("monthly", description="Aggregation: monthly, quarterly, or yearly"),
+):
+    """Dividend income aggregated by period.
+
+    Reads ``dividend_income`` from ``Portfolio_Daily`` and buckets by
+    month, quarter, or year.  Returns ``[{period, gross, tax, net}, ...]``.
+    """
+    import sqlite3
+    db3_path = get_db3()
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+
+    # Read daily dividend income
+    rows = conn.execute(
+        "SELECT date, dividend_income FROM Portfolio_Daily ORDER BY date"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return []
+
+    # Also read individual dividend/tax transactions for gross/tax split
+    conn2 = sqlite3.connect(db3_path)
+    conn2.row_factory = sqlite3.Row
+    txn_rows = conn2.execute(
+        "SELECT trade_date, activity_type, amount, fx_rate_to_base FROM Transactions "
+        "WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
+        "ORDER BY trade_date"
+    ).fetchall()
+    conn2.close()
+
+    # Build daily gross/tax maps
+    daily_gross: dict[str, float] = {}
+    daily_tax: dict[str, float] = {}
+    for tr in txn_rows:
+        d = tr["trade_date"]
+        fx = tr["fx_rate_to_base"] or 1.0
+        amt = (tr["amount"] or 0) * fx
+        if tr["activity_type"] in ("DIVIDEND", "PIL_DIVIDEND"):
+            daily_gross[d] = daily_gross.get(d, 0) + abs(amt)
+        elif tr["activity_type"] == "WITHHOLDING_TAX":
+            daily_tax[d] = daily_tax.get(d, 0) + abs(amt)
+
+    # Aggregate
+    from collections import defaultdict
+    buckets: dict[str, dict[str, float]] = defaultdict(lambda: {"gross": 0, "tax": 0, "net": 0})
+
+    for r in rows:
+        d = r["date"]
+        if not d:
+            continue
+        y, m, _day = d[:4], d[5:7], d[8:10]
+        if period == "yearly":
+            key = y
+        elif period == "quarterly":
+            q = str((int(m) - 1) // 3 + 1)
+            key = f"{y}-Q{q}"
+        else:  # monthly
+            key = f"{y}-{m}"
+
+        gross = daily_gross.get(d, 0)
+        tax = daily_tax.get(d, 0)
+        net = r["dividend_income"] or 0
+        buckets[key]["gross"] += gross
+        buckets[key]["tax"] += tax
+        buckets[key]["net"] += net
+
+    result = []
+    for k in sorted(buckets.keys()):
+        b = buckets[k]
+        result.append({
+            "period": k,
+            "gross": round(b["gross"], 2),
+            "tax": round(b["tax"], 2),
+            "net": round(b["net"], 2),
+        })
+    return result
+
+
 @router.get("/holdings/at/{date}")
 async def holdings_at_date(date: str):
     """Holdings snapshot at a specific date."""

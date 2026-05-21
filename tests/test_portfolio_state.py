@@ -104,6 +104,38 @@ class TestBuildPortfolioState:
         assert result1["daily_rows"] == result2["daily_rows"]
         assert result1["holdings_count"] == result2["holdings_count"]
 
+    def test_rebuild_clears_stale_holdings_history(self, db3_path):
+        """After rebuild, Holdings_History has no entries for closed positions.
+
+        Closed positions (quantity=0 in Portfolio_Holdings) must not
+        appear in Holdings_History.  This prevents stale chart data
+        for sold positions.
+        """
+        self._load_year(db3_path, "2024")
+        build_portfolio_state(db3_path, base_currency="EUR")
+
+        # Get current non-cash symbols
+        import sqlite3
+        conn = sqlite3.connect(db3_path)
+        cur_syms = set(r[0] for r in conn.execute(
+            "SELECT symbol FROM Portfolio_Holdings WHERE quantity > 0"
+            " AND asset_category != 'CASH'"
+        ).fetchall())
+
+        # Get all symbols in Holdings_History
+        hh_syms = set(r[0] for r in conn.execute(
+            "SELECT DISTINCT symbol FROM Holdings_History"
+            " WHERE symbol NOT LIKE 'CASH%'"
+        ).fetchall())
+        conn.close()
+
+        # Every symbol in Holdings_History must be a current holding
+        ghost = hh_syms - cur_syms
+        assert not ghost, (
+            f"Holdings_History has {len(ghost)} closed-position symbols "
+            f"not in Portfolio_Holdings: {ghost}"
+        )
+
     def test_spinoff_creates_new_position(self, db3_path):
         """Loading 2024 should create SOLV position from MMM spinoff."""
         for year in ["2020", "2021", "2022", "2023", "2024"]:

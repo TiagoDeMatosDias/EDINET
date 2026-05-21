@@ -103,6 +103,11 @@ def build_portfolio_state(
     conn2 = sqlite3.connect(db2_path)
 
     try:
+        # 0. Clear previous rebuild state so stale entries don't persist
+        conn3.execute("DELETE FROM Holdings_History")
+        conn3.execute("DELETE FROM Portfolio_Daily")
+        conn3.execute("DELETE FROM Portfolio_Holdings")
+
         # 1. Load transactions sorted by date
         conn3.row_factory = sqlite3.Row
         rows = conn3.execute(
@@ -257,9 +262,8 @@ def build_portfolio_state(
             current_date += timedelta(days=1)
 
         # --- Store current holdings ---
-        # Clear and repopulate. Filter out expired options (expiry < today).
+        # Filter out expired options (expiry < today).
         today = Date.today().isoformat()
-        conn3.execute("DELETE FROM Portfolio_Holdings")
         for h in holdings.values():
             if abs(h["quantity"]) <= 0:
                 continue

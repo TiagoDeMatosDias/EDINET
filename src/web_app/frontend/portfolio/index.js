@@ -37,6 +37,8 @@ const state = {
   transactions: [],
   activitySummary: {},
   performance: null,
+  chartParams: { currency: 'EUR', benchmark: '', inflation: true },
+  chartData: null,
   charts: {},
   uploadedFiles: [],
   sortColumn: null,      // current sort column key
@@ -56,6 +58,7 @@ async function init() {
   await loadTransactions();
   wireTransactionsFilters();
   wirePerformance();
+  wireChartControls();
   wireRebuild();
 }
 
@@ -469,10 +472,6 @@ function renderHoldingsTable() {
         state.sortAsc = true;
       }
       renderHoldingsTable();
-      // Re-wire row clicks after re-render
-      $$('.pf-holding-row[data-holding]').forEach(row => {
-        row.addEventListener('click', () => toggleHoldingDetail(row));
-      });
     });
   });
 
@@ -516,6 +515,7 @@ function insertDetailRow(row, symbol, p, isClosed) {
   const pct = v => v != null ? (v * 100).toFixed(2) + '%' : '—';
   const detailTr = document.createElement('tr');
   detailTr.className = 'pf-holding-detail-row';
+  const chartId = 'pf-detail-chart-' + symbol.replace(/[^a-zA-Z0-9]/g, '_');
 
   if (isClosed) {
     // ── Closed position detail ──
@@ -548,7 +548,6 @@ function insertDetailRow(row, symbol, p, isClosed) {
     // ── Current holding detail ──
     const pnlColor2 = (p.unrealized_pnl || 0) >= 0 ? 'var(--success)' : 'var(--danger)';
     const retColor2 = (p.total_return || 0) >= 0 ? 'var(--success)' : 'var(--danger)';
-    const chartId = 'pf-detail-chart-' + symbol.replace(/[^a-zA-Z0-9]/g, '_');
     detailTr.innerHTML = `<td colspan="${cols}" style="padding:12px 16px;background:rgba(88,166,255,0.04);border-left:3px solid var(--accent);">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
       <strong>${p.symbol} — Performance Details</strong>
@@ -587,7 +586,7 @@ function insertDetailRow(row, symbol, p, isClosed) {
     .then(history => {
       const ctx = document.getElementById(chartId);
       if (!ctx || !history || !history.length) return;
-      const filtered = history.filter(h => (h.market_value || 0) > 0);
+      const filtered = history.filter(h => h.market_value != null || h.market_price != null);
       if (!filtered.length) return;
       _detailChart = new Chart(ctx, {
         type: 'line',
@@ -621,26 +620,23 @@ function insertDetailRow(row, symbol, p, isClosed) {
         },
       });
     })
-    .catch(() => {});
+    .catch(err => log('warn', `Chart fetch error for ${symbol}: ${(err && err.message) || err}`));
   }  // end if (!isClosed)
 }  // end insertDetailRow
 
 function renderChartsTab() {
-  // Compute performance if needed (for benchmark/inflation data on equity chart)
-  if (!state.performance || (!state.performance.sharpe_ratio && !state.performance.total_return)) {
-    computePerformance().then(() => {
-      renderEquityChart();
-      renderValueChart();
-      renderAllocationChart();
-    }).catch(() => {});
-  } else {
-    renderEquityChart();
-    renderValueChart();
-    renderAllocationChart();
-  }
+  renderEquityChart();
+  renderValueChart();
+  renderDividendsChart();
+  renderAllocationChart();
 }
 
 function renderValueChart() {
+  const breakdown = $('#pf-value-breakdown')?.checked;
+  if (breakdown) {
+    renderValueBreakdown();
+    return;
+  }
   fetchJson('/api/portfolio/holdings/history').then(daily => {
     if (!daily.length) return;
     const ctx = $('#pf-value-chart');
@@ -667,6 +663,140 @@ function renderValueChart() {
           x: { ticks: { color: '#8ea0b8', maxTicksLimit: 10 } },
         },
         plugins: { legend: { labels: { color: '#d9e2f2', usePointStyle: true } } },
+      },
+    });
+  });
+}
+
+const _VALUE_COLORS = [
+  '#58a6ff','#44d17b','#e0af4f','#ff6b6b','#8ea0b8',
+  '#58a6ffcc','#44d17bcc','#e0af4fcc','#ff6b6bcc','#8ea0b8cc',
+  '#58a6ff88','#44d17b88','#e0af4f88','#ff6b6b88','#8ea0b888',
+];
+
+function renderValueBreakdown() {
+  Promise.all([
+    fetchJson('/api/portfolio/holdings/history/constituents'),
+    fetchJson('/api/portfolio/holdings/history'),
+  ]).then(([constituents, daily]) => {
+    const ctx = $('#pf-value-chart');
+    if (!constituents || !constituents.dates || !constituents.dates.length || !daily.length) return;
+    destroyChart('value');
+
+    // Sort symbols by total contribution (largest last = on top of stacked area)
+    const syms = Object.keys(constituents.series).sort((a, b) => {
+      const sumA = (constituents.series[a] || []).reduce((s, v) => s + (v || 0), 0);
+      const sumB = (constituents.series[b] || []).reduce((s, v) => s + (v || 0), 0);
+      return sumA - sumB;  // smallest first → rendered last = on top
+    });
+
+    // Build cash map from daily
+    const cashMap = {};
+    for (const d of daily) cashMap[d.date] = d.cash_balance || 0;
+
+    const datasets = [];
+    // Stacked area for each symbol
+    for (let i = 0; i < syms.length; i++) {
+      const sym = syms[i];
+      const vals = constituents.series[sym] || [];
+      datasets.push({
+        label: sym,
+        data: vals,
+        backgroundColor: _VALUE_COLORS[i % _VALUE_COLORS.length],
+        fill: true, tension: 0.2, pointRadius: 0,
+        borderWidth: 0,
+        spanGaps: false,
+      });
+    }
+    // Cash line on top (not stacked)
+    datasets.push({
+      label: 'Cash',
+      data: constituents.dates.map(d => cashMap[d] || null),
+      borderColor: '#44d17b',
+      borderDash: [5, 3],
+      tension: 0.2, pointRadius: 0,
+      fill: false,
+      borderWidth: 2,
+    });
+
+    state.charts.value = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: constituents.dates,
+        datasets,
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { intersect: false, mode: 'index' },
+        scales: {
+          y: {
+            stacked: true,
+            ticks: { color: '#8ea0b8', callback: v => formatMoney(v) },
+          },
+          x: { ticks: { color: '#8ea0b8', maxTicksLimit: 10 } },
+        },
+        plugins: {
+          legend: {
+            position: 'right',
+            labels: { color: '#d9e2f2', usePointStyle: true, padding: 8, font: { size: 10 } },
+          },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatMoney(ctx.raw)}` } },
+        },
+      },
+    });
+  });
+}
+
+function renderDividendsChart() {
+  const period = $('#pf-div-period')?.value || 'monthly';
+  fetchJson(`/api/portfolio/dividends/history?period=${period}`).then(data => {
+    if (!data || !data.length) return;
+    const ctx = $('#pf-dividends-chart');
+    destroyChart('dividends');
+    state.charts.dividends = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: data.map(d => d.period),
+        datasets: [
+          {
+            label: 'Gross',
+            data: data.map(d => d.gross),
+            backgroundColor: 'rgba(68,209,123,0.6)',
+            borderColor: '#44d17b',
+            borderWidth: 1,
+            borderRadius: 2,
+          },
+          {
+            label: 'Tax',
+            data: data.map(d => -d.tax),
+            backgroundColor: 'rgba(255,107,107,0.5)',
+            borderColor: '#ff6b6b',
+            borderWidth: 1,
+            borderRadius: 2,
+          },
+          {
+            label: 'Net',
+            data: data.map(d => d.net),
+            type: 'line',
+            borderColor: '#58a6ff',
+            backgroundColor: 'rgba(88,166,255,0.15)',
+            borderWidth: 2.5,
+            tension: 0.2, pointRadius: 3, pointBackgroundColor: '#58a6ff',
+            fill: false,
+          },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { intersect: false, mode: 'index' },
+        scales: {
+          y: { ticks: { color: '#8ea0b8', callback: v => formatMoney(v) }, title: { display: true, text: 'EUR', color: '#8ea0b8' } },
+          x: { ticks: { color: '#8ea0b8', maxTicksLimit: 12 } },
+        },
+        plugins: {
+          legend: { labels: { color: '#d9e2f2', usePointStyle: true } },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatMoney(ctx.raw)}` } },
+        },
       },
     });
   });
@@ -897,8 +1027,84 @@ function renderMetrics() {
   </div>`;
 }
 
+// ================================================================
+// CHART CONTROLS — independent from Performance tab
+// ================================================================
+function wireChartControls() {
+  const updateBtn = $('#pf-chart-update');
+  const benchInput = $('#pf-chart-benchmark');
+  const currencySel = $('#pf-chart-currency');
+  const inflationCb = $('#pf-chart-inflation');
+
+  updateBtn.addEventListener('click', () => {
+    state.chartParams.currency = currencySel.value;
+    state.chartParams.benchmark = benchInput.value.trim();
+    state.chartParams.inflation = inflationCb.checked;
+    computeChartData();
+  });
+
+  // Benchmark quick-select buttons
+  $$('#pf-chart-bench-shortcuts .btn-ghost').forEach(btn => {
+    btn.addEventListener('click', () => {
+      benchInput.value = btn.dataset.bench;
+      state.chartParams.currency = currencySel.value;
+      state.chartParams.benchmark = benchInput.value.trim();
+      state.chartParams.inflation = inflationCb.checked;
+      computeChartData();
+    });
+  });
+
+  // Currency change triggers update
+  currencySel.addEventListener('change', () => {
+    state.chartParams.currency = currencySel.value;
+    state.chartParams.benchmark = benchInput.value.trim();
+    state.chartParams.inflation = inflationCb.checked;
+    computeChartData();
+  });
+
+  // Inflation toggle triggers update
+  inflationCb.addEventListener('change', () => {
+    state.chartParams.currency = currencySel.value;
+    state.chartParams.benchmark = benchInput.value.trim();
+    state.chartParams.inflation = inflationCb.checked;
+    computeChartData();
+  });
+
+  // Portfolio Value breakdown toggle
+  const breakdownCb = $('#pf-value-breakdown');
+  if (breakdownCb) {
+    breakdownCb.addEventListener('change', () => renderValueChart());
+  }
+
+  // Dividends period selector
+  const divPeriod = $('#pf-div-period');
+  if (divPeriod) {
+    divPeriod.addEventListener('change', () => renderDividendsChart());
+  }
+}
+
+async function computeChartData() {
+  const updateBtn = $('#pf-chart-update');
+  updateBtn.disabled = true;
+  updateBtn.textContent = 'Loading…';
+  try {
+    const cp = state.chartParams;
+    const qs = new URLSearchParams({ base_currency: cp.currency });
+    if (cp.benchmark) qs.set('benchmark_ticker', cp.benchmark);
+    state.chartData = await fetchJson('/api/portfolio/performance?' + qs.toString());
+  } catch (e) {
+    log('warn', 'Chart data fetch error: ' + (e && e.message || e));
+    state.chartData = null;
+  } finally {
+    updateBtn.disabled = false;
+    updateBtn.textContent = 'Update Charts';
+  }
+  renderEquityChart();
+}
+
 function renderEquityChart() {
-  const p = state.performance;
+  const cd = state.chartData;
+  const cp = state.chartParams;
   Promise.all([
     fetchJson('/api/portfolio/holdings/history'),
   ]).then(([daily]) => {
@@ -915,11 +1121,10 @@ function renderEquityChart() {
       borderWidth: 2,
     }];
 
-    // Add benchmark line from performance data
-    if (p && p.benchmark && p.benchmark.series && p.benchmark.series.length) {
-      // Build a map of date → benchmark cumulative return
+    // Add benchmark line from chart-specific data
+    if (cd && cd.benchmark && cd.benchmark.series && cd.benchmark.series.length) {
       const benchMap = {};
-      for (const pt of p.benchmark.series) {
+      for (const pt of cd.benchmark.series) {
         benchMap[pt.date] = pt.cumulative_return;
       }
       const benchData = daily.map(d => {
@@ -927,7 +1132,7 @@ function renderEquityChart() {
         return v != null ? v * 100 : null;
       });
       datasets.push({
-        label: p.benchmark.ticker || 'Benchmark',
+        label: cd.benchmark.ticker || 'Benchmark',
         data: benchData,
         borderColor: '#e0af4f',
         borderDash: [2, 2],
@@ -937,10 +1142,10 @@ function renderEquityChart() {
       });
     }
 
-    // Add inflation line
-    if (p && p.inflation_series && p.inflation_series.length) {
+    // Add inflation line from chart-specific data
+    if (cp.inflation && cd && cd.inflation_series && cd.inflation_series.length) {
       const infMap = {};
-      for (const pt of p.inflation_series) {
+      for (const pt of cd.inflation_series) {
         infMap[pt.date] = pt.cumulative;
       }
       const infData = daily.map(d => {
@@ -948,7 +1153,7 @@ function renderEquityChart() {
         return v != null ? v * 100 : null;
       });
       datasets.push({
-        label: 'Inflation (' + (p.base_currency || 'EUR') + ')',
+        label: 'Inflation (' + (cp.currency || 'EUR') + ')',
         data: infData,
         borderColor: '#ff6b6b',
         borderDash: [8, 4],

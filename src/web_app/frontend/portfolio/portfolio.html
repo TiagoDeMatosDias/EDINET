@@ -174,16 +174,59 @@
             <!-- ======================================================== -->
             <div class="tab-panel" data-panel="charts">
               <div class="panel" style="margin-top:12px;">
-                <div class="panel-head"><div class="panel-title">Cumulative Returns</div></div>
+                <div class="panel-head">
+                  <div class="panel-title">Cumulative Returns</div>
+                  <div class="panel-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                    <select id="pf-chart-currency" class="input-sm">
+                      <option value="EUR">EUR</option>
+                      <option value="USD">USD</option>
+                      <option value="JPY">JPY</option>
+                    </select>
+                    <input type="text" id="pf-chart-benchmark" class="input-sm" placeholder="Benchmark ticker (e.g. SPY)" style="width:160px;"/>
+                    <span style="font-size:10px;color:var(--muted);display:flex;gap:4px;" id="pf-chart-bench-shortcuts">
+                      <button class="btn-ghost btn-sm" data-bench="SPY">SPY</button>
+                      <button class="btn-ghost btn-sm" data-bench="IVV">IVV</button>
+                      <button class="btn-ghost btn-sm" data-bench="VWCE">VWCE</button>
+                    </span>
+                    <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer;">
+                      <input type="checkbox" id="pf-chart-inflation" checked /> Inflation
+                    </label>
+                    <button class="btn-primary btn-sm" id="pf-chart-update">Update Charts</button>
+                  </div>
+                </div>
                 <div class="panel-body" style="height:320px;">
                   <canvas id="pf-equity-chart"></canvas>
                 </div>
               </div>
+              <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px;">
+                <div class="panel">
+                  <div class="panel-head">
+                    <div class="panel-title">Portfolio Value</div>
+                    <div class="panel-actions" style="display:flex;gap:8px;align-items:center;">
+                      <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer;">
+                        <input type="checkbox" id="pf-value-breakdown" /> Breakdown by Holding
+                      </label>
+                    </div>
+                  </div>
+                  <div class="panel-body" style="height:340px;">
+                    <canvas id="pf-value-chart"></canvas>
+                  </div>
+                </div>
+              </div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
                 <div class="panel">
-                  <div class="panel-head"><div class="panel-title">Portfolio Value</div></div>
+                  <div class="panel-head">
+                    <div class="panel-title">Dividends</div>
+                    <div class="panel-actions">
+                      <select id="pf-div-period" class="input-sm">
+                        <option value="monthly">Monthly</option>
+                        <option value="quarterly">Quarterly</option>
+                        <option value="yearly">Yearly</option>
+                      </select>
+                    </div>
+                  </div>
                   <div class="panel-body" style="height:300px;">
-                    <canvas id="pf-value-chart"></canvas>
+                    <canvas id="pf-dividends-chart"></canvas>
                   </div>
                 </div>
                 <div class="panel">
