@@ -39,6 +39,12 @@ app.router.routes.extend(router_app.router.routes)
 @app.on_event("startup")
 def _startup() -> None:
     cleanup_completed_jobs()
+    # Log registered API routes for diagnostics
+    api_routes = [r.path for r in app.router.routes if hasattr(r, 'path')]
+    portfolio_count = sum(1 for r in api_routes if 'portfolio' in r)
+    if portfolio_count > 0:
+        from src.web_app.api import logger as _api_logger
+        _api_logger.info(f"Portfolio module loaded: {portfolio_count} routes registered")
 
 
 @app.get("/")
@@ -64,6 +70,11 @@ def page_backtesting() -> FileResponse:
 @app.get("/security")
 def page_security() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "security_analysis" / "security.html")
+
+
+@app.get("/portfolio")
+def page_portfolio() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "portfolio" / "portfolio.html")
 
 
 @app.get("/favicon.ico")

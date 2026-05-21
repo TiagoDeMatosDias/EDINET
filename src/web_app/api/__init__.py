@@ -26,6 +26,13 @@ from src.web_app.api.security_analysis import router as _security_router
 router_app.router.routes.extend(_screening_router.routes)
 router_app.router.routes.extend(_security_router.routes)
 
+try:
+    from src.portfolio.api import router as _portfolio_router
+    router_app.router.routes.extend(_portfolio_router.routes)
+    logger.info("Portfolio API router explicitly registered: prefix=%s", _portfolio_router.prefix)
+except Exception as e:
+    logger.error("Failed to register portfolio router: %s", e)
+
 # ---------------------------------------------------------------------------
 # Dynamic discovery of view-package API routers
 # ---------------------------------------------------------------------------

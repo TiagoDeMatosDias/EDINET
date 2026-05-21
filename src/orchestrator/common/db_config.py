@@ -79,3 +79,9 @@ def get_db2() -> str:
     """Return the absolute path to DB2 (standardized data: all other tables)."""
     cfg = _load_config()
     return _resolve(cfg.get("db2", "data/databases/Standardized.db"))
+
+
+def get_db3() -> str:
+    """Return the absolute path to DB3 (portfolio module data)."""
+    cfg = _load_config()
+    return _resolve(cfg.get("db3", "data/databases/Portfolio.db"))

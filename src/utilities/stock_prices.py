@@ -202,7 +202,18 @@ def _normalise_price_history(raw_history: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_provider_history(ticker: str, start_date: str | None = None) -> tuple[str, pd.DataFrame]:
-    """Load normalized price history using Stooq first and Yahoo as fallback."""
+    """Load normalized price history using Stooq first and Yahoo as fallback.
+
+    For European UCITS ETFs (short alphabetic tickers without exchange suffix),
+    also tries common exchange suffixes (.DE, .L, .MI, .AS, .PA) when the
+    bare ticker fails.
+    """
+    # Check if ticker looks like a european ETF needing suffix
+    _looks_eu = (
+        ticker.isalpha() and len(ticker) <= 6 and "." not in ticker
+        and not ticker[:4].isdigit() and not ticker.lower().endswith(".jp")
+    )
+
     providers = [
         ("Stooq", _fetch_stooq_history, _stooq_symbol_for_ticker(ticker)),
         ("Yahoo Finance chart", _fetch_yahoo_history, _provider_symbol_for_ticker(ticker)),
@@ -217,11 +228,25 @@ def _load_provider_history(ticker: str, start_date: str | None = None) -> tuple[
             last_error = exc
             logger.warning(
                 "%s failed for ticker %s (%s): %s",
-                provider_name,
-                ticker,
-                provider_ticker,
-                exc,
+                provider_name, ticker, provider_ticker, exc,
             )
+
+    # European ETF suffix fallback
+    if _looks_eu:
+        _EU_SUFFIXES = [".DE", ".L", ".MI", ".AS", ".PA", ".SW"]
+        for suffix in _EU_SUFFIXES:
+            suffixed = ticker + suffix
+            for provider_name, fetcher, symbol_fn in [
+                ("Stooq", _fetch_stooq_history, _stooq_symbol_for_ticker),
+                ("Yahoo Finance chart", _fetch_yahoo_history, _provider_symbol_for_ticker),
+            ]:
+                try:
+                    p_tkr = symbol_fn(suffixed)
+                    raw_history = fetcher(p_tkr, start_date=start_date)
+                    logger.info("Fetched %s as %s via %s (%s)", ticker, suffixed, provider_name, p_tkr)
+                    return provider_name + f" (as {suffixed})", _normalise_price_history(raw_history)
+                except Exception:
+                    continue
 
     raise RuntimeError(
         f"All price providers failed for ticker {ticker}: {last_error}"
@@ -256,7 +281,7 @@ def _create_prices_table(conn, table_name):
     logger.debug(f"Index '{idx_name}' on ({table_name}.Date, {table_name}.Ticker) is ready")
 
 
-def load_ticker_data(ticker, prices_table, conn) -> bool:
+def load_ticker_data(ticker, prices_table, conn, currency: str = "JPY") -> bool:
     """Download and store historical price data for a single ticker.
 
     Fetches price data for the given ticker, starting from the last date
@@ -294,7 +319,7 @@ def load_ticker_data(ticker, prices_table, conn) -> bool:
             return True
 
         out_data["Ticker"] = ticker
-        out_data["Currency"] = "JPY"
+        out_data["Currency"] = currency
         out_data["Price"] = out_data["Close"]  
         out_data = out_data[["Date", "Ticker", "Currency", "Price"]]
         out_data.to_sql(prices_table, conn, if_exists="append", index=False)

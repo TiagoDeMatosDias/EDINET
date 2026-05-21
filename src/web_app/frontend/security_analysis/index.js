@@ -191,13 +191,22 @@ export async function selectTicker(ticker) {
   ticker = String(ticker).trim(); if (!ticker) return;
   state.loading = true; state.error = null; state.company = null; render();
   try {
-    const [overview, formulas] = await Promise.all([
-      fetchJson(`/api/security/overview?ticker=${encodeURIComponent(ticker)}`),
-      fetchJson('/api/security/formulas'),
-    ]);
+    const overview = await fetchJson(`/api/security/overview?ticker=${encodeURIComponent(ticker)}`);
+    const formulas = await fetchJson('/api/security/formulas');
     state.company = overview; state.formulas = formulas.formulas || [];
-    state.history = { periods: [], tables: {} };
-    state.activeTable = '__stock_price__';
+
+    // If the ticker resolved to a company record, fetch financial history too
+    const code = overview?.company?.company_code;
+    if (code) {
+      state.history = await fetchJson(`/api/security/history?company_code=${encodeURIComponent(code)}&periods=20`);
+      sessionStorage.setItem('sa.lastCompanyCode', code);
+      if (!state.activeTable || !state.history.tables?.[state.activeTable])
+        state.activeTable = state.history.tables && Object.keys(state.history.tables).length > 0
+          ? Object.keys(state.history.tables)[0] : '__stock_price__';
+    } else {
+      state.history = { periods: [], tables: {} };
+      state.activeTable = '__stock_price__';
+    }
     state.priceHistory = null; state.priceLoading = false;
     state.loading = false; persist(); render();
     log('info', `Loaded ticker: ${ticker}`);

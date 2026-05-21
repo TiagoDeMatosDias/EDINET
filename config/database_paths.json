@@ -1,4 +1,5 @@
 {
     "db1": "data/databases/Base.db",
-    "db2": "data/databases/Standardized.db"
+    "db2": "data/databases/Standardized.db",
+    "db3": "data/databases/Portfolio.db"
 }

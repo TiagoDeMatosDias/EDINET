@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.ico" />
+    <title>Shade Research — Portfolio</title>
+    <link rel="stylesheet" href="/assets/common/styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  </head>
+  <body>
+    <div class="app-shell" style="grid-template-rows:52px 1fr;">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-logo" src="/brand-assets/icon_hexagon.svg" alt="Shade Research" />
+          <div>
+            <div class="brand-title">Shade Research</div>
+            <div class="brand-subtitle">terminal-style research console</div>
+          </div>
+        </div>
+        <nav class="tabs" aria-label="Primary navigation">
+          <button class="tab" onclick="location.href='/'">Main</button>
+          <button class="tab" onclick="location.href='/orchestrator'">Orchestrator</button>
+          <button class="tab" onclick="location.href='/screening'">Screening</button>
+          <button class="tab" onclick="location.href='/backtesting'">Backtesting</button>
+          <button class="tab" onclick="location.href='/security'">Security Analysis</button>
+          <button class="tab is-active" onclick="void 0">Portfolio</button>
+        </nav>
+        <div class="topbar-actions">
+          <div class="status-pill" id="pf-backend-status">Connecting…</div>
+        </div>
+      </header>
+
+      <!-- Override overflow: hidden from .workspace to allow scrolling -->
+      <main class="workspace" style="overflow-y:auto;">
+        <section class="view is-active" style="overflow-y:auto;height:auto;min-height:100%;"
+                 data-view-panel="portfolio">
+          <div id="pf-root" style="padding:12px;max-width:1400px;margin:0 auto;">
+
+            <!-- Summary bar — always visible -->
+            <div id="pf-summary-bar" class="panel" style="margin-bottom:12px;">
+              <div class="panel-body" style="display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
+                <div class="summary-stat">
+                  <span class="summary-label">Transactions</span>
+                  <span class="summary-value" id="pf-stat-txn">—</span>
+                </div>
+                <div class="summary-stat">
+                  <span class="summary-label">Holdings</span>
+                  <span class="summary-value" id="pf-stat-holdings">—</span>
+                </div>
+                <div class="summary-stat">
+                  <span class="summary-label">Date Range</span>
+                  <span class="summary-value" id="pf-stat-dates">—</span>
+                </div>
+                <div class="summary-stat">
+                  <span class="summary-label">Portfolio Value</span>
+                  <span class="summary-value" id="pf-stat-value">—</span>
+                </div>
+                <button class="btn-ghost btn-sm" id="pf-rebuild-btn" style="margin-left:auto;">
+                  Rebuild State
+                </button>
+              </div>
+            </div>
+
+            <!-- Tab bar -->
+            <nav class="tab-bar" id="pf-tabs">
+              <button class="tab-btn is-active" data-tab="upload">📤 Upload</button>
+              <button class="tab-btn" data-tab="holdings">📊 Holdings</button>
+              <button class="tab-btn" data-tab="transactions">📋 Transactions</button>
+              <button class="tab-btn" data-tab="performance">📈 Performance</button>
+            </nav>
+
+            <!-- ======================================================== -->
+            <!-- Upload Tab -->
+            <!-- ======================================================== -->
+            <div class="tab-panel is-active" data-panel="upload">
+              <div class="panel" style="margin-top:12px;">
+                <div class="panel-head">
+                  <div class="panel-title">Upload IBKR FlexQuery XML</div>
+                  <div class="panel-actions">
+                    <span style="font-size:11px;color:var(--muted);" id="pf-upload-hint">
+                      Select one or more .xml files
+                    </span>
+                  </div>
+                </div>
+                <div class="panel-body">
+                  <label class="drop-zone" id="pf-drop-zone" for="pf-file-input">
+                    <div class="drop-zone-icon">📄</div>
+                    <div class="drop-zone-text">Drop one or more XML files here or click to browse</div>
+                    <input type="file" id="pf-file-input" accept=".xml,text/xml,application/xml" multiple />
+                  </label>
+
+                  <!-- Upload queue -->
+                  <div id="pf-upload-queue" style="display:none;margin-top:8px;"></div>
+
+                  <!-- Upload summary -->
+                  <div id="pf-upload-results" style="display:none;margin-top:12px;"></div>
+                </div>
+              </div>
+
+              <div class="panel" style="margin-top:12px;">
+                <div class="panel-head">
+                  <div class="panel-title">Activity Breakdown</div>
+                </div>
+                <div class="panel-body">
+                  <div id="pf-activity-breakdown" style="display:flex;gap:16px;flex-wrap:wrap;">
+                    <span class="muted">No data yet. Upload transactions above.</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ======================================================== -->
+            <!-- Holdings Tab -->
+            <!-- ======================================================== -->
+            <div class="tab-panel" data-panel="holdings">
+              <div class="panel" style="margin-top:12px;">
+                <div class="panel-head">
+                  <div class="panel-title">Current Holdings</div>
+                  <div class="panel-actions">
+                    <span style="font-size:11px;color:var(--muted);" id="pf-holdings-count"></span>
+                  </div>
+                </div>
+                <div class="panel-body" style="overflow-x:auto;">
+                  <div id="pf-holdings-table">Loading…</div>
+                </div>
+              </div>
+
+              <!-- Charts row -->
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
+                <div class="panel">
+                  <div class="panel-head"><div class="panel-title">Portfolio Value</div></div>
+                  <div class="panel-body" style="height:280px;">
+                    <canvas id="pf-value-chart"></canvas>
+                  </div>
+                </div>
+                <div class="panel">
+                  <div class="panel-head"><div class="panel-title">Allocation</div></div>
+                  <div class="panel-body" style="height:280px;">
+                    <canvas id="pf-allocation-chart"></canvas>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ======================================================== -->
+            <!-- Transactions Tab -->
+            <!-- ======================================================== -->
+            <div class="tab-panel" data-panel="transactions">
+              <div class="panel" style="margin-top:12px;">
+                <div class="panel-head">
+                  <div class="panel-title">Transaction Log</div>
+                  <div class="panel-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                    <span style="font-size:11px;color:var(--muted);" id="pf-txn-count"></span>
+                    <select id="pf-txn-type-filter" class="input-sm">
+                      <option value="">All Types</option>
+                      <option value="TRADE">Trade</option>
+                      <option value="DIVIDEND">Dividend</option>
+                      <option value="WITHHOLDING_TAX">Withholding Tax</option>
+                      <option value="DEPOSIT_WITHDRAWAL">Deposit/Withdrawal</option>
+                      <option value="BROKER_INTEREST">Broker Interest</option>
+                      <option value="SPINOFF">Spinoff</option>
+                      <option value="PIL_DIVIDEND">PIL Dividend</option>
+                      <option value="OTHER_FEE">Other Fee</option>
+                      <option value="COMMISSION_ADJ">Commission Adj</option>
+                    </select>
+                    <select id="pf-txn-symbol-filter" class="input-sm">
+                      <option value="">All Symbols</option>
+                    </select>
+                    <input type="date" id="pf-txn-start-date" class="input-sm" title="Start date" />
+                    <span style="font-size:11px;color:var(--muted);">to</span>
+                    <input type="date" id="pf-txn-end-date" class="input-sm" title="End date" />
+                    <button class="btn-ghost btn-sm" id="pf-txn-clear-filters">Clear</button>
+                  </div>
+                </div>
+                <div class="panel-body" style="overflow-x:auto;max-height:60vh;">
+                  <div id="pf-transactions-table">Loading…</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ======================================================== -->
+            <!-- Performance Tab -->
+            <!-- ======================================================== -->
+            <div class="tab-panel" data-panel="performance">
+              <div class="panel" style="margin-top:12px;">
+                <div class="panel-head">
+                  <div class="panel-title">Performance Metrics</div>
+                  <div class="panel-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                    <select id="pf-perf-currency" class="input-sm">
+                      <option value="EUR">EUR</option>
+                      <option value="USD">USD</option>
+                      <option value="JPY">JPY</option>
+                    </select>
+                    <input type="text" id="pf-perf-benchmark" class="input-sm" placeholder="Benchmark ticker (e.g. SPY)" style="width:180px;"/>
+                    <span style="font-size:10px;color:var(--muted);display:flex;gap:4px;" id="pf-bench-shortcuts">
+                      <button class="btn-ghost btn-sm" data-bench="SPY">SPY</button>
+                      <button class="btn-ghost btn-sm" data-bench="IVV">IVV</button>
+                      <button class="btn-ghost btn-sm" data-bench="VWCE">VWCE</button>
+                    </span>
+                    <input type="number" id="pf-perf-rf" class="input-sm" placeholder="Risk-free rate" step="0.001" min="0" max="1" style="width:120px;"/>
+                    <button class="btn-ghost btn-sm" id="pf-perf-detect-rf">Detect RF</button>
+                    <button class="btn-primary btn-sm" id="pf-perf-compute">Compute</button>
+                  </div>
+                </div>
+                <div class="panel-body">
+                  <div id="pf-metrics-grid">Click Compute to calculate metrics, or switch to this tab to auto-compute.</div>
+                  <!-- Allocation pie chart in performance tab -->
+                  <canvas id="pf-equity-chart" style="margin-top:16px;max-height:300px;"></canvas>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/assets/portfolio/index.js"></script>
+  </body>
+</html>

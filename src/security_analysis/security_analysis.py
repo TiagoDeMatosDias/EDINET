@@ -1453,6 +1453,22 @@ def _load_company_record(db_path: str, company_code: str) -> dict[str, Any] | No
     return matches.iloc[0].to_dict()
 
 
+def _load_company_by_ticker(db_path: str, ticker: str) -> dict[str, Any] | None:
+    """Find a company record by ticker (searches CompanyInfo table directly)."""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT * FROM CompanyInfo WHERE Company_Ticker = ? LIMIT 1", (ticker,)
+        ).fetchone()
+        if row:
+            return dict(row)
+        return None
+    finally:
+        conn.close()
+
+
 def _load_latest_prices_frame(conn: sqlite3.Connection, schema: SecuritySchema) -> pd.DataFrame:
     """Load the latest available price row per ticker."""
     sql = f"""
@@ -1783,6 +1799,40 @@ def _price_return_1y(conn: sqlite3.Connection, schema: SecuritySchema, tickers: 
 # ---------------------------------------------------------------------------
 
 
+def _normalize_ibkr_ticker(ticker: str) -> str:
+    """Convert IBKR-format tickers to db2 format.
+
+    IBKR appends exchange suffixes like ``5984.T`` (Tokyo).  The database
+    stores these as 5-digit tickers: ``59840``.  This function strips the
+    ``.T`` suffix and appends a ``0`` to create a valid db2 ticker.
+
+    Returns the original unchanged if it doesn't match the IBKR pattern.
+    """
+    t = ticker.strip()
+    # Pattern: 4 digits + .T (e.g. 5984.T → 59840)
+    if len(t) == 6 and t.endswith(".T") and t[:4].isdigit():
+        return t[:4] + "0"
+    # Already 5 digits (e.g. 59840) — keep as-is
+    if len(t) == 5 and t.isdigit():
+        return t
+    return t
+
+
+def _normalize_ticker_for_query(ticker: str) -> list[str]:
+    """Return a list of ticker variants to try when querying the database.
+
+    For a ticker like ``5984.T``, returns ``["5984.T", "59840"]`` so the
+    search can fall back to the db2 format if the IBKR format is not found.
+    """
+    t = ticker.strip()
+    variants = [t]
+    if t.endswith(".T") and len(t) == 6 and t[:4].isdigit():
+        variants.append(t[:4] + "0")
+    elif len(t) == 5 and t.isdigit():
+        variants.append(t[:4] + ".T")
+    return variants
+
+
 def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[str, Any]]:
     """Search companies by name, ticker, EDINET code, or industry.
 
@@ -1810,6 +1860,9 @@ def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[st
         ticker = _safe_str(record.get("ticker"))
         if ticker:
             seen_tickers.add(ticker.lower())
+            # Also mark the IBKR variant as seen (e.g. 59110 → 5911.T)
+            for v in _normalize_ticker_for_query(ticker):
+                seen_tickers.add(v.lower())
         scored.append((score, {
             "company_code": _safe_str(record.get("company_code")),
             "ticker": ticker,
@@ -1831,15 +1884,16 @@ def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[st
         )
         for _, row in price_tickers_df.iterrows():
             pticker = _safe_str(row.get("Ticker"))
-            if not pticker or pticker.lower() in seen_tickers:
+            if not pticker:
+                continue
+            # Skip if the ticker or its db2-normalized form already has a CompanyInfo record
+            pt_lower = pticker.lower()
+            variants = _normalize_ticker_for_query(pticker)
+            already_seen = any(v.lower() in seen_tickers for v in variants)
+            if already_seen:
                 continue
             # Check if the ticker matches any token
-            pt_lower = pticker.lower()
             matched = False
-            for token in tokens:
-                if token in pt_lower:
-                    matched = True
-                    break
             if not matched:
                 continue
             # Get latest price for this ticker
@@ -1896,14 +1950,28 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
     ensure_security_analysis_indexes(db_path)
     schema = resolve_schema(db_path)
 
-    # Ticker-only lookup: no CompanyInfo record, just price data
+    # Ticker-only lookup: try to find company record, then price data
     if not code and tkr:
-        conn = _connect(db_path)
-        try:
-            price_info = _load_price_range(conn, schema, tkr)
-        finally:
-            conn.close()
-        return {
+        variants = _normalize_ticker_for_query(tkr)
+        company = None
+        for variant in variants:
+            company = _load_company_by_ticker(db_path, variant)
+            if company is not None:
+                code = company.get("EdinetCode", company.get("company_code", ""))
+                break
+
+        if company is not None:
+            # Found a company record — proceed to full overview below
+            pass
+        else:
+            # Pure ticker — no CompanyInfo match at all
+            conn = _connect(db_path)
+            try:
+                # Use original ticker for price lookup
+                price_info = _load_price_range(conn, schema, tkr)
+            finally:
+                conn.close()
+            return {
             "company": {
                 "company_code": None,
                 "ticker": tkr,

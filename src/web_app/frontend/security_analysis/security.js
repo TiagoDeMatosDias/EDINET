@@ -5,7 +5,7 @@
 import { log } from '../common/console.js';
 import { els } from '../common/state.js';
 import { refreshHealth, wireTopbarEvents } from '../common/topbar.js';
-import { init, render, selectCompany, markReady } from './index.js';
+import { init, render, selectCompany, selectTicker, markReady } from './index.js';
 
 async function bootstrap() {
   wireTopbarEvents();
@@ -21,9 +21,16 @@ async function bootstrap() {
   // Check URL params first, then fall back to sessionStorage
   const params = new URLSearchParams(window.location.search);
   const urlCode = params.get('company_code');
-  const lastCode = urlCode || sessionStorage.getItem('sa.lastCompanyCode');
-  if (lastCode) {
-    try { await selectCompany(lastCode); } catch (e) { log('warn', e.message); }
+  const urlSymbol = params.get('symbol');
+  if (urlCode) {
+    try { await selectCompany(urlCode); } catch (e) { log('warn', e.message); }
+  } else if (urlSymbol) {
+    try { await selectTicker(urlSymbol); } catch (e) { log('warn', e.message); }
+  } else {
+    const lastCode = sessionStorage.getItem('sa.lastCompanyCode');
+    if (lastCode) {
+      try { await selectCompany(lastCode); } catch (e) { log('warn', e.message); }
+    }
   }
 
   render();
