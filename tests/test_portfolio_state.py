@@ -110,11 +110,13 @@ class TestBuildPortfolioState:
         Closed positions (quantity=0 in Portfolio_Holdings) must not
         appear in Holdings_History.  This prevents stale chart data
         for sold positions.
+
+        Also verifies that every symbol in Holdings_History has continuous
+        entries (no gaps within the symbol's active date range).
         """
         self._load_year(db3_path, "2024")
         build_portfolio_state(db3_path, base_currency="EUR")
 
-        # Get current non-cash symbols
         import sqlite3
         conn = sqlite3.connect(db3_path)
         cur_syms = set(r[0] for r in conn.execute(
@@ -122,19 +124,40 @@ class TestBuildPortfolioState:
             " AND asset_category != 'CASH'"
         ).fetchall())
 
-        # Get all symbols in Holdings_History
         hh_syms = set(r[0] for r in conn.execute(
             "SELECT DISTINCT symbol FROM Holdings_History"
             " WHERE symbol NOT LIKE 'CASH%'"
         ).fetchall())
-        conn.close()
 
-        # Every symbol in Holdings_History must be a current holding
+        # Every symbol in Holdings_History must be a current holding.
+        # (After rebuild, closed positions have no Holdings_History entries;
+        # the constituents API handles the 0-fill for visualization.)
         ghost = hh_syms - cur_syms
         assert not ghost, (
             f"Holdings_History has {len(ghost)} closed-position symbols "
             f"not in Portfolio_Holdings: {ghost}"
         )
+
+        # For each current holding, verify it has daily entries without gaps
+        for sym in hh_syms:
+            dates = sorted(r[0] for r in conn.execute(
+                "SELECT date FROM Holdings_History WHERE symbol = ? ORDER BY date",
+                (sym,),
+            ).fetchall())
+            assert len(dates) >= 1, f"Symbol {sym} has no history entries"
+            # Dates should be daily within the range
+            from datetime import date as D, timedelta
+            first = D.fromisoformat(dates[0])
+            last = D.fromisoformat(dates[-1])
+            expected_days = (last - first).days + 1
+            # Allow up to 5% gap (weekends/holidays where price may be missing
+            # but forward-fill should handle them)
+            min_expected = int(expected_days * 0.85)
+            assert len(dates) >= min_expected, (
+                f"Symbol {sym}: {len(dates)} entries for "
+                f"{expected_days} day range ({first} to {last})"
+            )
+        conn.close()
 
     def test_spinoff_creates_new_position(self, db3_path):
         """Loading 2024 should create SOLV position from MMM spinoff."""

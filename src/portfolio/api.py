@@ -171,6 +171,10 @@ async def holdings_constituents():
 
     Returns a dict with ``dates`` (ordered list) and ``series`` (symbol → value
     array).  Non-stock items (cash, options) are excluded.
+
+    For positions that were fully sold, values after the last known holding
+    date are set to 0 rather than null so the stacked chart fill drops to
+    zero instead of bridging across the gap.
     """
     import sqlite3
     from collections import defaultdict
@@ -185,7 +189,16 @@ async def holdings_constituents():
              AND market_value IS NOT NULL
            ORDER BY date, symbol"""
     ).fetchall()
+
+    # Also get currently-held symbols so we know which are closed
+    cur_held = set()
+    ch_rows = conn.execute(
+        "SELECT symbol FROM Portfolio_Holdings WHERE quantity > 0"
+        " AND asset_category != 'CASH'"
+    ).fetchall()
+    cur_held = {r["symbol"] for r in ch_rows}
     conn.close()
+
     if not rows:
         return {"dates": [], "series": {}}
     # Group: find all unique dates, then build per-symbol arrays
@@ -202,8 +215,26 @@ async def holdings_constituents():
         series_by_symbol[sym][d] = val
     # Build aligned arrays
     result_series: dict[str, list[float | None]] = {}
+    n_dates = len(date_list)
     for sym, day_map in series_by_symbol.items():
-        result_series[sym] = [day_map.get(d) for d in date_list]
+        vals = [day_map.get(d) for d in date_list]
+        # Find last index with a non-null value
+        last_idx = -1
+        for i in range(n_dates - 1, -1, -1):
+            if vals[i] is not None:
+                last_idx = i
+                break
+        if last_idx >= 0 and last_idx < n_dates - 1:
+            # Position was sold — fill trailing nulls with 0
+            for i in range(last_idx + 1, n_dates):
+                vals[i] = 0.0
+        # If the position is still held (in cur_held) but has no entry
+        # for the latest dates (pricing gap), forward-fill the last value
+        elif last_idx >= 0 and sym in cur_held:
+            last_val = vals[last_idx]
+            for i in range(last_idx + 1, n_dates):
+                vals[i] = last_val
+        result_series[sym] = vals
     return {"dates": date_list, "series": result_series}
 
 

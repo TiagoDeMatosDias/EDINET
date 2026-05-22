@@ -622,41 +622,44 @@ class TestPortfolioValueChart:
         assert len(legend.split('|')) >= 2, \
             f"Expected multiple legend items, got: {legend}"
 
-    def test_constituents_excludes_closed_positions_after_rebuild(self, page):
-        """After rebuild, constituents API only returns currently-held symbols."""
+    def test_constituents_zeros_after_position_closed(self, page):
+        """After a position is sold, its value in the constituent series
+        must be 0 (not null) for dates after the last holding entry,
+        so the chart fill drops to zero instead of bridging across the gap."""
         _upload_xml(page, "2024")
         _rebuild_state(page)
 
         page.goto(f"{BASE_URL}/portfolio")
         page.wait_for_selector("#pf-tabs", timeout=5000)
 
-        # Fetch both APIs
+        # Fetch constituents
         result = page.evaluate("""
             async () => {
-                const [constituents, holdings] = await Promise.all([
-                    fetch('/api/portfolio/holdings/history/constituents').then(r => r.json()),
-                    fetch('/api/portfolio/holdings').then(r => r.json()),
-                ]);
-                return {constituents, holdings};
+                const r = await fetch('/api/portfolio/holdings/history/constituents');
+                return await r.json();
             }
         """)
 
-        constituents = result["constituents"]
-        holdings = result["holdings"]
+        constituents = result
+        dates = constituents.get("dates", [])
+        series = constituents.get("series", {})
+        assert dates, "Constituents returned no dates"
+        assert series, "Constituents returned no series"
 
-        # Current non-cash symbols
-        current_syms = {
-            h["symbol"] for h in holdings
-            if h.get("asset_category") != "CASH" and not (h.get("symbol") or "").startswith("CASH")
-        }
-
-        # Constituents symbols
-        const_syms = set(constituents.get("series", {}).keys())
-
-        # Every constituent symbol must have a non-zero-quantity current holding
-        missing_from_current = const_syms - current_syms
-        assert not missing_from_current, \
-            f"Constituents has symbols NOT in current holdings: {missing_from_current}"
+        # For every symbol, verify: no null values AFTER the last non-null.
+        # (Before the first purchase, null is fine — it creates a proper gap.)
+        for sym, vals in series.items():
+            last_nonnull = -1
+            for i in range(len(vals) - 1, -1, -1):
+                if vals[i] is not None:
+                    last_nonnull = i
+                    break
+            if last_nonnull >= 0:
+                for i in range(last_nonnull + 1, len(vals)):
+                    assert vals[i] is not None, (
+                        f"Symbol {sym}: value at index {i} (date {dates[i]}) "
+                        f"is null after last holding at index {last_nonnull} (date {dates[last_nonnull]})"
+                    )
 
 
 # ============================================================
