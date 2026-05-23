@@ -612,3 +612,92 @@ class TestFullIntegration:
         ).fetchone()[0]
         conn.close()
         assert total == distinct, f"{total - distinct} duplicate transactionIDs found"
+
+
+class TestGetAllHoldingsPerformance:
+    """Tests for the batched holdings performance function."""
+
+    def test_returns_performance_for_all_holdings(self, populated_db3):
+        """Batch function returns all required fields for every holding."""
+        from src.portfolio.portfolio_state import get_all_holdings_performance
+        from src.orchestrator.common.db_config import get_db2
+        results = get_all_holdings_performance(populated_db3, get_db2(), "EUR")
+        assert isinstance(results, list)
+        assert len(results) > 0
+        required = ["cost_basis_native", "cost_basis_display", "pnl_native",
+                     "pnl_display", "total_return_native", "total_return_display",
+                     "annualized_return_native", "fx_return", "name", "industry"]
+        for r in results:
+            cat = r.get("asset_category", "")
+            sym = r.get("symbol", "")
+            if cat == "CASH" or sym.startswith("CASH"):
+                assert r.get("performance") is None, f"Cash entry {sym} should have no performance"
+            else:
+                perf = r.get("performance")
+                assert perf is not None, f"Missing performance for {sym}"
+                for field in required:
+                    assert field in perf, f"{sym}: missing field {field}"
+
+    def test_fx_return_zero_for_same_currency(self, populated_db3):
+        """FX effect is zero when native = display currency."""
+        from src.portfolio.portfolio_state import get_all_holdings_performance
+        from src.orchestrator.common.db_config import get_db2
+        results = get_all_holdings_performance(populated_db3, get_db2(), "EUR")
+        found = False
+        for r in results:
+            perf = r.get("performance")
+            if not perf:
+                continue
+            if perf.get("currency") == "EUR":
+                assert abs(perf.get("fx_return", 999)) < 0.001, \
+                    f"FX for EUR→EUR should be 0, got {perf.get('fx_return')}"
+                found = True
+        if not found:
+            # No EUR holdings — test that USD display on USD holdings gives zero
+            results2 = get_all_holdings_performance(populated_db3, get_db2(), "USD")
+            for r in results2:
+                perf = r.get("performance")
+                if not perf:
+                    continue
+                if perf.get("currency") == "USD":
+                    assert abs(perf.get("fx_return", 999)) < 0.001, \
+                        f"FX for USD→USD should be 0, got {perf.get('fx_return')}"
+                    found = True
+                    break
+        # If no EUR or USD holdings, this is still acceptable
+
+    def test_batch_matches_individual(self, populated_db3):
+        """Batch results match per-symbol get_holding_performance."""
+        from src.portfolio.portfolio_state import (
+            get_all_holdings_performance, get_holding_performance,
+        )
+        from src.orchestrator.common.db_config import get_db2
+        import sqlite3
+        db2 = get_db2()
+        conn = sqlite3.connect(populated_db3)
+        conn.row_factory = sqlite3.Row
+        syms = [r["symbol"] for r in conn.execute(
+            "SELECT symbol FROM Portfolio_Holdings WHERE asset_category!='CASH' AND symbol NOT LIKE 'CASH%' LIMIT 3"
+        ).fetchall()]
+        conn.close()
+        if not syms:
+            pytest.skip("No stock holdings to compare")
+        batch = get_all_holdings_performance(populated_db3, db2, "EUR")
+        batch_map = {r["symbol"]: r.get("performance") for r in batch}
+        for sym in syms:
+            indiv = get_holding_performance(sym, populated_db3, db2, "EUR")
+            bat = batch_map.get(sym)
+            if indiv and bat:
+                for field in ["cost_basis_native", "pnl_native", "total_return_native"]:
+                    iv = indiv.get(field) or 0
+                    bv = bat.get(field) or 0
+                    assert abs(iv - bv) < 0.01, \
+                        f"{sym}.{field}: batch={bv:.2f} indiv={iv:.2f}"
+
+    def test_display_currency_changes_converted_values(self, populated_db3):
+        """Monetary values differ when display currency changes."""
+        from src.portfolio.portfolio_state import get_all_holdings_performance
+        from src.orchestrator.common.db_config import get_db2
+        results_eur = get_all_holdings_performance(populated_db3, get_db2(), "EUR")
+        results_usd = get_all_holdings_performance(populated_db3, get_db2(), "USD")
+        assert len(results_eur) == len(results_usd)

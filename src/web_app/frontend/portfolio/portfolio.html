@@ -7,6 +7,7 @@
     <title>Shade Research — Portfolio</title>
     <link rel="stylesheet" href="/assets/common/styles.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
   </head>
   <style>
     .chart-expanded {
@@ -44,6 +45,116 @@
     }
     .panel:hover .panel-body::after { opacity: 0.6; }
     .chart-expanded .panel-body::after { content: '✕'; opacity: 0.8; font-size: 22px; top: 8px; right: 14px; }
+    /* Column visibility popover */
+    .pf-popover {
+      position:absolute;top:44px;right:8px;z-index:100;
+      background:var(--panel-bg, #161b22);
+      border:1px solid var(--line, #243244);
+      border-radius:6px;padding:8px 0;
+      min-width:200px;max-height:360px;overflow-y:auto;
+      box-shadow:0 8px 24px rgba(0,0,0,0.5);
+    }
+    .pf-popover-header {
+      padding:6px 10px 4px;
+      border-bottom:1px solid var(--line, #243244);
+      margin-bottom:2px;
+    }
+    .pf-popover-list { display:flex;flex-direction:column; }
+    .pf-popover-list label {
+      display:grid;grid-template-columns:16px 1fr auto;align-items:center;gap:6px;
+      padding:5px 10px;font-size:11px;color:var(--text, #d9e2f2);cursor:pointer;
+    }
+    .pf-popover-list label input[type=checkbox] { margin:0;width:14px;height:14px;accent-color:var(--accent,#58a6ff); }
+    .pf-popover-list label span { text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0; }
+    .pf-popover-list label button.pf-pin-btn {
+      width:20px;height:20px;display:flex;align-items:center;justify-content:center;
+      border-radius:3px;opacity:0.35;transition:opacity 0.15s;
+      font-size:10px;color:var(--muted, #8ea0b8);
+    }
+    .pf-popover-list label button.pf-pin-btn.pf-pinned {
+      opacity:0.85;color:var(--accent, #58a6ff);
+    }
+    .pf-popover-list label button.pf-pin-btn:hover { opacity:1;background:rgba(88,166,255,0.10); }
+    .pf-popover-list label:hover { background:rgba(88,166,255,0.08); }
+    .pf-col-visible { display:table-cell !important; }
+    .pf-col-hidden { display:none !important; }
+    /* Sticky pinned columns */
+    .pf-sticky-col {
+      position:sticky !important; z-index:2;
+      background:var(--panel-bg, #161b22);
+    }
+    .pf-sticky-col-last { box-shadow:2px 0 6px rgba(0,0,0,0.4); }
+    /* Summary row */
+    .pf-summary-row td {
+      font-weight:600;font-size:12px;
+      background:rgba(88,166,255,0.08);
+      border-top:2px solid var(--accent, #58a6ff);
+    }
+    /* Drag-over indicator */
+    .pf-drag-over { background:rgba(88,166,255,0.15) !important; }
+    /* Column filter popup */
+    .pf-filter-popup {
+      position:fixed;z-index:200;min-width:200px;width:280px;min-height:200px;
+      max-height:80vh;display:grid;grid-template-rows:auto 1fr auto;
+      background:var(--panel-bg,#161b22);border:1px solid var(--accent,#58a6ff);
+      border-radius:6px;padding:10px;box-shadow:0 4px 16px rgba(0,0,0,0.5);
+      font-size:11px;color:var(--text,#d9e2f2);
+      resize:both;overflow:hidden;
+    }
+    .pf-filter-popup .pf-filter-body {
+      display:grid;grid-template-rows:auto auto 1fr;min-height:0;overflow:hidden;
+    }
+    .pf-filter-popup .pf-filter-values {
+      overflow-y:auto;min-height:0;margin:4px 0;
+    }
+    .pf-filter-popup .pf-filter-actions {
+      display:flex;gap:4px;margin-top:8px;flex-shrink:0;
+    }
+    .pf-filter-popup .pf-filter-row {
+      display:flex;align-items:center;gap:6px;padding:3px 0;
+    }
+    .pf-filter-popup input[type=text],.pf-filter-popup input[type=number] {
+      padding:4px 6px;font-size:11px;min-width:80px;width:120px;
+      background:var(--bg,#0b1018);color:var(--text,#d9e2f2);
+      border:1px solid var(--line,#243244);border-radius:3px;
+    }
+    .pf-filter-popup select {
+      padding:3px 4px;font-size:10px;
+      background:var(--bg,#0b1018);color:var(--text,#d9e2f2);
+      border:1px solid var(--line,#243244);border-radius:3px;
+    }
+    .pf-filter-popup .pf-check-row {
+      display:grid;grid-template-columns:20px 1fr;align-items:center;gap:6px;
+      padding:2px 0;cursor:pointer;font-size:11px;
+    }
+    .pf-filter-popup .pf-check-row input[type=checkbox] {
+      margin:0;width:16px;height:16px;accent-color:var(--accent,#58a6ff);
+    }
+    .pf-filter-popup .pf-check-row:hover { background:rgba(88,166,255,0.06); }
+    .pf-filter-values { max-height:180px;overflow-y:auto;margin:4px 0; }
+    /* Chart loading overlay */
+    /* Chart loading overlay (absolute, for fixed-height chart canvases) */
+    .pf-chart-loading {
+      position:absolute;inset:0;z-index:50;
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      background:rgba(11,16,24,0.75);gap:10px;
+    }
+    .pf-table-loading {
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      gap:12px;padding:60px 20px;
+      background:rgba(88,166,255,0.04);
+      border:1px dashed var(--line, #243244);
+      border-radius:6px;
+    }
+    .pf-chart-loading-spinner {
+      width:36px;height:36px;border:3px solid var(--line, #243244);
+      border-top-color:var(--accent, #58a6ff);border-radius:50%;
+      animation:pf-spin 0.8s linear infinite;
+    }
+    @keyframes pf-spin { to { transform:rotate(360deg); } }
+    .pf-chart-loading-text {
+      font-size:12px;color:var(--muted, #8ea0b8);
+    }
   </style>
   <body>
     <div class="app-shell" style="grid-template-rows:52px 1fr;">
@@ -72,31 +183,15 @@
       <main class="workspace" style="overflow-y:auto;">
         <section class="view is-active" style="overflow-y:auto;height:auto;min-height:100%;"
                  data-view-panel="portfolio">
-          <div id="pf-root" style="padding:12px;max-width:1400px;margin:0 auto;">
+          <div id="pf-root" style="padding:12px;max-width:100%;margin:0 auto;">
 
-            <!-- Summary bar — always visible -->
-            <div id="pf-summary-bar" class="panel" style="margin-bottom:12px;">
-              <div class="panel-body" style="display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
-                <div class="summary-stat">
-                  <span class="summary-label">Transactions</span>
-                  <span class="summary-value" id="pf-stat-txn">—</span>
-                </div>
-                <div class="summary-stat">
-                  <span class="summary-label">Holdings</span>
-                  <span class="summary-value" id="pf-stat-holdings">—</span>
-                </div>
-                <div class="summary-stat">
-                  <span class="summary-label">Date Range</span>
-                  <span class="summary-value" id="pf-stat-dates">—</span>
-                </div>
-                <div class="summary-stat">
-                  <span class="summary-label">Portfolio Value</span>
-                  <span class="summary-value" id="pf-stat-value">—</span>
-                </div>
-                <button class="btn-ghost btn-sm" id="pf-rebuild-btn" style="margin-left:auto;">
-                  Rebuild State
-                </button>
-              </div>
+            <!-- Summary bar — compact single row -->
+            <div id="pf-summary-bar" style="display:flex;align-items:center;gap:8px;padding:4px 12px;margin-bottom:8px;background:var(--panel,#111c2a);border:1px solid var(--line,#243244);border-radius:4px;font-size:11px;">
+              <span style="color:var(--muted);flex-shrink:0;">Range</span>
+              <span id="pf-stat-dates" style="background:rgba(88,166,255,0.08);color:var(--accent);padding:1px 8px;border-radius:3px;font-family:monospace;flex-shrink:0;">—</span>
+              <span style="color:var(--muted);flex-shrink:0;">Txns</span>
+              <span id="pf-stat-txn" style="background:rgba(68,209,123,0.08);color:var(--success);padding:1px 8px;border-radius:3px;font-family:monospace;flex-shrink:0;">—</span>
+              <button class="btn-ghost btn-sm" id="pf-rebuild-btn" style="margin-left:auto;flex-shrink:0;font-size:10px;">Rebuild</button>
             </div>
 
             <!-- Tab bar -->
@@ -155,16 +250,25 @@
               <div class="panel" style="margin-top:12px;">
                 <div class="panel-head">
                   <div class="panel-title" id="pf-holdings-title">Current Holdings</div>
-                  <div class="panel-actions">
-                    <span class="pf-view-toggle">
-                      <button class="pf-view-btn is-active" data-view="current">Current</button>
-                      <button class="pf-view-btn" data-view="closed">Closed</button>
-                      <button class="pf-view-btn" data-view="all">All</button>
-                    </span>
+                  <div class="panel-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                    <label style="font-size:11px;color:var(--muted);">Display Currency</label>
+                    <select id="pf-display-currency" class="input-sm" style="width:90px;"></select>
+                    <button class="btn-ghost btn-sm" id="pf-columns-btn" title="Select visible columns">⚙ Columns</button>
                     <span style="font-size:11px;color:var(--muted);" id="pf-holdings-count"></span>
                   </div>
                 </div>
-                <div class="panel-body" style="overflow-x:auto;">
+                <!-- Column visibility popover -->
+                <div id="pf-columns-popover" class="pf-popover" style="display:none;">
+                  <div class="pf-popover-header">
+                    <input type="text" id="pf-columns-search" class="input-sm" placeholder="Search columns…" style="width:100%;box-sizing:border-box;margin-bottom:4px;" />
+                    <div style="display:flex;gap:6px;">
+                      <button class="btn-ghost btn-sm" id="pf-cols-select-all" style="flex:1;font-size:10px;">Select All</button>
+                      <button class="btn-ghost btn-sm" id="pf-cols-select-none" style="flex:1;font-size:10px;">Select None</button>
+                    </div>
+                  </div>
+                  <div class="pf-popover-list" id="pf-columns-list"></div>
+                </div>
+                <div class="panel-body" style="overflow-x:auto;position:relative;min-height:120px;">
                   <div id="pf-holdings-table">Loading…</div>
                 </div>
               </div>
@@ -210,28 +314,38 @@
             <!-- Charts Tab -->
             <!-- ======================================================== -->
             <div class="tab-panel" data-panel="charts">
-              <div class="panel" style="margin-top:12px;">
+              <!-- Global chart settings -->
+              <div class="panel" style="margin-top:12px;background:rgba(88,166,255,0.06);border-left:3px solid var(--accent);">
                 <div class="panel-head">
-                  <div class="panel-title">Cumulative Returns</div>
+                  <div class="panel-title">Chart Settings</div>
                   <div class="panel-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                    <label style="font-size:11px;color:var(--muted);">Display Currency</label>
                     <select id="pf-chart-currency" class="input-sm">
                       <option value="EUR">EUR</option>
                       <option value="USD">USD</option>
                       <option value="JPY">JPY</option>
                     </select>
-                    <input type="text" id="pf-chart-benchmark" class="input-sm" placeholder="Benchmark ticker (e.g. SPY)" style="width:160px;"/>
+                    <label style="font-size:11px;color:var(--muted);margin-left:4px;">Benchmark</label>
+                    <input type="text" id="pf-chart-benchmark" class="input-sm" placeholder="e.g. SPY" style="width:120px;"/>
                     <span style="font-size:10px;color:var(--muted);display:flex;gap:4px;" id="pf-chart-bench-shortcuts">
                       <button class="btn-ghost btn-sm" data-bench="SPY">SPY</button>
                       <button class="btn-ghost btn-sm" data-bench="IVV">IVV</button>
                       <button class="btn-ghost btn-sm" data-bench="VWCE">VWCE</button>
                     </span>
-                    <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer;">
+                    <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer;margin-left:4px;">
                       <input type="checkbox" id="pf-chart-inflation" checked /> Inflation
                     </label>
-                    <button class="btn-primary btn-sm" id="pf-chart-update">Update Charts</button>
+                    <button class="btn-primary btn-sm" id="pf-chart-update">Apply Settings</button>
+                    <span id="pf-chart-currency-note" style="font-size:10px;color:var(--warning);display:none;"></span>
                   </div>
                 </div>
-                <div class="panel-body" style="height:320px;">
+              </div>
+              <!-- Cumulative Returns -->
+              <div class="panel" style="margin-top:12px;">
+                <div class="panel-head">
+                  <div class="panel-title">Cumulative Returns</div>
+                </div>
+                <div class="panel-body" style="height:340px;">
                   <canvas id="pf-equity-chart"></canvas>
                 </div>
               </div>

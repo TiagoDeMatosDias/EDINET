@@ -228,33 +228,45 @@ def _get_benchmark_returns(
     # Build price map
     price_map: dict[str, float] = {row[0]: row[1] for row in rows}
 
-    # If benchmark currency differs from base, fetch FX rates and convert
+    # If benchmark currency differs from base, fetch FX rates and convert.
+    # FX data stored as Ticker='EUR', Currency=XXX with Price = XXX per 1 EUR.
     if bench_currency != base_currency:
-        fx_ticker = f"{bench_currency}{base_currency}_FX"
-        # ECB stores EUR-based rates, so for USD→EUR: use EURUSD_FX
-        # price_EUR = price_USD / EURUSD_FX
-        if bench_currency == "USD" and base_currency == "EUR":
-            fx_ticker = "EURUSD_FX"
+        if base_currency == "EUR":
+            # bench_price / EUR{bench} = EUR_price
             fx_rows = conn.execute(
-                "SELECT Date, Price FROM Stock_Prices WHERE Ticker = ? "
+                "SELECT Date, Price FROM Stock_Prices "
+                "WHERE Ticker = 'EUR' AND Currency = ? "
                 "AND Date >= ? AND Date <= ? ORDER BY Date",
-                (fx_ticker, min_date, max_date),
+                (bench_currency, min_date, max_date),
             ).fetchall()
             fx_map: dict[str, float] = {row[0]: row[1] for row in fx_rows}
-        elif bench_currency == "JPY" and base_currency == "EUR":
-            fx_ticker = "EURJPY_FX"
-            fx_rows = conn.execute(
-                "SELECT Date, Price FROM Stock_Prices WHERE Ticker = ? "
-                "AND Date >= ? AND Date <= ? ORDER BY Date",
-                (fx_ticker, min_date, max_date),
-            ).fetchall()
-            fx_map = {row[0]: row[1] for row in fx_rows}
         else:
-            logger.warning(
-                "No FX conversion from %s to %s available — comparing in native currency",
-                bench_currency, base_currency,
-            )
+            # bench_ccy → EUR → base_ccy: cross_rate = EUR{base} / EUR{bench}
+            fx_bench_rows = conn.execute(
+                "SELECT Date, Price FROM Stock_Prices "
+                "WHERE Ticker = 'EUR' AND Currency = ? "
+                "AND Date >= ? AND Date <= ? ORDER BY Date",
+                (bench_currency, min_date, max_date),
+            ).fetchall()
+            fx_base_rows = conn.execute(
+                "SELECT Date, Price FROM Stock_Prices "
+                "WHERE Ticker = 'EUR' AND Currency = ? "
+                "AND Date >= ? AND Date <= ? ORDER BY Date",
+                (base_currency, min_date, max_date),
+            ).fetchall()
+            fx_bench_map = {row[0]: row[1] for row in fx_bench_rows}
+            fx_base_map = {row[0]: row[1] for row in fx_base_rows}
+            all_d = sorted(set(fx_bench_map.keys()) | set(fx_base_map.keys()))
             fx_map = {}
+            last_b: float | None = None
+            last_b2: float | None = None
+            for d in all_d:
+                if d in fx_bench_map:
+                    last_b = fx_bench_map[d]
+                if d in fx_base_map:
+                    last_b2 = fx_base_map[d]
+                if last_b and last_b2 and last_b > 0:
+                    fx_map[d] = last_b2 / last_b
     else:
         fx_map = {}
 
@@ -390,11 +402,11 @@ def calculate_metrics(
     # using the FX rate on that day, then recompute daily/cumulative returns.
     if base_currency != "EUR":
         import sqlite3 as _sql_fx
-        _fx_ticker = f"EUR{base_currency}_FX"
         _fx_conn = _sql_fx.connect(db2_path)
         _fx_rows = _fx_conn.execute(
-            "SELECT Date, Price FROM Stock_Prices WHERE Ticker = ? ORDER BY Date",
-            (_fx_ticker,),
+            "SELECT Date, Price FROM Stock_Prices "
+            "WHERE Ticker = 'EUR' AND Currency = ? ORDER BY Date",
+            (base_currency,),
         ).fetchall()
         _fx_conn.close()
         if _fx_rows and len(_fx_rows) >= 2:
@@ -498,11 +510,11 @@ def calculate_metrics(
         # using a single rate on total sums is within ±1% for moderate
         # currency moves over typical portfolio lifetimes.
         import sqlite3 as _sql_fx2
-        _fx_ticker = f"EUR{base_currency}_FX"
         _fx_conn2 = _sql_fx2.connect(db2_path)
         _fx_latest = _fx_conn2.execute(
-            "SELECT Price FROM Stock_Prices WHERE Ticker = ? ORDER BY Date DESC LIMIT 1",
-            (_fx_ticker,),
+            "SELECT Price FROM Stock_Prices "
+            "WHERE Ticker = 'EUR' AND Currency = ? ORDER BY Date DESC LIMIT 1",
+            (base_currency,),
         ).fetchone()
         _fx_conn2.close()
         _fx_factor = (_fx_latest[0] if _fx_latest and _fx_latest[0] and _fx_latest[0] > 0 else 1.0)
@@ -571,6 +583,22 @@ def calculate_metrics(
             }
         else:
             result["benchmark"] = {"ticker": benchmark_ticker, "series": []}
+
+    # --- Portfolio cumulative return series (for equity chart) ---
+    # Already computed in target currency above (crs).  Align with dates
+    # so the frontend equity chart can use a single data source for
+    # portfolio, benchmark, and inflation lines.
+    portfolio_series: list[dict] = []
+    for i, d in enumerate(dates):
+        cr_val = crs[i] if i < len(crs) else 0.0
+        # Skip leading zeros before portfolio has any value
+        if i == 0 or values[i] > 0:
+            portfolio_series.append({
+                "date": d,
+                "cumulative_return": round(float(cr_val), 6),
+                "total_value": round(float(values[i]), 2),
+            })
+    result["series"] = portfolio_series
 
     # --- Inflation series (for chart) ---
     import sqlite3 as _sql2

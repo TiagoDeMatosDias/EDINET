@@ -26,8 +26,14 @@ from src.portfolio.price_fetcher import ensure_prices_for_tickers, _build_curren
 from src.portfolio.portfolio_state import (
     build_portfolio_state, get_daily_values, get_current_holdings,
     get_holdings_at_date, get_holding_performance, get_closed_positions,
+    get_all_holdings_performance,
 )
 from src.portfolio.performance import calculate_metrics, get_risk_free_rate
+from src.portfolio.currency import (
+    get_fx_series, convert_series, get_rate_at_date,
+    get_available_display_currencies, convert_native_to_display,
+    get_rate_at_date_any,
+)
 from src.orchestrator.common.db_config import get_db2, get_db3
 
 logger = logging.getLogger(__name__)
@@ -149,24 +155,60 @@ async def holdings():
 
 
 @router.get("/holdings/closed")
-async def holdings_closed():
-    """Positions that were fully closed and are no longer held."""
-    return await asyncio.to_thread(get_closed_positions, get_db3())
+async def holdings_closed(
+    base_currency: str = Query("EUR"),
+):
+    """Positions that were fully closed and are no longer held.
+
+    Monetary values are converted from each position's native currency to
+    *base_currency* using FX rates at the last trade date.
+    """
+    result = await asyncio.to_thread(get_closed_positions, get_db3())
+    if result:
+        from src.portfolio.currency import get_rate_at_date_any
+        for r in result:
+            native_ccy = r.get("currency", "EUR")
+            if native_ccy == base_currency or not native_ccy:
+                continue
+            ref_date = r.get("last_trade_date") or r.get("first_trade_date")
+            if not ref_date:
+                continue
+            rate = get_rate_at_date_any(native_ccy, base_currency, ref_date, get_db2())
+            if rate:
+                r["realized_pnl"] = round((r["realized_pnl"] or 0) * rate, 2)
+                r["total_cost"] = round((r["total_cost"] or 0) * rate, 2)
+                r["total_proceeds"] = round((r["total_proceeds"] or 0) * rate, 2)
+    return result
 
 
 @router.get("/holdings/history")
 async def holdings_history(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
+    base_currency: str = Query("EUR"),
 ):
-    """Daily portfolio value series."""
-    return await asyncio.to_thread(
+    """Daily portfolio value series, converted to *base_currency*."""
+    result = await asyncio.to_thread(
         get_daily_values, get_db3(), start_date, end_date
     )
+    if base_currency != "EUR" and result:
+        fx = get_fx_series("EUR", base_currency, get_db2())
+        if fx:
+            monetary_keys = ["total_value", "cash_balance", "stock_value",
+                           "option_value", "dividend_income", "net_inflow"]
+            for r in result:
+                rate = get_rate_at_date(r["date"], fx)
+                if rate:
+                    for k in monetary_keys:
+                        if r.get(k) is not None:
+                            r[k] = round(r[k] * rate, 2)
+    return result
 
 
 @router.get("/holdings/history/constituents")
-async def holdings_constituents():
+async def holdings_constituents(
+    base_currency: str = Query("EUR"),
+):
     """Daily market value per holding (for stacked breakdown chart).
 
     Returns a dict with ``dates`` (ordered list) and ``series`` (symbol → value
@@ -175,6 +217,8 @@ async def holdings_constituents():
     For positions that were fully sold, values after the last known holding
     date are set to 0 rather than null so the stacked chart fill drops to
     zero instead of bridging across the gap.
+
+    All values are converted to *base_currency*.
     """
     import sqlite3
     from collections import defaultdict
@@ -235,14 +279,21 @@ async def holdings_constituents():
             for i in range(last_idx + 1, n_dates):
                 vals[i] = last_val
         result_series[sym] = vals
+    # Currency conversion: multiply all market values by FX rate
+    if base_currency != "EUR":
+        fx = get_fx_series("EUR", base_currency, get_db2())
+        if fx:
+            for sym in result_series:
+                result_series[sym] = convert_series(result_series[sym], date_list, fx)
     return {"dates": date_list, "series": result_series}
 
 
 @router.get("/dividends/history")
 async def dividends_history(
     period: str = Query("monthly", description="Aggregation: monthly, quarterly, or yearly"),
+    base_currency: str = Query("EUR"),
 ):
-    """Dividend income aggregated by period.
+    """Dividend income aggregated by period, converted to *base_currency*.
 
     Reads ``dividend_income`` from ``Portfolio_Daily`` and buckets by
     month, quarter, or year.  Returns ``[{period, gross, tax, net}, ...]``.
@@ -316,6 +367,25 @@ async def dividends_history(
             "tax": round(b["tax"], 2),
             "net": round(b["net"], 2),
         })
+    # Currency conversion: apply period-start FX rate (backwards-filled)
+    if base_currency != "EUR" and result:
+        fx = get_fx_series("EUR", base_currency, get_db2())
+        if fx:
+            for r_entry in result:
+                key = r_entry["period"]
+                if "-Q" in key:
+                    yr, q = key.split("-Q")
+                    m = str((int(q) - 1) * 3 + 1).zfill(2)
+                    ref_date = f"{yr}-{m}-01"
+                elif len(key) == 4:
+                    ref_date = f"{key}-01-01"
+                else:
+                    ref_date = f"{key}-01"
+                rate = get_rate_at_date(ref_date, fx)
+                if rate:
+                    r_entry["gross"] = round(r_entry["gross"] * rate, 2)
+                    r_entry["tax"] = round(r_entry["tax"] * rate, 2)
+                    r_entry["net"] = round(r_entry["net"] * rate, 2)
     return result
 
 
@@ -352,22 +422,80 @@ async def holding_history(symbol: str):
     return [dict(r) for r in rows]
 
 
+@router.get("/display-currencies")
+async def display_currencies():
+    """Return the list of currencies available as display currency.
+
+    Scans Stock_Prices for available FX pairs (EUR{XXX}_FX) and returns
+    each target currency code plus EUR itself.
+    """
+    return await asyncio.to_thread(get_available_display_currencies, get_db2())
+
+
 @router.get("/holdings/performance")
-async def holdings_with_performance():
-    """Current holdings enriched with per-symbol performance metrics."""
-    holdings = await asyncio.to_thread(get_current_holdings, get_db3())
-    result = []
-    for h in holdings:
-        sym = h["symbol"]
-        # Skip cash rows
-        if h["asset_category"] == "CASH" or sym.startswith("CASH"):
-            result.append({**h, "performance": None})
-            continue
-        try:
-            perf = await asyncio.to_thread(get_holding_performance, sym, get_db3())
-        except Exception:
-            perf = None
-        result.append({**h, "performance": perf})
+async def holdings_with_performance(
+    display_currency: str = Query("EUR"),
+    include_closed: bool = Query(False),
+):
+    """Current holdings enriched with per-symbol performance metrics.
+
+    When *include_closed* is True, closed positions are included with
+    ``is_open = False`` so the frontend can filter by open/closed status.
+    """
+    result = await asyncio.to_thread(
+        get_all_holdings_performance, get_db3(), get_db2(), display_currency,
+    )
+    # Mark all current holdings as open
+    for r in result:
+        r["is_open"] = True
+
+    if include_closed:
+        closed = await asyncio.to_thread(get_closed_positions, get_db3())
+        from src.portfolio.currency import get_rate_at_date_any
+        for cp in closed:
+            native_ccy = cp.get("currency", "EUR")
+            ref_date = cp.get("last_trade_date") or cp.get("first_trade_date")
+            rate = 1.0
+            if native_ccy != display_currency and ref_date:
+                r = get_rate_at_date_any(native_ccy, display_currency, ref_date, get_db2())
+                if r:
+                    rate = r
+            result.append({
+                "symbol": cp["symbol"],
+                "asset_category": cp.get("asset_category", "STK"),
+                "quantity": 0,
+                "avg_cost": cp["total_cost"] / (cp.get("total_sold") or 1) if cp.get("total_sold") else None,
+                "market_price": None,
+                "market_value": 0,
+                "market_value_native": 0,
+                "currency": cp.get("currency", ""),
+                "fx_rate": None,
+                "is_option": cp.get("asset_category") == "OPT",
+                "is_open": False,
+                "performance": {
+                    "symbol": cp["symbol"],
+                    "currency": cp.get("currency", ""),
+                    "display_currency": display_currency,
+                    "realized_pnl": round((cp.get("realized_pnl") or 0) * rate, 2),
+                    "total_cost": round((cp.get("total_cost") or 0) * rate, 2),
+                    "total_proceeds": round((cp.get("total_proceeds") or 0) * rate, 2),
+                    "total_bought": cp.get("total_bought", 0),
+                    "total_sold": cp.get("total_sold", 0),
+                    "first_trade_date": cp.get("first_trade_date"),
+                    "last_trade_date": cp.get("last_trade_date"),
+                    "asset_category": cp.get("asset_category"),
+                    # Closed positions have no current value / daily returns
+                    "current_value": 0, "current_value_native": 0, "current_value_display": 0,
+                    "cost_basis_native": round(cp.get("total_cost") or 0, 2),
+                    "cost_basis_display": round((cp.get("total_cost") or 0) * rate, 2),
+                    "pnl_native": 0, "pnl_display": round((cp.get("realized_pnl") or 0) * rate, 2),
+                    "total_return_native": 0, "total_return_display": 0,
+                    "annualized_return_native": 0, "annualized_return": 0,
+                    "fx_return": 0,
+                    "name": cp.get("description"),
+                    "industry": None,
+                },
+            })
     return result
 
 
@@ -489,6 +617,15 @@ async def dividends_yoy(
         else:
             yoy_growth.append(None)
 
+    # Currency conversion
+    if base_currency != "EUR":
+        fx_series = get_fx_series("EUR", base_currency, get_db2())
+        if fx_series:
+            for i, y in enumerate(years):
+                ref_date = f"{y}-06-30"  # mid-year approximation
+                rate = get_rate_at_date(ref_date, fx_series)
+                if rate and dividends[i]:
+                    dividends[i] = round(dividends[i] * rate, 2)
     return {
         "years": years,
         "dividends": dividends,
@@ -750,11 +887,14 @@ async def returns_by_company():
             "dividend_return": dividend_arr,
         }
 
-    # Compute total_return across all years for sorting
+    # Compute cumulative total_return across all years (compound, not sum)
     for sym in result:
         r = result[sym]
-        total_all = sum(v for v in r["total_return"] if v is not None)
-        r["_total_all_years"] = round(total_all, 2)
+        cumulative = 1.0
+        for v in r["total_return"]:
+            if v is not None:
+                cumulative *= (1 + v / 100)
+        r["_total_all_years"] = round((cumulative - 1) * 100, 2)
 
     return {"years": years, "companies": result}
 
@@ -768,33 +908,40 @@ async def returns_money_weighted():
 
     Modified Dietz:
         Return = (end_val - start_val - net_cf) / (start_val + Σ w_i × cf_i)
-    where w_i = days remaining in year / total days in year.
+    where w_i = days remaining in holding period / total days in period.
+
+    When a position is fully closed during the year, the holding period
+    ends at the sale date and *end_val* is set to 0 (the position no
+    longer exists).  This prevents the denominator from collapsing to
+    near-zero values that produce spurious extreme returns.
     """
     import sqlite3
     from collections import defaultdict
-    from datetime import date as D, timedelta
+    from datetime import date as D
 
     db3_path = get_db3()
     conn = sqlite3.connect(db3_path)
     conn.row_factory = sqlite3.Row
 
-    # Holdings_History: first/last value per symbol per year
+    # Holdings_History: use market_value_native for native-currency
+    # MW returns that match the holdings tab.
     hh_rows = conn.execute("""
-        SELECT symbol, date, market_value
+        SELECT symbol, date, market_value, market_value_native, quantity
         FROM Holdings_History
         WHERE symbol NOT LIKE 'CASH%'
           AND is_option = 0
-          AND market_value IS NOT NULL
+          AND market_value_native IS NOT NULL
         ORDER BY symbol, date
     """).fetchall()
 
-    # Trade transactions: buys and sells per symbol per year (EUR)
+    # Trade transactions: use raw trade_money (native currency).
+    # Cancellation trades have negative trade_money and net correctly.
     trade_rows = conn.execute("""
         SELECT symbol, trade_date, buy_sell,
-               ABS(trade_money) * COALESCE(fx_rate_to_base, 1) AS amount_eur
+               trade_money AS amount_native
         FROM Transactions
         WHERE activity_type = 'TRADE'
-          AND buy_sell IN ('BUY', 'SELL')
+          AND buy_sell IN ('BUY', 'SELL', 'BUY (Ca.)')
           AND symbol NOT LIKE 'CASH%'
         ORDER BY symbol, trade_date
     """).fetchall()
@@ -835,6 +982,33 @@ async def returns_money_weighted():
 
         ret_arr: list[float | None] = []
 
+        # ── Full-period total return ──
+        # Used for the "All Years" view.  amount_eur is now signed:
+        # positive = money in, negative = money out.  Cancellation
+        # trades have the opposite sign of their pair, so they net
+        # correctly when summed.
+        all_trades = []
+        for yt in years:
+            all_trades.extend(sym_trades.get(sym, {}).get(yt, []))
+        # Sum signed amounts per direction: cancellations (BUY (Ca.))
+        # have negative amount_eur and must net against original buys.
+        total_invested = sum(
+            t["amount_native"] for t in all_trades
+            if t["buy_sell"] in ("BUY", "BUY (Ca.)")
+        )
+        total_withdrawn = sum(
+            -t["amount_native"] for t in all_trades if t["buy_sell"] == "SELL"
+        )
+        # If still held, add current market value as "returnable"
+        last_entry_all = entries[-1]
+        last_date = D.fromisoformat(last_entry_all["date"])
+        if (D.today() - last_date).days < 7:
+            total_withdrawn += last_entry_all["market_value_native"] or last_entry_all["market_value"] or 0
+        full_total_return = round(
+            ((total_withdrawn / total_invested - 1) * 100) if total_invested > 0 else 0,
+            2,
+        )
+
         for y in years:
             y_str = str(y)
             year_entries = [e for e in entries if e["date"].startswith(y_str)]
@@ -842,68 +1016,126 @@ async def returns_money_weighted():
                 ret_arr.append(None)
                 continue
 
-            start_val = year_entries[0]["market_value"] or 0
-            end_val = year_entries[-1]["market_value"] or 0
-
+            start_val = year_entries[0]["market_value_native"] or year_entries[0]["market_value"] or 0
             if start_val <= 0:
                 ret_arr.append(None)
                 continue
+
+            last_entry = year_entries[-1]
+            last_entry_date = last_entry["date"]
+
+            year_end = D(y, 12, 31)
 
             # Collect cash flows from trades in this year
             trades = sym_trades.get(sym, {}).get(y, [])
             net_cf = 0.0
             weighted_cf = 0.0
 
-            year_end = D(y, 12, 31)
-            days_in_year = 366 if (y % 4 == 0 and y % 100 != 0) or y % 400 == 0 else 365
+            # ── Determine the holding period ──────────────────────────
+            # Key insight: if the position was first acquired during this
+            # year (no entries near Jan 1), we must NOT use the first
+            # Holdings_History value as V_start — it already includes the
+            # purchase capital, which would double-count when the BUY CF
+            # is also added to the denominator.
+            #
+            # Solution: for new positions, V_start = 0 and ALL trades
+            # (including the initial buy) contribute to CFs.  The period
+            # starts at the first BUY trade date.
+            first_entry_date = year_entries[0]["date"]
+            position_existed_at_year_start = first_entry_date <= f"{y}-01-07"
 
+            # Find last sell trade date this year
+            last_sell_date: str | None = None
+            for t in trades:
+                if t["buy_sell"] == "SELL" and t["trade_date"] > (last_sell_date or ""):
+                    last_sell_date = t["trade_date"]
+
+            position_closed = False
+            period_end = year_end
+
+            if last_sell_date and last_entry_date <= last_sell_date:
+                has_entries_after_sell = any(
+                    e["date"] > last_sell_date for e in year_entries
+                )
+                if not has_entries_after_sell:
+                    position_closed = True
+                    try:
+                        period_end = D.fromisoformat(last_sell_date)
+                    except ValueError:
+                        period_end = year_end
+
+            if position_existed_at_year_start:
+                # Carried from previous year: V_start is the Jan value
+                actual_start_val = start_val
+                try:
+                    period_start = D(y, 1, 1)
+                except ValueError:
+                    period_start = D.fromisoformat(first_entry_date)
+            else:
+                # New position established this year: V_start = 0,
+                # the initial BUY is a cash flow like any other.
+                actual_start_val = 0.0
+                # Period starts at the first trade (or first entry)
+                first_trade_date = trades[0]["trade_date"] if trades else first_entry_date
+                try:
+                    period_start = D.fromisoformat(first_trade_date)
+                except ValueError:
+                    period_start = D.fromisoformat(first_entry_date)
+
+            effective_days = (period_end - period_start).days + 1
+            effective_days = max(effective_days, 1)
+
+            # ── Cash flow weights ────────────────────────────────────
+            # amount_eur is now signed: positive = money in, negative = out.
             for t in trades:
                 td = t["trade_date"]
-                tm = t["amount_eur"] or 0
-                bs = t["buy_sell"]
-
-                # BUY = money goes INTO the position → positive CF for denominator
-                # SELL = money LEAVES the position → negative CF
-                if bs == "BUY":
-                    cf_val = tm
-                else:
-                    cf_val = -tm
+                cf_val = t["amount_native"] or 0
 
                 net_cf += cf_val
 
-                # Weight: fraction of year remaining after cash flow
                 try:
                     cf_date = D.fromisoformat(td)
                 except ValueError:
                     continue
-                days_remaining = (year_end - cf_date).days
-                weight = max(days_remaining, 0) / days_in_year
+                days_remaining = (period_end - cf_date).days
+                weight = max(days_remaining, 0) / effective_days
                 weighted_cf += weight * cf_val
 
-            denominator = start_val + weighted_cf
+            denominator = actual_start_val + weighted_cf
+
+            if position_closed:
+                end_val = 0.0
+            else:
+                end_val = last_entry["market_value_native"] or last_entry["market_value"] or 0
+
             if denominator <= 0:
                 ret_arr.append(None)
                 continue
 
-            mw_return = round((end_val - start_val - net_cf) / denominator * 100, 2)
+            mw_return = round((end_val - actual_start_val - net_cf) / denominator * 100, 2)
             ret_arr.append(mw_return)
 
         result[sym] = {
             "return_pct": ret_arr,
+            "_total_return": full_total_return,
         }
 
     return {"years": years, "companies": result}
 
 
 @router.get("/returns/contribution")
-async def returns_contribution():
+async def returns_contribution(
+    base_currency: str = Query("EUR"),
+):
     """Contribution of each company to the portfolio's total return per year.
 
     For each company-year:
-    - Absolute contribution (EUR) = end_val - start_val - net_invested + dividends
+    - Absolute contribution = end_val - start_val - net_invested + dividends
     - Percentage contribution = absolute / portfolio_start_value × 100
 
     This shows which companies drove (or dragged) the portfolio each year.
+
+    Monetary values are converted to *base_currency*.
     """
     import sqlite3
     from collections import defaultdict
@@ -927,12 +1159,14 @@ async def returns_contribution():
         "SELECT date, total_value FROM Portfolio_Daily ORDER BY date"
     ).fetchall()
 
-    # Trade transactions per symbol per year
+    # Trade transactions per symbol per year.
+    # BUYs: use raw trade_money (may be negative for cancellations).
+    # SELLs: trade_money is negative (proceeds), so ABS gives positive.
     trade_rows = conn.execute("""
         SELECT symbol,
                CAST(substr(trade_date, 1, 4) AS INTEGER) AS year,
                SUM(CASE WHEN buy_sell = 'BUY'
-                        THEN ABS(trade_money) * COALESCE(fx_rate_to_base, 1)
+                        THEN trade_money * COALESCE(fx_rate_to_base, 1)
                         ELSE 0 END) AS total_bought_eur,
                SUM(CASE WHEN buy_sell = 'SELL'
                         THEN COALESCE(proceeds, ABS(trade_money)) * COALESCE(fx_rate_to_base, 1)
@@ -1040,6 +1274,26 @@ async def returns_contribution():
             "contribution_eur": eur_arr,
             "contribution_pct": pct_arr,
         }
+
+    # Currency conversion for monetary values
+    if base_currency != "EUR" and result:
+        fx_series = get_fx_series("EUR", base_currency, get_db2())
+        if fx_series:
+            for sym in result:
+                c = result[sym]
+                for i, y in enumerate(years):
+                    v = c["contribution_eur"][i]
+                    if v is not None:
+                        ref_date = f"{y}-06-30"
+                        rate = get_rate_at_date(ref_date, fx_series)
+                        if rate:
+                            c["contribution_eur"][i] = round(v * rate, 2)
+            # Also convert portfolio_start values
+            for i, y in enumerate(years):
+                if pf_arr[i] is not None:
+                    rate = get_rate_at_date(f"{y}-06-30", fx_series)
+                    if rate:
+                        pf_arr[i] = round(pf_arr[i] * rate, 2)
 
     return {"years": years, "companies": result, "portfolio_start": pf_arr}
 

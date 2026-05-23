@@ -82,7 +82,10 @@ def _transform_ecb_fx_to_prices(df: pd.DataFrame) -> pd.DataFrame:
     (units of currency per 1 EUR).  ``N/A`` values and the ``EUR`` column
     (if present) are dropped.
 
-    Returns a DataFrame with columns ``Date``, ``Ticker``, ``Currency``, ``Price``.
+    Returns a DataFrame with columns ``Date``, ``Ticker``, ``Currency``, ``Price``
+    where **Ticker = "EUR"** (the base) and **Currency = the target currency**.
+    Example: Date=2024-01-02, Ticker=EUR, Currency=USD, Price=1.10
+    means 1 EUR = 1.10 USD on that date.
     """
     # Melt: Date stays as identifier, currency columns become rows.
     # The ECB CSV has trailing commas, which pandas parses as unnamed
@@ -100,7 +103,7 @@ def _transform_ecb_fx_to_prices(df: pd.DataFrame) -> pd.DataFrame:
     melted = df.melt(
         id_vars=id_vars,
         value_vars=currency_cols,
-        var_name="Ticker",
+        var_name="Currency",
         value_name="Price",
     )
 
@@ -113,17 +116,17 @@ def _transform_ecb_fx_to_prices(df: pd.DataFrame) -> pd.DataFrame:
         logger.info("Skipped %d ECB FX rows with missing rates.", skipped)
 
     # Drop EUR/EUR (rate is always 1, not useful)
-    melted = melted[melted["Ticker"] != "EUR"].copy()
+    melted = melted[melted["Currency"] != "EUR"].copy()
     logger.info(
         "After filtering: %d FX rows across %s currencies.",
         len(melted),
-        melted["Ticker"].nunique(),
+        melted["Currency"].nunique(),
     )
 
     melted["Date"] = pd.to_datetime(melted["Date"], errors="coerce").dt.strftime(
         "%Y-%m-%d"
     )
-    melted["Currency"] = "EUR"
+    melted["Ticker"] = "EUR"
     melted = melted[["Date", "Ticker", "Currency", "Price"]]
 
     return melted

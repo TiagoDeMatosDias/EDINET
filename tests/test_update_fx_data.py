@@ -60,9 +60,10 @@ class TestTransformEcbFxToPrices(unittest.TestCase):
         result = _transform_ecb_fx_to_prices(raw)
 
         self.assertEqual(len(result), 4)  # 2 dates × 2 currencies
-        self.assertNotIn("EUR", result["Ticker"].values)
-        self.assertEqual(set(result["Ticker"].unique()), {"USD", "JPY"})
-        self.assertTrue((result["Currency"] == "EUR").all())
+        # Ticker is always "EUR", Currency is the target
+        self.assertTrue((result["Ticker"] == "EUR").all())
+        self.assertEqual(set(result["Currency"].unique()), {"USD", "JPY"})
+        self.assertNotIn("EUR", result["Currency"].values)
 
     def test_drops_na_rates(self):
         raw = pd.DataFrame({
@@ -73,8 +74,8 @@ class TestTransformEcbFxToPrices(unittest.TestCase):
         result = _transform_ecb_fx_to_prices(raw)
 
         self.assertEqual(len(result), 2)
-        usd_row = result[result["Ticker"] == "USD"].iloc[0]
-        jpy_row = result[result["Ticker"] == "JPY"].iloc[0]
+        usd_row = result[result["Currency"] == "USD"].iloc[0]
+        jpy_row = result[result["Currency"] == "JPY"].iloc[0]
         self.assertEqual(usd_row["Price"], 1.10)
         self.assertEqual(jpy_row["Price"], 141.0)
 
@@ -407,9 +408,12 @@ class TestUpdateFxDataIntegration(unittest.TestCase):
 
         prices = self._read_prices()
         self.assertEqual(len(prices), 5)
-        fx_tickers = set(prices[prices["Currency"] == "EUR"]["Ticker"])
-        self.assertEqual(fx_tickers, {"USD", "JPY"})
-        inf_tickers = set(prices[prices["Currency"] == "USD"]["Ticker"])
+        # FX data: Ticker=EUR, Currency=target
+        fx_currencies = set(prices[prices["Ticker"] == "EUR"]["Currency"])
+        self.assertEqual(fx_currencies, {"USD", "JPY"})
+        # Inflation data: Ticker starts with "Inflation_"
+        inf = prices[prices["Ticker"].str.startswith("Inflation_")]
+        inf_tickers = set(inf["Ticker"])
         self.assertEqual(inf_tickers, {"Inflation_USD"})
 
     @patch("src.orchestrator.update_fx_data.update_fx_data._fetch_all_inflation_prices")
