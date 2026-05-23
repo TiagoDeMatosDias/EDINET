@@ -8,6 +8,43 @@
     <link rel="stylesheet" href="/assets/common/styles.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   </head>
+  <style>
+    .chart-expanded {
+      position: fixed !important;
+      top: 55px !important;
+      left: 0 !important;
+      width: 100vw !important;
+      height: calc(100vh - 55px) !important;
+      z-index: 999 !important;
+      background: var(--panel-bg, #161b22) !important;
+      margin: 0 !important;
+      border-radius: 0 !important;
+      padding: 16px 24px !important;
+      display: flex !important;
+      flex-direction: column !important;
+    }
+    .chart-expanded .panel-body {
+      flex: 1 !important;
+      height: auto !important;
+    }
+    .panel-body { cursor: pointer; position: relative; }
+    .chart-expanded .panel-body { cursor: pointer; }
+    /* Expand hint on hover */
+    .panel-body::after {
+      content: '⛶';
+      position: absolute;
+      top: 6px;
+      right: 10px;
+      font-size: 14px;
+      color: var(--muted, #8ea0b8);
+      opacity: 0;
+      transition: opacity 0.2s;
+      pointer-events: none;
+      z-index: 10;
+    }
+    .panel:hover .panel-body::after { opacity: 0.6; }
+    .chart-expanded .panel-body::after { content: '✕'; opacity: 0.8; font-size: 22px; top: 8px; right: 14px; }
+  </style>
   <body>
     <div class="app-shell" style="grid-template-rows:52px 1fr;">
       <header class="topbar">
@@ -236,6 +273,84 @@
                   </div>
                 </div>
               </div>
+
+              <!-- Row 3: Dividend Growth YoY + Currency Split -->
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
+                <div class="panel">
+                  <div class="panel-head">
+                    <div class="panel-title">Dividend Growth YoY</div>
+                    <div class="panel-actions">
+                      <button class="btn-ghost btn-sm" id="pf-div-growth-show-dps" title="Switch to per-company view">Per Company</button>
+                    </div>
+                  </div>
+                  <div class="panel-body" style="height:300px;">
+                    <canvas id="pf-div-growth-chart"></canvas>
+                  </div>
+                </div>
+                <div class="panel">
+                  <div class="panel-head"><div class="panel-title">Currency Split</div></div>
+                  <div class="panel-body" style="height:300px;">
+                    <canvas id="pf-currency-split-chart"></canvas>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Row 4: Returns by Company + Closed Positions -->
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
+                <div class="panel">
+                  <div class="panel-head">
+                    <div class="panel-title">Returns by Company</div>
+                    <div class="panel-actions" style="display:flex;gap:8px;align-items:center;">
+                      <select id="pf-returns-year" class="input-sm">
+                        <option value="all">All Years</option>
+                      </select>
+                      <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer;">
+                        <input type="checkbox" id="pf-returns-decompose" /> Decompose
+                      </label>
+                    </div>
+                  </div>
+                  <div class="panel-body" style="height:350px;">
+                    <canvas id="pf-returns-by-company-chart"></canvas>
+                  </div>
+                </div>
+                <div class="panel">
+                  <div class="panel-head"><div class="panel-title">Closed Positions</div></div>
+                  <div class="panel-body" style="height:300px;">
+                    <canvas id="pf-closed-returns-chart"></canvas>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Row 5: Money-Weighted Returns + Contribution to Portfolio -->
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
+                <div class="panel">
+                  <div class="panel-head">
+                    <div class="panel-title">Money-Weighted Returns</div>
+                    <div class="panel-actions">
+                      <select id="pf-mw-returns-year" class="input-sm">
+                        <option value="all">All Years</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="panel-body" style="height:350px;">
+                    <canvas id="pf-mw-returns-chart"></canvas>
+                  </div>
+                </div>
+                <div class="panel">
+                  <div class="panel-head">
+                    <div class="panel-title">Contribution to Portfolio</div>
+                    <div class="panel-actions">
+                      <select id="pf-contrib-year" class="input-sm">
+                        <option value="all">All Years</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="panel-body" style="height:350px;">
+                    <canvas id="pf-contrib-chart"></canvas>
+                  </div>
+                </div>
+              </div>
+
             </div>
 
             <!-- ======================================================== -->

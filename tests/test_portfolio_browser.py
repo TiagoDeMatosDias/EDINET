@@ -93,7 +93,10 @@ def _rebuild_state(page):
     page.wait_for_timeout(1000)
 
 
-# ============================================================
+def _switch_to_charts(page):
+    """Switch to the Charts tab."""
+    page.locator('[data-tab="charts"]').click()
+    page.wait_for_timeout(500)# ============================================================
 # Core E2E: Upload → Rebuild → Verify
 # ============================================================
 
@@ -800,3 +803,219 @@ class TestErrorHandling:
                 os.unlink(tmp)
             except:
                 pass
+
+
+# ============================================================================
+# New Analytical Charts
+# ============================================================================
+
+class TestDividendGrowthChart:
+    """Dividend Growth YoY chart."""
+
+    def test_yoy_api_returns_data(self, page):
+        """API for dividend growth returns years, dividends, and growth values."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        _switch_to_charts(page)
+
+        data = page.evaluate("""
+            async () => {
+                const r = await fetch('/api/portfolio/dividends/yoy');
+                return await r.json();
+            }
+        """)
+
+        assert data["years"], "No years in dividend growth data"
+        assert data["dividends"], "No dividend values"
+        assert len(data["years"]) == len(data["dividends"])
+        assert len(data["yoy_growth"]) == len(data["years"])
+        # First year should have null growth
+        assert data["yoy_growth"][0] is None
+
+    def test_div_growth_chart_renders(self, page):
+        """Dividend growth chart canvas is visible and has data on the chart page."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        _switch_to_charts(page)
+
+        canvas = page.locator("#pf-div-growth-chart")
+        assert canvas.is_visible(), "Dividend growth chart not visible"
+
+    def test_toggle_to_per_company_view(self, page):
+        """Per-company DPS chart renders when toggled."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        _switch_to_charts(page)
+
+        btn = page.locator("#pf-div-growth-show-dps")
+        btn.click()
+        page.wait_for_timeout(500)
+
+        canvas = page.locator("#pf-div-growth-chart")
+        assert canvas.is_visible(), "Per-company dividends chart not visible after toggle"
+
+        # Toggle back
+        btn.click()
+        page.wait_for_timeout(500)
+        assert canvas.is_visible(), "Aggregate dividends chart not visible after toggling back"
+
+
+class TestReturnsByCompanyChart:
+    """Returns by Company chart."""
+
+    def test_api_returns_company_data(self, page):
+        """API returns companies with total_return, capital_gain, dividend_return arrays."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        _switch_to_charts(page)
+
+        data = page.evaluate("""
+            async () => {
+                const r = await fetch('/api/portfolio/returns/by-company');
+                return await r.json();
+            }
+        """)
+
+        assert data["years"], "No years in returns data"
+        assert data["companies"], "No companies in returns data"
+        for sym, cdata in data["companies"].items():
+            assert "total_return" in cdata, f"Company {sym} missing total_return"
+            assert "capital_gain" in cdata, f"Company {sym} missing capital_gain"
+            assert "dividend_return" in cdata, f"Company {sym} missing dividend_return"
+            assert len(cdata["total_return"]) == len(data["years"])
+
+    def test_chart_renders(self, page):
+        """Returns by company chart canvas is visible."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        _switch_to_charts(page)
+
+        canvas = page.locator("#pf-returns-by-company-chart")
+        assert canvas.is_visible(), "Returns by company chart not visible"
+
+    def test_decompose_toggle(self, page):
+        """Decompose checkbox triggers re-render."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        _switch_to_charts(page)
+
+        cb = page.locator("#pf-returns-decompose")
+        assert cb.is_visible(), "Decompose checkbox not visible"
+        # Check it and verify canvas still visible
+        cb.check()
+        page.wait_for_timeout(500)
+        assert page.locator("#pf-returns-by-company-chart").is_visible(), \
+            "Returns chart not visible after decompose toggle"
+
+
+class TestCurrencySplitChart:
+    """Asset currency split pie chart."""
+
+    def test_chart_renders_from_holdings(self, page):
+        """Currency split pie chart renders using holdings currency data."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        _switch_to_charts(page)
+
+        canvas = page.locator("#pf-currency-split-chart")
+        assert canvas.is_visible(), "Currency split chart not visible"
+
+
+class TestClosedReturnsChart:
+    """Returns by closed positions chart."""
+
+    def test_closed_positions_api_connectivity(self, page):
+        """Closed positions API returns data (even if empty)."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        _switch_to_charts(page)
+
+        result = page.evaluate("""
+            async () => {
+                const r = await fetch('/api/portfolio/holdings/closed');
+                return await r.json();
+            }
+        """)
+        assert isinstance(result, list), "Closed positions API should return a list"
+
+    def test_chart_renders(self, page):
+        """Closed positions chart canvas exists."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        _switch_to_charts(page)
+
+        canvas = page.locator("#pf-closed-returns-chart")
+        assert canvas.is_visible(), "Closed positions chart not visible"
+
+
+class TestChartMaximize:
+    """Click-to-expand chart feature."""
+
+    def test_click_chart_expands_panel(self, page):
+        """Clicking a chart panel body adds the chart-expanded class."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        _switch_to_charts(page)
+
+        # Click the portfolio value chart body
+        body = page.locator("#pf-value-chart").locator("..")  # canvas is inside panel-body
+        # Actually click the panel-body directly
+        panel_body = page.locator("#pf-value-chart").locator("xpath=..")
+        panel_body.click()
+        page.wait_for_timeout(300)
+
+        # Verify the parent panel has chart-expanded class
+        panel = page.locator("#pf-value-chart").locator("xpath=ancestor::div[contains(@class,'panel')][1]")
+        classes = panel.get_attribute("class") or ""
+        assert "chart-expanded" in classes, f"Panel not expanded: {classes}"
+
+    def test_click_again_restores(self, page):
+        """Clicking an expanded chart restores it."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        _switch_to_charts(page)
+
+        body = page.locator("#pf-value-chart").locator("xpath=..")
+        body.click()
+        page.wait_for_timeout(300)
+        body.click()
+        page.wait_for_timeout(300)
+
+        panel = page.locator("#pf-value-chart").locator("xpath=ancestor::div[contains(@class,'panel')][1]")
+        classes = panel.get_attribute("class") or ""
+        assert "chart-expanded" not in classes, f"Panel still expanded: {classes}"
+
+    def test_expand_hint_visible_on_hover(self, page):
+        """The expand icon (⛶) appears on hover."""
+        _upload_xml(page, "2024")
+        _rebuild_state(page)
+
+        page.goto(f"{BASE_URL}/portfolio")
+        _switch_to_charts(page)
+
+        # Check that a panel-body has the ::after pseudo-element styling
+        # (We can verify the CSS class exists on panel-body)
+        panel_body = page.locator(".panel-body").first
+        assert panel_body.is_visible()

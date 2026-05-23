@@ -445,6 +445,606 @@ async def backtest_compare(request: dict):
 
 
 # ---------------------------------------------------------------------------
+# Analytical charts
+# ---------------------------------------------------------------------------
+
+@router.get("/dividends/yoy")
+async def dividends_yoy(
+    base_currency: str = Query("EUR"),
+):
+    """Yearly dividend totals with YoY growth for the dividend growth chart."""
+    import sqlite3
+    from collections import defaultdict
+
+    db3_path = get_db3()
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+
+    # Aggregate dividend_income from Portfolio_Daily by year
+    rows = conn.execute(
+        "SELECT date, dividend_income, cash_ccy_json FROM Portfolio_Daily ORDER BY date"
+    ).fetchall()
+    conn.close()
+
+    # First pass: collect raw yearly dividends and per-currency cash for FX
+    import json
+    yearly: dict[int, float] = defaultdict(float)
+    latest_ccy_json = "{}"
+    for r in rows:
+        year = int(r["date"][:4])
+        yearly[year] += r["dividend_income"] or 0
+        if r["cash_ccy_json"]:
+            latest_ccy_json = r["cash_ccy_json"]
+
+    years = sorted(yearly.keys())
+    dividends = [round(yearly[y], 2) for y in years]
+
+    # YoY growth: (this_year / prev_year - 1) * 100
+    yoy_growth: list[float | None] = [None]
+    for i in range(1, len(dividends)):
+        prev = dividends[i - 1]
+        curr = dividends[i]
+        if prev > 0:
+            yoy_growth.append(round((curr / prev - 1) * 100, 2))
+        else:
+            yoy_growth.append(None)
+
+    return {
+        "years": years,
+        "dividends": dividends,
+        "yoy_growth": yoy_growth,
+        "currency": base_currency,
+    }
+
+
+@router.get("/dividends/yoy/per-company")
+async def dividends_per_company_yoy():
+    """Dividend per share per company per year with YoY growth."""
+    import sqlite3
+    from collections import defaultdict
+
+    db3_path = get_db3()
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+
+    # Get dividend transactions: dividend income and withholding tax per company per year
+    div_rows = conn.execute("""
+        SELECT
+            symbol,
+            CAST(substr(trade_date, 1, 4) AS INTEGER) AS year,
+            activity_type,
+            SUM(CASE WHEN activity_type IN ('DIVIDEND','PIL_DIVIDEND') THEN ABS(amount) * COALESCE(fx_rate_to_base, 1) ELSE 0 END) AS gross_eur,
+            SUM(CASE WHEN activity_type = 'WITHHOLDING_TAX' THEN ABS(amount) * COALESCE(fx_rate_to_base, 1) ELSE 0 END) AS tax_eur,
+            SUM(CASE WHEN activity_type IN ('DIVIDEND','PIL_DIVIDEND') THEN ABS(amount) ELSE 0 END) AS gross_native,
+            SUM(CASE WHEN activity_type = 'WITHHOLDING_TAX' THEN ABS(amount) ELSE 0 END) AS tax_native,
+            MAX(currency) AS currency
+        FROM Transactions
+        WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')
+          AND symbol NOT LIKE 'CASH%'
+        GROUP BY symbol, year
+        ORDER BY symbol, year
+    """).fetchall()
+
+    if not div_rows:
+        conn.close()
+        return {"years": [], "companies": {}}
+
+    # Get avg shares per year from Holdings_History (approximate DPS = total_div / avg_shares)
+    hh_rows = conn.execute("""
+        SELECT symbol, CAST(substr(date, 1, 4) AS INTEGER) AS year,
+               AVG(quantity) AS avg_qty
+        FROM Holdings_History
+        WHERE quantity > 0 AND symbol NOT LIKE 'CASH%'
+        GROUP BY symbol, year
+        ORDER BY symbol, year
+    """).fetchall()
+    conn.close()
+
+    # Build shares map: {symbol: {year: avg_qty}}
+    shares_map: dict[str, dict[int, float]] = defaultdict(dict)
+    for r in hh_rows:
+        shares_map[r["symbol"]][r["year"]] = r["avg_qty"]
+
+    # Collect all years
+    all_years: set[int] = set()
+    for r in div_rows:
+        all_years.add(r["year"])
+    for sym, ym in shares_map.items():
+        all_years.update(ym.keys())
+    years = sorted(all_years)
+    if not years:
+        return {"years": [], "companies": {}}
+
+    # Build per-company series
+    companies: dict[str, dict] = {}
+    for r in div_rows:
+        sym = r["symbol"]
+        y = r["year"]
+        shares = shares_map.get(sym, {}).get(y, 0)
+        gross = round(r["gross_native"] or 0, 2)
+        tax = round(r["tax_native"] or 0, 2)
+        net_native = gross - tax
+        dps = round(net_native / shares, 4) if shares > 0 else 0
+
+        if sym not in companies:
+            companies[sym] = {
+                "currency": r["currency"] or "EUR",
+                "year_data": {},
+            }
+        companies[sym]["year_data"][y] = {
+            "gross": gross,
+            "tax": tax,
+            "net": net_native,
+            "shares": round(shares, 2),
+            "dps": dps,
+        }
+
+    # Build aligned arrays per company
+    result: dict[str, dict] = {}
+    for sym, cdata in companies.items():
+        dps_arr: list[float | None] = []
+        growth_arr: list[float | None] = []
+        prev_dps = None
+        for y in years:
+            yd = cdata["year_data"].get(y)
+            if yd and yd["shares"] > 0:
+                dps = yd["dps"]
+                dps_arr.append(dps)
+                if prev_dps is not None and prev_dps > 0:
+                    growth_arr.append(round((dps / prev_dps - 1) * 100, 2))
+                else:
+                    growth_arr.append(None)
+                prev_dps = dps
+            else:
+                dps_arr.append(None)
+                growth_arr.append(None)
+        result[sym] = {
+            "currency": cdata["currency"],
+            "dps": dps_arr,
+            "yoy_growth": growth_arr,
+        }
+
+    return {"years": years, "companies": result}
+
+
+@router.get("/returns/by-company")
+async def returns_by_company():
+    """Yearly total return per company with decomposition into capital
+    gain and dividend return.
+
+    Uses price-per-share (market_value / quantity) to isolate true
+    market movement from the effect of buying/selling more shares.
+
+    For each company and year:
+    - capital_gain  = (end_price - start_price) / start_price * 100
+    - dividend_yield = (dividends_per_share / avg_price) * 100
+    - total_return   = capital_gain + dividend_yield
+
+    All computed in EUR (market_value / quantity = EUR-per-share).
+    Positions with zero quantity at start/end of year are skipped.
+    """
+    import sqlite3
+    from collections import defaultdict
+
+    db3_path = get_db3()
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+
+    # 1. Holdings_History: per-symbol daily market values + quantities
+    hh_rows = conn.execute("""
+        SELECT symbol, date, market_value, quantity
+        FROM Holdings_History
+        WHERE symbol NOT LIKE 'CASH%'
+          AND is_option = 0
+          AND market_value IS NOT NULL
+          AND quantity > 0
+        ORDER BY symbol, date
+    """).fetchall()
+
+    # 2. Dividend income per symbol per year (net EUR)
+    div_rows = conn.execute("""
+        SELECT
+            symbol,
+            CAST(substr(trade_date, 1, 4) AS INTEGER) AS year,
+            SUM(
+                CASE WHEN activity_type IN ('DIVIDEND','PIL_DIVIDEND')
+                     THEN ABS(amount) * COALESCE(fx_rate_to_base, 1)
+                     ELSE 0 END
+            ) AS gross_eur,
+            SUM(
+                CASE WHEN activity_type = 'WITHHOLDING_TAX'
+                     THEN ABS(amount) * COALESCE(fx_rate_to_base, 1)
+                     ELSE 0 END
+            ) AS tax_eur
+        FROM Transactions
+        WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')
+          AND symbol NOT LIKE 'CASH%'
+        GROUP BY symbol, year
+    """).fetchall()
+
+    conn.close()
+
+    if not hh_rows:
+        return {"years": [], "companies": {}}
+
+    # --- Group entries by symbol ---
+    sym_entries: dict[str, list] = defaultdict(list)
+    for r in hh_rows:
+        sym_entries[r["symbol"]].append(r)
+
+    # Collect years
+    all_years: set[int] = set()
+    for r in hh_rows:
+        all_years.add(int(r["date"][:4]))
+    for r in div_rows:
+        all_years.add(r["year"])
+    years = sorted(all_years)
+    if not years:
+        return {"years": [], "companies": {}}
+
+    # Dividend map: {symbol: {year: net_eur}}
+    div_map: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    for r in div_rows:
+        div_map[r["symbol"]][r["year"]] += (r["gross_eur"] or 0) - (r["tax_eur"] or 0)
+
+    # --- For each symbol, compute per-year price-based returns ---
+    result: dict[str, dict] = {}
+
+    for sym, entries in sym_entries.items():
+        entries.sort(key=lambda x: x["date"])
+
+        total_arr: list[float | None] = []
+        capital_arr: list[float | None] = []
+        dividend_arr: list[float | None] = []
+
+        for y in years:
+            y_str = str(y)
+            year_entries = [e for e in entries if e["date"].startswith(y_str)]
+            if len(year_entries) < 2:
+                total_arr.append(None)
+                capital_arr.append(None)
+                dividend_arr.append(None)
+                continue
+
+            # EUR price per share: market_value / quantity
+            first = year_entries[0]
+            last = year_entries[-1]
+
+            if first["quantity"] <= 0 or last["quantity"] <= 0:
+                total_arr.append(None)
+                capital_arr.append(None)
+                dividend_arr.append(None)
+                continue
+
+            start_price = first["market_value"] / first["quantity"]
+            end_price = last["market_value"] / last["quantity"]
+
+            if start_price <= 0:
+                total_arr.append(None)
+                capital_arr.append(None)
+                dividend_arr.append(None)
+                continue
+
+            # Capital gain from price change (in EUR)
+            cap_pct = round((end_price - start_price) / start_price * 100, 2)
+
+            # Dividend yield: DPS / avg_price * 100
+            total_div = div_map[sym].get(y, 0)
+            avg_qty = sum(e["quantity"] for e in year_entries) / len(year_entries)
+            avg_price = sum(
+                e["market_value"] / e["quantity"] for e in year_entries
+                if e["quantity"] > 0
+            ) / len(year_entries)
+            dps = total_div / avg_qty if avg_qty > 0 else 0
+            div_pct = round(dps / avg_price * 100, 2) if avg_price > 0 and dps > 0 else 0
+
+            total_pct = round(cap_pct + div_pct, 2)
+
+            total_arr.append(total_pct)
+            capital_arr.append(cap_pct)
+            dividend_arr.append(div_pct)
+
+        result[sym] = {
+            "total_return": total_arr,
+            "capital_gain": capital_arr,
+            "dividend_return": dividend_arr,
+        }
+
+    # Compute total_return across all years for sorting
+    for sym in result:
+        r = result[sym]
+        total_all = sum(v for v in r["total_return"] if v is not None)
+        r["_total_all_years"] = round(total_all, 2)
+
+    return {"years": years, "companies": result}
+
+
+@router.get("/returns/money-weighted")
+async def returns_money_weighted():
+    """Money-weighted return per company per year using Modified Dietz.
+
+    Accounts for intra-year cash flows (buys add capital, sells remove
+    it) so additional purchases don't inflate the return.
+
+    Modified Dietz:
+        Return = (end_val - start_val - net_cf) / (start_val + Σ w_i × cf_i)
+    where w_i = days remaining in year / total days in year.
+    """
+    import sqlite3
+    from collections import defaultdict
+    from datetime import date as D, timedelta
+
+    db3_path = get_db3()
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+
+    # Holdings_History: first/last value per symbol per year
+    hh_rows = conn.execute("""
+        SELECT symbol, date, market_value
+        FROM Holdings_History
+        WHERE symbol NOT LIKE 'CASH%'
+          AND is_option = 0
+          AND market_value IS NOT NULL
+        ORDER BY symbol, date
+    """).fetchall()
+
+    # Trade transactions: buys and sells per symbol per year (EUR)
+    trade_rows = conn.execute("""
+        SELECT symbol, trade_date, buy_sell,
+               ABS(trade_money) * COALESCE(fx_rate_to_base, 1) AS amount_eur
+        FROM Transactions
+        WHERE activity_type = 'TRADE'
+          AND buy_sell IN ('BUY', 'SELL')
+          AND symbol NOT LIKE 'CASH%'
+        ORDER BY symbol, trade_date
+    """).fetchall()
+
+    conn.close()
+
+    if not hh_rows:
+        return {"years": [], "companies": {}}
+
+    # Group holdings by symbol
+    sym_entries: dict[str, list] = defaultdict(list)
+    for r in hh_rows:
+        sym_entries[r["symbol"]].append(r)
+
+    # Group trades by (symbol, year)
+    sym_trades: dict[str, dict[int, list]] = defaultdict(lambda: defaultdict(list))
+    for r in trade_rows:
+        d = r["trade_date"]
+        if not d:
+            continue
+        y = int(d[:4])
+        sym_trades[r["symbol"]][y].append(r)
+
+    # Collect years
+    all_years: set[int] = set()
+    for r in hh_rows:
+        all_years.add(int(r["date"][:4]))
+    for sym, ym in sym_trades.items():
+        all_years.update(ym.keys())
+    years = sorted(all_years)
+    if not years:
+        return {"years": [], "companies": {}}
+
+    result: dict[str, dict] = {}
+
+    for sym, entries in sym_entries.items():
+        entries.sort(key=lambda x: x["date"])
+
+        ret_arr: list[float | None] = []
+
+        for y in years:
+            y_str = str(y)
+            year_entries = [e for e in entries if e["date"].startswith(y_str)]
+            if not year_entries:
+                ret_arr.append(None)
+                continue
+
+            start_val = year_entries[0]["market_value"] or 0
+            end_val = year_entries[-1]["market_value"] or 0
+
+            if start_val <= 0:
+                ret_arr.append(None)
+                continue
+
+            # Collect cash flows from trades in this year
+            trades = sym_trades.get(sym, {}).get(y, [])
+            net_cf = 0.0
+            weighted_cf = 0.0
+
+            year_end = D(y, 12, 31)
+            days_in_year = 366 if (y % 4 == 0 and y % 100 != 0) or y % 400 == 0 else 365
+
+            for t in trades:
+                td = t["trade_date"]
+                tm = t["amount_eur"] or 0
+                bs = t["buy_sell"]
+
+                # BUY = money goes INTO the position → positive CF for denominator
+                # SELL = money LEAVES the position → negative CF
+                if bs == "BUY":
+                    cf_val = tm
+                else:
+                    cf_val = -tm
+
+                net_cf += cf_val
+
+                # Weight: fraction of year remaining after cash flow
+                try:
+                    cf_date = D.fromisoformat(td)
+                except ValueError:
+                    continue
+                days_remaining = (year_end - cf_date).days
+                weight = max(days_remaining, 0) / days_in_year
+                weighted_cf += weight * cf_val
+
+            denominator = start_val + weighted_cf
+            if denominator <= 0:
+                ret_arr.append(None)
+                continue
+
+            mw_return = round((end_val - start_val - net_cf) / denominator * 100, 2)
+            ret_arr.append(mw_return)
+
+        result[sym] = {
+            "return_pct": ret_arr,
+        }
+
+    return {"years": years, "companies": result}
+
+
+@router.get("/returns/contribution")
+async def returns_contribution():
+    """Contribution of each company to the portfolio's total return per year.
+
+    For each company-year:
+    - Absolute contribution (EUR) = end_val - start_val - net_invested + dividends
+    - Percentage contribution = absolute / portfolio_start_value × 100
+
+    This shows which companies drove (or dragged) the portfolio each year.
+    """
+    import sqlite3
+    from collections import defaultdict
+
+    db3_path = get_db3()
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+
+    # Per-symbol daily market values
+    hh_rows = conn.execute("""
+        SELECT symbol, date, market_value
+        FROM Holdings_History
+        WHERE symbol NOT LIKE 'CASH%'
+          AND is_option = 0
+          AND market_value IS NOT NULL
+        ORDER BY symbol, date
+    """).fetchall()
+
+    # Portfolio daily totals for denominator
+    pf_rows = conn.execute(
+        "SELECT date, total_value FROM Portfolio_Daily ORDER BY date"
+    ).fetchall()
+
+    # Trade transactions per symbol per year
+    trade_rows = conn.execute("""
+        SELECT symbol,
+               CAST(substr(trade_date, 1, 4) AS INTEGER) AS year,
+               SUM(CASE WHEN buy_sell = 'BUY'
+                        THEN ABS(trade_money) * COALESCE(fx_rate_to_base, 1)
+                        ELSE 0 END) AS total_bought_eur,
+               SUM(CASE WHEN buy_sell = 'SELL'
+                        THEN COALESCE(proceeds, ABS(trade_money)) * COALESCE(fx_rate_to_base, 1)
+                        ELSE 0 END) AS total_sold_eur
+        FROM Transactions
+        WHERE activity_type = 'TRADE'
+          AND buy_sell IN ('BUY', 'SELL')
+          AND symbol NOT LIKE 'CASH%'
+        GROUP BY symbol, year
+    """).fetchall()
+
+    # Dividend income per symbol per year (net EUR)
+    div_rows = conn.execute("""
+        SELECT symbol,
+               CAST(substr(trade_date, 1, 4) AS INTEGER) AS year,
+               SUM(
+                   CASE WHEN activity_type IN ('DIVIDEND','PIL_DIVIDEND')
+                        THEN ABS(amount) * COALESCE(fx_rate_to_base, 1)
+                        ELSE 0 END
+               ) AS gross_eur,
+               SUM(
+                   CASE WHEN activity_type = 'WITHHOLDING_TAX'
+                        THEN ABS(amount) * COALESCE(fx_rate_to_base, 1)
+                        ELSE 0 END
+               ) AS tax_eur
+        FROM Transactions
+        WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')
+          AND symbol NOT LIKE 'CASH%'
+        GROUP BY symbol, year
+    """).fetchall()
+
+    conn.close()
+
+    if not hh_rows:
+        return {"years": [], "companies": {}, "portfolio_total": []}
+
+    # Group holdings by symbol
+    sym_entries: dict[str, list] = defaultdict(list)
+    for r in hh_rows:
+        sym_entries[r["symbol"]].append(r)
+
+    # Build portfolio total map by year-start
+    pf_total_map: dict[int, float] = {}
+    for r in pf_rows:
+        y = int(r["date"][:4])
+        if y not in pf_total_map:
+            pf_total_map[y] = r["total_value"] or 0
+
+    # Trade map: {symbol: {year: net_invested}}
+    trade_map: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    for r in trade_rows:
+        net = (r["total_bought_eur"] or 0) - (r["total_sold_eur"] or 0)
+        trade_map[r["symbol"]][r["year"]] += net
+
+    # Dividend map: {symbol: {year: net_eur}}
+    div_map: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    for r in div_rows:
+        div_map[r["symbol"]][r["year"]] += (r["gross_eur"] or 0) - (r["tax_eur"] or 0)
+
+    # Collect years
+    all_years: set[int] = set()
+    for r in hh_rows:
+        all_years.add(int(r["date"][:4]))
+    for r in trade_rows:
+        all_years.add(r["year"])
+    for r in div_rows:
+        all_years.add(r["year"])
+    years = sorted(all_years)
+    if not years:
+        return {"years": [], "companies": {}, "portfolio_total": []}
+
+    pf_arr = [pf_total_map.get(y) for y in years]
+
+    result: dict[str, dict] = {}
+
+    for sym, entries in sym_entries.items():
+        entries.sort(key=lambda x: x["date"])
+        eur_arr: list[float | None] = []
+        pct_arr: list[float | None] = []
+
+        for y in years:
+            y_str = str(y)
+            year_entries = [e for e in entries if e["date"].startswith(y_str)]
+            if not year_entries:
+                eur_arr.append(None)
+                pct_arr.append(None)
+                continue
+
+            start_val = year_entries[0]["market_value"] or 0
+            end_val = year_entries[-1]["market_value"] or 0
+            net_invested = trade_map.get(sym, {}).get(y, 0)
+            dividends = div_map.get(sym, {}).get(y, 0)
+
+            # Contribution = value change minus net new money plus dividends
+            contrib = end_val - start_val - net_invested + dividends
+            contrib = round(contrib, 2)
+
+            pf_start = pf_total_map.get(y)
+            contrib_pct = round(contrib / pf_start * 100, 2) if pf_start and pf_start > 0 else None
+
+            eur_arr.append(contrib)
+            pct_arr.append(contrib_pct)
+
+        result[sym] = {
+            "contribution_eur": eur_arr,
+            "contribution_pct": pct_arr,
+        }
+
+    return {"years": years, "companies": result, "portfolio_start": pf_arr}
+
+
+# ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 

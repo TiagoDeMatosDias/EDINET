@@ -172,3 +172,160 @@ class TestBuildPortfolioState:
         spinoff_symbols = {"SOLV", "ONL"}
         found = symbols & spinoff_symbols
         assert found, f"Expected at least one spinoff symbol in holdings, got: {symbols}"
+
+    # --- Return/Contribution verification ---------------------------------
+
+    def test_contribution_sums_consistent_with_portfolio_change(self, db3_path):
+        """Sum of company contributions ≈ portfolio total value change."""
+        self._load_year(db3_path, "2024")
+        build_portfolio_state(db3_path, base_currency="EUR")
+
+        import sqlite3
+        from collections import defaultdict
+
+        conn = sqlite3.connect(db3_path)
+        conn.row_factory = sqlite3.Row
+
+        pf_rows = conn.execute(
+            "SELECT date, total_value FROM Portfolio_Daily ORDER BY date"
+        ).fetchall()
+        pf_start: dict[int, float] = {}
+        pf_end: dict[int, float] = {}
+        for r in pf_rows:
+            y = int(r["date"][:4])
+            if y not in pf_start:
+                pf_start[y] = r["total_value"] or 0
+            pf_end[y] = r["total_value"] or 0
+
+        hh_rows = conn.execute("""
+            SELECT symbol, date, market_value FROM Holdings_History
+            WHERE symbol NOT LIKE 'CASH%' AND is_option=0 AND market_value IS NOT NULL
+            ORDER BY symbol, date
+        """).fetchall()
+
+        trade_rows = conn.execute("""
+            SELECT symbol, CAST(substr(trade_date,1,4) AS INT) AS year,
+                   SUM(CASE WHEN buy_sell='BUY' THEN ABS(trade_money)*COALESCE(fx_rate_to_base,1) ELSE 0 END
+                       - CASE WHEN buy_sell='SELL' THEN COALESCE(proceeds,ABS(trade_money))*COALESCE(fx_rate_to_base,1) ELSE 0 END) AS net_inv
+            FROM Transactions WHERE activity_type='TRADE' AND buy_sell IN ('BUY','SELL')
+              AND symbol NOT LIKE 'CASH%' GROUP BY symbol, year
+        """).fetchall()
+
+        div_rows = conn.execute("""
+            SELECT symbol, CAST(substr(trade_date,1,4) AS INT) AS year,
+                   SUM(CASE WHEN activity_type IN ('DIVIDEND','PIL_DIVIDEND')
+                            THEN ABS(amount)*COALESCE(fx_rate_to_base,1) ELSE 0 END
+                       - CASE WHEN activity_type='WITHHOLDING_TAX'
+                              THEN ABS(amount)*COALESCE(fx_rate_to_base,1) ELSE 0 END) AS net_div
+            FROM Transactions WHERE activity_type IN ('DIVIDEND','PIL_DIVIDEND','WITHHOLDING_TAX')
+              AND symbol NOT LIKE 'CASH%' GROUP BY symbol, year
+        """).fetchall()
+
+        conn.close()
+
+        sym_entries = defaultdict(list)
+        for r in hh_rows:
+            sym_entries[r["symbol"]].append(r)
+        trade_map = defaultdict(lambda: defaultdict(float))
+        for r in trade_rows:
+            trade_map[r["symbol"]][r["year"]] = r["net_inv"] or 0
+        div_map = defaultdict(lambda: defaultdict(float))
+        for r in div_rows:
+            div_map[r["symbol"]][r["year"]] = r["net_div"] or 0
+
+        years = sorted({int(r["date"][:4]) for r in hh_rows})
+        assert years, "No years found in data"
+
+        for y in years:
+            total_contrib = 0.0
+            for sym, entries in sym_entries.items():
+                ye = [e for e in entries if e["date"].startswith(str(y))]
+                if not ye:
+                    continue
+                start_val = ye[0]["market_value"] or 0
+                end_val = ye[-1]["market_value"] or 0
+                net_inv = trade_map[sym][y]
+                div = div_map[sym][y]
+                contrib = end_val - start_val - net_inv + div
+                total_contrib += contrib
+
+            pf_change = (pf_end.get(y, 0) or 0) - (pf_start.get(y, 0) or 0)
+            tolerance = max(abs(pf_change) * 0.15, 2000)  # 15% tolerance for cash/options/rounding
+            diff = abs(total_contrib - pf_change)
+            assert diff < tolerance, (
+                f"Year {y}: sum(contributions)={total_contrib:.0f}, "
+                f"pf_change={pf_change:.0f}, diff={diff:.0f} > {tolerance:.0f}"
+            )
+
+    def test_no_company_has_phantom_negative_contribution(self, db3_path):
+        """When a position's value increases over a year (before new money),
+        its contribution should not be deeply negative."""
+        self._load_year(db3_path, "2024")
+        build_portfolio_state(db3_path, base_currency="EUR")
+
+        import sqlite3
+        from collections import defaultdict
+
+        conn = sqlite3.connect(db3_path)
+        conn.row_factory = sqlite3.Row
+
+        hh_rows = conn.execute("""
+            SELECT symbol, date, market_value FROM Holdings_History
+            WHERE symbol NOT LIKE 'CASH%' AND is_option=0 AND market_value IS NOT NULL
+            ORDER BY symbol, date
+        """).fetchall()
+
+        trade_rows = conn.execute("""
+            SELECT symbol, CAST(substr(trade_date,1,4) AS INT) AS year,
+                   SUM(CASE WHEN buy_sell='BUY' THEN ABS(trade_money)*COALESCE(fx_rate_to_base,1) ELSE 0 END
+                       - CASE WHEN buy_sell='SELL' THEN COALESCE(proceeds,ABS(trade_money))*COALESCE(fx_rate_to_base,1) ELSE 0 END) AS net_inv
+            FROM Transactions WHERE activity_type='TRADE' AND buy_sell IN ('BUY','SELL')
+              AND symbol NOT LIKE 'CASH%' GROUP BY symbol, year
+        """).fetchall()
+
+        div_rows = conn.execute("""
+            SELECT symbol, CAST(substr(trade_date,1,4) AS INT) AS year,
+                   SUM(CASE WHEN activity_type IN ('DIVIDEND','PIL_DIVIDEND')
+                            THEN ABS(amount)*COALESCE(fx_rate_to_base,1) ELSE 0 END
+                       - CASE WHEN activity_type='WITHHOLDING_TAX'
+                              THEN ABS(amount)*COALESCE(fx_rate_to_base,1) ELSE 0 END) AS net_div
+            FROM Transactions WHERE activity_type IN ('DIVIDEND','PIL_DIVIDEND','WITHHOLDING_TAX')
+              AND symbol NOT LIKE 'CASH%' GROUP BY symbol, year
+        """).fetchall()
+        conn.close()
+
+        sym_entries = defaultdict(list)
+        for r in hh_rows:
+            sym_entries[r["symbol"]].append(r)
+        trade_map = defaultdict(lambda: defaultdict(float))
+        for r in trade_rows:
+            trade_map[r["symbol"]][r["year"]] = r["net_inv"] or 0
+        div_map = defaultdict(lambda: defaultdict(float))
+        for r in div_rows:
+            div_map[r["symbol"]][r["year"]] = r["net_div"] or 0
+
+        violations = []
+        for sym, entries in sym_entries.items():
+            for y in {int(e["date"][:4]) for e in entries}:
+                ye = [e for e in entries if e["date"].startswith(str(y))]
+                if not ye:
+                    continue
+                start_val = ye[0]["market_value"] or 0
+                end_val = ye[-1]["market_value"] or 0
+                net_inv = trade_map[sym][y]
+                div = div_map[sym][y]
+                contrib = end_val - start_val - net_inv + div
+                raw_change = end_val - start_val + div
+
+                # If position value + dividends grew, contribution should be non-negative
+                # (after accounting for invested capital)
+                if raw_change > 100 and contrib < -abs(raw_change) * 0.5:
+                    violations.append(
+                        f"{sym} {y}: raw_change=+{raw_change:.0f} but contrib={contrib:.0f} "
+                        f"(start={start_val:.0f} end={end_val:.0f} net_inv={net_inv:.0f} div={div:.0f})"
+                    )
+
+        assert not violations, (
+            f"{len(violations)} companies have phantom negative contributions:\n" +
+            "\n".join(violations[:15])
+        )

@@ -6,7 +6,8 @@
  *   - Summary stats bar (always visible)
  *   - Holdings table with inline detail panels
  *   - Transactions with filters + scrollable table
- *   - Charts: cumulative returns, portfolio value, allocation
+ *   - Charts: cumulative returns, portfolio value, dividends, allocation,
+ *     dividend growth YoY, returns by company, currency split, closed positions
  *   - Performance Metrics auto-compute on tab switch
  */
 
@@ -59,6 +60,7 @@ async function init() {
   wireTransactionsFilters();
   wirePerformance();
   wireChartControls();
+  wireChartExpand();
   wireRebuild();
 }
 
@@ -629,6 +631,12 @@ function renderChartsTab() {
   renderValueChart();
   renderDividendsChart();
   renderAllocationChart();
+  renderDividendGrowthChart();
+  renderReturnsByCompanyChart();
+  renderCurrencySplitChart();
+  renderClosedReturnsChart();
+  renderMoneyWeightedReturnsChart();
+  renderContributionChart();
 }
 
 function renderValueChart() {
@@ -827,6 +835,602 @@ function renderAllocationChart() {
       plugins: {
         legend: { position: 'right', labels: { color: '#d9e2f2', usePointStyle: true, padding: 12 } },
         tooltip: { callbacks: { label: ctx => `${ctx.label}: ${formatMoney(ctx.raw)}` } },
+      },
+    },
+  });
+}
+
+// ================================================================
+// Chart 5: Dividend Growth Year over Year
+// ================================================================
+function renderDividendGrowthChart() {
+  fetchJson('/api/portfolio/dividends/yoy').then(data => {
+    if (!data || !data.years || !data.years.length) return;
+    const ctx = $('#pf-div-growth-chart');
+    destroyChart('divGrowth');
+    state.charts.divGrowth = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: data.years.map(y => String(y)),
+        datasets: [
+          {
+            label: 'Dividends (' + (data.currency || 'EUR') + ')',
+            data: data.dividends,
+            backgroundColor: 'rgba(68,209,123,0.55)',
+            borderColor: '#44d17b',
+            borderWidth: 1,
+            borderRadius: 2,
+            order: 2,
+          },
+          {
+            label: 'YoY Growth %',
+            data: data.yoy_growth,
+            type: 'line',
+            borderColor: '#58a6ff',
+            backgroundColor: 'rgba(88,166,255,0.1)',
+            borderWidth: 2.5,
+            tension: 0.2,
+            pointRadius: 4,
+            pointBackgroundColor: '#58a6ff',
+            yAxisID: 'y1',
+            order: 1,
+          },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { intersect: false, mode: 'index' },
+        scales: {
+          y: {
+            position: 'left',
+            ticks: { color: '#8ea0b8', callback: v => formatMoney(v) },
+            title: { display: true, text: data.currency || 'EUR', color: '#8ea0b8' },
+          },
+          y1: {
+            position: 'right',
+            ticks: { color: '#58a6ff', callback: v => v.toFixed(1) + '%' },
+            grid: { drawOnChartArea: false },
+          },
+          x: { ticks: { color: '#8ea0b8' } },
+        },
+        plugins: {
+          legend: { labels: { color: '#d9e2f2', usePointStyle: true } },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                if (ctx.dataset.label === 'YoY Growth %') {
+                  return 'YoY Growth: ' + (ctx.raw != null ? ctx.raw.toFixed(1) + '%' : 'N/A');
+                }
+                return 'Dividends: ' + formatMoney(ctx.raw);
+              },
+            },
+          },
+        },
+      },
+    });
+  });
+}
+
+// ================================================================
+// Chart: DPS per Company Year over Year (toggled from Dividend Growth)
+// ================================================================
+let _divGrowthMode = 'agg';  // 'agg' | 'per-company'
+
+function renderDpsPerCompanyChart() {
+  fetchJson('/api/portfolio/dividends/yoy/per-company').then(data => {
+    if (!data || !data.years || !data.years.length) return;
+    const ctx = $('#pf-div-growth-chart');
+    destroyChart('divGrowth');
+
+    const companies = data.companies;
+    const syms = Object.keys(companies).sort();
+    if (!syms.length) return;
+
+    const colors = [
+      '#58a6ff','#44d17b','#e0af4f','#ff6b6b','#8ea0b8',
+      '#58a6ffcc','#44d17bcc','#e0af4fcc','#ff6b6bcc','#8ea0b8cc',
+    ];
+
+    const datasets = syms.map((sym, i) => ({
+      label: sym + ' (DPS)',
+      data: companies[sym].dps,
+      backgroundColor: colors[i % colors.length] + '99',
+      borderColor: colors[i % colors.length],
+      borderWidth: 1,
+      borderRadius: 2,
+      hidden: i >= 8,  // show first 8, rest toggleable
+    }));
+
+    state.charts.divGrowth = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: data.years.map(y => String(y)),
+        datasets,
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { intersect: false, mode: 'index' },
+        scales: {
+          y: {
+            ticks: { color: '#8ea0b8', callback: v => formatMoney(v, 2) },
+            title: { display: true, text: 'DPS', color: '#8ea0b8' },
+          },
+          x: { ticks: { color: '#8ea0b8' } },
+        },
+        plugins: {
+          legend: { position: 'right', labels: { color: '#d9e2f2', usePointStyle: true, padding: 8, font: { size: 10 } } },
+          tooltip: { callbacks: { label: ctx => {
+            const sym = ctx.dataset.label.replace(' (DPS)', '');
+            const val = ctx.raw;
+            if (val == null) return sym + ': N/A';
+            const growth = companies[sym]?.yoy_growth?.[ctx.dataIndex];
+            const growthStr = growth != null ? ' (YoY ' + growth.toFixed(1) + '%)' : '';
+            return sym + ': ' + formatMoney(val, 4) + growthStr;
+          }}},
+        },
+      },
+    });
+  });
+}
+
+// ================================================================
+// Chart 6: Returns by Company by Year
+// ================================================================
+function renderReturnsByCompanyChart() {
+  fetchJson('/api/portfolio/returns/by-company').then(data => {
+    if (!data || !data.years || !data.years.length) return;
+
+    // Cache data so year-switch doesn't re-fetch
+    _returnsByCompanyData = data;
+
+    // Populate year selector if not already done
+    const yearSel = $('#pf-returns-year');
+    if (yearSel && yearSel.options.length <= 1) {
+      yearSel.innerHTML = '<option value="all">All Years</option>';
+      for (const y of data.years) {
+        const opt = document.createElement('option');
+        opt.value = String(y);
+        opt.textContent = String(y);
+        yearSel.appendChild(opt);
+      }
+    }
+
+    _drawReturnsByCompanyChart(data);
+  });
+}
+
+let _returnsByCompanyData = null;
+
+function _drawReturnsByCompanyChart(data) {
+  const ctx = $('#pf-returns-by-company-chart');
+  destroyChart('returnsByCompany');
+
+  const decompose = $('#pf-returns-decompose')?.checked;
+  const companies = data.companies;
+  const yearSel = $('#pf-returns-year');
+  const selectedYear = yearSel?.value || 'all';
+  const yearIdx = selectedYear === 'all' ? -1 : data.years.indexOf(parseInt(selectedYear));
+
+  // Build list of [company, value, cap_val, div_val]
+  let items = [];
+  for (const sym of Object.keys(companies)) {
+    const c = companies[sym];
+    if (yearIdx >= 0) {
+      const val = c.total_return[yearIdx];
+      if (val == null) continue;
+      items.push({
+        sym,
+        total: val,
+        cap: c.capital_gain[yearIdx],
+        div: c.dividend_return[yearIdx],
+      });
+    } else {
+      // All years: use _total_all_years
+      const val = c._total_all_years;
+      if (val == null) continue;
+      items.push({
+        sym,
+        total: val,
+        cap: val,  // no decomposition for all-years view
+        div: 0,
+      });
+    }
+  }
+
+  if (!items.length) return;
+
+  // Sort by total value (ascending → horizontal bars render bottom-to-top)
+  items.sort((a, b) => a.total - b.total);
+
+  // Dynamic height so all companies are visible
+  ctx.parentNode.style.height = Math.max(350, items.length * 26) + 'px';
+
+  const labels = items.map(it => it.sym);
+
+  // Color function: green for positive, red for negative, intensity by magnitude
+  function pnlColor(val) {
+    if (val == null || val === 0) return '#8ea0b8';
+    const intensity = Math.min(Math.abs(val) / 50, 1);  // cap at 50% return
+    if (val > 0) {
+      const g = Math.round(180 + 75 * intensity);
+      const r = Math.round(60 - 60 * intensity);
+      return `rgba(${r},${g},80,0.85)`;
+    } else {
+      const r = Math.round(180 + 75 * intensity);
+      const g = Math.round(60 - 60 * intensity);
+      return `rgba(${r},${g},80,0.85)`;
+    }
+  }
+
+  let datasets;
+  if (decompose && selectedYear !== 'all') {
+    datasets = [
+      {
+        label: 'Capital Gain',
+        data: items.map(it => it.cap),
+        backgroundColor: items.map(it => pnlColor(it.cap)),
+        borderColor: 'transparent',
+        borderWidth: 0,
+      },
+      {
+        label: 'Dividends',
+        data: items.map(it => it.div),
+        backgroundColor: items.map(it => {
+          const v = it.div || 0;
+          return v >= 0 ? 'rgba(68,209,123,0.4)' : 'rgba(255,107,107,0.4)';
+        }),
+        borderColor: 'transparent',
+        borderWidth: 0,
+      },
+    ];
+  } else {
+    datasets = [{
+      label: selectedYear === 'all' ? 'Total Return (all yrs)' : 'Total Return ' + selectedYear,
+      data: items.map(it => it.total),
+      backgroundColor: items.map(it => pnlColor(it.total)),
+      borderColor: items.map(it => it.total >= 0 ? '#44d17b' : '#ff6b6b'),
+      borderWidth: 0.5,
+      borderRadius: 2,
+    }];
+  }
+
+  state.charts.returnsByCompany = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      scales: {
+        x: {
+          ticks: { color: '#8ea0b8', callback: v => v.toFixed(1) + '%' },
+          title: { display: true, text: 'Return %', color: '#8ea0b8' },
+        },
+        y: {
+          ticks: { color: '#d9e2f2', font: { size: 11 } },
+        },
+      },
+      plugins: {
+        legend: {
+          display: decompose && selectedYear !== 'all',
+          labels: { color: '#d9e2f2', usePointStyle: true },
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const it = items[ctx.dataIndex];
+              if (!it) return '';
+              if (decompose && ctx.dataset.label === 'Capital Gain') {
+                return `Cap Gain: ${it.cap?.toFixed(1)}%`;
+              }
+              if (decompose && ctx.dataset.label === 'Dividends') {
+                return `Dividends: ${it.div?.toFixed(1)}%`;
+              }
+              let s = `Total: ${it.total?.toFixed(1)}%`;
+              if (selectedYear !== 'all' && it.div) {
+                s += ` (Cap: ${it.cap?.toFixed(1)}%, Div: ${it.div?.toFixed(1)}%)`;
+              }
+              return s;
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+// ================================================================
+// Chart 7: Asset Currency Split (Pie)
+// ================================================================
+function renderCurrencySplitChart() {
+  const hh = state.holdings.filter(h => !h.is_option && h.currency);
+  if (!hh.length) return;
+  const ctx = $('#pf-currency-split-chart');
+  destroyChart('currencySplit');
+
+  // Group by currency
+  const byCcy = {};
+  for (const h of hh) {
+    const ccy = h.currency || '???';
+    byCcy[ccy] = (byCcy[ccy] || 0) + Math.abs(h.market_value || 0);
+  }
+
+  const labels = Object.keys(byCcy).sort();
+  const data = labels.map(c => byCcy[c]);
+  const total = data.reduce((s, v) => s + v, 0);
+
+  const currencyColors = {
+    EUR: '#44d17b',
+    USD: '#58a6ff',
+    JPY: '#e0af4f',
+    GBP: '#ff6b6b',
+    CHF: '#8ea0b8',
+    CAD: '#ff6b6bcc',
+    HKD: '#44d17bcc',
+    SEK: '#58a6ffcc',
+    NOK: '#e0af4fcc',
+    DKK: '#8ea0b8cc',
+  };
+  const bgColors = labels.map(c => currencyColors[c] || '#8ea0b8');
+
+  state.charts.currencySplit = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: labels.map(c => c + ' (' + (total > 0 ? (byCcy[c]/total*100).toFixed(1) + '%' : '0%') + ')'),
+      datasets: [{
+        data,
+        backgroundColor: bgColors,
+        borderColor: 'transparent',
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { color: '#d9e2f2', usePointStyle: true, padding: 12 } },
+        tooltip: { callbacks: { label: ctx => {
+          const ccy = labels[ctx.dataIndex];
+          return ccy + ': ' + formatMoney(ctx.raw);
+        }}},
+      },
+    },
+  });
+}
+
+// ================================================================
+// Chart 8: Returns by Closed Positions
+// ================================================================
+function renderClosedReturnsChart() {
+  fetchJson('/api/portfolio/holdings/closed').then(closed => {
+    if (!closed || !closed.length) {
+      const ctx = $('#pf-closed-returns-chart');
+      ctx.parentNode.querySelector('canvas')?.remove();
+      ctx.parentNode.innerHTML += '<div class="muted" style="text-align:center;padding-top:120px;">No closed positions</div>';
+      return;
+    }
+    const ctx = $('#pf-closed-returns-chart');
+    destroyChart('closedReturns');
+
+    // Sort by absolute P&L
+    closed.sort((a, b) => Math.abs(b.realized_pnl || 0) - Math.abs(a.realized_pnl || 0));
+
+    const labels = closed.map(c => c.symbol);
+    const pnl = closed.map(c => c.realized_pnl || 0);
+    const bgColors = pnl.map(v => v >= 0 ? 'rgba(68,209,123,0.7)' : 'rgba(255,107,107,0.7)');
+    const borderColors = pnl.map(v => v >= 0 ? '#44d17b' : '#ff6b6b');
+
+    state.charts.closedReturns = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Realized P&L',
+          data: pnl,
+          backgroundColor: bgColors,
+          borderColor: borderColors,
+          borderWidth: 1,
+          borderRadius: 3,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          y: {
+            ticks: { color: '#8ea0b8', callback: v => formatMoney(v) },
+            title: { display: true, text: 'EUR', color: '#8ea0b8' },
+          },
+          x: { ticks: { color: '#d9e2f2' } },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => 'P&L: ' + formatMoney(ctx.raw) } },
+        },
+      },
+    });
+  });
+}
+
+// ================================================================
+// Chart 9: Money-Weighted Returns (Modified Dietz)
+// ================================================================
+let _mwReturnsData = null;
+
+function renderMoneyWeightedReturnsChart() {
+  fetchJson('/api/portfolio/returns/money-weighted').then(data => {
+    if (!data || !data.years || !data.years.length) return;
+    _mwReturnsData = data;
+
+    const yearSel = $('#pf-mw-returns-year');
+    if (yearSel && yearSel.options.length <= 1) {
+      yearSel.innerHTML = '<option value="all">All Years</option>';
+      for (const y of data.years) {
+        const opt = document.createElement('option');
+        opt.value = String(y); opt.textContent = String(y);
+        yearSel.appendChild(opt);
+      }
+    }
+    _drawMWReturnsChart(data);
+  });
+}
+
+function _drawMWReturnsChart(data) {
+  const ctx = $('#pf-mw-returns-chart');
+  destroyChart('mwReturns');
+
+  const companies = data.companies;
+  const yearSel = $('#pf-mw-returns-year');
+  const selectedYear = yearSel?.value || 'all';
+  const yearIdx = selectedYear === 'all' ? -1 : data.years.indexOf(parseInt(selectedYear));
+
+  let items = [];
+  for (const sym of Object.keys(companies)) {
+    const c = companies[sym];
+    if (yearIdx >= 0) {
+      const val = c.return_pct[yearIdx];
+      if (val == null) continue;
+      items.push({ sym, val });
+    } else {
+      let total = 0, count = 0;
+      for (const v of c.return_pct) { if (v != null) { total += v; count++; } }
+      if (count > 0) items.push({ sym, val: total });
+    }
+  }
+  if (!items.length) return;
+  items.sort((a, b) => a.val - b.val);
+
+  // Dynamic height so all companies are visible
+  ctx.parentNode.style.height = Math.max(350, items.length * 26) + 'px';
+
+  function mwColor(val) {
+    if (val == null || val === 0) return '#8ea0b8';
+    const intensity = Math.min(Math.abs(val) / 50, 1);
+    if (val > 0) {
+      return `rgba(${Math.round(60-60*intensity)},${Math.round(180+75*intensity)},80,0.85)`;
+    } else {
+      return `rgba(${Math.round(180+75*intensity)},${Math.round(60-60*intensity)},80,0.85)`;
+    }
+  }
+
+  state.charts.mwReturns = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: items.map(it => it.sym),
+      datasets: [{
+        label: 'MW Return %',
+        data: items.map(it => it.val),
+        backgroundColor: items.map(it => mwColor(it.val)),
+        borderColor: items.map(it => it.val >= 0 ? '#44d17b' : '#ff6b6b'),
+        borderWidth: 0.5, borderRadius: 2,
+      }],
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      scales: {
+        x: {
+          ticks: { color: '#8ea0b8', callback: v => v.toFixed(1) + '%' },
+          title: { display: true, text: 'Return %', color: '#8ea0b8' },
+        },
+        y: { ticks: { color: '#d9e2f2', font: { size: 11 } } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => 'MW Return: ' + ctx.raw?.toFixed(1) + '%' } },
+      },
+    },
+  });
+}
+
+// ================================================================
+// Chart 10: Contribution to Portfolio Return
+// ================================================================
+let _contribData = null;
+
+function renderContributionChart() {
+  fetchJson('/api/portfolio/returns/contribution').then(data => {
+    if (!data || !data.years || !data.years.length) return;
+    _contribData = data;
+
+    const yearSel = $('#pf-contrib-year');
+    if (yearSel && yearSel.options.length <= 1) {
+      yearSel.innerHTML = '<option value="all">All Years</option>';
+      for (const y of data.years) {
+        const opt = document.createElement('option');
+        opt.value = String(y); opt.textContent = String(y);
+        yearSel.appendChild(opt);
+      }
+    }
+    _drawContributionChart(data);
+  });
+}
+
+function _drawContributionChart(data) {
+  const ctx = $('#pf-contrib-chart');
+  destroyChart('contribution');
+
+  const companies = data.companies;
+  const yearSel = $('#pf-contrib-year');
+  const selectedYear = yearSel?.value || 'all';
+  const yearIdx = selectedYear === 'all' ? -1 : data.years.indexOf(parseInt(selectedYear));
+
+  let items = [];
+  for (const sym of Object.keys(companies)) {
+    const c = companies[sym];
+    if (yearIdx >= 0) {
+      const val = c.contribution_eur[yearIdx];
+      if (val == null) continue;
+      items.push({ sym, val });
+    } else {
+      let total = 0, count = 0;
+      for (const v of c.contribution_eur) { if (v != null) { total += v; count++; } }
+      if (count > 0) items.push({ sym, val: total });
+    }
+  }
+  if (!items.length) return;
+  items.sort((a, b) => a.val - b.val);
+
+  // Dynamic height so all companies are visible
+  ctx.parentNode.style.height = Math.max(350, items.length * 26) + 'px';
+
+  state.charts.contribution = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: items.map(it => it.sym),
+      datasets: [{
+        label: 'Contribution (EUR)',
+        data: items.map(it => it.val),
+        backgroundColor: items.map(it => it.val >= 0
+          ? 'rgba(68,209,123,0.7)' : 'rgba(255,107,107,0.7)'),
+        borderColor: items.map(it => it.val >= 0 ? '#44d17b' : '#ff6b6b'),
+        borderWidth: 0.5, borderRadius: 2,
+      }],
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      scales: {
+        x: {
+          ticks: { color: '#8ea0b8', callback: v => formatMoney(v) },
+          title: { display: true, text: 'EUR', color: '#8ea0b8' },
+        },
+        y: { ticks: { color: '#d9e2f2', font: { size: 11 } } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const it = items[ctx.dataIndex];
+              if (!it) return '';
+              const c = companies[it.sym];
+              const pct = yearIdx >= 0 ? c.contribution_pct[yearIdx] : null;
+              let s = 'EUR ' + formatMoney(it.val);
+              if (pct != null) s += ' (' + pct.toFixed(1) + '% of portfolio)';
+              return s;
+            },
+          },
+        },
       },
     },
   });
@@ -1081,6 +1685,52 @@ function wireChartControls() {
   if (divPeriod) {
     divPeriod.addEventListener('change', () => renderDividendsChart());
   }
+
+  // Dividend Growth YoY toggle: aggregate vs per-company
+  const divGrowthBtn = $('#pf-div-growth-show-dps');
+  if (divGrowthBtn) {
+    divGrowthBtn.addEventListener('click', () => {
+      _divGrowthMode = _divGrowthMode === 'per-company' ? 'agg' : 'per-company';
+      divGrowthBtn.textContent = _divGrowthMode === 'per-company' ? 'Aggregate' : 'Per Company';
+      if (_divGrowthMode === 'per-company') {
+        renderDpsPerCompanyChart();
+      } else {
+        renderDividendGrowthChart();
+      }
+    });
+  }
+
+  // Returns by Company decompose toggle
+  const decomposeCb = $('#pf-returns-decompose');
+  if (decomposeCb) {
+    decomposeCb.addEventListener('change', () => {
+      if (_returnsByCompanyData) _drawReturnsByCompanyChart(_returnsByCompanyData);
+    });
+  }
+
+  // Returns by Company year selector
+  const yearSel = $('#pf-returns-year');
+  if (yearSel) {
+    yearSel.addEventListener('change', () => {
+      if (_returnsByCompanyData) _drawReturnsByCompanyChart(_returnsByCompanyData);
+    });
+  }
+
+  // Money-Weighted Returns year selector
+  const mwYearSel = $('#pf-mw-returns-year');
+  if (mwYearSel) {
+    mwYearSel.addEventListener('change', () => {
+      if (_mwReturnsData) _drawMWReturnsChart(_mwReturnsData);
+    });
+  }
+
+  // Contribution year selector
+  const contribYearSel = $('#pf-contrib-year');
+  if (contribYearSel) {
+    contribYearSel.addEventListener('change', () => {
+      if (_contribData) _drawContributionChart(_contribData);
+    });
+  }
 }
 
 async function computeChartData() {
@@ -1201,6 +1851,50 @@ function wireRebuild() {
       await refreshSummary();
       await loadHoldings();
       await loadTransactions();
+    }
+  });
+}
+
+// ================================================================
+// Chart maximize: click a chart body to expand to full width
+// ================================================================
+function wireChartExpand() {
+  const chartsTab = document.querySelector('[data-panel="charts"]');
+  if (!chartsTab) return;
+
+  chartsTab.addEventListener('click', (e) => {
+    const body = e.target.closest('.panel-body');
+    if (!body) return;
+    const panel = body.closest('.panel');
+    if (!panel) return;
+
+    // Ignore clicks on interactive elements inside panel-body
+    if (e.target.closest('select, input, button, label, .btn-ghost, .btn-primary')) return;
+
+    if (panel.classList.contains('chart-expanded')) {
+      panel.classList.remove('chart-expanded');
+    } else {
+      const other = chartsTab.querySelector('.chart-expanded');
+      if (other) other.classList.remove('chart-expanded');
+      panel.classList.add('chart-expanded');
+    }
+
+    // Resize the chart to fill new dimensions
+    setTimeout(() => {
+      const canvas = panel.querySelector('canvas');
+      if (!canvas) return;
+      for (const key of Object.keys(state.charts)) {
+        const ch = state.charts[key];
+        if (ch && ch.canvas === canvas) { ch.resize(); break; }
+      }
+    }, 50);
+  });
+
+  // Escape key to close expanded chart
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const expanded = chartsTab.querySelector('.chart-expanded');
+      if (expanded) expanded.classList.remove('chart-expanded');
     }
   });
 }
