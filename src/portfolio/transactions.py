@@ -136,8 +136,17 @@ def get_transactions(
     activity_type: str | None = None,
     limit: int = 1000,
     offset: int = 0,
+    slim: bool = True,
 ) -> list[dict]:
-    """Query transactions with optional filters."""
+    """Query transactions with optional filters.
+
+    When *slim* is True (default), returns only the columns needed for
+    the transactions table (~70% smaller payload vs SELECT *).
+    """
+    if slim:
+        cols = "trade_date, activity_type, symbol, quantity, trade_price, amount, net_cash, currency, buy_sell, commission, description, trade_money, proceeds, source_file"
+    else:
+        cols = "*"
     db_path = db_path or get_db3()
     create_tables(db_path)  # idempotent
     conn = sqlite3.connect(db_path)
@@ -159,7 +168,7 @@ def get_transactions(
         where.append("activity_type = ?")
         params.append(activity_type)
 
-    sql = "SELECT * FROM Transactions"
+    sql = f"SELECT {cols} FROM Transactions"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY trade_date DESC, id DESC LIMIT ? OFFSET ?"

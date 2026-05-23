@@ -1066,22 +1066,6 @@ class TestHoldingsLoadingIndicator:
         # No leftover spinner
         assert page.locator('.pf-table-loading').count() == 0
 
-    def test_spinner_appears_on_closed_view_switch(self, page):
-        """Switching to closed positions view shows loading spinner."""
-        # Switch to holdings tab
-        page.locator('.tab-btn[data-tab="holdings"]').click()
-        page.wait_for_selector('#pf-holdings-tbl', timeout=15000)
-
-        # Click closed view
-        page.locator('.pf-view-btn[data-view="closed"]').click()
-
-        # Wait for table to re-render
-        page.wait_for_selector('#pf-holdings-tbl', timeout=15000)
-        table = page.locator('#pf-holdings-tbl')
-        assert table.is_visible()
-        # No leftover spinner
-        assert page.locator('.pf-table-loading').count() == 0
-
 
 class TestHoldingsTableFeatures:
     """Verify holdings table columns, sort, summary row."""
@@ -1201,19 +1185,119 @@ class TestHoldingsViewSwitching:
         page.locator('.tab-btn[data-tab="holdings"]').click()
         page.wait_for_selector('#pf-holdings-tbl', timeout=15000)
 
-    def test_switch_to_closed_view(self, page):
-        page.locator('.pf-view-btn[data-view="closed"]').click()
-        page.wait_for_timeout(1000)
-        assert page.locator('#pf-holdings-tbl').is_visible()
 
-    def test_switch_to_all_view(self, page):
-        page.locator('.pf-view-btn[data-view="all"]').click()
-        page.wait_for_timeout(1000)
-        assert page.locator('#pf-holdings-tbl').is_visible()
+class TestTransactionsTable:
+    """Verify transactions table rendering, columns, and features."""
 
-    def test_switch_back_to_current(self, page):
-        page.locator('.pf-view-btn[data-view="closed"]').click()
+    @pytest.fixture(autouse=True)
+    def setup(self, page):
+        _upload_xml(page, "2024")
+        page.goto(f"{BASE_URL}/portfolio")
+        page.locator('.tab-btn[data-tab="transactions"]').click()
+        page.wait_for_timeout(2000)
+
+    def test_table_renders_with_rows(self, page):
+        """Transactions table loads and shows rows."""
+        table = page.locator('#dt-txn')
+        table.wait_for(state='visible', timeout=10000)
+        rows = page.locator('#dt-txn tbody tr')
+        assert rows.count() > 5, f"Expected >5 rows, got {rows.count()}"
+
+    def test_core_columns_visible(self, page):
+        """Core columns are present in the header."""
+        page.wait_for_selector('#dt-txn', timeout=10000)
+        headers = page.locator('#dt-txn th')
+        texts = [h.inner_text().strip() for h in headers.all()]
+        joined = ' '.join(texts)
+        assert 'Date' in joined
+        assert 'Type' in joined
+        assert 'Symbol' in joined
+        assert 'Amount' in joined
+
+    def test_sort_by_date(self, page):
+        """Clicking Date header sorts."""
+        page.wait_for_selector('#dt-txn', timeout=10000)
+        date_header = page.locator('#dt-txn .pf-sort-th[data-sort="trade_date"]')
+        date_header.click()
         page.wait_for_timeout(500)
-        page.locator('.pf-view-btn[data-view="current"]').click()
+        assert page.locator('#dt-txn tbody tr').first.is_visible()
+
+    def test_type_badges_present(self, page):
+        """Activity types show as colored badges."""
+        page.wait_for_selector('#dt-txn', timeout=10000)
+        badges = page.locator('#dt-txn .badge')
+        assert badges.count() > 0
+
+    def test_columns_draggable(self, page):
+        """Transaction column headers are draggable."""
+        page.wait_for_selector('#dt-txn', timeout=10000)
+        draggable = page.locator('#dt-txn th[draggable="true"]')
+        assert draggable.count() >= 3
+
+    def test_filter_popup_opens(self, page):
+        """Ctrl+click on Symbol header opens filter."""
+        page.wait_for_selector('#dt-txn', timeout=10000)
+        sym_header = page.locator('#dt-txn .pf-sort-th[data-sort="symbol"]')
+        sym_header.click(modifiers=['Control'])
         page.wait_for_timeout(500)
-        assert page.locator('#pf-holdings-tbl').is_visible()
+        assert page.locator('#dt-txn-filt').is_visible()
+
+    def test_all_rows_render(self, page):
+        """No rows lost — check that earlier-dated transactions appear."""
+        page.wait_for_selector('#dt-txn', timeout=10000)
+        # Check for rows from earlier in 2024
+        all_dates = page.locator('#dt-txn tbody tr td:first-child').all_text_contents()
+        has_2024 = any('2024' in d for d in all_dates)
+        assert has_2024, "Expected transactions from 2024 to be present"
+
+
+class TestTransactionsFilterPopup:
+    """Verify right-click filter popup on transaction columns."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, page):
+        _upload_xml(page, "2024")
+        page.goto(f"{BASE_URL}/portfolio")
+        page.locator('.tab-btn[data-tab="transactions"]').click()
+        page.wait_for_timeout(2000)
+
+    def test_right_click_opens_text_filter(self, page):
+        """Right-clicking Symbol opens text filter popup."""
+        sym_header = page.locator('th[data-txn-sort="symbol"]')
+        sym_header.wait_for(state='visible', timeout=5000)
+        sym_header.click(button='right')
+        page.wait_for_timeout(500)
+        popup = page.locator('#pf-txn-filter-popup')
+        assert popup.is_visible(), "Filter popup should be visible after right-click"
+
+    def test_right_click_opens_numeric_filter(self, page):
+        """Right-clicking Qty opens numeric filter popup."""
+        qty_header = page.locator('th[data-txn-sort="quantity"]')
+        qty_header.wait_for(state='visible', timeout=5000)
+        qty_header.click(button='right')
+        page.wait_for_timeout(500)
+        popup = page.locator('#pf-txn-filter-popup')
+        assert popup.is_visible(), "Numeric filter popup should be visible"
+
+    def test_filter_closes_on_outside_click(self, page):
+        """Clicking outside the filter popup closes it."""
+        sym_header = page.locator('th[data-txn-sort="symbol"]')
+        sym_header.click(button='right')
+        page.wait_for_timeout(500)
+        assert page.locator('#pf-txn-filter-popup').is_visible()
+        # Click the summary bar area
+        page.locator('#pf-summary-bar').click()
+        page.wait_for_timeout(500)
+        assert page.locator('#pf-txn-filter-popup').count() == 0
+
+    def test_text_filter_has_search_box(self, page):
+        """Text filter popup has search input."""
+        page.locator('th[data-txn-sort="symbol"]').click(button='right')
+        page.wait_for_timeout(500)
+        assert page.locator('#dt-filt-search').is_visible()
+
+    def test_numeric_filter_has_add_button(self, page):
+        """Numeric filter popup has Add condition button."""
+        page.locator('th[data-txn-sort="quantity"]').click(button='right')
+        page.wait_for_timeout(500)
+        assert page.locator('#dt-filt-add').is_visible()

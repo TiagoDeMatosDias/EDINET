@@ -84,6 +84,14 @@
       background:var(--panel-bg, #161b22);
     }
     .pf-sticky-col-last { box-shadow:2px 0 6px rgba(0,0,0,0.4); }
+    /* Sticky table headers */
+    .data-table thead th {
+      position:sticky;top:0;z-index:3;
+      background:var(--panel-bg, #161b22);
+    }
+    .data-table thead th.pf-sticky-col { z-index:4; }
+    /* Virtual rendering for large tables */
+    .data-table tbody tr { content-visibility:auto;contain-intrinsic-size:auto 28px; }
     /* Summary row */
     .pf-summary-row td {
       font-weight:600;font-size:12px;
@@ -283,25 +291,6 @@
                   <div class="panel-title">Transaction Log</div>
                   <div class="panel-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
                     <span style="font-size:11px;color:var(--muted);" id="pf-txn-count"></span>
-                    <select id="pf-txn-type-filter" class="input-sm">
-                      <option value="">All Types</option>
-                      <option value="TRADE">Trade</option>
-                      <option value="DIVIDEND">Dividend</option>
-                      <option value="WITHHOLDING_TAX">Withholding Tax</option>
-                      <option value="DEPOSIT_WITHDRAWAL">Deposit/Withdrawal</option>
-                      <option value="BROKER_INTEREST">Broker Interest</option>
-                      <option value="SPINOFF">Spinoff</option>
-                      <option value="PIL_DIVIDEND">PIL Dividend</option>
-                      <option value="OTHER_FEE">Other Fee</option>
-                      <option value="COMMISSION_ADJ">Commission Adj</option>
-                    </select>
-                    <select id="pf-txn-symbol-filter" class="input-sm">
-                      <option value="">All Symbols</option>
-                    </select>
-                    <input type="date" id="pf-txn-start-date" class="input-sm" title="Start date" />
-                    <span style="font-size:11px;color:var(--muted);">to</span>
-                    <input type="date" id="pf-txn-end-date" class="input-sm" title="End date" />
-                    <button class="btn-ghost btn-sm" id="pf-txn-clear-filters">Clear</button>
                   </div>
                 </div>
                 <div class="panel-body" style="overflow-x:auto;max-height:60vh;">
