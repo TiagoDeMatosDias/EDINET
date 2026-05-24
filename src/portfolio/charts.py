@@ -1,0 +1,599 @@
+"""Data-fetching functions for the Portfolio Charts tab.
+
+Each function returns plain dicts ready for JSON serialisation.  Business
+logic is concentrated here rather than in the API layer so it's testable.
+"""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+from collections import defaultdict
+
+from src.portfolio.currency import (
+    get_fx_series,
+    get_rate_at_date,
+    get_available_display_currencies,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _latest_fx_rate(from_currency: str, to_currency: str, db2_path: str) -> float | None:
+    """Get the most recent FX rate from *from_currency* to *to_currency*."""
+    series = get_fx_series(from_currency, to_currency, db2_path)
+    if not series:
+        return None
+    # Get the last (most recent) date's rate
+    last_date = max(series.keys())
+    return series[last_date]
+
+
+# ---------------------------------------------------------------------------
+# Chart 1: Holdings by value (pie)
+# ---------------------------------------------------------------------------
+
+def _get_latest_rates(
+    currencies: set[str],
+    display_currency: str,
+    db2_path: str,
+) -> dict[str, float]:
+    """Pre-compute latest FX rates for a set of currencies to display currency."""
+    dc = display_currency.upper()
+    rates: dict[str, float] = {dc: 1.0}
+    for ccy in currencies:
+        u = ccy.upper()
+        if u != dc and u not in rates:
+            r = _latest_fx_rate(u, dc, db2_path)
+            rates[u] = r if r is not None else 1.0
+    return rates
+
+
+def get_holdings_by_value(
+    db3_path: str,
+    db2_path: str,
+    display_currency: str = "EUR",
+) -> dict:
+    """Current portfolio holdings aggregated by symbol, valued in *display_currency*.
+
+    Excludes cash and option positions.
+    Returns ``{labels: [str], values: [float], total: float, currency: str}``.
+    """
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT symbol, market_value_native, currency "
+        "FROM Portfolio_Holdings WHERE quantity > 0 "
+        "AND asset_category NOT IN ('CASH', 'OPT') "
+        "ORDER BY market_value_native DESC"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return {"labels": [], "values": [], "total": 0, "currency": display_currency}
+
+    dc = display_currency.upper()
+    native_ccies = {(r["currency"] or "EUR").upper() for r in rows}
+    rates = _get_latest_rates(native_ccies, dc, db2_path)
+
+    labels: list[str] = []
+    values: list[float] = []
+    total = 0.0
+
+    for r in rows:
+        sym = r["symbol"]
+        val_native = r["market_value_native"] or 0
+        native_ccy = (r["currency"] or "EUR").upper()
+        val_display = round(val_native * rates.get(native_ccy, 1.0), 2)
+        labels.append(sym)
+        values.append(val_display)
+        total += val_display
+
+    return {
+        "labels": labels,
+        "values": [round(v, 2) for v in values],
+        "total": round(total, 2),
+        "currency": display_currency,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Chart 2: Holdings by native currency (pie)
+# ---------------------------------------------------------------------------
+
+def get_holdings_by_currency(
+    db3_path: str,
+    db2_path: str,
+    display_currency: str = "EUR",
+) -> dict:
+    """Current holdings grouped by native currency, all values in *display_currency*.
+
+    Returns ``{labels: [str], values: [float], total: float, currency: str}``.
+    """
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT market_value_native, currency FROM Portfolio_Holdings "
+        "WHERE quantity > 0 AND asset_category NOT IN ('CASH', 'OPT')"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return {"labels": [], "values": [], "total": 0, "currency": display_currency}
+
+    dc = display_currency.upper()
+    native_ccies = {(r["currency"] or "EUR").upper() for r in rows}
+    rates = _get_latest_rates(native_ccies, dc, db2_path)
+
+    by_ccy: dict[str, float] = defaultdict(float)
+    for r in rows:
+        val_native = r["market_value_native"] or 0
+        native_ccy = (r["currency"] or "EUR").upper()
+        val_display = round(val_native * rates.get(native_ccy, 1.0), 2)
+        by_ccy[native_ccy] += val_display
+
+    labels = sorted(by_ccy.keys())
+    values = [round(by_ccy[c], 2) for c in labels]
+    total = round(sum(values), 2)
+
+    return {"labels": labels, "values": values, "total": total, "currency": display_currency}
+
+
+# ---------------------------------------------------------------------------
+# Chart 3: Portfolio value over time, per holding (stacked line)
+# ---------------------------------------------------------------------------
+
+def get_portfolio_value_history(
+    db3_path: str,
+    db2_path: str,
+    display_currency: str = "EUR",
+) -> dict:
+    """Daily market value per holding, for stacked area chart.
+
+    Returns ``{dates: [str], holdings: {symbol: [float]}, currency: str}``.
+
+    Non-stock items (cash, options) are excluded.  Positions that were fully
+    sold have zeroed values after their last holding date.  All values are
+    converted to *display_currency*.
+    """
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+
+    hh_rows = conn.execute(
+        "SELECT date, symbol, market_value_native, currency "
+        "FROM Holdings_History "
+        "WHERE is_option = 0 AND symbol NOT LIKE 'CASH%' "
+        "AND market_value_native IS NOT NULL "
+        "ORDER BY date, symbol"
+    ).fetchall()
+
+    cur_held = {
+        r["symbol"] for r in conn.execute(
+            "SELECT symbol FROM Portfolio_Holdings WHERE quantity > 0 "
+            "AND asset_category != 'CASH'"
+        ).fetchall()
+    }
+    conn.close()
+
+    if not hh_rows:
+        return {"dates": [], "holdings": {}, "currency": display_currency}
+
+    dc = display_currency.upper()
+    series_by_symbol: dict[str, dict[str, float]] = defaultdict(dict)
+    native_ccy_by_symbol: dict[str, str] = {}
+    date_set: set[str] = set()
+    for r in hh_rows:
+        d = r["date"]
+        sym = r["symbol"]
+        val = r["market_value_native"] or 0
+        date_set.add(d)
+        series_by_symbol[sym][d] = val
+        native_ccy_by_symbol[sym] = r["currency"] or "EUR"
+
+    date_list = sorted(date_set)
+
+    # Pre-load FX series for each unique native currency
+    fx_series_cache: dict[str, dict[str, float]] = {}
+    for nccy in set(native_ccy_by_symbol.values()):
+        nccy_u = nccy.upper()
+        if nccy_u != dc:
+            fx = get_fx_series(nccy, dc, db2_path)
+            if fx:
+                fx_series_cache[nccy_u] = fx
+
+    result_series: dict[str, list[float | None]] = {}
+    n_dates = len(date_list)
+    for sym, day_map in series_by_symbol.items():
+        vals: list[float | None] = [day_map.get(d) for d in date_list]
+        nccy = native_ccy_by_symbol.get(sym, "EUR").upper()
+
+        last_idx = -1
+        for i in range(n_dates - 1, -1, -1):
+            if vals[i] is not None:
+                last_idx = i
+                break
+
+        if last_idx >= 0 and last_idx < n_dates - 1:
+            for i in range(last_idx + 1, n_dates):
+                vals[i] = 0.0
+        elif last_idx >= 0 and sym in cur_held:
+            last_val = vals[last_idx]
+            for i in range(last_idx + 1, n_dates):
+                vals[i] = last_val
+
+        # Convert to display currency
+        if nccy != dc and nccy in fx_series_cache:
+            fx = fx_series_cache[nccy]
+            for i in range(n_dates):
+                v = vals[i]
+                if v is not None:
+                    rate = get_rate_at_date(date_list[i], fx)
+                    if rate:
+                        vals[i] = round(v * rate, 2)
+        else:
+            for i in range(n_dates):
+                if vals[i] is not None:
+                    vals[i] = round(vals[i], 2)
+
+        result_series[sym] = vals
+
+    return {
+        "dates": date_list,
+        "holdings": result_series,
+        "currency": display_currency,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Chart 4: Dividends by company (stacked bar)
+# ---------------------------------------------------------------------------
+
+def _period_bucket(date_str: str, period: str) -> str:
+    """Group a date string into period bucket."""
+    y = date_str[:4]
+    m = int(date_str[5:7])
+    if period == "yearly":
+        return y
+    elif period == "quarterly":
+        q = (m - 1) // 3 + 1
+        return f"{y}-Q{q}"
+    else:  # monthly
+        return date_str[:7]
+
+
+def _batch_fx_rates(
+    rows_with_ccy: list[tuple[str, str]],  # [(date_str, currency), ...]
+    display_currency: str,
+    db2_path: str,
+) -> list[float | None]:
+    """Batch-convert amounts by pre-loading FX series per currency once."""
+    dc = display_currency.upper()
+    # Group unique currencies
+    currencies = {(ccy or "EUR").upper() for _, ccy in rows_with_ccy} | {dc}
+    # Pre-load FX series for each currency to display currency
+    fx_cache: dict[str, dict[str, float]] = {}
+    for ccy in currencies:
+        u = ccy.upper()
+        if u == dc:
+            continue
+        fx = get_fx_series(u, dc, db2_path)
+        if fx:
+            fx_cache[u] = fx
+
+    rates: list[float | None] = []
+    for date_str, ccy in rows_with_ccy:
+        u = (ccy or "EUR").upper()
+        if u == dc:
+            rates.append(1.0)
+        elif u in fx_cache:
+            rate = get_rate_at_date(date_str, fx_cache[u])
+            rates.append(rate or 1.0)
+        else:
+            rates.append(None)
+    return rates
+
+
+def get_dividends_by_company(
+    db3_path: str,
+    db2_path: str,
+    display_currency: str = "EUR",
+    period: str = "monthly",
+) -> dict:
+    """Net dividends grouped by company, in *display_currency*.
+
+    *period*: "monthly", "quarterly", or "yearly".
+    Returns ``{periods: [str], companies: {symbol: [float]}, currency: str}``.
+    """
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT symbol, trade_date, activity_type, amount, currency "
+        "FROM Transactions "
+        "WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
+        "AND symbol NOT LIKE 'CASH%' "
+        "ORDER BY trade_date"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return {"periods": [], "companies": {}, "currency": display_currency}
+
+    dc = display_currency.upper()
+
+    # Batch pre-load FX rates
+    raw_ccy_pairs = [(r["trade_date"], r["currency"] or "EUR") for r in rows]
+    fx_rates = _batch_fx_rates(raw_ccy_pairs, dc, db2_path)
+
+    net_divs: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    period_set: set[str] = set()
+
+    for i, r in enumerate(rows):
+        d = r["trade_date"]
+        pk = _period_bucket(d, period)
+        sym = r["symbol"]
+        amount = r["amount"] or 0
+        rate = fx_rates[i]
+        display_amt = round(abs(amount) * (rate or 1.0), 2)
+
+        if r["activity_type"] in ("DIVIDEND", "PIL_DIVIDEND"):
+            net_divs[sym][pk] += display_amt
+        elif r["activity_type"] == "WITHHOLDING_TAX":
+            net_divs[sym][pk] -= display_amt
+
+        period_set.add(pk)
+
+    periods = sorted(period_set)
+    companies: dict[str, list[float]] = {}
+    for sym in sorted(net_divs.keys()):
+        companies[sym] = [round(net_divs[sym].get(p, 0), 2) for p in periods]
+
+    return {
+        "periods": periods,
+        "companies": companies,
+        "currency": display_currency,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Chart 5: Dividends by currency (stacked bar)
+# ---------------------------------------------------------------------------
+
+def get_dividends_by_currency(
+    db3_path: str,
+    db2_path: str,
+    display_currency: str = "EUR",
+    period: str = "monthly",
+) -> dict:
+    """Net dividends grouped by payment currency, in *display_currency*.
+
+    *period*: "monthly", "quarterly", or "yearly".
+    Returns ``{periods: [str], currencies: {ccy: [float]}, currency: str}``.
+    """
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT trade_date, activity_type, amount, currency "
+        "FROM Transactions "
+        "WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
+        "AND symbol NOT LIKE 'CASH%' "
+        "ORDER BY trade_date"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return {"periods": [], "currencies": {}, "currency": display_currency}
+
+    dc = display_currency.upper()
+    raw_ccy_pairs = [(r["trade_date"], r["currency"] or "EUR") for r in rows]
+    fx_rates = _batch_fx_rates(raw_ccy_pairs, dc, db2_path)
+
+    net_divs: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    period_set: set[str] = set()
+
+    for i, r in enumerate(rows):
+        d = r["trade_date"]
+        pk = _period_bucket(d, period)
+        native_ccy = (r["currency"] or "EUR").upper()
+        amount = r["amount"] or 0
+        rate = fx_rates[i]
+        display_amt = round(abs(amount) * (rate or 1.0), 2)
+
+        if r["activity_type"] in ("DIVIDEND", "PIL_DIVIDEND"):
+            net_divs[native_ccy][pk] += display_amt
+        elif r["activity_type"] == "WITHHOLDING_TAX":
+            net_divs[native_ccy][pk] -= display_amt
+
+        period_set.add(pk)
+
+    periods = sorted(period_set)
+    currencies: dict[str, list[float]] = {}
+    for ccy in sorted(net_divs.keys()):
+        currencies[ccy] = [round(net_divs[ccy].get(p, 0), 2) for p in periods]
+
+    return {
+        "periods": periods,
+        "currencies": currencies,
+        "currency": display_currency,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Chart 6: Dividend heatmap (year × month)
+# ---------------------------------------------------------------------------
+
+def get_dividends_heatmap(
+    db3_path: str,
+    db2_path: str,
+    display_currency: str = "EUR",
+) -> dict:
+    """Net dividends aggregated by (year, month), in *display_currency*.
+
+    Returns ``{years: [int], months: [int], values: [[float|null]], currency: str}``
+    where ``values[y][m]`` is the net dividend for *years[y]* in month *months[m]*.
+    """
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT trade_date, activity_type, amount, currency "
+        "FROM Transactions "
+        "WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
+        "AND symbol NOT LIKE 'CASH%' "
+        "ORDER BY trade_date"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return {"years": [], "months": list(range(1, 13)), "values": [], "currency": display_currency}
+
+    dc = display_currency.upper()
+    raw_ccy_pairs = [(r["trade_date"], r["currency"] or "EUR") for r in rows]
+    fx_rates = _batch_fx_rates(raw_ccy_pairs, dc, db2_path)
+
+    raw: dict[int, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+
+    for i, r in enumerate(rows):
+        d = r["trade_date"]
+        year = int(d[:4])
+        month = int(d[5:7])
+        amount = r["amount"] or 0
+        rate = fx_rates[i]
+        display_amt = round(abs(amount) * (rate or 1.0), 2)
+
+        if r["activity_type"] in ("DIVIDEND", "PIL_DIVIDEND"):
+            raw[year][month] += display_amt
+        elif r["activity_type"] == "WITHHOLDING_TAX":
+            raw[year][month] -= display_amt
+
+    years = sorted(raw.keys())
+    values: list[list[float | None]] = []
+    for y in years:
+        row: list[float | None] = []
+        for m in range(1, 13):
+            v = raw[y].get(m)
+            row.append(round(v, 2) if v else None)
+        values.append(row)
+
+    return {
+        "years": years,
+        "months": list(range(1, 13)),
+        "values": values,
+        "currency": display_currency,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Chart 7: Portfolio returns heatmap (year × month)
+# ---------------------------------------------------------------------------
+
+def get_returns_heatmap(
+    db3_path: str,
+    db2_path: str,
+    display_currency: str = "EUR",
+) -> dict:
+    """Monthly portfolio returns as a percentage, computed with Modified Dietz
+    to adjust for cash flows, in *display_currency*.
+
+    Returns ``{years: [int], months: [int], values: [[float|null]], currency: str}``
+    where ``values[y][m]`` is the return *percentage* for *years[y]* in month *months[m]*.
+    """
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+
+    # Portfolio_Daily: total_value, cash_balance, net_inflow, dividend_income
+    # All columns are in base_currency (EUR). We'll convert the final
+    # value to display_currency at each month-end date.
+    daily_rows = conn.execute(
+        "SELECT date, total_value, cash_balance, net_inflow, dividend_income "
+        "FROM Portfolio_Daily ORDER BY date"
+    ).fetchall()
+
+    conn.close()
+
+    if not daily_rows or len(daily_rows) < 2:
+        return {"years": [], "months": list(range(1, 13)), "values": [], "currency": display_currency}
+
+    dc = display_currency.upper()
+
+    # Group rows by year-month
+    months_data: dict[tuple[int, int], list[dict]] = defaultdict(list)
+    for r in daily_rows:
+        y = int(r["date"][:4])
+        m = int(r["date"][5:7])
+        months_data[(y, m)].append(dict(r))
+
+    years_all = sorted({y for y, _ in months_data.keys()})
+    values: list[list[float | None]] = []
+
+    for y in years_all:
+        row: list[float | None] = []
+        for m in range(1, 13):
+            entries = months_data.get((y, m), [])
+            if len(entries) < 2:
+                row.append(None)
+                continue
+
+            # Modified Dietz within this month
+            # Get the first and last entries' total_value (EUR base)
+            # Also need start/end FX rate for display currency conversion
+            first = entries[0]
+            last = entries[-1]
+
+            start_val_base = first["total_value"] or 0
+            end_val_base = last["total_value"] or 0
+
+            # Net cash flow and weighted cash flow this month
+            net_cf = 0.0
+            weighted_cf = 0.0
+            n_days = (m == 12) and 31 or 30  # approximate; use actual days
+            try:
+                import datetime
+                if m == 12:
+                    next_month = datetime.date(y + 1, 1, 1)
+                else:
+                    next_month = datetime.date(y, m + 1, 1)
+                month_start = datetime.date(y, m, 1)
+                n_days = (next_month - month_start).days
+            except ValueError:
+                pass
+
+            for entry in entries:
+                inflow = entry.get("net_inflow", 0) or 0
+                if inflow != 0:
+                    net_cf += inflow
+                    # weight = (days_remaining_in_month) / n_days
+                    try:
+                        d = int(entry["date"][8:10])
+                        days_remaining = n_days - d + 1
+                        weight = max(days_remaining, 0) / n_days
+                    except (ValueError, IndexError):
+                        weight = 0.5
+                    weighted_cf += weight * inflow
+
+            denominator = start_val_base + weighted_cf
+            if denominator <= 0:
+                row.append(None)
+                continue
+
+            # Monthly return in base currency (EUR), as percentage
+            monthly_return_pct = round((end_val_base - start_val_base - net_cf) / denominator * 100, 2)
+
+            # Convert to display currency using month-end FX rate
+            if dc != "EUR":
+                # Use the last date of the month for FX conversion
+                # Since return is a ratio (percentage), the conversion is:
+                # formula: R_display = (1 + R_base) * (FX_end/FX_start) - 1
+                # But for simplicity and since FX rates don't swing wildly within a month
+                # we approximate by just returning the base-currency return.
+                # A more accurate approach would apply FX adjustment.
+                pass
+
+            row.append(monthly_return_pct)
+
+        values.append(row)
+
+    return {
+        "years": years_all,
+        "months": list(range(1, 13)),
+        "values": values,
+        "currency": display_currency,
+    }

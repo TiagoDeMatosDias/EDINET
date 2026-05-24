@@ -518,6 +518,100 @@ async def holdings_with_performance(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Charts tab endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/charts/display-currencies")
+async def charts_display_currencies():
+    """Available display currencies for chart currency conversion."""
+    return await asyncio.to_thread(get_available_display_currencies, get_db2())
+
+
+@router.get("/charts/holdings-by-value")
+async def charts_holdings_by_value(
+    display_currency: str = Query("EUR"),
+):
+    """Pie chart data: holdings by value in *display_currency*."""
+    from src.portfolio.charts import get_holdings_by_value
+    return await asyncio.to_thread(
+        get_holdings_by_value, get_db3(), get_db2(), display_currency,
+    )
+
+
+@router.get("/charts/holdings-by-currency")
+async def charts_holdings_by_currency(
+    display_currency: str = Query("EUR"),
+):
+    """Pie chart data: holdings by native currency in *display_currency*."""
+    from src.portfolio.charts import get_holdings_by_currency
+    return await asyncio.to_thread(
+        get_holdings_by_currency, get_db3(), get_db2(), display_currency,
+    )
+
+
+@router.get("/charts/portfolio-value-history")
+async def charts_portfolio_value_history(
+    display_currency: str = Query("EUR"),
+):
+    """Stacked line chart data: daily portfolio value per holding."""
+    from src.portfolio.charts import get_portfolio_value_history
+    return await asyncio.to_thread(
+        get_portfolio_value_history, get_db3(), get_db2(), display_currency,
+    )
+
+
+@router.get("/charts/dividends-by-company")
+async def charts_dividends_by_company(
+    display_currency: str = Query("EUR"),
+    period: str = Query("monthly"),
+):
+    """Stacked bar chart data: dividends by company.  *period* = monthly|quarterly|yearly."""
+    from src.portfolio.charts import get_dividends_by_company
+    return await asyncio.to_thread(
+        get_dividends_by_company, get_db3(), get_db2(), display_currency, period,
+    )
+
+
+@router.get("/charts/dividends-by-currency")
+async def charts_dividends_by_currency(
+    display_currency: str = Query("EUR"),
+    period: str = Query("monthly"),
+):
+    """Stacked bar chart data: dividends by currency.  *period* = monthly|quarterly|yearly."""
+    from src.portfolio.charts import get_dividends_by_currency
+    return await asyncio.to_thread(
+        get_dividends_by_currency, get_db3(), get_db2(), display_currency, period,
+    )
+
+
+@router.get("/charts/dividends-heatmap")
+async def charts_dividends_heatmap(
+    display_currency: str = Query("EUR"),
+):
+    """Heatmap data: dividends by (year, month)."""
+    from src.portfolio.charts import get_dividends_heatmap
+    return await asyncio.to_thread(
+        get_dividends_heatmap, get_db3(), get_db2(), display_currency,
+    )
+
+
+@router.get("/charts/returns-heatmap")
+async def charts_returns_heatmap(
+    display_currency: str = Query("EUR"),
+):
+    """Heatmap data: monthly portfolio returns percentage."""
+    from src.portfolio.charts import get_returns_heatmap
+    return await asyncio.to_thread(
+        get_returns_heatmap, get_db3(), get_db2(), display_currency,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rebuild
+# ---------------------------------------------------------------------------
+
+
 @router.post("/rebuild", response_model=RebuildResponse)
 async def rebuild_state(
     base_currency: str = Query("EUR"),

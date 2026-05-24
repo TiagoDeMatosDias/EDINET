@@ -4,7 +4,7 @@ import { state, $$, refreshSummary, renderActivityBreakdown } from './common.js'
 import { initUpload } from './upload.js';
 import loadHoldings, { loadDisplayCurrencies, wireDisplayCurrency, wireColumnVisibility, renderHoldingsTab } from './holdings.js';
 import { loadTransactions } from './transactions.js';
-import { wireChartControls, wireChartExpand, wireTableViewToggles, renderChartsTab } from './charts.js';
+import { wireChartControls, renderChartsTab, loadChartCurrencies } from './charts.js';
 import { wirePerformance, renderPerformanceTab } from './performance.js';
 
 function wireTabs() {
@@ -63,8 +63,7 @@ async function init() {
   await loadTransactions();
   wirePerformance();
   wireChartControls();
-  wireChartExpand();
-  wireTableViewToggles();
+  loadChartCurrencies();
   wireRebuild();
 }
 
