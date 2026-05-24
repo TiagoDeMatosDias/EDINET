@@ -39,3 +39,5 @@ yfinance==0.2.55
 pyinstaller
 matplotlib
 python-multipart
+pytest-playwright
+playwright
