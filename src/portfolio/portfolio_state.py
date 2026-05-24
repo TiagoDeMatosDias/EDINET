@@ -704,6 +704,55 @@ def _lookup_industry(symbol: str, db2_path: str) -> str | None:
     return None
 
 
+def _compute_holding_periods(
+    hist_records: list[dict],
+) -> dict:
+    """Compute longest/latest holding period and count of holding periods.
+
+    ``hist_records`` must be a list of dicts with a ``"date"`` key, sorted
+    chronologically.  A new holding period begins whenever there is a gap of
+    more than 1 calendar day between consecutive records (Holdings_History
+    only stores rows when ``quantity > 0``, so gaps mean the position was
+    closed and later re-opened).
+    """
+    if not hist_records:
+        return {
+            "longest_holding_days": 0,
+            "latest_holding_days": 0,
+            "num_holding_periods": 0,
+        }
+
+    from datetime import date as _date
+
+    dates = [_date.fromisoformat(r["date"]) for r in hist_records]
+    if len(dates) == 1:
+        return {
+            "longest_holding_days": 1,
+            "latest_holding_days": 1,
+            "num_holding_periods": 1,
+        }
+
+    streaks: list[int] = []
+    streak_start = dates[0]
+    prev = dates[0]
+
+    for d in dates[1:]:
+        if (d - prev).days > 1:
+            # Gap > 1 day → previous streak ends
+            streaks.append((prev - streak_start).days + 1)
+            streak_start = d
+        prev = d
+
+    # Close the final streak
+    streaks.append((prev - streak_start).days + 1)
+
+    return {
+        "longest_holding_days": max(streaks),
+        "latest_holding_days": streaks[-1],
+        "num_holding_periods": len(streaks),
+    }
+
+
 def get_holding_performance(
     symbol: str,
     db3_path: str | None = None,
@@ -959,6 +1008,8 @@ def get_holding_performance(
         "dividend_gross": round(div_gross_eur, 2),
         "dividend_tax": round(div_tax_eur, 2),
         "dividend_yield": round(div_yield, 6),
+        # ── Holding periods ──
+        **_compute_holding_periods(hist),
         # ── Metadata ──
         "name": asset_name,
         "industry": _lookup_industry(symbol, db2_path),
@@ -1203,6 +1254,8 @@ def get_all_holdings_performance(
 
             fx_ret = ((1 + total_return_display_d) / (1 + total_return_native) - 1) if (1 + total_return_native) > 0 else 0
 
+            hold_periods = _compute_holding_periods(hist)
+
             perf = {
                 "symbol": sym, "currency": currency, "display_currency": display_currency,
                 "first_purchase": first_buy, "last_purchase": buys[-1]["trade_date"] if buys else None,
@@ -1231,6 +1284,9 @@ def get_all_holdings_performance(
                 "dividend_gross": round(div_gross_eur, 2),
                 "dividend_tax": round(div_tax_eur, 2),
                 "dividend_yield": round(div_yield, 6),
+                "longest_holding_days": hold_periods["longest_holding_days"],
+                "latest_holding_days": hold_periods["latest_holding_days"],
+                "num_holding_periods": hold_periods["num_holding_periods"],
                 "name": names.get(sym),
                 "industry": industries.get(sym),
             }

@@ -452,6 +452,22 @@ async def holdings_with_performance(
     if include_closed:
         closed = await asyncio.to_thread(get_closed_positions, get_db3())
         from src.portfolio.currency import get_rate_at_date_any
+        from src.portfolio.portfolio_state import _compute_holding_periods
+        # Batch-fetch holdings history for closed symbols to compute holding periods
+        closed_syms = [cp["symbol"] for cp in closed]
+        closed_hist: dict[str, list] = {}
+        if closed_syms:
+            import sqlite3 as _sqlite3
+            _c = _sqlite3.connect(get_db3())
+            _c.row_factory = _sqlite3.Row
+            _ph = ",".join("?" for _ in closed_syms)
+            _hr = _c.execute(
+                f"SELECT symbol, date FROM Holdings_History WHERE symbol IN ({_ph}) ORDER BY symbol, date",
+                closed_syms,
+            ).fetchall()
+            _c.close()
+            for _r in _hr:
+                closed_hist.setdefault(_r["symbol"], []).append(dict(_r))
         for cp in closed:
             native_ccy = cp.get("currency", "EUR")
             ref_date = cp.get("last_trade_date") or cp.get("first_trade_date")
@@ -492,6 +508,9 @@ async def holdings_with_performance(
                     "total_return_native": 0, "total_return_display": 0,
                     "annualized_return_native": 0, "annualized_return": 0,
                     "fx_return": 0,
+                    "longest_holding_days": _compute_holding_periods(closed_hist.get(cp["symbol"], [])).get("longest_holding_days", 0),
+                    "latest_holding_days": _compute_holding_periods(closed_hist.get(cp["symbol"], [])).get("latest_holding_days", 0),
+                    "num_holding_periods": _compute_holding_periods(closed_hist.get(cp["symbol"], [])).get("num_holding_periods", 0),
                     "name": cp.get("description"),
                     "industry": None,
                 },

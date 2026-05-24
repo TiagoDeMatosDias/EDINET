@@ -512,6 +512,9 @@ const HOLDINGS_COLUMNS = [
   { key: 'industry',    label: 'Industry',             get: h => h.performance?.industry ?? '' },
   { key: 'open_pos',    label: 'Open position',         get: h => h.is_open ? 'Open' : 'Closed' },
   { key: 'native_ccy',  label: 'Native Currency',      get: h => h.currency },
+  { key: 'longest_hold',label: 'Longest Hold (Days)',  get: h => h.performance?.longest_holding_days ?? 0, num: true },
+  { key: 'latest_hold', label: 'Latest Hold (Days)',   get: h => h.performance?.latest_holding_days ?? 0, num: true },
+  { key: 'num_holds',   label: '# Holding Periods',    get: h => h.performance?.num_holding_periods ?? 0, num: true },
   { key: 'quantity',    label: 'Qty',                  get: h => h.quantity, num: true },
   { key: 'avg_cost',    label: 'Avg Cost (Nat.)',      get: h => h.performance?.avg_cost ?? h.avg_cost, num: true },
   { key: 'price',       label: 'Price',                get: h => h.market_price, num: true },
@@ -675,6 +678,9 @@ function renderHoldingsTable() {
       <td class="pf-col-td-industry" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(industryStr).replace(/"/g, '&quot;')}">${industryStr || '—'}</td>
       <td class="pf-col-td-open_pos"><span class="badge ${isClosed ? 'bg-muted' : 'bg-success'}" style="font-size:10px;">${isClosed ? 'Closed' : 'Open'}</span></td>
       <td class="pf-col-td-native_ccy"><span class="pf-ccy-badge" style="font-size:10px;color:var(--warning);">${ccy || '—'}</span></td>
+      <td class="pf-col-td-longest_hold">${isCash ? '' : (p.longest_holding_days ?? 0)}</td>
+      <td class="pf-col-td-latest_hold">${isCash ? '' : (p.latest_holding_days ?? 0)}</td>
+      <td class="pf-col-td-num_holds">${isCash ? '' : (p.num_holding_periods ?? 0)}</td>
       <td class="pf-col-td-quantity">${isCash ? '' : h.quantity}</td>
       <td class="pf-col-td-avg_cost">${h.avg_cost != null ? formatMoney(h.avg_cost) : '—'}</td>
       <td class="pf-col-td-price">${isClosed ? '—' : (h.market_price != null ? formatMoney(h.market_price) : '—')}</td>
@@ -730,7 +736,7 @@ function renderHoldingsTable() {
   for (const col of cols) {
     const k = col.key;
     if (k === 'symbol') { html += '<td class="pf-col-td-symbol"><strong>Summary</strong></td>'; continue; }
-    if (k === 'name' || k === 'asset_type' || k === 'industry' || k === 'quantity' || k === 'avg_cost' || k === 'price') {
+    if (k === 'name' || k === 'asset_type' || k === 'industry' || k === 'longest_hold' || k === 'latest_hold' || k === 'num_holds' || k === 'quantity' || k === 'avg_cost' || k === 'price') {
       html += `<td class="pf-col-td-${k}"></td>`;
       continue;
     }

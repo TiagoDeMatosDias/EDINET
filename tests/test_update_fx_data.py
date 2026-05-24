@@ -201,9 +201,10 @@ class TestDownloadEcbHicp(unittest.TestCase):
 
 class TestFetchAllInflationPrices(unittest.TestCase):
 
+    @patch("src.orchestrator.update_fx_data.update_fx_data._download_dbnomics_cpi")
     @patch("src.orchestrator.update_fx_data.update_fx_data._download_ecb_hicp")
     @patch("src.orchestrator.update_fx_data.update_fx_data._download_fred_cpi")
-    def test_assembles_all_currencies(self, mock_fred, mock_ecb):
+    def test_assembles_all_currencies(self, mock_fred, mock_ecb, mock_dbno):
         # ECB returns EUR HICP
         mock_ecb.return_value = pd.DataFrame({
             "Date": ["2024-01-01", "2024-02-01"],
@@ -212,37 +213,36 @@ class TestFetchAllInflationPrices(unittest.TestCase):
 
         # FRED returns data for each series
         def fred_side_effect(series_id, **_kwargs):
-            ticker_map = {
-                "CPIAUCSL":        "Inflation_USD",
-                "JPNCPIALLMINMEI": "Inflation_JPY",
-                "GBRCPIALLMINMEI": "Inflation_GBP",
-                "AUSCPIALLMINMEI": "Inflation_AUD",
-                "CANCPIALLMINMEI": "Inflation_CAD",
-            }
-            ticker = ticker_map.get(series_id, "UNKNOWN")
             return pd.DataFrame({
                 "Date": ["2024-01-01"],
                 "Price": [100.0],
             })
         mock_fred.side_effect = fred_side_effect
 
+        # DBnomics returns JPY inflation
+        mock_dbno.return_value = pd.DataFrame({
+            "Date": ["2024-01-01"],
+            "Price": [105.0],
+        })
+
         result = _fetch_all_inflation_prices()
 
-        self.assertEqual(len(result), 7)  # 2 EUR + 5×1 FRED
+        self.assertEqual(len(result), 6)  # 2 EUR + 3×1 FRED + 1 DBnomics
         expected_tickers = {
-            "Inflation_EUR", "Inflation_USD", "Inflation_JPY",
-            "Inflation_GBP", "Inflation_AUD", "Inflation_CAD",
+            "Inflation_EUR", "Inflation_USD",
+            "Inflation_GBP", "Inflation_CAD", "Inflation_JPY",
         }
         self.assertEqual(set(result["Ticker"].unique()), expected_tickers)
         self.assertListEqual(list(result.columns), ["Date", "Ticker", "Currency", "Price"])
 
+    @patch("src.orchestrator.update_fx_data.update_fx_data._download_dbnomics_cpi")
     @patch("src.orchestrator.update_fx_data.update_fx_data._download_ecb_hicp")
     @patch("src.orchestrator.update_fx_data.update_fx_data._download_fred_cpi")
-    def test_skips_failed_sources(self, mock_fred, mock_ecb):
+    def test_skips_failed_sources(self, mock_fred, mock_ecb, mock_dbno):
         mock_ecb.return_value = pd.DataFrame(columns=["Date", "Price"])
         # FRED returns empty for one series, data for another
         def fred_side_effect(series_id, **_kwargs):
-            if series_id == "JPNCPIALLMINMEI":
+            if series_id == "GBRCPIALLMINMEI":
                 return pd.DataFrame(columns=["Date", "Price"])
             return pd.DataFrame({
                 "Date": ["2024-01-01"],
@@ -250,12 +250,16 @@ class TestFetchAllInflationPrices(unittest.TestCase):
             })
         mock_fred.side_effect = fred_side_effect
 
+        # DBnomics returns empty (JPY unavailable)
+        mock_dbno.return_value = pd.DataFrame(columns=["Date", "Price"])
+
         result = _fetch_all_inflation_prices()
 
-        # EUR empty + JPY empty → 4 remaining FRED series
-        self.assertEqual(len(result), 4)
+        # EUR empty + GBR empty + JPY empty → 2 remaining (USD + CAD)
+        self.assertEqual(len(result), 2)
         self.assertNotIn("Inflation_EUR", result["Ticker"].values)
         self.assertNotIn("Inflation_JPY", result["Ticker"].values)
+        self.assertNotIn("Inflation_GBP", result["Ticker"].values)
 
 
 # ---------------------------------------------------------------------------
