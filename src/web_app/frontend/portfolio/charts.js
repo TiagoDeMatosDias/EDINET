@@ -69,18 +69,21 @@ export async function refreshAllCharts() {
     'pf-holding-pie-chart', 'pf-currency-pie-chart',
     'pf-portfolio-value-chart', 'pf-div-company-chart',
     'pf-div-currency-chart', 'pf-div-heatmap-chart',
-    'pf-return-heatmap-chart',
+    'pf-return-heatmap-chart', 'pf-deposits-heatmap-chart',
+    'pf-return-scatter-chart',
   ];
   canvasIds.forEach(id => showChartLoading(id));
 
   try {
     const [divByCo, divByCcy] = await _fetchDividendCharts(dc);
-    const [holdingsByVal, holdingsByCcy, valueHistory, divHeat, retHeat] = await Promise.all([
+    const [holdingsByVal, holdingsByCcy, valueHistory, divHeat, retHeat, depHeat, retVsCost] = await Promise.all([
       fetchJson(`/api/portfolio/charts/holdings-by-value?display_currency=${dc}`).catch(() => null),
       fetchJson(`/api/portfolio/charts/holdings-by-currency?display_currency=${dc}`).catch(() => null),
       fetchJson(`/api/portfolio/charts/portfolio-value-history?display_currency=${dc}`).catch(() => null),
       fetchJson(`/api/portfolio/charts/dividends-heatmap?display_currency=${dc}`).catch(() => null),
       fetchJson(`/api/portfolio/charts/returns-heatmap?display_currency=${dc}`).catch(() => null),
+      fetchJson(`/api/portfolio/charts/deposits-heatmap?display_currency=${dc}`).catch(() => null),
+      fetchJson(`/api/portfolio/charts/return-vs-cost?display_currency=${dc}`).catch(() => null),
     ]);
 
     state.chartRawData = {
@@ -91,6 +94,8 @@ export async function refreshAllCharts() {
       divByCurrency: divByCcy,
       divHeatmap: divHeat,
       returnHeatmap: retHeat,
+      depositsHeatmap: depHeat,
+      returnVsCost: retVsCost,
     };
 
     _renderHoldingPie(holdingsByVal);
@@ -100,6 +105,8 @@ export async function refreshAllCharts() {
     _renderDivStackedBar('pf-div-currency-chart', 'divByCurrency', divByCcy, 'currencies');
     _renderHeatmap('pf-div-heatmap-chart', 'divHeatmap', divHeat, false);
     _renderHeatmap('pf-return-heatmap-chart', 'returnHeatmap', retHeat, true);
+    _renderHeatmap('pf-deposits-heatmap-chart', 'depositsHeatmap', depHeat, false, 10000);
+    _renderReturnScatter(retVsCost);
   } catch (e) {
     console.error('Failed to refresh charts:', e);
   } finally {
@@ -302,7 +309,7 @@ function _redGreenColor(val, cap) {
   }
 }
 
-function _renderHeatmap(canvasId, chartKey, data, isReturns) {
+function _renderHeatmap(canvasId, chartKey, data, isReturns, overrideCap) {
   const canvas = $(`#${canvasId}`);
   if (!canvas) return;
   destroyChart(chartKey);
@@ -326,16 +333,19 @@ function _renderHeatmap(canvasId, chartKey, data, isReturns) {
   const months = data.months || [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
   const values = data.values;
 
-  // Cap for color scale: 5% for returns, max absolute value for dividends
-  let cap = isReturns ? 5 : 0;
-  if (!isReturns) {
-    let maxAbs = 0;
-    for (const row of values) {
-      for (const v of row) {
-        if (v != null && Math.abs(v) > maxAbs) maxAbs = Math.abs(v);
+  // Cap for color scale: 5% for returns, overrideCap for deposits, max absolute value for dividends
+  let cap = overrideCap || 0;
+  if (!cap) {
+    cap = isReturns ? 5 : 0;
+    if (!cap) {
+      let maxAbs = 0;
+      for (const row of values) {
+        for (const v of row) {
+          if (v != null && Math.abs(v) > maxAbs) maxAbs = Math.abs(v);
+        }
       }
+      cap = maxAbs || 1;
     }
-    cap = maxAbs || 1;
   }
 
   const cellW = Math.max(20, (w - 60) / months.length);
@@ -382,6 +392,81 @@ function _renderHeatmap(canvasId, chartKey, data, isReturns) {
   };
 
   state.chartRawData[chartKey] = data;
+}
+
+// ---------------------------------------------------------------------------
+// Chart 9: Return vs Cost Basis (Scatter)
+// ---------------------------------------------------------------------------
+
+function _renderReturnScatter(data) {
+  const canvas = $('#pf-return-scatter-chart');
+  if (!canvas) return;
+  destroyChart('returnVsCost');
+  if (!data || !data.length) {
+    _showEmpty(canvas, 'No data');
+    return;
+  }
+
+  const scatterData = data.map(d => ({ x: d.cost_basis_display, y: d.annualized_return, symbol: d.symbol, isOpen: d.is_open }));
+  // Remove outliers for display (top/bottom 2%)
+  const sortedY = [...scatterData].sort((a, b) => a.y - b.y);
+  const clipN = Math.max(0, Math.floor(scatterData.length * 0.02));
+  const yMin = sortedY[clipN]?.y ?? -50;
+  const yMax = sortedY[sortedY.length - 1 - clipN]?.y ?? 50;
+
+  const openPts = scatterData.filter(d => d.isOpen && d.y >= yMin && d.y <= yMax);
+  const closedPts = scatterData.filter(d => !d.isOpen && d.y >= yMin && d.y <= yMax);
+
+  const ctx = canvas.getContext('2d');
+  state.charts.returnVsCost = new Chart(ctx, {
+    type: 'scatter',
+    data: {
+      datasets: [
+        {
+          label: 'Open',
+          data: openPts,
+          backgroundColor: '#44d17b',
+          borderColor: '#44d17b',
+          pointRadius: 5,
+          pointHoverRadius: 7,
+        },
+        {
+          label: 'Closed',
+          data: closedPts,
+          backgroundColor: '#8ea0b8',
+          borderColor: '#8ea0b8',
+          pointRadius: 4,
+          pointHoverRadius: 6,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          type: 'logarithmic',
+          title: { display: true, text: 'Cost Basis (' + (state.chartSettings.currency || '') + ')', color: '#8ea0b8' },
+          ticks: { color: '#8ea0b8', callback: v => formatMoney(v) },
+        },
+        y: {
+          title: { display: true, text: 'Annualized Return %', color: '#8ea0b8' },
+          ticks: { color: '#8ea0b8', callback: v => v + '%' },
+        },
+      },
+      plugins: {
+        legend: { labels: { color: '#d9e2f2', usePointStyle: true, padding: 12 } },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const pt = ctx.raw;
+              return `${pt.symbol}: ${formatMoney(pt.x)} → ${pt.y.toFixed(1)}%`;
+            },
+          },
+        },
+      },
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +546,8 @@ function _openTablePopup(chartKey) {
     divByCurrency: 'Dividends by Currency',
     divHeatmap: 'Dividend Heatmap',
     returnHeatmap: 'Portfolio Returns Heatmap',
+    depositsHeatmap: 'Deposits Heatmap',
+    returnVsCost: 'Return vs Cost Basis',
   };
 
   document.getElementById('pf-popup-title').textContent = titleMap[chartKey] || chartKey;
@@ -503,13 +590,25 @@ function _openTablePopup(chartKey) {
       break;
     }
     case 'divHeatmap':
-    case 'returnHeatmap': {
+    case 'returnHeatmap':
+    case 'depositsHeatmap': {
       const isRet = chartKey === 'returnHeatmap';
       columns = ['Year', ...(data.months || []).map(m => `M${m}`)];
       rows = (data.years || []).map((y, i) => {
         const vals = data.values[i] || [];
         return [String(y), ...vals.map(v => v == null ? '—' : isRet ? v.toFixed(1) + '%' : v.toFixed(2))];
       });
+      break;
+    }
+    case 'returnVsCost': {
+      const ccy = state.chartSettings.currency || '';
+      columns = ['Symbol', `Cost Basis (${ccy})`, 'Ann. Return %', 'Status'];
+      rows = (data || []).map(d => [
+        d.symbol,
+        (d.cost_basis_display || 0).toFixed(2),
+        (d.annualized_return || 0).toFixed(1),
+        d.is_open ? 'Open' : 'Closed',
+      ]);
       break;
     }
     default:

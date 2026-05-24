@@ -476,6 +476,39 @@ async def holdings_with_performance(
                 r = get_rate_at_date_any(native_ccy, display_currency, ref_date, get_db2())
                 if r:
                     rate = r
+            # Pre-compute closed position metrics
+            _realized_pnl = cp.get("realized_pnl") or 0
+            _total_cost = cp.get("total_cost") or 0
+            _cost_display = _total_cost * rate
+            _pnl_display = _realized_pnl * rate
+            # Return on zero cost is undefined; skip
+            _total_return_native = None
+            _total_return_display = None
+            _ann_ret_native = None
+            _ann_ret_display = None
+            if _total_cost > 0.01:
+                _total_return_native = _realized_pnl / _total_cost
+                _total_return_display = _pnl_display / _cost_display
+                # Annualized return from holding period
+                _f = cp.get("first_trade_date")
+                _l = cp.get("last_trade_date")
+                if _f and _l:
+                    from datetime import date as _Date
+                    try:
+                        _fd = _Date.fromisoformat(_f)
+                        _ld = _Date.fromisoformat(_l)
+                        _years = max((_ld - _fd).days / 365.25, 0.01)
+                        if _total_return_native > -1:
+                            _ann_ret_native = (1 + _total_return_native) ** (1 / _years) - 1
+                        if _total_return_display > -1:
+                            _ann_ret_display = (1 + _total_return_display) ** (1 / _years) - 1
+                    except (ValueError, TypeError, OverflowError):
+                        pass
+                # Cap extreme returns to prevent display/overflow issues
+                if _ann_ret_native is not None:
+                    _ann_ret_native = max(min(_ann_ret_native, 100), -1)
+                if _ann_ret_display is not None:
+                    _ann_ret_display = max(min(_ann_ret_display, 100), -1)
             result.append({
                 "symbol": cp["symbol"],
                 "asset_category": cp.get("asset_category", "STK"),
@@ -493,6 +526,8 @@ async def holdings_with_performance(
                     "currency": cp.get("currency", ""),
                     "display_currency": display_currency,
                     "realized_pnl": round((cp.get("realized_pnl") or 0) * rate, 2),
+                    "realized_pnl_native": round(cp.get("realized_pnl") or 0, 2),
+                    "realized_pnl_display": round((cp.get("realized_pnl") or 0) * rate, 2),
                     "total_cost": round((cp.get("total_cost") or 0) * rate, 2),
                     "total_proceeds": round((cp.get("total_proceeds") or 0) * rate, 2),
                     "total_bought": cp.get("total_bought", 0),
@@ -502,11 +537,14 @@ async def holdings_with_performance(
                     "asset_category": cp.get("asset_category"),
                     # Closed positions have no current value / daily returns
                     "current_value": 0, "current_value_native": 0, "current_value_display": 0,
-                    "cost_basis_native": round(cp.get("total_cost") or 0, 2),
-                    "cost_basis_display": round((cp.get("total_cost") or 0) * rate, 2),
-                    "pnl_native": 0, "pnl_display": round((cp.get("realized_pnl") or 0) * rate, 2),
-                    "total_return_native": 0, "total_return_display": 0,
-                    "annualized_return_native": 0, "annualized_return": 0,
+                    "cost_basis_native": round(_total_cost, 2),
+                    "cost_basis_display": round(_cost_display, 2),
+                    "pnl_native": round(_realized_pnl, 2),
+                    "pnl_display": round(_pnl_display, 2),
+                    "total_return_native": round(_total_return_native, 6) if _total_return_native is not None else None,
+                    "total_return_display": round(_total_return_display, 6) if _total_return_display is not None else None,
+                    "annualized_return_native": round(_ann_ret_native, 6) if _ann_ret_native is not None else None,
+                    "annualized_return": round(_ann_ret_display, 6) if _ann_ret_display is not None else None,
                     "fx_return": 0,
                     "longest_holding_days": _compute_holding_periods(closed_hist.get(cp["symbol"], [])).get("longest_holding_days", 0),
                     "latest_holding_days": _compute_holding_periods(closed_hist.get(cp["symbol"], [])).get("latest_holding_days", 0),
@@ -604,6 +642,28 @@ async def charts_returns_heatmap(
     from src.portfolio.charts import get_returns_heatmap
     return await asyncio.to_thread(
         get_returns_heatmap, get_db3(), get_db2(), display_currency,
+    )
+
+
+@router.get("/charts/deposits-heatmap")
+async def charts_deposits_heatmap(
+    display_currency: str = Query("EUR"),
+):
+    """Heatmap data: net deposits/withdrawals by (year, month)."""
+    from src.portfolio.charts import get_deposits_heatmap
+    return await asyncio.to_thread(
+        get_deposits_heatmap, get_db3(), get_db2(), display_currency,
+    )
+
+
+@router.get("/charts/return-vs-cost")
+async def charts_return_vs_cost(
+    display_currency: str = Query("EUR"),
+):
+    """Scatter plot data: cost basis vs annualized return per holding."""
+    from src.portfolio.charts import get_return_vs_cost
+    return await asyncio.to_thread(
+        get_return_vs_cost, get_db3(), get_db2(), display_currency,
     )
 
 

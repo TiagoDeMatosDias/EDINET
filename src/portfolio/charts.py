@@ -597,3 +597,163 @@ def get_returns_heatmap(
         "values": values,
         "currency": display_currency,
     }
+
+
+# ---------------------------------------------------------------------------
+# Chart 8: Deposits heatmap (year × month)
+# ---------------------------------------------------------------------------
+
+def get_deposits_heatmap(
+    db3_path: str,
+    db2_path: str,
+    display_currency: str = "EUR",
+) -> dict:
+    """Net deposits/withdrawals aggregated by (year, month), in *display_currency*.
+
+    Returns ``{years: [int], months: [int], values: [[float|null]], currency: str}``.
+    """
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT date, net_inflow FROM Portfolio_Daily ORDER BY date"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return {"years": [], "months": list(range(1, 13)), "values": [], "currency": display_currency}
+
+    dc = display_currency.upper()
+
+    # Group dates by (year, month) to batch-load FX rates
+    month_dates: dict[tuple[int, int], list[str]] = defaultdict(list)
+    for r in rows:
+        d = r["date"]
+        y = int(d[:4])
+        m = int(d[5:7])
+        month_dates[(y, m)].append(d)
+
+    # Aggregate net_inflow per month
+    raw: dict[int, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    ccy_pairs: list[tuple[str, str]] = []
+    for r in rows:
+        d = r["date"]
+        y = int(d[:4])
+        m = int(d[5:7])
+        val = r["net_inflow"] or 0
+        # net_inflow is in EUR base; convert to display if needed
+        ccy_pairs.append((d, "EUR"))
+        # We'll apply FX rate after batch loading
+        raw[y][m] += val
+
+    # Convert aggregated monthly totals to display currency using mid-month date
+    if dc != "EUR":
+        mid_month_dates: dict[tuple[int, int], str] = {}
+        for (y, m), dates in month_dates.items():
+            # Use the middle date of the month's entries
+            sorted_dates = sorted(dates)
+            mid_month_dates[(y, m)] = sorted_dates[len(sorted_dates) // 2]
+
+        # Batch-load EUR→display FX series
+        fx = get_fx_series("EUR", dc, db2_path)
+        if fx:
+            for (y, m), ref_date in mid_month_dates.items():
+                rate = get_rate_at_date(ref_date, fx)
+                if rate:
+                    raw[y][m] = round(raw[y][m] * rate, 2)
+
+    years = sorted(raw.keys())
+    values: list[list[float | None]] = []
+    for y in years:
+        row: list[float | None] = []
+        for m in range(1, 13):
+            v = raw[y].get(m)
+            row.append(round(v, 2) if v else None)
+        values.append(row)
+
+    return {
+        "years": years,
+        "months": list(range(1, 13)),
+        "values": values,
+        "currency": display_currency,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Chart 9: Cost basis vs annualized return scatter (open + closed holdings)
+# ---------------------------------------------------------------------------
+
+def get_return_vs_cost(
+    db3_path: str,
+    db2_path: str,
+    display_currency: str = "EUR",
+) -> list[dict]:
+    """Return scatter-plot data: cost basis vs annualized return per holding.
+
+    Includes both open and closed (non-option) holdings.
+    Returns ``[{symbol, cost_basis_display, annualized_return, is_open}, ...]``.
+    """
+    from src.portfolio.portfolio_state import get_all_holdings_performance, get_closed_positions
+    from src.portfolio.currency import get_rate_at_date_any
+    from datetime import datetime
+
+    dc = display_currency.upper()
+    result: list[dict] = []
+
+    # --- Open holdings ---
+    open_holdings = get_all_holdings_performance(db3_path, db2_path, dc)
+    for h in open_holdings:
+        perf = h.get("performance")
+        if not perf:
+            continue
+        cost = perf.get("cost_basis_display")
+        ann_ret = perf.get("annualized_return")
+        if cost is None or cost <= 0 or ann_ret is None:
+            continue
+        result.append({
+            "symbol": h["symbol"],
+            "cost_basis_display": round(cost, 2),
+            "annualized_return": round(ann_ret * 100, 2),  # percentage
+            "is_open": True,
+        })
+
+    # --- Closed holdings (non-option) ---
+    closed = get_closed_positions(db3_path)
+    for cp in closed:
+        if cp.get("asset_category") == "OPT":
+            continue
+        total_cost = cp.get("total_cost") or 0
+        realized_pnl = cp.get("realized_pnl") or 0
+        if total_cost <= 0:
+            continue
+        native_ccy = (cp.get("currency") or "EUR").upper()
+
+        # Convert cost to display currency
+        ref_date = cp.get("last_trade_date") or cp.get("first_trade_date")
+        if not ref_date:
+            continue
+        rate = 1.0
+        if native_ccy != dc:
+            r = get_rate_at_date_any(native_ccy, dc, ref_date, db2_path)
+            if r:
+                rate = r
+        cost_display = round(total_cost * rate, 2)
+
+        # Compute annualized return
+        total_return = realized_pnl / total_cost
+        try:
+            start = datetime.strptime(cp["first_trade_date"], "%Y-%m-%d")
+            end = datetime.strptime(cp["last_trade_date"], "%Y-%m-%d")
+            years = (end - start).days / 365.25
+        except (ValueError, KeyError):
+            years = 1
+        years = max(years, 1 / 365.25)  # at least 1 day
+        ann_ret = (1 + total_return) ** (1 / years) - 1
+
+        result.append({
+            "symbol": cp.get("symbol", "?"),
+            "cost_basis_display": cost_display,
+            "annualized_return": round(ann_ret * 100, 2),
+            "is_open": False,
+        })
+
+    return result

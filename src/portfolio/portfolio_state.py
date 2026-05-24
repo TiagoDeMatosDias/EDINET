@@ -753,6 +753,145 @@ def _compute_holding_periods(
     }
 
 
+def _compute_position_stats(
+    txns: list[dict],
+    display_currency: str = "EUR",
+    db2_path: str | None = None,
+) -> dict:
+    """Walk trade transactions chronologically with average-cost accounting.
+
+    Tracks shares, cost basis, and realized P&L across multiple buy/sell
+    periods.  Handles the sell-and-rebuy scenario correctly.
+
+    Returns:
+        cost_basis_native, cost_basis_display, cost_basis_eur,
+        realized_pnl_native, realized_pnl_display,
+        current_period_start, first_trade_date, last_trade_date,
+        shares_bought_total, shares_sold_total
+    """
+    from src.portfolio.currency import get_rate_at_date_any
+
+    shares = 0.0
+    cost_basis_native = 0.0
+    cost_basis_display = 0.0
+    cost_basis_eur = 0.0
+    realized_pnl_native = 0.0
+    realized_pnl_display = 0.0
+    realized_pnl_eur = 0.0
+    current_period_start: str | None = None
+    first_trade_date: str | None = None
+    last_trade_date: str | None = None
+    shares_bought_total = 0.0
+    shares_sold_total = 0.0
+    currency: str = ""
+
+    for t in txns:
+        td = t["trade_date"]
+        if first_trade_date is None or td < first_trade_date:
+            first_trade_date = td
+        if last_trade_date is None or td > last_trade_date:
+            last_trade_date = td
+
+        bs = t.get("buy_sell", "")
+        qty = abs(t["quantity"] or 0)
+        if qty == 0:
+            continue
+        trade_money = t["trade_money"] or 0
+        commission = t["commission"] or 0
+        fx = t["fx_rate_to_base"] or 1.0
+        cur = t.get("currency", "")
+        if cur:
+            currency = cur
+
+        if bs == "BUY":
+            total_cost = trade_money + commission  # native
+            shares += qty
+            shares_bought_total += qty
+            cost_basis_native += total_cost
+            cost_basis_eur += total_cost * fx
+
+            # Display currency
+            if display_currency != currency:
+                rate = get_rate_at_date_any(currency, display_currency, td, db2_path)
+                cost_basis_display += total_cost * (rate if rate else fx)
+            else:
+                cost_basis_display += total_cost
+
+            # Track current period start (shares went from 0 → >0)
+            if shares == qty:  # just went from 0 to qty
+                current_period_start = td
+
+        elif bs == "SELL":
+            qty_sell = min(qty, shares)
+            if shares > 0:
+                avg_cost_native = cost_basis_native / shares
+                avg_cost_eur = cost_basis_eur / shares
+                avg_cost_display = cost_basis_display / shares
+
+                # Reduce cost basis proportionally
+                cost_basis_native -= qty_sell * avg_cost_native
+                cost_basis_eur -= qty_sell * avg_cost_eur
+                cost_basis_display -= qty_sell * avg_cost_display
+
+                # Compute realized P&L for this sale
+                proceeds = abs(trade_money) if trade_money < 0 else trade_money
+                # trade_money for sells is negative (money out), proceeds = -trade_money
+                actual_proceeds = -trade_money if trade_money < 0 else trade_money
+                cost_of_sold = qty_sell * avg_cost_native
+                realized_pnl_native += actual_proceeds - cost_of_sold
+
+                # Display currency realized
+                proceeds_display = actual_proceeds
+                if display_currency != currency:
+                    rate = get_rate_at_date_any(currency, display_currency, td, db2_path)
+                    proceeds_display = actual_proceeds * (rate if rate else fx)
+                realized_pnl_display += proceeds_display - (qty_sell * avg_cost_display)
+
+                # EUR realized
+                realized_pnl_eur += (actual_proceeds * fx) - (qty_sell * avg_cost_eur)
+
+            shares -= qty_sell
+            shares_sold_total += qty_sell
+            if shares <= 0:
+                shares = 0.0
+                cost_basis_native = 0.0
+                cost_basis_display = 0.0
+                cost_basis_eur = 0.0
+                current_period_start = None  # will be set on next BUY
+
+        elif bs == "BUY (Ca.)":
+            # Cancellation: reverse a previous BUY — negative trade_money
+            # means it reduces shares and cost basis
+            shares -= qty
+            shares_bought_total -= qty
+            total_cost = trade_money + commission  # may be negative
+            cost_basis_native += total_cost  # adds a negative
+            cost_basis_eur += total_cost * fx
+            if display_currency != currency:
+                rate = get_rate_at_date_any(currency, display_currency, td, db2_path)
+                cost_basis_display += total_cost * (rate if rate else fx)
+            else:
+                cost_basis_display += total_cost
+            if shares < 0:
+                shares = 0.0
+
+    return {
+        "cost_basis_native": cost_basis_native,
+        "cost_basis_display": cost_basis_display,
+        "cost_basis_eur": cost_basis_eur,
+        "realized_pnl_native": realized_pnl_native,
+        "realized_pnl_display": realized_pnl_display,
+        "realized_pnl_eur": realized_pnl_eur,
+        "current_period_start": current_period_start or first_trade_date,
+        "first_trade_date": first_trade_date or "",
+        "last_trade_date": last_trade_date or "",
+        "shares_bought_total": shares_bought_total,
+        "shares_sold_total": shares_sold_total,
+        "currency": currency,
+        "current_shares": max(shares, 0),
+    }
+
+
 def get_holding_performance(
     symbol: str,
     db3_path: str | None = None,
@@ -762,8 +901,8 @@ def get_holding_performance(
     """Compute performance metrics for a single holding.
 
     All monetary values are returned in BOTH native currency and the
-    requested *display_currency*.  Cost basis normalization uses
-    historical FX rates at the time of each purchase.
+    requested *display_currency*.  Properly handles sell-and-rebuy
+    scenarios via ``_compute_position_stats``.
     """
     import numpy as np
     from src.portfolio.currency import (
@@ -782,70 +921,35 @@ def get_holding_performance(
         conn.close()
         return None
 
-    buys = [t for t in txns if t["buy_sell"] == "BUY"]
-    sells = [t for t in txns if t["buy_sell"] == "SELL"]
-    first_date = txns[0]["trade_date"]
-    currency = txns[0]["currency"] or ""
+    stats = _compute_position_stats(
+        [dict(t) for t in txns], display_currency, db2_path,
+    )
+    currency = stats["currency"]
+    current_qty = stats["current_shares"]
+    cost_basis_native = stats["cost_basis_native"]
+    cost_basis_display = stats["cost_basis_display"]
+    cost_basis_eur = stats["cost_basis_eur"]
+    realized_pnl_native = stats["realized_pnl_native"]
+    realized_pnl_display = stats["realized_pnl_display"]
 
-    total_shares_bought = 0.0
-    total_shares_sold = 0.0
-    for t in buys:
-        qty = abs(t["quantity"] or 0)
-        total_shares_bought += qty
-    for t in sells:
-        total_shares_sold += abs(t["quantity"] or 0)
-
-    # ── Native cost basis from raw transactions ──
-    # Sum each BUY's trade_money (native currency) + native commission.
-    # Cancellation BUYs (Ca.) have negative trade_money and net correctly.
-    cost_basis_native = 0.0
-    cost_basis_display = 0.0
-    total_cost_eur = 0.0
-    for t in buys:
-        trade_money = t["trade_money"] or 0
-        commission = t["commission"] or 0
-        fx = t["fx_rate_to_base"] or 1.0
-        trade_date = t["trade_date"]
-        # Native currency cost
-        cost_basis_native += trade_money + commission
-        # EUR cost
-        total_cost_eur += (trade_money + commission) * fx
-        # Display currency cost — use FX rate at trade date
-        if display_currency != currency:
-            rate = get_rate_at_date_any(currency, display_currency, trade_date, db2_path)
-            if rate:
-                cost_basis_display += (trade_money + commission) * rate
-            else:
-                cost_basis_display += (trade_money + commission) * fx  # fallback via EUR
-        else:
-            cost_basis_display = cost_basis_native
-
-    if display_currency == currency:
-        cost_basis_display = cost_basis_native
-
-    # Use Portfolio_Holdings for authoritative current state
+    # Use Portfolio_Holdings for current market values
     holding = conn.execute(
         "SELECT * FROM Portfolio_Holdings WHERE symbol = ?", (symbol,),
     ).fetchone()
 
-    net_shares = total_shares_bought - total_shares_sold
     avg_cost = holding["avg_cost"] if holding and holding["avg_cost"] else 0
-    current_qty = holding["quantity"] if holding else net_shares
     current_price = holding["market_price"] if holding and holding["market_price"] else avg_cost
     current_value_eur = holding["market_value"] if holding and holding["market_value"] else (current_qty * current_price)
     current_value_native = holding["market_value_native"] if holding else current_qty * current_price
 
-    # ── P&L (Nat.)  ──
-    if current_qty > 0 and cost_basis_native != 0:
-        pnl_native = current_value_native - cost_basis_native
-    else:
-        pnl_native = 0.0
+    # P&L (Nat.) — unrealized only
+    pnl_native = current_value_native - cost_basis_native if current_qty > 0 and cost_basis_native != 0 else 0.0
 
-    # ── P&L (Display) ──
-    if display_currency != "EUR":
+    # P&L (Display)
+    if display_currency.upper() != "EUR":
         from datetime import date as _date
         today_str = _date.today().isoformat()
-        if display_currency != currency:
+        if display_currency.upper() != currency.upper():
             rate_now = get_rate_at_date_any(currency, display_currency, today_str, db2_path)
             current_value_display = round(current_value_native * rate_now, 2) if rate_now and current_value_native else 0
         else:
@@ -853,24 +957,21 @@ def get_holding_performance(
         pnl_display = current_value_display - cost_basis_display if current_value_display else 0
     else:
         current_value_display = current_value_eur
-        pnl_display = current_value_eur - total_cost_eur if current_value_eur else 0
+        pnl_display = current_value_eur - cost_basis_eur if current_value_eur else 0
 
-    # ── Dividends (native) ──
+    # ── Dividends ──
     div_rows = conn.execute(
         "SELECT activity_type, amount, fx_rate_to_base, trade_date FROM Transactions "
         "WHERE symbol = ? AND activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')",
         (symbol,),
     ).fetchall()
     div_gross_native = sum(
-        abs(r["amount"] or 0)
-        for r in div_rows if r["activity_type"] in ("DIVIDEND", "PIL_DIVIDEND")
+        abs(r["amount"] or 0) for r in div_rows if r["activity_type"] in ("DIVIDEND", "PIL_DIVIDEND")
     )
     div_tax_native = sum(
-        abs(r["amount"] or 0)
-        for r in div_rows if r["activity_type"] == "WITHHOLDING_TAX"
+        abs(r["amount"] or 0) for r in div_rows if r["activity_type"] == "WITHHOLDING_TAX"
     )
     div_net_native = div_gross_native - div_tax_native
-
     div_gross_eur = sum(
         abs(r["amount"] or 0) * (r["fx_rate_to_base"] or 1)
         for r in div_rows if r["activity_type"] in ("DIVIDEND", "PIL_DIVIDEND")
@@ -880,19 +981,15 @@ def get_holding_performance(
         for r in div_rows if r["activity_type"] == "WITHHOLDING_TAX"
     )
 
-    # ── Dividends (display) — convert each dividend at its payment-date FX ──
     div_net_display = 0.0
-    if display_currency != currency and div_rows:
+    if display_currency.upper() != currency.upper() and div_rows:
         for r in div_rows:
             amt = abs(r["amount"] or 0)
             sign = 1 if r["activity_type"] in ("DIVIDEND", "PIL_DIVIDEND") else -1
             dt = r["trade_date"]
             rate = get_rate_at_date_any(currency, display_currency, dt, db2_path)
-            if rate:
-                div_net_display += amt * sign * rate
-            else:
-                div_net_display += amt * sign * (r["fx_rate_to_base"] or 1)
-    elif display_currency == currency:
+            div_net_display += amt * sign * (rate if rate else (r["fx_rate_to_base"] or 1))
+    elif display_currency.upper() == currency.upper():
         div_net_display = div_net_native
     else:
         div_net_display = div_gross_eur - div_tax_eur
@@ -903,42 +1000,30 @@ def get_holding_performance(
         (symbol,),
     ).fetchall()
 
-    # Look up asset name from most recent TRADE transaction description
     name_row = conn.execute(
-        "SELECT description FROM Transactions WHERE symbol = ? AND activity_type = 'TRADE' AND description IS NOT NULL AND description != '' ORDER BY trade_date DESC LIMIT 1",
+        "SELECT description FROM Transactions WHERE symbol = ? AND activity_type = 'TRADE' "
+        "AND description IS NOT NULL AND description != '' ORDER BY trade_date DESC LIMIT 1",
         (symbol,),
     ).fetchone()
     asset_name = name_row[0] if name_row else None
-
     conn.close()
 
     values = [h["market_value"] or 0 for h in hist]
     values_native = [h["market_value_native"] or 0 for h in hist]
     first_val = next((i for i, v in enumerate(values) if v > 0), None)
     daily_returns: list[float] = []
-    daily_returns_native: list[float] = []
     if first_val is not None:
         for i in range(first_val + 1, len(values)):
             if values[i-1] > 0 and values[i] > 0:
                 daily_returns.append(values[i] / values[i-1] - 1)
-            if values_native[i-1] > 0 and values_native[i] > 0:
-                daily_returns_native.append(values_native[i] / values_native[i-1] - 1)
 
-    # ── Total Return (EUR) ──
+    # ── Total Return ──
     total_return = 0.0
-    if total_cost_eur > 0 and current_value_eur:
-        total_return = current_value_eur / total_cost_eur - 1
-    elif total_cost_eur > 0:
-        total_return = 0.0
-
-    # ── Total Return (Nat.) ──
+    if cost_basis_eur > 0 and current_value_eur:
+        total_return = current_value_eur / cost_basis_eur - 1
     total_return_native = 0.0
     if cost_basis_native > 0 and current_value_native:
         total_return_native = current_value_native / cost_basis_native - 1
-    elif cost_basis_native > 0:
-        total_return_native = 0.0
-
-    # ── Display-currency total return ──
     total_return_display = 0.0
     if cost_basis_display > 0 and current_value_display:
         total_return_display = current_value_display / cost_basis_display - 1
@@ -946,19 +1031,16 @@ def get_holding_performance(
     volatility = 0.0
     if daily_returns and len(daily_returns) >= 2:
         volatility = float(np.std(daily_returns, ddof=1) * np.sqrt(252))
-
     avg_val = float(np.mean([v for v in values if v > 0])) if values else 0
     div_yield = (div_gross_eur - div_tax_eur) / avg_val if avg_val > 0 else 0
 
-    first_buy = buys[0]["trade_date"] if buys else None
-    last_buy = buys[-1]["trade_date"] if buys else None
-
-    # Compute annualized return using actual holding period
+    # Annualized return: use current_period_start, NOT first_buy
+    period_start = stats["current_period_start"]
     annualized_return = 0.0
     annualized_return_native = 0.0
-    if first_buy:
+    if period_start:
         from datetime import date as _date
-        hold_days = (_date.today() - _date.fromisoformat(first_buy)).days
+        hold_days = (_date.today() - _date.fromisoformat(period_start)).days
         years = max(hold_days / 365.25, 0.01)
         if total_return > -1:
             annualized_return = (1 + total_return) ** (1 / years) - 1
@@ -969,40 +1051,46 @@ def get_holding_performance(
         "symbol": symbol,
         "currency": currency,
         "display_currency": display_currency,
-        "first_purchase": first_buy,
-        "last_purchase": last_buy,
-        "first_trade": first_date,
-        "last_trade": txns[-1]["trade_date"],
-        "num_buys": len(buys),
-        "num_sells": len(sells),
-        "shares_bought": round(total_shares_bought, 2),
-        "shares_sold": round(total_shares_sold, 2),
+        "first_purchase": period_start,
+        "last_purchase": stats["last_trade_date"],
+        "first_trade": stats["first_trade_date"],
+        "last_trade": stats["last_trade_date"],
+        "num_buys": len([t for t in txns if t["buy_sell"] == "BUY"]),
+        "num_sells": len([t for t in txns if t["buy_sell"] == "SELL"]),
+        "shares_bought": round(stats["shares_bought_total"], 2),
+        "shares_sold": round(stats["shares_sold_total"], 2),
         "current_shares": round(current_qty, 2),
         "avg_cost": round(avg_cost, 4),
         "current_price": round(current_price, 4),
         "current_value": round(current_value_eur, 2),
         "current_value_native": round(current_value_native, 2),
         "current_value_display": round(current_value_display, 2),
-        # ── Native-currency fields ──
+        # ── Cost basis ──
         "cost_basis_native": round(cost_basis_native, 2),
         "cost_basis_display": round(cost_basis_display, 2),
+        "cost_basis_eur": round(cost_basis_eur, 2),
+        # ── P&L ──
         "pnl_native": round(pnl_native, 2),
         "pnl_display": round(pnl_display, 2),
+        # ── Realized P&L ──
+        "realized_pnl_native": round(realized_pnl_native, 2),
+        "realized_pnl_display": round(realized_pnl_display, 2),
+        # ── Dividends ──
         "dividends_native": round(div_net_native, 2),
         "dividends_display": round(div_net_display, 2),
+        # ── Returns ──
         "total_return_native": round(total_return_native, 6),
         "total_return_display": round(total_return_display, 6),
         "annualized_return_native": round(annualized_return_native, 6),
-        # ── FX attribution: geometric difference between disp and nat returns ──
-        "fx_return": round(
-            ((1 + total_return_display) / (1 + total_return_native) - 1)
-            if (1 + total_return_native) > 0 else 0,
-            6,
-        ),
-        # ── EUR/display fields (backward compat) ──
-        "unrealized_pnl": round(current_value_eur - total_cost_eur if current_qty > 0 else 0, 2),
         "total_return": round(total_return, 6),
         "annualized_return": round(annualized_return, 6),
+        # ── FX attribution ──
+        "fx_return": round(
+            ((1 + total_return_display) / (1 + total_return_native) - 1)
+            if (1 + total_return_native) > 0 else 0, 6,
+        ),
+        # ── Misc ──
+        "unrealized_pnl": round(current_value_eur - cost_basis_eur if current_qty > 0 else 0, 2),
         "volatility": round(volatility, 6),
         "dividend_income": round(div_gross_eur - div_tax_eur, 2),
         "dividend_gross": round(div_gross_eur, 2),
@@ -1152,51 +1240,34 @@ def get_all_holdings_performance(
                 result.append(next((h for h in holdings if h["symbol"] == sym), {}))
                 continue
 
-            buys = [t for t in txns if t["buy_sell"] == "BUY"]
-            sells = [t for t in txns if t["buy_sell"] == "SELL"]
-            currency = txns[0]["currency"] or ""
-            first_date = txns[0]["trade_date"]
-
-            total_shares_bought = sum(abs(t["quantity"] or 0) for t in buys)
-            total_shares_sold = sum(abs(t["quantity"] or 0) for t in sells)
-
-            # Cost basis
-            cost_basis_native = 0.0
-            cost_basis_display = 0.0
-            total_cost_eur = 0.0
-            for t in buys:
-                tm = t["trade_money"] or 0
-                comm = t["commission"] or 0
-                fx = t["fx_rate_to_base"] or 1.0
-                td = t["trade_date"]
-                cost_basis_native += tm + comm
-                total_cost_eur += (tm + comm) * fx
-                if display_currency != currency:
-                    rate = _cached_fx_rate(currency, display_currency, td)
-                    cost_basis_display += (tm + comm) * rate if rate else (tm + comm) * fx
-                else:
-                    cost_basis_display = cost_basis_native
-            if display_currency == currency:
-                cost_basis_display = cost_basis_native
+            stats = _compute_position_stats(
+                txns, display_currency, db2_path,
+            )
+            currency = stats["currency"]
+            cost_basis_native = stats["cost_basis_native"]
+            cost_basis_display = stats["cost_basis_display"]
+            cost_basis_eur = stats["cost_basis_eur"]
+            realized_pnl_native = stats["realized_pnl_native"]
+            realized_pnl_display = stats["realized_pnl_display"]
 
             # Current state
             holding = cur_holdings.get(sym)
-            avg_cost = holding["avg_cost"] if holding and holding.get("avg_cost") else 0
-            current_qty = holding["quantity"] if holding else (total_shares_bought - total_shares_sold)
-            current_price = holding["market_price"] if holding and holding.get("market_price") else avg_cost
-            cv_eur = holding["market_value"] if holding and holding.get("market_value") else (current_qty * current_price)
+            current_qty = stats["current_shares"]
+            avg_cost = holding["avg_cost"] if holding and holding["avg_cost"] else 0
+            current_price = holding["market_price"] if holding and holding["market_price"] else avg_cost
+            cv_eur = holding["market_value"] if holding and holding["market_value"] else (current_qty * current_price)
             cv_native = holding["market_value_native"] if holding else current_qty * current_price
 
             pnl_native = cv_native - cost_basis_native if current_qty > 0 and cost_basis_native != 0 else 0
             cv_display = cv_eur
-            pnl_display = cv_eur - total_cost_eur
-            if display_currency != currency:
+            pnl_display = cv_eur - cost_basis_eur
+            if display_currency.upper() != currency.upper():
                 from datetime import date as _date
                 today_str = _date.today().isoformat()
                 rate_now = _cached_fx_rate(currency, display_currency, today_str)
                 cv_display = round(cv_native * rate_now, 2) if rate_now and cv_native else 0
                 pnl_display = cv_display - cost_basis_display if cv_display else 0
-            elif display_currency != "EUR":
+            elif display_currency.upper() != "EUR":
                 cv_display = cv_native
                 pnl_display = cv_native - cost_basis_native
 
@@ -1205,12 +1276,10 @@ def get_all_holdings_performance(
             div_gross_native = sum(abs(r["amount"] or 0) for r in divs if r["activity_type"] in ("DIVIDEND", "PIL_DIVIDEND"))
             div_tax_native = sum(abs(r["amount"] or 0) for r in divs if r["activity_type"] == "WITHHOLDING_TAX")
             div_net_native = div_gross_native - div_tax_native
-
             div_gross_eur = sum(abs(r["amount"] or 0) * (r["fx_rate_to_base"] or 1) for r in divs if r["activity_type"] in ("DIVIDEND", "PIL_DIVIDEND"))
             div_tax_eur = sum(abs(r["amount"] or 0) * (r["fx_rate_to_base"] or 1) for r in divs if r["activity_type"] == "WITHHOLDING_TAX")
-
             div_net_display = div_gross_eur - div_tax_eur
-            if display_currency != currency and divs:
+            if display_currency.upper() != currency.upper() and divs:
                 div_net_display = 0
                 for r in divs:
                     amt = abs(r["amount"] or 0)
@@ -1218,13 +1287,12 @@ def get_all_holdings_performance(
                     dt = r["trade_date"]
                     rate = _cached_fx_rate(currency, display_currency, dt)
                     div_net_display += amt * sign * (rate if rate else (r["fx_rate_to_base"] or 1))
-            elif display_currency == currency:
+            elif display_currency.upper() == currency.upper():
                 div_net_display = div_net_native
 
             # Returns
             hist = hist_by_sym.get(sym, [])
             values = [h["market_value"] or 0 for h in hist]
-            values_native = [h["market_value_native"] or 0 for h in hist]
             dr_list = []
             first_val = next((i for i, v in enumerate(values) if v > 0), None)
             if first_val is not None:
@@ -1232,7 +1300,7 @@ def get_all_holdings_performance(
                     if values[i - 1] > 0 and values[i] > 0:
                         dr_list.append(values[i] / values[i - 1] - 1)
 
-            total_return = cv_eur / total_cost_eur - 1 if total_cost_eur > 0 and cv_eur else 0
+            total_return = cv_eur / cost_basis_eur - 1 if cost_basis_eur > 0 and cv_eur else 0
             total_return_native = cv_native / cost_basis_native - 1 if cost_basis_native > 0 and cv_native else 0
             total_return_display_d = cv_display / cost_basis_display - 1 if cost_basis_display > 0 and cv_display else 0
 
@@ -1240,12 +1308,12 @@ def get_all_holdings_performance(
             avg_val = float(np.mean([v for v in values if v > 0])) if values else 0
             div_yield = (div_gross_eur - div_tax_eur) / avg_val if avg_val > 0 else 0
 
-            first_buy = buys[0]["trade_date"] if buys else None
+            period_start = stats["current_period_start"]
             annualized_return = 0.0
             annualized_return_native = 0.0
-            if first_buy:
+            if period_start:
                 from datetime import date as _date
-                hold_days = (_date.today() - _date.fromisoformat(first_buy)).days
+                hold_days = (_date.today() - _date.fromisoformat(period_start)).days
                 years = max(hold_days / 365.25, 0.01)
                 if total_return > -1:
                     annualized_return = (1 + total_return) ** (1 / years) - 1
@@ -1258,25 +1326,31 @@ def get_all_holdings_performance(
 
             perf = {
                 "symbol": sym, "currency": currency, "display_currency": display_currency,
-                "first_purchase": first_buy, "last_purchase": buys[-1]["trade_date"] if buys else None,
-                "first_trade": first_date, "last_trade": txns[-1]["trade_date"],
-                "num_buys": len(buys), "num_sells": len(sells),
-                "shares_bought": round(total_shares_bought, 2),
-                "shares_sold": round(total_shares_sold, 2),
+                "first_purchase": stats["current_period_start"],
+                "last_purchase": stats["last_trade_date"],
+                "first_trade": stats["first_trade_date"],
+                "last_trade": stats["last_trade_date"],
+                "num_buys": len([t for t in txns if t["buy_sell"] == "BUY"]),
+                "num_sells": len([t for t in txns if t["buy_sell"] == "SELL"]),
+                "shares_bought": round(stats["shares_bought_total"], 2),
+                "shares_sold": round(stats["shares_sold_total"], 2),
                 "current_shares": round(current_qty, 2),
                 "avg_cost": round(avg_cost, 4), "current_price": round(current_price, 4),
                 "current_value": round(cv_eur, 2), "current_value_native": round(cv_native, 2),
                 "current_value_display": round(cv_display, 2),
                 "cost_basis_native": round(cost_basis_native, 2),
                 "cost_basis_display": round(cost_basis_display, 2),
+                "cost_basis_eur": round(cost_basis_eur, 2),
                 "pnl_native": round(pnl_native, 2), "pnl_display": round(pnl_display, 2),
+                "realized_pnl_native": round(realized_pnl_native, 2),
+                "realized_pnl_display": round(realized_pnl_display, 2),
                 "dividends_native": round(div_net_native, 2),
                 "dividends_display": round(div_net_display, 2),
                 "total_return_native": round(total_return_native, 6),
                 "total_return_display": round(total_return_display_d, 6),
                 "annualized_return_native": round(annualized_return_native, 6),
                 "fx_return": round(fx_ret, 6),
-                "unrealized_pnl": round(cv_eur - total_cost_eur if current_qty > 0 else 0, 2),
+                "unrealized_pnl": round(cv_eur - cost_basis_eur if current_qty > 0 else 0, 2),
                 "total_return": round(total_return, 6),
                 "annualized_return": round(annualized_return, 6),
                 "volatility": round(volatility, 6),

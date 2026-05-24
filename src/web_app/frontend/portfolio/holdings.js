@@ -1,6 +1,6 @@
 import { $, $$, fetchJson, state, normalizeTicker, formatMoney, formatPct, formatNum, badgeClass } from './common.js';
 
-// HOLDINGS columns
+// HOLDINGS columns  (order: Qty after Native Currency, hold periods at far right)
 const HOLDINGS_COLUMNS = [
   { key: 'symbol',      label: 'Symbol',               get: h => h.symbol },
   { key: 'name',        label: 'Name',                 get: h => h.performance?.name ?? '' },
@@ -8,9 +8,6 @@ const HOLDINGS_COLUMNS = [
   { key: 'industry',    label: 'Industry',             get: h => h.performance?.industry ?? '' },
   { key: 'open_pos',    label: 'Open position',         get: h => h.is_open ? 'Open' : 'Closed' },
   { key: 'native_ccy',  label: 'Native Currency',      get: h => h.currency },
-  { key: 'longest_hold',label: 'Longest Hold (Days)',  get: h => h.performance?.longest_holding_days ?? 0, num: true },
-  { key: 'latest_hold', label: 'Latest Hold (Days)',   get: h => h.performance?.latest_holding_days ?? 0, num: true },
-  { key: 'num_holds',   label: '# Holding Periods',    get: h => h.performance?.num_holding_periods ?? 0, num: true },
   { key: 'quantity',    label: 'Qty',                  get: h => h.quantity, num: true },
   { key: 'avg_cost',    label: 'Avg Cost (Nat.)',      get: h => h.performance?.avg_cost ?? h.avg_cost, num: true },
   { key: 'price',       label: 'Price',                get: h => h.market_price, num: true },
@@ -20,6 +17,8 @@ const HOLDINGS_COLUMNS = [
   { key: 'cost_display',label: 'Cost Basis (Disp.)',   get: h => h.performance?.cost_basis_display, num: true },
   { key: 'pnl_native',  label: 'P&L (Nat.)',           get: h => h.performance?.pnl_native, num: true, native: true },
   { key: 'pnl_display', label: 'P&L (Disp.)',          get: h => h.performance?.pnl_display, num: true },
+  { key: 'realized_native',label: 'Realized (Nat.)',   get: h => h.performance?.realized_pnl_native, num: true, native: true },
+  { key: 'realized_display',label: 'Realized (Disp.)', get: h => h.performance?.realized_pnl_display, num: true },
   { key: 'div_native',  label: 'Div (Nat.)',           get: h => h.performance?.dividends_native, num: true, native: true },
   { key: 'div_display', label: 'Div (Disp.)',          get: h => h.performance?.dividends_display, num: true },
   { key: 'pct_ret_nat', label: '% Return (Nat.)',      get: h => h.performance?.total_return_native, num: true, native: true },
@@ -32,6 +31,9 @@ const HOLDINGS_COLUMNS = [
     const dv = h.performance?.current_value_display ?? h.market_value ?? 0;
     return totalBase ? (Math.abs(dv) / Math.abs(totalBase)) * 100 : 0;
   }, num: true },
+  { key: 'longest_hold',label: 'Longest Hold (Days)',  get: h => h.performance?.longest_holding_days ?? 0, num: true },
+  { key: 'latest_hold', label: 'Latest Hold (Days)',   get: h => h.performance?.latest_holding_days ?? 0, num: true },
+  { key: 'num_holds',   label: '# Holding Periods',    get: h => h.performance?.num_holding_periods ?? 0, num: true },
 ];
 
 function _col(key) {
@@ -39,7 +41,19 @@ function _col(key) {
   return state._colMap.get(key);
 }
 function _orderedCols() {
-  if (!state.columnOrder) state.columnOrder = HOLDINGS_COLUMNS.map(c => c.key);
+  // Always include all HOLDINGS_COLUMNS keys, even if state.columnOrder
+  // was persisted before new columns were added.
+  const allKeys = HOLDINGS_COLUMNS.map(c => c.key);
+  if (!state.columnOrder) {
+    state.columnOrder = [...allKeys];
+  } else {
+    // Merge any new columns that aren't in the persisted order
+    for (const k of allKeys) {
+      if (!state.columnOrder.includes(k)) {
+        state.columnOrder.push(k);
+      }
+    }
+  }
   return state.columnOrder.map(k => _col(k)).filter(Boolean);
 }
 
@@ -234,6 +248,123 @@ export function applyColumnVisibility() {
 
 export function renderHoldingsTab() { renderHoldingsTable(); }
 
+function _cellHTML(h, p, col, v) {
+  // Build a single <td> for a given column key, using the precomputed
+  // values passed in `v`.  The column order is determined by `_orderedCols()`
+  // so drag-and-drop reorders both headers and body cells.
+  const k = col.key;
+  const closedStyle = v.isClosed ? 'opacity:0.55;' : '';
+  function _c(v2) { if (v2 == null) return ''; return v2 >= 0 ? 'color:var(--success);' : 'color:var(--danger);'; }
+  function _cd(v2, pos, neg) { if (v2 == null) return ''; return v2 >= 0 ? `color:${pos || 'var(--success)'};` : `color:${neg || 'var(--danger)'};`; }
+  function _f(v2) { return v2 != null ? formatMoney(v2) : '—'; }
+
+  let inner = '';
+  let extraStyle = '';
+  let extraAttrs = '';
+
+  switch (k) {
+    case 'symbol':
+      inner = v.symLabel;
+      break;
+    case 'name':
+      extraAttrs = ` style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(v.nameStr || '').replace(/"/g, '&quot;')}"`;
+      inner = v.nameStr || '—';
+      break;
+    case 'asset_type':
+      inner = `<span class="badge ${h.asset_category === 'CASH' ? 'bg-muted' : h.asset_category === 'OPT' ? 'bg-warning' : 'bg-accent'}" style="font-size:10px;">${v.typeStr}</span>`;
+      break;
+    case 'industry':
+      extraAttrs = ` style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(v.industryStr || '').replace(/"/g, '&quot;')}"`;
+      inner = v.industryStr || '—';
+      break;
+    case 'open_pos':
+      inner = `<span class="badge ${v.isClosed ? 'bg-muted' : 'bg-success'}" style="font-size:10px;">${v.isClosed ? 'Closed' : 'Open'}</span>`;
+      break;
+    case 'native_ccy':
+      inner = `<span class="pf-ccy-badge" style="font-size:10px;color:var(--warning);">${v.ccy || '—'}</span>`;
+      break;
+    case 'longest_hold':
+      inner = v.isCash ? '' : (p.longest_holding_days ?? 0);
+      break;
+    case 'latest_hold':
+      inner = v.isCash ? '' : (p.latest_holding_days ?? 0);
+      break;
+    case 'num_holds':
+      inner = v.isCash ? '' : (p.num_holding_periods ?? 0);
+      break;
+    case 'quantity':
+      inner = v.isCash ? '' : h.quantity;
+      break;
+    case 'avg_cost':
+      inner = h.avg_cost != null ? formatMoney(h.avg_cost) : '—';
+      break;
+    case 'price':
+      inner = v.isClosed ? '—' : (h.market_price != null ? formatMoney(h.market_price) : '—');
+      break;
+    case 'val_native':
+      inner = v.mvNative;
+      break;
+    case 'val_display':
+      extraStyle = v.cashStyle + v.closedStyle;
+      inner = v.mvDisplay;
+      break;
+    case 'cost_native':
+      inner = v.costNat;
+      break;
+    case 'cost_display':
+      inner = v.costDisp;
+      break;
+    case 'pnl_native':
+      extraStyle = _c(v.pnlNatRaw) + closedStyle;
+      inner = v.pnlNat;
+      break;
+    case 'pnl_display':
+      extraStyle = _c(v.pnlDispRaw) + closedStyle;
+      inner = v.pnlDisp;
+      break;
+    case 'realized_native':
+      extraStyle = _c(v.realizedNatRaw) + closedStyle;
+      inner = v.realizedNat;
+      break;
+    case 'realized_display':
+      extraStyle = _c(v.realizedDispRaw) + closedStyle;
+      inner = v.realizedDisp;
+      break;
+    case 'div_native':
+      extraStyle = (p.dividends_native != null && p.dividends_native !== 0 ? _cd(p.dividends_native) : '') + closedStyle;
+      inner = v.divNat;
+      break;
+    case 'div_display':
+      extraStyle = (p.dividends_display != null && p.dividends_display !== 0 ? _cd(p.dividends_display) : (p.dividend_income != null && p.dividend_income !== 0 ? 'color:var(--success);' : '')) + closedStyle;
+      inner = v.divDisp;
+      break;
+    case 'pct_ret_nat':
+      extraStyle = _c(v.retNatRaw) + closedStyle;
+      inner = v.retNat;
+      break;
+    case 'pct_ret':
+      extraStyle = _c(v.retDispRaw) + closedStyle;
+      inner = v.retDisp;
+      break;
+    case 'fx_effect':
+      extraStyle = _c(v.fxEffectRaw) + closedStyle;
+      inner = v.fxEffect;
+      break;
+    case 'ann_ret_nat':
+      extraStyle = _c(v.annNatRaw) + closedStyle;
+      inner = v.annNat;
+      break;
+    case 'ann_ret':
+      extraStyle = _c(v.annDispRaw) + closedStyle;
+      inner = v.annDisp;
+      break;
+    case 'weight':
+      inner = v.wt;
+      break;
+  }
+  return `<td class="pf-col-td-${k}"${extraAttrs}${extraStyle ? ` style="${extraStyle}"` : ''}>${inner}</td>`;
+}
+
 function renderHoldingsTable() {
   const div = $('#pf-holdings-table');
   const hh = state.holdings || [];
@@ -300,6 +431,9 @@ function renderHoldingsTable() {
     const costDisp = isClosed ? '—' : (p.cost_basis_display != null ? formatMoney(p.cost_basis_display) : '—');
     const pnlNat = isClosed ? '—' : (p.pnl_native != null ? formatMoney(p.pnl_native) : '—');
     const pnlDisp = isClosed ? (p.realized_pnl != null ? formatMoney(p.realized_pnl) : '—') : (p.pnl_display != null ? formatMoney(p.pnl_display) : '—');
+    // Realized: only show non-zero values; zeros → dash
+    const realizedNat = isClosed ? (p.realized_pnl != null ? formatMoney(p.realized_pnl) : '—') : (p.realized_pnl_native != null && p.realized_pnl_native !== 0 ? formatMoney(p.realized_pnl_native) : '—');
+    const realizedDisp = isClosed ? (p.realized_pnl != null ? formatMoney(p.realized_pnl) : '—') : (p.realized_pnl_display != null && p.realized_pnl_display !== 0 ? formatMoney(p.realized_pnl_display) : '—');
     const divNat = isClosed ? '—' : (p.dividends_native != null ? formatMoney(p.dividends_native) : '—');
     const divDisp = isClosed ? '—' : (p.dividends_display != null ? formatMoney(p.dividends_display) : (p.dividend_income != null ? formatMoney(p.dividend_income) : '—'));
     const retNat = isClosed ? '—' : (p.total_return_native != null ? _pct(p.total_return_native) : '—');
@@ -312,6 +446,8 @@ function renderHoldingsTable() {
 
     const pnlNatRaw = p.pnl_native;
     const pnlDispRaw = isClosed ? p.realized_pnl : p.pnl_display;
+    const realizedNatRaw = isClosed ? p.realized_pnl : p.realized_pnl_native;
+    const realizedDispRaw = isClosed ? p.realized_pnl : p.realized_pnl_display;
     const retNatRaw = p.total_return_native;
     const retDispRaw = p.total_return_display ?? p.total_return;
     const fxEffectRaw = p.fx_return;
@@ -322,39 +458,17 @@ function renderHoldingsTable() {
     const typeStr = isCash ? 'Cash' : isOption ? 'Option' : (h.asset_category === 'ETF' ? 'ETF' : 'Stock');
     const industryStr = p.industry || '';
 
-    html += `<tr class="pf-holding-row" ${rowClick} data-symbol="${encodeURIComponent(h.symbol)}" style="cursor:${clickable ? 'pointer' : 'default'}; ${closedStyle}">
-      <td class="pf-col-td-symbol">${symLabel}</td>
-      <td class="pf-col-td-name" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(p.name || h.description || '').replace(/"/g, '&quot;')}">${nameStr || '—'}</td>
-      <td class="pf-col-td-asset_type"><span class="badge ${h.asset_category === 'CASH' ? 'bg-muted' : h.asset_category === 'OPT' ? 'bg-warning' : 'bg-accent'}" style="font-size:10px;">${typeStr}</span></td>
-      <td class="pf-col-td-industry" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(industryStr).replace(/"/g, '&quot;')}">${industryStr || '—'}</td>
-      <td class="pf-col-td-open_pos"><span class="badge ${isClosed ? 'bg-muted' : 'bg-success'}" style="font-size:10px;">${isClosed ? 'Closed' : 'Open'}</span></td>
-      <td class="pf-col-td-native_ccy"><span class="pf-ccy-badge" style="font-size:10px;color:var(--warning);">${ccy || '—'}</span></td>
-      <td class="pf-col-td-longest_hold">${isCash ? '' : (p.longest_holding_days ?? 0)}</td>
-      <td class="pf-col-td-latest_hold">${isCash ? '' : (p.latest_holding_days ?? 0)}</td>
-      <td class="pf-col-td-num_holds">${isCash ? '' : (p.num_holding_periods ?? 0)}</td>
-      <td class="pf-col-td-quantity">${isCash ? '' : h.quantity}</td>
-      <td class="pf-col-td-avg_cost">${h.avg_cost != null ? formatMoney(h.avg_cost) : '—'}</td>
-      <td class="pf-col-td-price">${isClosed ? '—' : (h.market_price != null ? formatMoney(h.market_price) : '—')}</td>
-      <td class="pf-col-td-val_native">${mvNative}</td>
-      <td class="pf-col-td-val_display" style="${cashStyle}${closedStyle}">${mvDisplay}</td>
-      <td class="pf-col-td-cost_native">${costNat}</td>
-      <td class="pf-col-td-cost_display">${costDisp}</td>
-      <td class="pf-col-td-pnl_native" style="${_color(pnlNatRaw)}${closedStyle}">${pnlNat}</td>
-      <td class="pf-col-td-pnl_display" style="${_color(pnlDispRaw)}${closedStyle}">${pnlDisp}</td>
-      <td class="pf-col-td-div_native" style="${p.dividends_native !== null && p.dividends_native !== 0 ? _color(p.dividends_native) : ''}${closedStyle}">${divNat}</td>
-      <td class="pf-col-td-div_display" style="${p.dividends_display !== null && p.dividends_display !== 0 ? _color(p.dividends_display) : (p.dividend_income !== null && p.dividend_income !== 0 ? 'color:var(--success);' : '')}${closedStyle}">${divDisp}</td>
-      <td class="pf-col-td-pct_ret_nat" style="${_color(retNatRaw)}${closedStyle}">${retNat}</td>
-      <td class="pf-col-td-pct_ret" style="${_color(retDispRaw)}${closedStyle}">${retDisp}</td>
-      <td class="pf-col-td-fx_effect" style="${_color(fxEffectRaw)}${closedStyle}">${fxEffect}</td>
-      <td class="pf-col-td-ann_ret_nat" style="${_color(annNatRaw)}${closedStyle}">${annNat}</td>
-      <td class="pf-col-td-ann_ret" style="${_color(annDispRaw)}${closedStyle}">${annDisp}</td>
-      <td class="pf-col-td-weight">${wt}</td>
-    </tr>`;
+    // Build cells in column order so drag-and-drop reorders both header and body
+    html += `<tr class="pf-holding-row" ${rowClick} data-symbol="${encodeURIComponent(h.symbol)}" style="cursor:${clickable ? 'pointer' : 'default'}; ${closedStyle}">`;
+    for (const col of cols) {
+      html += _cellHTML(h, p, col, { symLabel, nameStr, typeStr, industryStr, isClosed, isCash, ccy, mvNative, mvDisplay, costNat, costDisp, pnlNat, pnlDisp, realizedNat, realizedDisp, divNat, divDisp, retNat, retDisp, fxEffect, annNat, annDisp, wt, cashStyle, closedStyle, pnlNatRaw, pnlDispRaw, realizedNatRaw, realizedDispRaw, retNatRaw, retDispRaw, fxEffectRaw, annNatRaw, annDispRaw });
+    }
+    html += '</tr>';
   }
 
   // Summary row
   const summary = {};
-  const sumCols = ['val_native','val_display','cost_native','cost_display','pnl_native','pnl_display','div_native','div_display'];
+  const sumCols = ['val_native','val_display','cost_native','cost_display','pnl_native','pnl_display','realized_native','realized_display','div_native','div_display'];
   const avgCols = ['pct_ret_nat','pct_ret','fx_effect','ann_ret_nat','ann_ret'];
   for (const k of sumCols) summary[k] = 0;
   for (const k of avgCols) { summary[k] = 0; summary[k + '_count'] = 0; }
@@ -377,7 +491,7 @@ function renderHoldingsTable() {
     if (['name','asset_type','industry','longest_hold','latest_hold','num_holds','quantity','avg_cost','price'].includes(k)) { html += `<td class="pf-col-td-${k}"></td>`; continue; }
     const v = sVals[k] || '';
     let style = '';
-    if (['pnl_native','pnl_display','pct_ret_nat','pct_ret','fx_effect','ann_ret_nat','ann_ret'].includes(k)) { const raw = summary[k]; if (raw != null) style = raw >= 0 ? 'color:var(--success);' : 'color:var(--danger);'; }
+    if (['pnl_native','pnl_display','realized_native','realized_display','pct_ret_nat','pct_ret','fx_effect','ann_ret_nat','ann_ret'].includes(k)) { const raw = summary[k]; if (raw != null) style = raw >= 0 ? 'color:var(--success);' : 'color:var(--danger);'; }
     if (k === 'div_native' || k === 'div_display') style = 'color:var(--success);';
     html += `<td class="pf-col-td-${k}" style="${style}">${v}</td>`;
   }
@@ -467,6 +581,17 @@ function _setupFilterResize(popup) {
 }
 
 function closeFilterPopup() { const p = document.getElementById('pf-filter-popup'); if (p) p.remove(); }
+
+// Close filter popup on click-outside or Escape
+document.addEventListener('mousedown', (e) => {
+  const p = document.getElementById('pf-filter-popup');
+  if (p && !p.contains(e.target) && !e.target.closest('.pf-sort-th') && !e.target.closest('.pf-sort-th *')) {
+    closeFilterPopup();
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeFilterPopup();
+});
 
 function _updateFilterIndicators() { $$('.pf-sort-th').forEach(th => { const key = th.dataset.sort; const hasFilter = !!state.columnFilters[key]; let icon = th.querySelector('.pf-filter-indicator'); if (hasFilter && !icon) { icon = document.createElement('span'); icon.className = 'pf-filter-indicator'; icon.textContent = ' ⏏'; icon.style.cssText = 'color:var(--accent,#58a6ff);font-size:10px;'; th.appendChild(icon); } else if (!hasFilter && icon) { icon.remove(); } }); }
 
