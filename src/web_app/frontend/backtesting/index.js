@@ -22,6 +22,9 @@ const ST = {
   startDate: '',
   endDate: '',
   benchmarkTicker: '',
+  benchmarkMode: 'ticker',          // 'ticker' | 'portfolio'
+  baseCurrency: '',                 // '' = native, 'EUR', 'USD', etc.
+  availableCurrencies: [],         // [{code, label}, ...]
   initialCapital: 0,
   riskFreeRate: 0,
 
@@ -60,6 +63,8 @@ const ST = {
   rollingWeightingModes: ['equal'],
   rollingMaxCompanies: 25,
   rollingBenchmark: '',
+  rollingBenchmarkMode: 'ticker',
+  rollingBaseCurrency: '',
   rollingStartPeriod: '',
   rollingEndPeriod: '',
   rollingResult: null,         // RollingBacktestResult
@@ -107,6 +112,19 @@ function uid() { return String(ST._nextId++); }
 // (prevents circular import — sets ST.availableTickers after module load)
 export function setAvailableTickers(tickers) {
   ST.availableTickers = tickers || [];
+}
+
+export function setAvailableCurrencies(currencies) {
+  ST.availableCurrencies = currencies || [];
+}
+
+async function loadBaseCurrencies() {
+  try {
+    const data = await fetchJson('/api/backtesting/base-currencies');
+    ST.availableCurrencies = data.currencies || [];
+  } catch (e) {
+    log('warn', 'Could not load base currencies: ' + e.message);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -318,6 +336,7 @@ function getTickersFromCSV() {
 
 export async function render() {
   loadSavedResults();
+  loadBaseCurrencies();
   const root = document.getElementById('bt-root');
   if (!root) return;
 
@@ -504,17 +523,69 @@ function renderManualConfig() {
     ),
   );
 
-  // Benchmark + params
+  // Base Currency
+  children.push(
+    el('div', { class: 'bt-config-row' },
+      el('label', { class: 'bt-config-label', text: 'Base Currency' }),
+      el('div', { class: 'bt-config-fields' },
+        el('select', {
+          class: 'bt-input', style: 'width:160px',
+          value: ST.benchmarkMode === 'portfolio' ? 'EUR' : ST.baseCurrency,
+          disabled: ST.benchmarkMode === 'portfolio',
+          onchange: (e) => { ST.baseCurrency = e.target.value; renderConfigPanel(); },
+        },
+          el('option', { value: '', text: 'Native (no conversion)' }),
+          ...ST.availableCurrencies.map(c =>
+            el('option', { value: c.code, text: c.label })
+          ),
+        ),
+        ST.benchmarkMode === 'portfolio'
+          ? el('span', { class: 'bt-config-hint', text: 'Set to EUR (portfolio is EUR-denominated)' })
+          : el('span', { class: 'bt-config-hint', text: 'Converts all returns to this currency using historical FX rates.' }),
+      ),
+    ),
+  );
+
+  // Benchmark mode
   children.push(
     el('div', { class: 'bt-config-row' },
       el('label', { class: 'bt-config-label', text: 'Benchmark' }),
       el('div', { class: 'bt-config-fields' },
-        el('input', {
-          type: 'text', class: 'bt-input', style: 'width:160px',
-          placeholder: 'e.g. 1321.T',
-          value: ST.benchmarkTicker,
-          oninput: (e) => { ST.benchmarkTicker = e.target.value; },
-        }),
+        el('div', { style: 'display:flex;align-items:center;gap:4px;flex-wrap:wrap' },
+          el('label', { class: 'bt-radio-label' },
+            el('input', {
+              type: 'radio', name: 'bt-benchmark-mode',
+              checked: ST.benchmarkMode === 'ticker',
+              onchange: () => {
+                ST.benchmarkMode = 'ticker';
+                ST.baseCurrency = '';
+                renderConfigPanel();
+              },
+            }),
+            ' Ticker',
+          ),
+          el('label', { class: 'bt-radio-label', style: 'margin-left:12px' },
+            el('input', {
+              type: 'radio', name: 'bt-benchmark-mode',
+              checked: ST.benchmarkMode === 'portfolio',
+              onchange: () => {
+                ST.benchmarkMode = 'portfolio';
+                ST.baseCurrency = 'EUR';
+                ST.benchmarkTicker = '';
+                renderConfigPanel();
+              },
+            }),
+            ' My Portfolio',
+          ),
+        ),
+        ST.benchmarkMode === 'ticker'
+          ? el('input', {
+              type: 'text', class: 'bt-input', style: 'width:160px',
+              placeholder: 'e.g. 1321.T',
+              value: ST.benchmarkTicker,
+              oninput: (e) => { ST.benchmarkTicker = e.target.value; },
+            })
+          : el('span', { class: 'bt-config-hint', text: 'Using your actual portfolio returns as benchmark. Base currency set to EUR.' }),
       ),
     ),
   );
@@ -771,6 +842,8 @@ async function runManualBacktest() {
         start_date: ST.startDate,
         end_date: ST.endDate,
         benchmark_ticker: ST.benchmarkTicker,
+        benchmark_mode: ST.benchmarkMode,
+        base_currency: ST.benchmarkMode === 'portfolio' ? 'EUR' : ST.baseCurrency,
         initial_capital: ST.initialCapital,
         risk_free_rate: ST.riskFreeRate,
       }),
@@ -956,16 +1029,69 @@ function renderRollingConfig() {
   );
 
   // Benchmark ticker
+  // Base Currency
+  children.push(
+    el('div', { class: 'bt-config-row' },
+      el('label', { class: 'bt-config-label', text: 'Base Currency' }),
+      el('div', { class: 'bt-config-fields' },
+        el('select', {
+          class: 'bt-input', style: 'width:160px',
+          value: ST.rollingBenchmarkMode === 'portfolio' ? 'EUR' : ST.rollingBaseCurrency,
+          disabled: ST.rollingBenchmarkMode === 'portfolio',
+          onchange: (e) => { ST.rollingBaseCurrency = e.target.value; renderConfigPanel(); },
+        },
+          el('option', { value: '', text: 'Native (no conversion)' }),
+          ...ST.availableCurrencies.map(c =>
+            el('option', { value: c.code, text: c.label })
+          ),
+        ),
+        ST.rollingBenchmarkMode === 'portfolio'
+          ? el('span', { class: 'bt-config-hint', text: 'Set to EUR (portfolio is EUR-denominated)' })
+          : el('span', { class: 'bt-config-hint', text: 'Converts all returns to this currency using historical FX rates.' }),
+      ),
+    ),
+  );
+
+  // Benchmark mode
   children.push(
     el('div', { class: 'bt-config-row' },
       el('label', { class: 'bt-config-label', text: 'Benchmark' }),
       el('div', { class: 'bt-config-fields' },
-        el('input', {
-          type: 'text', class: 'bt-input', style: 'width:160px',
-          placeholder: 'e.g. 1321.T',
-          value: ST.rollingBenchmark,
-          oninput: (e) => { ST.rollingBenchmark = e.target.value; },
-        }),
+        el('div', { style: 'display:flex;align-items:center;gap:4px;flex-wrap:wrap' },
+          el('label', { class: 'bt-radio-label' },
+            el('input', {
+              type: 'radio', name: 'bt-benchmark-mode-rolling',
+              checked: ST.rollingBenchmarkMode === 'ticker',
+              onchange: () => {
+                ST.rollingBenchmarkMode = 'ticker';
+                ST.rollingBaseCurrency = '';
+                renderConfigPanel();
+              },
+            }),
+            ' Ticker',
+          ),
+          el('label', { class: 'bt-radio-label', style: 'margin-left:12px' },
+            el('input', {
+              type: 'radio', name: 'bt-benchmark-mode-rolling',
+              checked: ST.rollingBenchmarkMode === 'portfolio',
+              onchange: () => {
+                ST.rollingBenchmarkMode = 'portfolio';
+                ST.rollingBaseCurrency = 'EUR';
+                ST.rollingBenchmark = '';
+                renderConfigPanel();
+              },
+            }),
+            ' My Portfolio',
+          ),
+        ),
+        ST.rollingBenchmarkMode === 'ticker'
+          ? el('input', {
+              type: 'text', class: 'bt-input', style: 'width:160px',
+              placeholder: 'e.g. 1321.T',
+              value: ST.rollingBenchmark,
+              oninput: (e) => { ST.rollingBenchmark = e.target.value; },
+            })
+          : el('span', { class: 'bt-config-hint', text: 'Using your actual portfolio returns as benchmark. Base currency set to EUR.' }),
       ),
     ),
   );
@@ -1100,6 +1226,8 @@ async function runRollingBacktest() {
           ranking_algorithm: cfg.rankingAlgorithm,
           ranking_rules: cfg.rankingRules,
           benchmark_ticker: ST.rollingBenchmark,
+          benchmark_mode: ST.rollingBenchmarkMode,
+          base_currency: ST.rollingBenchmarkMode === 'portfolio' ? 'EUR' : ST.rollingBaseCurrency,
           start_period: ST.rollingStartPeriod || null,
           end_period: ST.rollingEndPeriod || null,
         }),
@@ -1955,16 +2083,69 @@ function renderScreenerConfig() {
     ),
   );
 
+  // Base Currency
+  children.push(
+    el('div', { class: 'bt-config-row' },
+      el('label', { class: 'bt-config-label', text: 'Base Currency' }),
+      el('div', { class: 'bt-config-fields' },
+        el('select', {
+          class: 'bt-input', style: 'width:160px',
+          value: ST.benchmarkMode === 'portfolio' ? 'EUR' : ST.baseCurrency,
+          disabled: ST.benchmarkMode === 'portfolio',
+          onchange: (e) => { ST.baseCurrency = e.target.value; renderConfigPanel(); },
+        },
+          el('option', { value: '', text: 'Native (no conversion)' }),
+          ...ST.availableCurrencies.map(c =>
+            el('option', { value: c.code, text: c.label })
+          ),
+        ),
+        ST.benchmarkMode === 'portfolio'
+          ? el('span', { class: 'bt-config-hint', text: 'Set to EUR (portfolio is EUR-denominated)' })
+          : el('span', { class: 'bt-config-hint', text: 'Converts all returns to this currency using historical FX rates.' }),
+      ),
+    ),
+  );
+
+  // Benchmark mode
   children.push(
     el('div', { class: 'bt-config-row' },
       el('label', { class: 'bt-config-label', text: 'Benchmark' }),
       el('div', { class: 'bt-config-fields' },
-        el('input', {
-          type: 'text', class: 'bt-input', style: 'width:160px',
-          placeholder: 'e.g. 1321.T',
-          value: ST.benchmarkTicker,
-          oninput: (e) => { ST.benchmarkTicker = e.target.value; },
-        }),
+        el('div', { style: 'display:flex;align-items:center;gap:4px;flex-wrap:wrap' },
+          el('label', { class: 'bt-radio-label' },
+            el('input', {
+              type: 'radio', name: 'bt-benchmark-mode-screener',
+              checked: ST.benchmarkMode === 'ticker',
+              onchange: () => {
+                ST.benchmarkMode = 'ticker';
+                ST.baseCurrency = '';
+                renderConfigPanel();
+              },
+            }),
+            ' Ticker',
+          ),
+          el('label', { class: 'bt-radio-label', style: 'margin-left:12px' },
+            el('input', {
+              type: 'radio', name: 'bt-benchmark-mode-screener',
+              checked: ST.benchmarkMode === 'portfolio',
+              onchange: () => {
+                ST.benchmarkMode = 'portfolio';
+                ST.baseCurrency = 'EUR';
+                ST.benchmarkTicker = '';
+                renderConfigPanel();
+              },
+            }),
+            ' My Portfolio',
+          ),
+        ),
+        ST.benchmarkMode === 'ticker'
+          ? el('input', {
+              type: 'text', class: 'bt-input', style: 'width:160px',
+              placeholder: 'e.g. 1321.T',
+              value: ST.benchmarkTicker,
+              oninput: (e) => { ST.benchmarkTicker = e.target.value; },
+            })
+          : el('span', { class: 'bt-config-hint', text: 'Using your actual portfolio returns as benchmark. Base currency set to EUR.' }),
       ),
     ),
   );
@@ -2053,6 +2234,8 @@ async function runScreenerBacktest() {
       body: JSON.stringify({
         csv_content: ST.csvContent,
         benchmark_ticker: ST.benchmarkTicker,
+        benchmark_mode: ST.benchmarkMode,
+        base_currency: ST.benchmarkMode === 'portfolio' ? 'EUR' : ST.baseCurrency,
         durations: ST.durations,
         initial_capital: ST.initialCapital,
         risk_free_rate: ST.riskFreeRate,
@@ -2137,6 +2320,73 @@ function renderCSVConfig() {
             el('span', { text: d }),
           ),
         ),
+      ),
+    ),
+  );
+
+  // Base Currency
+  children.push(
+    el('div', { class: 'bt-config-row' },
+      el('label', { class: 'bt-config-label', text: 'Base Currency' }),
+      el('div', { class: 'bt-config-fields' },
+        el('select', {
+          class: 'bt-input', style: 'width:160px',
+          value: ST.benchmarkMode === 'portfolio' ? 'EUR' : ST.baseCurrency,
+          disabled: ST.benchmarkMode === 'portfolio',
+          onchange: (e) => { ST.baseCurrency = e.target.value; renderConfigPanel(); },
+        },
+          el('option', { value: '', text: 'Native (no conversion)' }),
+          ...ST.availableCurrencies.map(c =>
+            el('option', { value: c.code, text: c.label })
+          ),
+        ),
+        ST.benchmarkMode === 'portfolio'
+          ? el('span', { class: 'bt-config-hint', text: 'Set to EUR (portfolio is EUR-denominated)' })
+          : el('span', { class: 'bt-config-hint', text: 'Converts all returns to this currency using historical FX rates.' }),
+      ),
+    ),
+  );
+
+  // Benchmark mode
+  children.push(
+    el('div', { class: 'bt-config-row' },
+      el('label', { class: 'bt-config-label', text: 'Benchmark' }),
+      el('div', { class: 'bt-config-fields' },
+        el('div', { style: 'display:flex;align-items:center;gap:4px;flex-wrap:wrap' },
+          el('label', { class: 'bt-radio-label' },
+            el('input', {
+              type: 'radio', name: 'bt-benchmark-mode-csv',
+              checked: ST.benchmarkMode === 'ticker',
+              onchange: () => {
+                ST.benchmarkMode = 'ticker';
+                ST.baseCurrency = '';
+                renderConfigPanel();
+              },
+            }),
+            ' Ticker',
+          ),
+          el('label', { class: 'bt-radio-label', style: 'margin-left:12px' },
+            el('input', {
+              type: 'radio', name: 'bt-benchmark-mode-csv',
+              checked: ST.benchmarkMode === 'portfolio',
+              onchange: () => {
+                ST.benchmarkMode = 'portfolio';
+                ST.baseCurrency = 'EUR';
+                ST.benchmarkTicker = '';
+                renderConfigPanel();
+              },
+            }),
+            ' My Portfolio',
+          ),
+        ),
+        ST.benchmarkMode === 'ticker'
+          ? el('input', {
+              type: 'text', class: 'bt-input', style: 'width:160px',
+              placeholder: 'e.g. 1321.T',
+              value: ST.benchmarkTicker,
+              oninput: (e) => { ST.benchmarkTicker = e.target.value; },
+            })
+          : el('span', { class: 'bt-config-hint', text: 'Using your actual portfolio returns as benchmark. Base currency set to EUR.' }),
       ),
     ),
   );
@@ -2320,6 +2570,8 @@ async function runCSVBacktest() {
       body: JSON.stringify({
         csv_content: ST.csvContent,
         benchmark_ticker: ST.benchmarkTicker,
+        benchmark_mode: ST.benchmarkMode,
+        base_currency: ST.benchmarkMode === 'portfolio' ? 'EUR' : ST.baseCurrency,
         durations: ST.durations,
         initial_capital: ST.initialCapital,
         risk_free_rate: ST.riskFreeRate,

@@ -229,8 +229,15 @@ def get_portfolio_prices(
                     variant_to_original[tv] = t
 
         placeholders = ",".join(["?"] * len(variants))
+        # Check if Currency column exists (backward compat with custom tables)
+        col_info = conn.execute(
+            f"PRAGMA table_info({_sql_ident(prices_table)})"
+        ).fetchall()
+        col_names = {row[1] for row in col_info}
+        has_currency = "Currency" in col_names
+        price_cols = "Date, Ticker, Price" + (", Currency" if has_currency else "")
         query = (
-            f"SELECT Date, Ticker, Price FROM {prices_table} "
+            f"SELECT {price_cols} FROM {prices_table} "
             f"WHERE Ticker IN ({placeholders}) "
             f"AND Date >= ? AND Date <= ? "
             f"ORDER BY Date"
@@ -239,6 +246,10 @@ def get_portfolio_prices(
         df = pd.read_sql_query(query, conn, params=params)
         df["Date"] = pd.to_datetime(df["Date"])
         df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
+        if "Currency" not in df.columns:
+            df["Currency"] = "EUR"
+        else:
+            df["Currency"] = df["Currency"].fillna("EUR").astype(str)
         # Map DB tickers back to original portfolio keys
         df["Ticker"] = df["Ticker"].map(variant_to_original).fillna(df["Ticker"])
         return df
@@ -397,6 +408,268 @@ def get_dividend_data(
     finally:
         if own_conn:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Currency conversion
+# ---------------------------------------------------------------------------
+
+
+def get_ticker_currency(
+    db_path: str,
+    tickers: list[str],
+) -> dict[str, str]:
+    """Return the native currency for each ticker from Stock_Prices.
+
+    Tickers not found in Stock_Prices default to ``"EUR"``.
+    Uses the same ticker-variant matching logic as :func:`get_portfolio_prices`.
+    """
+    if not tickers:
+        return {}
+    conn = sqlite3.connect(db_path)
+    try:
+        variants: list[str] = []
+        variant_to_original: dict[str, str] = {}
+        for t in tickers:
+            t = str(t).strip()
+            if t not in variant_to_original:
+                variants.append(t)
+                variant_to_original[t] = t
+            if not t.endswith(".T"):
+                tv = t + ".T"
+                if tv not in variant_to_original:
+                    variants.append(tv)
+                    variant_to_original[tv] = t
+            else:
+                tv = t[:-2]
+                if tv not in variant_to_original:
+                    variants.append(tv)
+                    variant_to_original[tv] = t
+
+        placeholders = ",".join(["?"] * len(variants))
+        try:
+            rows = conn.execute(
+                f"SELECT DISTINCT Ticker, Currency FROM Stock_Prices "
+                f"WHERE Ticker IN ({placeholders}) "
+                f"AND Currency IS NOT NULL AND Currency != ''"
+            ).fetchall()
+        except Exception as exc:
+            logger.warning("Could not query ticker currencies: %s", exc)
+            rows = []
+
+        result: dict[str, str] = {}
+        for db_ticker, ccy in rows:
+            orig = variant_to_original.get(db_ticker, db_ticker)
+            if orig not in result:
+                result[orig] = str(ccy).upper()
+
+        for t in tickers:
+            t_clean = str(t).strip()
+            if t_clean not in result:
+                result[t_clean] = "EUR"
+
+        return result
+    finally:
+        conn.close()
+
+
+def convert_prices_to_base_currency(
+    prices_df: pd.DataFrame,
+    base_currency: str,
+    db_path: str,
+) -> pd.DataFrame:
+    """Convert all daily prices in *prices_df* to *base_currency*.
+
+    For each ticker whose native currency differs from *base_currency*,
+    fetches the historical FX series and applies the daily conversion.
+    FX series are cached per currency pair within the call to avoid
+    repeated DB queries.
+    """
+    if not base_currency or prices_df.empty:
+        return prices_df
+
+    bc = base_currency.upper()
+    if bc == "":
+        return prices_df
+
+    df = prices_df.copy()
+    cache: dict[str, dict[str, float]] = {}
+    ticker_currency = get_ticker_currency(db_path, list(df["Ticker"].unique()))
+
+    for ticker in df["Ticker"].unique():
+        native = ticker_currency.get(ticker, "EUR")
+        if native == bc:
+            continue
+
+        pair_key = f"{native}_{bc}"
+        if pair_key not in cache:
+            try:
+                from src.portfolio.currency import get_fx_series
+                cache[pair_key] = get_fx_series(native, bc, db_path)
+            except Exception as e:
+                logger.warning(
+                    "Failed to load FX data for %s->%s: %s. "
+                    "Using native currency for '%s'.",
+                    native, bc, e, ticker,
+                )
+                cache[pair_key] = {}
+
+        fx_series = cache[pair_key]
+        if not fx_series:
+            logger.warning(
+                "No FX data for %s->%s; using native currency for '%s'.",
+                native, bc, ticker,
+            )
+            continue
+
+        ticker_mask = df["Ticker"] == ticker
+        for idx in df[ticker_mask].index:
+            date_val = df.at[idx, "Date"]
+            if isinstance(date_val, pd.Timestamp):
+                date_str = date_val.strftime("%Y-%m-%d")
+            else:
+                date_str = str(date_val)
+            rate = fx_series.get(date_str)
+            if rate is not None and rate > 0:
+                df.at[idx, "Price"] = df.at[idx, "Price"] * rate
+
+    df["Currency"] = bc
+    return df
+
+
+def convert_dividends_to_base_currency(
+    dividends_df: pd.DataFrame,
+    base_currency: str,
+    db_path: str,
+) -> pd.DataFrame:
+    """Convert all per-share dividend amounts to *base_currency*.
+
+    For each dividend payment, determines the ticker's native currency
+    and converts the per-share amount using the FX rate on the payment
+    date (``periodEnd``).
+    """
+    if not base_currency or dividends_df.empty:
+        return dividends_df
+
+    bc = base_currency.upper()
+    if bc == "":
+        return dividends_df
+
+    df = dividends_df.copy()
+    ticker_currency = get_ticker_currency(
+        db_path, list(df["Ticker"].unique()),
+    )
+    cache: dict[str, dict[str, float]] = {}
+
+    for idx, row in df.iterrows():
+        ticker = row["Ticker"]
+        native = ticker_currency.get(ticker, "EUR")
+        if native == bc:
+            continue
+
+        pair_key = f"{native}_{bc}"
+        if pair_key not in cache:
+            try:
+                from src.portfolio.currency import get_fx_series
+                cache[pair_key] = get_fx_series(native, bc, db_path)
+            except Exception as e:
+                logger.warning(
+                    "Failed to load FX data for %s->%s: %s",
+                    native, bc, e,
+                )
+                cache[pair_key] = {}
+
+        fx_series = cache[pair_key]
+        if not fx_series:
+            continue
+
+        period_end = row["periodEnd"]
+        if isinstance(period_end, pd.Timestamp):
+            date_str = period_end.strftime("%Y-%m-%d")
+        else:
+            date_str = str(period_end)[:10]
+
+        rate = fx_series.get(date_str)
+        if rate is not None and rate > 0:
+            df.at[idx, "PerShare_Dividends"] = (
+                row["PerShare_Dividends"] * rate
+            )
+
+    return df
+
+
+def get_portfolio_benchmark_returns(
+    db3_path: str,
+    start_date: str,
+    end_date: str,
+    base_currency: str,
+    db2_path: str,
+) -> pd.DataFrame | None:
+    """Fetch portfolio daily values from db3 and format as benchmark DataFrame.
+
+    Reads ``Portfolio_Daily`` from *db3_path*. Values are stored in EUR.
+    If *base_currency* != ``"EUR"``, converts daily values using historical
+    FX rates, then recomputes daily returns from the converted series.
+    """
+    conn = sqlite3.connect(db3_path)
+    try:
+        rows = conn.execute(
+            "SELECT date, total_value, net_inflow FROM Portfolio_Daily "
+            "WHERE date >= ? AND date <= ? "
+            "ORDER BY date",
+            (start_date, end_date),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows or len(rows) < 2:
+        return None
+
+    dates = [pd.to_datetime(r[0]) for r in rows]
+    total_values = np.array([float(r[1]) for r in rows], dtype=float)
+    net_inflows = np.array([float(r[2]) if r[2] is not None else 0.0 for r in rows], dtype=float)
+
+    bc = base_currency.upper()
+
+    if bc != "EUR":
+        from src.portfolio.currency import get_fx_series
+        fx_series = get_fx_series("EUR", bc, db2_path)
+        if fx_series:
+            fx_values = np.array([
+                fx_series.get(r[0], 1.0) for r in rows
+            ], dtype=float)
+            total_values = total_values * fx_values
+            net_inflows = net_inflows * fx_values
+        else:
+            logger.warning(
+                "No FX data for EUR->%s; portfolio benchmark remains in EUR.",
+                bc,
+            )
+
+    daily_returns = np.zeros(len(rows))
+    daily_returns[0] = 0.0
+    for i in range(1, len(rows)):
+        v_prev = total_values[i - 1]
+        v_curr = total_values[i]
+        inflow = net_inflows[i]
+        denom = v_prev + inflow
+        if denom > 0 and v_prev > 0:
+            ret = (v_curr - v_prev - inflow) / denom
+            daily_returns[i] = max(min(ret, 1.0), -1.0)
+        else:
+            daily_returns[i] = 0.0
+
+    cum_returns = np.cumprod(1.0 + daily_returns)
+
+    result_df = pd.DataFrame(
+        {
+            "benchmark_return": daily_returns,
+            "cumulative_return": cum_returns,
+        },
+        index=dates,
+    )
+    result_df = result_df.iloc[1:]
+    return result_df
 
 
 # ---------------------------------------------------------------------------
@@ -829,6 +1102,9 @@ def calculate_metrics(
     start_date: str,
     end_date: str,
     risk_free_rate: float = 0.0,
+    *,
+    effective_start: str | None = None,
+    effective_end: str | None = None,
 ) -> dict:
     """Compute summary performance metrics for the backtest.
 
@@ -853,8 +1129,8 @@ def calculate_metrics(
         * ``benchmark_total_return``, ``benchmark_annualized_return``
         * ``excess_return`` — portfolio minus benchmark total return.
     """
-    dt_start = pd.to_datetime(start_date)
-    dt_end = pd.to_datetime(end_date)
+    dt_start = pd.to_datetime(effective_start or start_date)
+    dt_end = pd.to_datetime(effective_end or end_date)
     years = max((dt_end - dt_start).days / 365.25, 1 / 365.25)
 
     total_return = float(portfolio_df["cumulative_return"].iloc[-1] - 1) if len(portfolio_df) else 0.0

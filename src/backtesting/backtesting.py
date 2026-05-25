@@ -28,8 +28,12 @@ from src.orchestrator.common.backtesting import (
     calculate_portfolio_returns,
     calculate_return_decomposition,
     calculate_yearly_returns,
+    convert_dividends_to_base_currency,
+    convert_prices_to_base_currency,
     get_dividend_data,
+    get_portfolio_benchmark_returns,
     get_portfolio_prices,
+    get_ticker_currency,
     resolve_portfolio_allocations,
 )
 
@@ -47,6 +51,9 @@ def run_backtest_web(
     end_date: str,
     *,
     benchmark_ticker: str = "",
+    benchmark_mode: str = "ticker",
+    base_currency: str = "",
+    db3_path: str = "",
     initial_capital: float = 0.0,
     risk_free_rate: float = 0.0,
     prices_table: str = "Stock_Prices",
@@ -70,7 +77,7 @@ def run_backtest_web(
     tickers = list(portfolio.keys())
     warnings: list[str] = []
     all_tickers = list(tickers)
-    if benchmark_ticker and benchmark_ticker not in all_tickers:
+    if benchmark_mode == "ticker" and benchmark_ticker and benchmark_ticker not in all_tickers:
         all_tickers.append(benchmark_ticker)
 
     # ── Fetch data ────────────────────────────────────────────────────
@@ -80,9 +87,15 @@ def run_backtest_web(
 
     if prices_df.empty:
         return _empty_result(start_date, end_date, initial_capital,
-                             has_benchmark=bool(benchmark_ticker),
+                             has_benchmark=bool(benchmark_ticker) or benchmark_mode == "portfolio",
                              warnings=["No price data available for the "
                                        "selected tickers in this date range."])
+
+    # ── Currency conversion (prices) ──
+    if base_currency and base_currency != "":
+        prices_df = convert_prices_to_base_currency(
+            prices_df, base_currency, db_path,
+        )
 
     # Check missing tickers
     available = set(prices_df["Ticker"].unique())
@@ -107,11 +120,11 @@ def run_backtest_web(
 
     if not portfolio_weights:
         return _empty_result(start_date, end_date, initial_capital,
-                             has_benchmark=bool(benchmark_ticker),
+                             has_benchmark=bool(benchmark_ticker) or benchmark_mode == "portfolio",
                              warnings=["No valid tickers with price data "
                                        "in the selected date range."])
 
-    # Fetch dividends
+    # Fetch dividends (portfolio tickers only)
     dividends_df = get_dividend_data(
         db_path, ratios_table, company_table, tickers,
         start_date, end_date,
@@ -119,7 +132,7 @@ def run_backtest_web(
     )
 
     all_dividends_df = dividends_df
-    if benchmark_ticker:
+    if benchmark_mode == "ticker" and benchmark_ticker:
         bench_divs = get_dividend_data(
             db_path, ratios_table, company_table,
             [benchmark_ticker], start_date, end_date,
@@ -129,6 +142,15 @@ def run_backtest_web(
             all_dividends_df = pd.concat(
                 [dividends_df, bench_divs], ignore_index=True,
             )
+
+    # ── Dividend currency conversion (after ALL dividends are fetched) ──
+    if base_currency and base_currency != "" and not all_dividends_df.empty:
+        all_dividends_df = convert_dividends_to_base_currency(
+            all_dividends_df, base_currency, db_path,
+        )
+        dividends_df = all_dividends_df[
+            all_dividends_df["Ticker"].isin(tickers)
+        ]
 
     portfolio_prices = prices_df[prices_df["Ticker"].isin(tickers)]
 
@@ -154,18 +176,83 @@ def run_backtest_web(
         dividends_df, shares_purchased=shares_map,
     )
 
-    # Benchmark
+    # ── Benchmark ──
     benchmark_df = None
-    if benchmark_ticker:
+    if benchmark_mode == "ticker" and benchmark_ticker:
         bench_prices = prices_df[prices_df["Ticker"] == benchmark_ticker]
         if not bench_prices.empty:
             benchmark_df = calculate_benchmark_returns(
                 prices_df, benchmark_ticker, all_dividends_df,
             )
+    elif benchmark_mode == "portfolio" and db3_path:
+        # When portfolio is benchmark and no base_currency set,
+        # auto-set to EUR (portfolio is EUR-denominated)
+        effective_base = base_currency or "EUR"
+        if not base_currency:
+            base_currency = "EUR"
+            prices_df = convert_prices_to_base_currency(
+                prices_df, "EUR", db_path,
+            )
+            if not all_dividends_df.empty:
+                all_dividends_df = convert_dividends_to_base_currency(
+                    all_dividends_df, "EUR", db_path,
+                )
+                dividends_df = all_dividends_df[
+                    all_dividends_df["Ticker"].isin(tickers)
+                ]
+                # Recompute returns with converted prices/dividends
+                portfolio_df = calculate_portfolio_returns(
+                    portfolio_prices, portfolio_weights, dividends_df,
+                )
+                decomposition = calculate_return_decomposition(
+                    portfolio_prices, portfolio_weights, dividends_df,
+                )
+                per_company = calculate_per_company_returns(
+                    portfolio_prices, portfolio_weights, dividends_df,
+                    initial_capital=initial_capital,
+                )
+                yearly_returns = calculate_yearly_returns(decomposition)
+                shares_map = None
+                if per_company is not None and "shares_purchased" in per_company.columns:
+                    shares_map = dict(
+                        zip(per_company["Ticker"], per_company["shares_purchased"])
+                    )
+                dividends_by_year = calculate_dividends_by_company_year(
+                    dividends_df, shares_purchased=shares_map,
+                )
+
+        benchmark_df = get_portfolio_benchmark_returns(
+            db3_path, start_date, end_date, effective_base, db_path,
+        )
+
+    # ── Align portfolio and benchmark to common date range ──
+    if benchmark_df is not None and not benchmark_df.empty and benchmark_mode == "portfolio":
+        common_idx = portfolio_df.index.intersection(benchmark_df.index)
+        if len(common_idx) > 1:
+            if len(common_idx) < len(portfolio_df.index):
+                warnings.append(
+                    f"Portfolio benchmark covers only "
+                    f"{common_idx[0].strftime('%Y-%m-%d')} → "
+                    f"{common_idx[-1].strftime('%Y-%m-%d')}. "
+                    f"Comparison limited to this period."
+                )
+            portfolio_df = portfolio_df.loc[common_idx]
+            benchmark_df = benchmark_df.loc[common_idx]
+            effective_start = common_idx[0].strftime("%Y-%m-%d")
+            effective_end = common_idx[-1].strftime("%Y-%m-%d")
+        else:
+            warnings.append("Portfolio benchmark has insufficient overlapping data.")
+            benchmark_df = None
+            effective_start = start_date
+            effective_end = end_date
+    else:
+        effective_start = start_date
+        effective_end = end_date
 
     # ── Metrics ───────────────────────────────────────────────────────
     metrics = calculate_metrics(
-        portfolio_df, benchmark_df, start_date, end_date, risk_free_rate,
+        portfolio_df, benchmark_df,
+        effective_start, effective_end, risk_free_rate,
     )
 
     # Inject fields not produced by calculate_metrics()
@@ -383,6 +470,9 @@ def run_backtest_set_web(
     *,
     durations: list[str] | None = None,
     benchmark_ticker: str = "",
+    benchmark_mode: str = "ticker",
+    base_currency: str = "",
+    db3_path: str = "",
     initial_capital: float = 0.0,
     risk_free_rate: float = 0.0,
     prices_table: str = "Stock_Prices",
@@ -513,6 +603,9 @@ def run_backtest_set_web(
                     start_date=bt_start,
                     end_date=bt_end,
                     benchmark_ticker=benchmark_ticker,
+                    benchmark_mode=benchmark_mode,
+                    base_currency=base_currency,
+                    db3_path=db3_path,
                     initial_capital=initial_capital,
                     risk_free_rate=risk_free_rate,
                     prices_table=prices_table,
@@ -535,7 +628,9 @@ def run_backtest_set_web(
 
     # ── Aggregate summary ─────────────────────────────────────────────
     aggregate = _build_aggregate_summary(all_results, successful, failed,
-                                         benchmark_ticker, durations)
+                                         benchmark_ticker, durations,
+                                         benchmark_mode=benchmark_mode,
+                                         base_currency=base_currency)
 
     return {
         "aggregate": aggregate,
@@ -549,6 +644,8 @@ def _build_aggregate_summary(
     failed: int,
     benchmark_ticker: str,
     durations: list[str],
+    benchmark_mode: str = "ticker",
+    base_currency: str = "",
 ) -> dict:
     """Build the aggregate statistics for a backtest set."""
     total_runs = len(all_results)
@@ -636,6 +733,9 @@ def run_screening_backtest_set(
     computed_columns: list[dict] | None = None,
     durations: list[str] | None = None,
     benchmark_ticker: str = "",
+    benchmark_mode: str = "ticker",
+    base_currency: str = "",
+    db3_path: str = "",
     initial_capital: float = 0.0,
     risk_free_rate: float = 0.0,
     prices_table: str = "Stock_Prices",
@@ -721,6 +821,9 @@ def run_screening_backtest_set(
         csv_content=csv_content,
         durations=durations,
         benchmark_ticker=benchmark_ticker,
+        benchmark_mode=benchmark_mode,
+        base_currency=base_currency,
+        db3_path=db3_path,
         initial_capital=initial_capital,
         risk_free_rate=risk_free_rate,
         prices_table=prices_table,
@@ -924,6 +1027,8 @@ def _build_rolling_aggregate(
     weighting_modes: list[str],
     periods: list[str],
     benchmark_ticker: str,
+    benchmark_mode: str = "ticker",
+    base_currency: str = "",
 ) -> dict:
     """Compute aggregate statistics from rolling backtest results.
 
@@ -1036,7 +1141,7 @@ def _build_rolling_aggregate(
     # ── Benchmark comparison ─────────────────────────────────────────
     total_with_bench = outperformed + underperformed
     benchmark_comparison: dict | None = None
-    if benchmark_ticker and total_with_bench > 0:
+    if (benchmark_ticker or benchmark_mode == "portfolio") and total_with_bench > 0:
         by_dur_summary: dict[str, dict] = {}
         for dur, counts in by_duration_bench.items():
             if counts["total"] > 0:
@@ -1077,7 +1182,7 @@ def _build_rolling_aggregate(
     )
 
     # ── Excess-returns heatmap (portfolio − benchmark) ───────────────
-    if benchmark_ticker:
+    if benchmark_ticker or benchmark_mode == "portfolio":
         _dur_years_ex = {
             "1yr": 1, "2yr": 2, "3yr": 3, "5yr": 5, "10yr": 10,
         }
@@ -1183,6 +1288,9 @@ def run_screening_backtest_rolling(
     ranking_rules: list[dict] | None = None,
     computed_columns: list[dict] | None = None,
     benchmark_ticker: str = "",
+    benchmark_mode: str = "ticker",
+    base_currency: str = "",
+    db3_path: str = "",
     initial_capital: float = 0.0,
     risk_free_rate: float = 0.0,
     start_period: str | None = None,
@@ -1422,6 +1530,9 @@ def run_screening_backtest_rolling(
                         start_date=screening_date,
                         end_date=bt_end,
                         benchmark_ticker=benchmark_ticker,
+                        benchmark_mode=benchmark_mode,
+                        base_currency=base_currency,
+                        db3_path=db3_path,
                         initial_capital=initial_capital,
                         risk_free_rate=risk_free_rate,
                         prices_table=prices_table,
@@ -1494,6 +1605,8 @@ def run_screening_backtest_rolling(
     # ── Build aggregate ────────────────────────────────────────────
     aggregate = _build_rolling_aggregate(
         all_results, durations, weighting_modes, periods, benchmark_ticker,
+        benchmark_mode=benchmark_mode,
+        base_currency=base_currency,
     )
 
     result = {
@@ -1504,6 +1617,8 @@ def run_screening_backtest_rolling(
             "max_companies": max_companies,
             "criteria": criteria,
             "benchmark_ticker": benchmark_ticker,
+            "benchmark_mode": benchmark_mode,
+            "base_currency": base_currency,
             "start_period": start_period or (periods[0] if periods else None),
             "end_period": end_period or (periods[-1] if periods else None),
         },

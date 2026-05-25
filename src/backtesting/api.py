@@ -21,8 +21,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import backtesting as _bt
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_db2, get_db3
 from src.orchestrator.common.backtesting import _sql_ident
+from src.portfolio.currency import get_available_display_currencies
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,42 @@ def _resolve_db(db_path: str = "") -> str:
     return str(p.resolve())
 
 
+def _resolve_db3() -> str:
+    """Resolve the portfolio database (db3) path."""
+    db3 = get_db3()
+    if not db3:
+        raise HTTPException(
+            status_code=400,
+            detail="Portfolio database not configured. Import transactions first."
+        )
+    p = Path(db3)
+    if not p.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Portfolio database not found. Import transactions first."
+        )
+    return str(p.resolve())
+
+
+def _validate_base_currency(base_currency: str) -> str:
+    """Validate and return the base currency code.
+
+    Returns empty string on empty input (native currency).
+    Raises HTTPException for invalid currency codes.
+    """
+    if not base_currency:
+        return ""
+    bc = base_currency.upper()
+    valid = {c["code"] for c in get_available_display_currencies()}
+    if bc not in valid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid base currency: '{base_currency}'. "
+                    f"Available currencies: {', '.join(sorted(valid))}"
+        )
+    return bc
+
+
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
@@ -75,6 +112,8 @@ class BacktestRunRequest(BaseModel):
     start_date: str = Field(..., description="YYYY-MM-DD")
     end_date: str = Field(..., description="YYYY-MM-DD")
     benchmark_ticker: str = ""
+    benchmark_mode: Literal["ticker", "portfolio"] = "ticker"
+    base_currency: str = Field(default="", description="Target currency for returns (e.g. EUR, USD). Empty = native.")
     initial_capital: float = 0.0
     risk_free_rate: float = 0.0
 
@@ -83,6 +122,8 @@ class CSVBacktestRequest(BaseModel):
     db_path: str = ""
     csv_content: str = Field(..., description="Raw CSV string")
     benchmark_ticker: str = ""
+    benchmark_mode: Literal["ticker", "portfolio"] = "ticker"
+    base_currency: str = Field(default="", description="Target currency for returns (e.g. EUR, USD). Empty = native.")
     durations: list[str] = ["1yr", "2yr", "3yr", "5yr", "10yr"]
     initial_capital: float = 0.0
     risk_free_rate: float = 0.0
@@ -100,6 +141,8 @@ class RollingScreeningRequest(BaseModel):
     ranking_algorithm: str = "none"
     ranking_rules: list[dict] = []
     benchmark_ticker: str = ""
+    benchmark_mode: Literal["ticker", "portfolio"] = "ticker"
+    base_currency: str = Field(default="", description="Target currency for returns (e.g. EUR, USD). Empty = native.")
     initial_capital: float = 0.0
     risk_free_rate: float = 0.0
     start_period: str | None = None
@@ -154,6 +197,13 @@ def get_available_tickers(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/base-currencies")
+def get_base_currencies() -> dict:
+    """Return available currencies for base currency selection."""
+    currencies = get_available_display_currencies()
+    return {"currencies": currencies}
+
+
 @router.post("/run")
 async def run_backtest(request: BacktestRunRequest = Body(...)) -> dict:
     """Run a single backtest with a manual portfolio."""
@@ -165,6 +215,16 @@ async def run_backtest(request: BacktestRunRequest = Body(...)) -> dict:
         for tk, spec in request.portfolio.items()
     }
 
+    # Validate base currency
+    base_currency = _validate_base_currency(request.base_currency)
+
+    # Resolve db3 and auto-set base_currency for portfolio benchmark
+    db3 = ""
+    if request.benchmark_mode == "portfolio":
+        db3 = _resolve_db3()
+        if not base_currency:
+            base_currency = "EUR"
+
     async with _semaphore:
         try:
             result = await asyncio.wait_for(
@@ -175,6 +235,9 @@ async def run_backtest(request: BacktestRunRequest = Body(...)) -> dict:
                     start_date=request.start_date,
                     end_date=request.end_date,
                     benchmark_ticker=request.benchmark_ticker,
+                    benchmark_mode=request.benchmark_mode,
+                    base_currency=base_currency,
+                    db3_path=db3,
                     initial_capital=request.initial_capital,
                     risk_free_rate=request.risk_free_rate,
                 ),
@@ -203,6 +266,13 @@ async def run_from_csv(request: CSVBacktestRequest = Body(...)) -> dict:
     if not request.csv_content.strip():
         raise HTTPException(status_code=400, detail="CSV content is empty.")
 
+    base_currency = _validate_base_currency(request.base_currency)
+    db3 = ""
+    if request.benchmark_mode == "portfolio":
+        db3 = _resolve_db3()
+        if not base_currency:
+            base_currency = "EUR"
+
     async with _semaphore:
         try:
             result = await asyncio.wait_for(
@@ -212,6 +282,9 @@ async def run_from_csv(request: CSVBacktestRequest = Body(...)) -> dict:
                     csv_content=request.csv_content,
                     durations=request.durations,
                     benchmark_ticker=request.benchmark_ticker,
+                    benchmark_mode=request.benchmark_mode,
+                    base_currency=base_currency,
+                    db3_path=db3,
                     initial_capital=request.initial_capital,
                     risk_free_rate=request.risk_free_rate,
                 ),
@@ -271,6 +344,14 @@ async def run_rolling(
 ) -> StreamingResponse:
     """Run a rolling screening backtest with SSE progress streaming."""
     db = _resolve_db(request.db_path)
+
+    base_currency = _validate_base_currency(request.base_currency)
+    db3 = ""
+    if request.benchmark_mode == "portfolio":
+        db3 = _resolve_db3()
+        if not base_currency:
+            base_currency = "EUR"
+
     progress_queue: queue.Queue = queue.Queue()
     cancel_event = threading.Event()
 
@@ -290,6 +371,9 @@ async def run_rolling(
                 ranking_rules=request.ranking_rules,
                 computed_columns=request.computed_columns,
                 benchmark_ticker=request.benchmark_ticker,
+                benchmark_mode=request.benchmark_mode,
+                base_currency=base_currency,
+                db3_path=db3,
                 initial_capital=request.initial_capital,
                 risk_free_rate=request.risk_free_rate,
                 start_period=request.start_period,
