@@ -1,7 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-05-03
+Last updated: 2026-05-25
 - Central reference for runtime/test Python modules (`src/`), web app modules (`src/web_app/`), and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
@@ -30,10 +30,10 @@ Suggested per-function format:
 ## Current project status
 
 - Default interface: the web workstation (FastAPI + vanilla JS) launched by `python main.py` is the primary maintained UI.
-- Maintained top-level views: `Dashboard`, `Orchestrator`, `Screening`, `Backtesting`, and `Security Analysis`.
+- Maintained top-level views: `Dashboard`, `Orchestrator`, `Screening`, `Backtesting`, `Security Analysis`, and `Portfolio`.
 - Architecture status: `src.orchestrator` is a thin dispatcher with dynamically discovered step packages; backend modules are decoupled from `Config` and called with explicit parameters.
-- Mature user-facing workflows: ingestion, ETL, ratio generation, backtesting, screening, and security analysis all have dedicated test coverage.
-- Web workstation: full-featured web UI (FastAPI + vanilla JS) served at `/`, `/orchestrator`, `/screening`, `/backtesting`, `/security`. All views are fully functional.
+- Mature user-facing workflows: ingestion, ETL, ratio generation, backtesting, screening, security analysis, and portfolio management all have dedicated test coverage.
+- Web workstation: full-featured web UI (FastAPI + vanilla JS) served at `/`, `/orchestrator`, `/screening`, `/backtesting`, `/security`, `/portfolio`. All views are fully functional.
 
 ---
 
