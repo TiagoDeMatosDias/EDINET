@@ -6,7 +6,10 @@ logs/
 __pycache__/
 .idea/
 .venv/
+.venv2/
+.venv3/
 .vscode/
+.claude/
 .env
 docs/Feature Development/*
 
