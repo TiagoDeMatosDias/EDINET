@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 # Import the FastAPI app
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 from src.portfolio.schema import create_tables
 from src.portfolio.api import router
 
@@ -43,7 +43,7 @@ class TestUpload:
 
     def _read_test_xml(self):
         ibkr_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "..", "data", "ibkr"
+            os.path.dirname(os.path.abspath(__file__)), "../..", "data", "ibkr"
         )
         with open(os.path.join(ibkr_dir, "2024.xml"), "rb") as f:
             return f.read()
@@ -112,7 +112,7 @@ class TestReadEndpoints:
         from src.portfolio.portfolio_state import build_portfolio_state
 
         ibkr_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "..", "data", "ibkr"
+            os.path.dirname(os.path.abspath(__file__)), "../..", "data", "ibkr"
         )
         for year in ["2024"]:
             fpath = os.path.join(ibkr_dir, f"{year}.xml")

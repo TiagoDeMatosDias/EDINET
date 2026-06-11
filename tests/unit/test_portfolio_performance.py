@@ -133,7 +133,7 @@ class TestCalculateMetrics:
 
         # Load all XML files
         ibkr_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "..", "data", "ibkr"
+            os.path.dirname(os.path.abspath(__file__)), "../..", "data", "ibkr"
         )
         for year in ["2020", "2021", "2022", "2023", "2024", "2025"]:
             fpath = os.path.join(ibkr_dir, f"{year}.xml")

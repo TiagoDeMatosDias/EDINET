@@ -484,11 +484,16 @@ def delete_saved(name: str) -> dict:
 
 
 @router.get("/history")
-def get_history() -> dict:
-    """Return screening run history (most recent first)."""
+def get_history(
+    limit: int = Query(50, ge=1, le=500, description="Max entries to return"),
+    offset: int = Query(0, ge=0, description="Number of entries to skip"),
+) -> dict:
+    """Return screening run history with pagination (most recent first)."""
     try:
         entries = _screening.load_screening_history(_screening_history_path())
-        return {"entries": entries}
+        total = len(entries)
+        page = entries[offset:offset + limit]
+        return {"entries": page, "total": total, "limit": limit, "offset": offset}
     except Exception as e:
         logger.error("Failed to load screening history: %s", str(e))
         raise HTTPException(status_code=500, detail=str(e))

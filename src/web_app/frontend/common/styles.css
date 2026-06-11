@@ -1,4 +1,16 @@
+/* ═══════════════════════════════════════════════════════════════════════════════
+   EDINET Web Workstation — Master Stylesheet
+   Sections: 1) Design Tokens  2) Global Reset  3) Shell & Topbar
+             4) Console  5) Workspace & Components  6) Data Tables
+             7) Orchestrator  8) Screening  9) Security Analysis
+             10) Backtesting  11) Portfolio  12) Shared Widgets
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+/* ========================================================================== */
+/*  1. DESIGN TOKENS                                                          */
+/* ========================================================================== */
 
 :root {
   /* ── Legacy tokens (kept for backward compatibility) ── */
@@ -106,6 +118,10 @@
   --transition-slow: 0.18s ease;
 }
 
+/* ========================================================================== */
+/*  2. GLOBAL RESET                                                            */
+/* ========================================================================== */
+
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {
@@ -119,6 +135,10 @@ button, input, select, textarea {
   font: inherit;
   color: inherit;
 }
+
+/* ========================================================================== */
+/*  3. APP SHELL & TOPBAR                                                     */
+/* ========================================================================== */
 
 .app-shell {
   display: grid;
@@ -518,6 +538,10 @@ textarea { resize: vertical; min-height: 88px; }
   padding: 18px;
   max-width: 72ch;
 }
+
+/* ========================================================================== */
+/*  4. CONSOLE PANEL                                                          */
+/* ========================================================================== */
 
 .console {
   border-top: 1px solid var(--line);

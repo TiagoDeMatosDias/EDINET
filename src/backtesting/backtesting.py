@@ -5,6 +5,12 @@ Wraps the orchestrator-level backtesting functions
 (:mod:`src.orchestrator.common.backtesting`) to produce JSON-serializable
 chart data and metrics for the browser frontend.  Does **not** write
 PNGs or text reports — Chart.js handles visualisation client-side.
+
+Sections:
+  1. Single backtest runner + helpers
+  2. Backtest set runner (CSV-based)
+  3. Screening backtest set
+  4. Rolling screening backtest
 """
 
 from __future__ import annotations
@@ -39,9 +45,9 @@ from src.orchestrator.common.backtesting import (
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Web backtest — single run
-# ---------------------------------------------------------------------------
+# ==========================================================================
+#  1. SINGLE BACKTEST RUNNER + HELPERS
+# ==========================================================================
 
 
 def run_backtest_web(
@@ -459,9 +465,9 @@ def _pivot_dividends(div_df: pd.DataFrame | None) -> list[dict]:
     return records
 
 
-# ---------------------------------------------------------------------------
-# Web backtest set — from CSV content string
-# ---------------------------------------------------------------------------
+# ==========================================================================
+#  2. BACKTEST SET RUNNER (CSV-BASED)
+# ==========================================================================
 
 
 def run_backtest_set_web(
@@ -716,9 +722,9 @@ def _stat_summary(values: list[float]) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Screen → Backtest
-# ---------------------------------------------------------------------------
+# ==========================================================================
+#  3. SCREENING BACKTEST SET
+# ==========================================================================
 
 
 def run_screening_backtest_set(
@@ -833,9 +839,9 @@ def run_screening_backtest_set(
     )
 
 
-# ---------------------------------------------------------------------------
-# Rolling Screening Backtest
-# ---------------------------------------------------------------------------
+# ==========================================================================
+#  4. ROLLING SCREENING BACKTEST
+# ==========================================================================
 
 
 def _discover_screening_periods(

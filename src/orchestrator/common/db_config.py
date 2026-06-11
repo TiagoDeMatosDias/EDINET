@@ -85,3 +85,35 @@ def get_db3() -> str:
     """Return the absolute path to DB3 (portfolio module data)."""
     cfg = _load_config()
     return _resolve(cfg.get("db3", "data/databases/Portfolio.db"))
+
+
+def resolve_db_path(db_value: str | None) -> str | None:
+    """Resolve a user-provided database identifier into a filesystem path.
+
+    Behaviour:
+    - If ``db_value`` is falsy, return it unchanged.
+    - If ``db_value`` is an absolute path, return it unchanged.
+    - If ``db_value`` contains a path separator, return its absolute path.
+    - Otherwise treat ``db_value`` as a filename and attempt to locate it
+      relative to the ``db2`` path. If ``db2`` points to a file, the
+      filename's dirname is used; if it points to a directory that exists,
+      that directory is used. Fallback: resolve relative to cwd.
+    """
+    if not db_value:
+        return db_value
+    raw = str(db_value).strip().strip("'\"")
+    if os.path.isabs(raw):
+        return raw
+    if ("/" in raw) or ("\\" in raw):
+        return os.path.abspath(raw)
+    # Bare filename: try to derive a directory from db2
+    try:
+        db2 = get_db2()
+    except Exception:
+        db2 = None
+    if db2:
+        if os.path.isdir(db2):
+            return os.path.abspath(os.path.join(db2, raw))
+        base = os.path.dirname(db2) or os.getcwd()
+        return os.path.abspath(os.path.join(base, raw))
+    return os.path.abspath(raw)

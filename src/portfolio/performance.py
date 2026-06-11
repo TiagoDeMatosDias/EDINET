@@ -659,8 +659,8 @@ def calculate_metrics(
                         "date": d,
                         "cumulative": round(infl_cum, 6),
                     })
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Could not compute inflation series for %s: %s", base_currency, exc)
     result["inflation_series"] = inflation_series
 
     # --- Inflation total (for real return) ---

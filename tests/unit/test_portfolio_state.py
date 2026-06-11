@@ -18,7 +18,7 @@ from src.portfolio.portfolio_state import (
 from src.orchestrator.common.db_config import get_db2
 
 IBKR_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "data", "ibkr"
+    os.path.dirname(os.path.abspath(__file__)), "../..", "data", "ibkr"
 )
 
 

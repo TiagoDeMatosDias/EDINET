@@ -1,8 +1,9 @@
 """Web application API routes.
 
-Exposes the backend orchestrator routes so the web server can mount them
-without importing directly from the unrelated ``src.api`` package.
-View-package API routers are discovered automatically via pkgutil.
+Builds a single FastAPI app that includes all API routers:
+- Orchestrator endpoints (from ``src.api.router``)
+- Screening, security_analysis, portfolio (manual registration)
+- Auto-discovered view-package routers (pkgutil)
 """
 
 import importlib
@@ -10,6 +11,7 @@ import logging
 import pkgutil
 
 from fastapi import APIRouter
+from fastapi import FastAPI
 
 from src.api.router import app as _api_app, cleanup_completed_jobs  # noqa: F401
 
@@ -18,18 +20,18 @@ logger = logging.getLogger(__name__)
 router_app = _api_app
 
 # ---------------------------------------------------------------------------
-# Existing manually-registered routers (kept for backward compat)
+# Manually-registered routers — use include_router() instead of extend()
 # ---------------------------------------------------------------------------
 from src.web_app.api.screening import router as _screening_router
 from src.web_app.api.security_analysis import router as _security_router
 
-router_app.router.routes.extend(_screening_router.routes)
-router_app.router.routes.extend(_security_router.routes)
+router_app.include_router(_screening_router)
+router_app.include_router(_security_router)
 
 try:
     from src.portfolio.api import router as _portfolio_router
-    router_app.router.routes.extend(_portfolio_router.routes)
-    logger.info("Portfolio API router explicitly registered: prefix=%s", _portfolio_router.prefix)
+    router_app.include_router(_portfolio_router)
+    logger.info("Portfolio API router registered: prefix=%s", _portfolio_router.prefix)
 except Exception as e:
     logger.error("Failed to register portfolio router: %s", e)
 
@@ -66,6 +68,6 @@ def _discover_view_routers(package_name: str = "src") -> list[APIRouter]:
 
 
 for _r in _discover_view_routers():
-    router_app.router.routes.extend(_r.routes)
+    router_app.include_router(_r)
 
 __all__ = ["router_app", "cleanup_completed_jobs"]

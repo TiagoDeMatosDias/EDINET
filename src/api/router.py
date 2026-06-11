@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 # Import existing orchestrator functionality (no modifications needed)
 # Note: These imports will work when the server is run from the project root
-from src.orchestrator import run, list_available_steps, validate_input
+from src.orchestrator import run, execute_step, list_available_steps, validate_input
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -267,7 +267,7 @@ def run_pipeline(config: PipelineConfig = Body(...)) -> PipelineRunResponse:
         job.status = "running"
         job.started_at = datetime.now()
         
-        # Normalize and validate input using existing orchestrator
+        # Normalize and validate input using existing orchestrator (once)
         normalized_steps = validate_input(
             config=config.config,
             steps=config.steps
@@ -275,6 +275,9 @@ def run_pipeline(config: PipelineConfig = Body(...)) -> PipelineRunResponse:
         
         logger.info("Starting pipeline run for job %s with steps: %s",
                    job_id, [s["name"] for s in normalized_steps])
+        
+        # Coerce config once (avoids N from_dict() + dotenv loads for N steps)
+        config_obj = Config.from_dict(config.config)
         
         results: list[StepResult] = []
         total_start_time = datetime.now()
@@ -289,14 +292,8 @@ def run_pipeline(config: PipelineConfig = Body(...)) -> PipelineRunResponse:
             )
             
             try:
-                # Execute the step using existing orchestrator
-                result = run(
-                    config=config.config,
-                    steps=[step_config],
-                    on_step_start=lambda s: None,  # No-op placeholder
-                    on_step_done=lambda s: None,   # No-op placeholder
-                    cancel_event=None,             # No cancellation support yet
-                )
+                # Execute step directly (validation already done once above)
+                result = execute_step(step_name, config_obj, overwrite=overwrite)
                 
                 step_result = StepResult(
                     step_name=step_name,

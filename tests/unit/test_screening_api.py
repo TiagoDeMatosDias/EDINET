@@ -476,6 +476,49 @@ def test_screening_history_roundtrip():
     assert latest["result_count"] == 42
 
 
+def test_screening_history_pagination():
+    """History endpoint supports limit/offset pagination."""
+    # Save a few entries
+    for i in range(5):
+        resp = client.post("/api/screening/history", json={
+            "name": f"test_run_{i}",
+            "criteria_count": i,
+            "result_count": i * 10,
+            "period": "2024",
+        })
+        assert resp.status_code == 200
+
+    # Get with limit
+    resp = client.get("/api/screening/history?limit=3")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "entries" in data
+    assert "total" in data
+    assert "limit" in data
+    assert "offset" in data
+    assert data["limit"] == 3
+    assert data["offset"] == 0
+    assert len(data["entries"]) <= 3
+    assert data["total"] >= 5
+
+    # Get with offset
+    resp = client.get("/api/screening/history?limit=2&offset=3")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["limit"] == 2
+    assert data["offset"] == 3
+    assert len(data["entries"]) <= 2
+
+
+def test_screening_history_invalid_limit():
+    """Invalid limit value returns 422."""
+    resp = client.get("/api/screening/history?limit=0")
+    assert resp.status_code == 422
+
+    resp = client.get("/api/screening/history?limit=1000")
+    assert resp.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # Tests — export
 # ---------------------------------------------------------------------------

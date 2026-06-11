@@ -5,7 +5,7 @@ import pytest
 from src.portfolio.ibkr_parser import parse_ibkr_xml_file, parse_ibkr_xml, normalize_entries
 
 IBKR_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "data", "ibkr"
+    os.path.dirname(os.path.abspath(__file__)), "../..", "data", "ibkr"
 )
 
 

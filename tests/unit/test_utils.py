@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock
 import os
 import sys
 import csv
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.utilities import utils
 from src.utilities import DISCOVERED_UTILITY_MODULES
 

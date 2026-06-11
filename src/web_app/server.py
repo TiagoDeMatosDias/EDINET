@@ -3,13 +3,16 @@
 The frontend is a multi-page application. Each top-level route serves its own
 HTML file from ``frontend/pages/``. Static assets are served from
 ``/assets`` (frontend directory) and ``/brand-assets`` (root assets/).
+
+API routes are built by ``src.web_app.api`` and mounted directly here —
+no intermediate ``extend()`` hack.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -20,20 +23,20 @@ FRONTEND_DIR = BASE_DIR / "frontend"
 PAGES_DIR = FRONTEND_DIR / "pages"
 BRAND_ASSETS_DIR = BASE_DIR.parent.parent / "assets"
 
-app = FastAPI(
-    title="EDINET Web Workstation",
-    description="Bloomberg-style web frontend for EDINET research workflows.",
-    version="1.0.0",
-)
+# The API router_app from src.web_app.api already includes all API routes
+# (orchestrator, screening, security_analysis, portfolio, and auto-discovered
+# view routers). We extend it with page routes and static mounts to create
+# the complete application.
+app = router_app
+app.title = "EDINET Web Workstation"
+app.description = "Bloomberg-style web frontend for EDINET research workflows."
+app.version = "1.0.0"
 
 # Serve frontend static assets.
 app.mount("/assets", StaticFiles(directory=FRONTEND_DIR), name="assets")
 
 if BRAND_ASSETS_DIR.exists():
     app.mount("/brand-assets", StaticFiles(directory=BRAND_ASSETS_DIR), name="brand-assets")
-
-# Register the API routes from the dedicated api package.
-app.router.routes.extend(router_app.router.routes)
 
 
 @app.on_event("startup")

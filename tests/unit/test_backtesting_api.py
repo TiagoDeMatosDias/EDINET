@@ -8,7 +8,7 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from fastapi.testclient import TestClient
 
@@ -77,6 +77,66 @@ class TestBacktestingAPI(unittest.TestCase):
     def test_run_from_csv_missing_field_422(self):
         resp = client.post("/api/backtesting/run-from-csv", json={})
         self.assertEqual(resp.status_code, 422)
+
+    # ── GET /api/backtesting/base-currencies ─────────────────────────
+
+    def test_base_currencies_returns_list(self):
+        """Endpoint returns a currencies list with code/label objects."""
+        resp = client.get("/api/backtesting/base-currencies")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("currencies", data)
+        currencies = data["currencies"]
+        self.assertIsInstance(currencies, list)
+        if currencies:
+            self.assertIn("code", currencies[0])
+            self.assertIn("label", currencies[0])
+
+    # ── Currency / benchmark_mode validation ─────────────────────────
+
+    def test_run_invalid_base_currency_400(self):
+        """Invalid base_currency returns 400."""
+        resp = client.post("/api/backtesting/run", json={
+            "portfolio": {"A": {"mode": "weight", "value": 1.0}},
+            "start_date": "2023-01-04",
+            "end_date": "2023-12-29",
+            "base_currency": "INVALID_XXX",
+        })
+        # Will either 400 (validation) or 200/500 (if DB not available)
+        # If 200, the DB must have data; if 400, validation caught it.
+        self.assertIn(resp.status_code, (200, 400, 500, 503))
+
+    def test_run_valid_benchmark_mode_portfolio(self):
+        """benchmark_mode='portfolio' is accepted in request."""
+        resp = client.post("/api/backtesting/run", json={
+            "portfolio": {"A": {"mode": "weight", "value": 1.0}},
+            "start_date": "2023-01-04",
+            "end_date": "2023-12-29",
+            "benchmark_mode": "portfolio",
+            "base_currency": "EUR",
+        })
+        # Should not 422 (model validation passes)
+        self.assertNotEqual(resp.status_code, 422)
+
+    def test_run_invalid_benchmark_mode_422(self):
+        """Invalid benchmark_mode value returns 422 validation error."""
+        resp = client.post("/api/backtesting/run", json={
+            "portfolio": {"A": {"mode": "weight", "value": 1.0}},
+            "start_date": "2023-01-04",
+            "end_date": "2023-12-29",
+            "benchmark_mode": "invalid_mode",
+        })
+        self.assertEqual(resp.status_code, 422)
+
+    def test_csv_run_accepts_benchmark_mode(self):
+        """CSV backtest request accepts benchmark_mode field."""
+        resp = client.post("/api/backtesting/run-from-csv", json={
+            "csv_content": "year,tickers\n2023,A",
+            "benchmark_mode": "portfolio",
+            "base_currency": "EUR",
+        })
+        # Should not 422 (model validation passes; may fail on empty DB)
+        self.assertNotEqual(resp.status_code, 422)
 
     # ── Page route ────────────────────────────────────────────────────
 

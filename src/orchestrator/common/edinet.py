@@ -134,7 +134,7 @@ class Edinet:
         while current_date <= end_date:
             date_str = current_date.strftime("%Y-%m-%d")
             url = f"{self.baseURL}.json?date={date_str}&type=2&Subscription-Key={self.key}"
-            print("URL: " + url)
+            logger.debug("URL: %s", url)
             try:
                 response = requests.get(url, timeout=self.REQUEST_TIMEOUT_SECONDS)
                 if response.status_code == 200:
@@ -142,16 +142,16 @@ class Edinet:
 
                     results = data.get("results") or []
                     if not isinstance(results, list):
-                        print(f"Skipping date {date_str}: unexpected API payload for results.")
+                        logger.warning("Skipping date %s: unexpected API payload for results.", date_str)
                         current_date += timedelta(days=1)
                         continue
 
                     if not results:
-                        print(f"No documents found for date {date_str}.")
+                        logger.info("No documents found for date %s.", date_str)
                         current_date += timedelta(days=1)
                         continue
                     else:
-                        print(f"Found {len(results)} documents for date {date_str}.")
+                        logger.info("Found %d documents for date %s.", len(results), date_str)
 
                         # Create the DB table if it doesn't exist
                         columns = list(results[0].keys())
@@ -172,7 +172,7 @@ class Edinet:
                         conn.commit()
             
             except Exception as e:
-                print(f"Error fetching data for {date_str}: {e}")
+                logger.error("Error fetching data for %s: %s", date_str, e)
             current_date += timedelta(days=1)  # Move to the next day
 
         conn.close()
@@ -240,7 +240,7 @@ class Edinet:
         docList = self.query_database_select(input_table,filter)
 
         if docList is None:
-            print("No documents to download: query returned no results.")
+            logger.info("No documents to download: query returned no results.")
             return
 
         logger.info(f"Number of documents to download: {len(docList)}")
@@ -253,7 +253,7 @@ class Edinet:
             folder = os.path.join(self.defaultLocation, "downloadeddocs", str(doc_id))
 
             if not doc_id:
-                print("Skipping document with missing docID.")
+                logger.warning("Skipping document with missing docID.")
                 continue
 
             try:
@@ -264,14 +264,14 @@ class Edinet:
                 downloaded = self.downloadDoc(doc_id, folder)
 
                 if not downloaded:
-                    print(f"Skipping document {doc_id}: downloaded file is not a valid ZIP.")
+                    logger.warning("Skipping document %s: downloaded file is not a valid ZIP.", doc_id)
                     doc_status = self.STATUS_CHECKED_UNAVAILABLE
                 else:
                     #Unzip files
                     zipped_files = self.list_files_in_folder(folder)
                     zipped_files = [f for f in zipped_files if zipfile.is_zipfile(f)]
                     if not zipped_files:
-                        print(f"Skipping document {doc_id}: downloaded file is not a valid ZIP.")
+                        logger.warning("Skipping document %s: downloaded file is not a valid ZIP.", doc_id)
                         doc_status = self.STATUS_CHECKED_UNAVAILABLE
                     else:
                         unzipped_folder = os.path.join(folder, "unzipped")
@@ -279,7 +279,7 @@ class Edinet:
                         financialFiles = self.list_files_in_folder(unzipped_folder, True)
 
                         if not financialFiles:
-                            print(f"No financial files found for document {doc_id}.")
+                            logger.info("No financial files found for document %s.", doc_id)
                             doc_status = self.STATUS_CHECKED_UNAVAILABLE
                         else:
                             #Load files to DB
@@ -287,13 +287,13 @@ class Edinet:
                             doc_status = self.STATUS_DOWNLOADED
             except Exception as e:
                 doc_status = self.STATUS_CHECKED_ERROR
-                print(f"Error downloading document {doc_id}: {e}")
+                logger.error("Error downloading document %s: %s", doc_id, e)
             finally:
                 if connection is not None:
                     try:
                         self.query_database_setColumn(input_table, doc_filter, "Downloaded", doc_status, connection)
                     except Exception as e:
-                        print(f"Failed to persist status for document {doc_id}: {e}")
+                        logger.error("Failed to persist status for document %s: %s", doc_id, e)
                     connection.close()
 
                 if folder:
@@ -301,7 +301,7 @@ class Edinet:
         
         self.delete_folder(os.path.join(self.defaultLocation, "downloadeddocs"))
 
-        print("All files downloaded successfully.")
+        logger.info("All files downloaded successfully.")
 
     def load_financial_data(self, financialFiles, table_name, doc, connection=None):
         """Read financial data from extracted CSV files and load it into the database.
@@ -352,9 +352,9 @@ class Edinet:
 
             conn.commit()
         except FileNotFoundError:
-            print(f"File '{csv_file}' not found.")
+            logger.warning("File '%s' not found.", csv_file)
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logger.exception("An error occurred")
         finally:
             if connection is None:
                 conn.close()
@@ -408,7 +408,7 @@ class Edinet:
             cursor.execute(f"DROP TABLE IF EXISTS {quoted_table}")
             conn.commit()
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logger.exception("An error occurred")
         finally:
             try:
                 conn.close()
@@ -434,14 +434,14 @@ class Edinet:
                         files.append(os.path.join(root, filename))
             else:
                 files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
-            print(f"Number of Files found: {len(files)}")
+            logger.info("Number of files found: %d", len(files))
 
             return files
         except FileNotFoundError:
-            print(f"Folder '{folder_path}' not found.")
+            logger.warning("Folder '%s' not found.", folder_path)
             return []
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logger.exception("An error occurred")
             return []
 
     def unzip_file(self, zip_file, output_dir):
@@ -458,9 +458,9 @@ class Edinet:
             with zipfile.ZipFile(zip_file, 'r') as zip_ref:
                 zip_ref.extractall(output_dir)
         except FileNotFoundError:
-            print(f"File '{zip_file}' not found.")
+            logger.warning("File '%s' not found.", zip_file)
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logger.exception("An error occurred")
 
     def unzip_files(self, zip_files, output_dir):
         """Extract the contents of multiple ZIP files to the specified directory.
@@ -472,7 +472,7 @@ class Edinet:
         Returns:
             None
         """
-        print(f"Unzipping {len(zip_files)} files to {output_dir}...")
+        logger.info("Unzipping %d files to %s...", len(zip_files), output_dir)
         for zip_file in zip_files:
             self.unzip_file(zip_file, output_dir)
 
@@ -488,11 +488,11 @@ class Edinet:
         try:
             if not os.path.exists(folder_path):
                 os.makedirs(folder_path)
-                print(f"Folder created: {folder_path}")
+                logger.info("Folder created: %s", folder_path)
             else:
-                print(f"Folder already exists: {folder_path}")
+                logger.info("Folder already exists: %s", folder_path)
         except Exception as e:
-            print(f"An error occurred while creating folder {folder_path}: {e}")
+            logger.exception("Error creating folder %s", folder_path)
 
     def delete_folder(self, folder_path):
         """Delete a folder and all its contents from the filesystem.
@@ -505,9 +505,9 @@ class Edinet:
         """
         if os.path.exists(folder_path):
             shutil.rmtree(folder_path)
-            print(f"Folder deleted: {folder_path}")
+            logger.info("Folder deleted: %s", folder_path)
         else:
-            print(f"Folder not found: {folder_path}")
+            logger.warning("Folder not found: %s", folder_path)
 
     def generate_filter(self, column, filter_type, value, existing_filters=None):
         """Build or extend a filter dictionary for use with database query methods.
@@ -530,7 +530,7 @@ class Edinet:
         else:
             existing_filters = dict(existing_filters)
         existing_filters[column] = (filter_type, value)
-        print(existing_filters)
+        logger.debug("Existing filters: %s", existing_filters)
         return existing_filters
 
     def query_database_select(self, table, filters=None, output_table=None):
@@ -576,14 +576,14 @@ class Edinet:
             if output_table:
                 self.create_table(output_table, column_names)
                 self.insert_data(output_table, column_names, rows)
-                print(f"Data copied to table {output_table}.")
+                logger.info("Data copied to table %s.", output_table)
                 return None
             else:
                 # Convert rows to list of dictionaries
                 result = [dict(zip(column_names, row)) for row in rows]
                 return result
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logger.exception("An error occurred")
             return None
         finally:
             if conn is not None:
@@ -613,7 +613,7 @@ class Edinet:
             column_definitions = ", ".join([f"{self._quote_identifier(col)} TEXT" for col in columns])
             cursor.execute(f"CREATE TABLE IF NOT EXISTS {quoted_table} ({column_definitions})")
         except Exception as e:
-            print(f"An error occurred while creating table {table_name}: {e}")
+            logger.exception("Error creating table %s", table_name)
         finally:
             
             if connection is None:
@@ -655,7 +655,7 @@ class Edinet:
                 cursor.executemany(f"INSERT INTO {quoted_table} VALUES ({placeholders})", rows)
             conn.commit()
         except Exception as e:
-            print(f"An error occurred while inserting data into table {table_name}: {e}")
+            logger.exception("Error inserting data into table %s", table_name)
         finally:
             if connection is None:
                 conn.close()
@@ -711,7 +711,7 @@ class Edinet:
             cursor.execute(query, (value,) + tuple(filter_values))
             conn.commit()
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logger.exception("An error occurred")
         finally:
             if connection is None:
                 conn.close()
@@ -981,6 +981,6 @@ class Edinet:
             # Commit and close
             conn.commit()
             conn.close()
-            print("EDINET codes successfully stored in the database.")
+            logger.info("EDINET codes successfully stored in the database.")
         except Exception as e:
-            print(f"Error downloading or storing EDINET codes: {e}")
+            logger.error("Error downloading or storing EDINET codes: %s", e)

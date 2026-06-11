@@ -9,7 +9,7 @@ import sqlite3
 import pandas as pd
 import tempfile
 import zipfile
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from src.orchestrator.common.edinet import Edinet
 
 

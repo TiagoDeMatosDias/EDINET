@@ -60,7 +60,7 @@ class TestBuildCurrencyMap:
         from src.portfolio.ibkr_parser import parse_ibkr_xml_file, normalize_entries
         from src.portfolio.price_fetcher import _build_currency_map
 
-        ibkr_dir = os.path.join(os.path.dirname(__file__), "..", "data", "ibkr")
+        ibkr_dir = os.path.join(os.path.dirname(__file__), "../..", "data", "ibkr")
         all_entries = []
         for year in ["2020", "2021", "2022", "2023", "2024", "2025"]:
             result = parse_ibkr_xml_file(os.path.join(ibkr_dir, f"{year}.xml"))
@@ -141,7 +141,7 @@ class TestParserEdgeCases:
     def test_order_level_skipped(self):
         """ORDER level trades should be skipped (only EXECUTION is used)."""
         from src.portfolio.ibkr_parser import parse_ibkr_xml_file
-        ibkr_dir = os.path.join(os.path.dirname(__file__), "..", "data", "ibkr")
+        ibkr_dir = os.path.join(os.path.dirname(__file__), "../..", "data", "ibkr")
         result = parse_ibkr_xml_file(os.path.join(ibkr_dir, "2024.xml"))
         # Verify no ORDER-level trades leaked through
         for t in result["trades"]:
@@ -511,7 +511,7 @@ class TestFullIntegration:
         os.close(fd)
         create_tables(path)
 
-        ibkr_dir = os.path.join(os.path.dirname(__file__), "..", "data", "ibkr")
+        ibkr_dir = os.path.join(os.path.dirname(__file__), "../..", "data", "ibkr")
         for year in ["2020", "2021", "2022", "2023", "2024", "2025"]:
             fpath = os.path.join(ibkr_dir, f"{year}.xml")
             result = parse_ibkr_xml_file(fpath)

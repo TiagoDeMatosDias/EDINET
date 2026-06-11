@@ -23,45 +23,10 @@ class Config:
     def resolve_db_path(self, db_value: str | None) -> str | None:
         """Resolve a user-provided database identifier into a filesystem path.
 
-        Behaviour:
-        - If ``db_value`` is falsy, return it unchanged.
-        - If ``db_value`` is an absolute path, return it unchanged.
-        - If ``db_value`` contains a path separator, return its absolute path.
-        - Otherwise treat ``db_value`` as a filename and attempt to locate it
-          relative to the ``db2`` path from ``config/database_paths.json``.
-          If ``db2`` points to a file, the filename's dirname is used; if
-          it points to a directory that exists, that directory is used. When
-          ``db2`` is unavailable, the filename is resolved relative to
-          the current working directory.
+        Delegates to the unified resolver in ``src.orchestrator.common.db_config``.
         """
-        if not db_value:
-            return db_value
-        raw = str(db_value).strip().strip("\"'")
-        # Absolute path => return as-is
-        if os.path.isabs(raw):
-            return raw
-        # If it contains a path separator, resolve relative to cwd
-        if ("/" in raw) or ("\\" in raw):
-            return os.path.abspath(raw)
-
-        # Bare filename: try to derive a directory from DB_PATH
-        # Resolve DB_PATH from database_paths.json (db2) instead of .env
-        from src.orchestrator.common.db_config import get_db2 as _get_db2
-        try:
-            db_path_setting = _get_db2()
-        except Exception:
-            db_path_setting = None
-        if db_path_setting:
-            db_path_setting = str(db_path_setting).strip().strip("\"'")
-            # If DB_PATH is an existing directory, join against it
-            if os.path.isdir(db_path_setting):
-                return os.path.abspath(os.path.join(db_path_setting, raw))
-            # If DB_PATH looks like a file path, use its dirname
-            base = os.path.dirname(db_path_setting) or os.getcwd()
-            return os.path.abspath(os.path.join(base, raw))
-
-        # Fallback: resolve relative to current working directory
-        return os.path.abspath(raw)
+        from src.orchestrator.common.db_config import resolve_db_path as _resolve_db_path
+        return _resolve_db_path(db_value)
 
     @classmethod
     def from_dict(cls, settings: dict) -> "Config":
