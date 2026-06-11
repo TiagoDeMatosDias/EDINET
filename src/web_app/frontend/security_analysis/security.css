@@ -26,6 +26,7 @@
   color: var(--text);
   font-family: var(--font);
   outline: none;
+  border-radius: var(--radius-sm);
 }
 .sa-search-input:focus { border-color: var(--accent); }
 .sa-db-row {
@@ -43,6 +44,7 @@
   color: var(--text);
   font-family: var(--font);
   outline: none;
+  border-radius: var(--radius-sm);
 }
 .sa-db-input:focus { border-color: var(--accent); }
 
@@ -69,6 +71,7 @@
   background: var(--panel);
   border: 1px solid var(--accent);
   border-top: none;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
   max-height: 320px;
   overflow-y: auto;
   z-index: 30;
@@ -153,6 +156,7 @@
   border: 1px solid var(--line);
   background: var(--panel);
   padding: 7px 9px;
+  border-radius: var(--radius-sm);
 }
 .sa-metric-tile.price-tile {
   border-color: var(--accent);

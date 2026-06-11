@@ -8,6 +8,7 @@
 import { STATE, els, callbacks, saveLastSetupName, persistLocalSetups, loadLocalSetups, LAST_SETUP_KEY } from '../common/state.js';
 import { el, $, $all, deepClone, formatDate, fetchJson, resolveDbPath } from '../common/utils.js';
 import { log } from '../common/console.js';
+import { icon } from '../common/icons.js';
 import { MetricTile, MetricGrid, Badge, Button, ListItem, ListSection, SectionCard,
          FormField, FormGrid, EmptyState, ProgressBar, Popup, FieldWithPicker } from '../common/components.js';
 
@@ -156,8 +157,31 @@ function getSelectedStep() {
 }
 
 export function selectStep(stepId) {
-  if (STATE.selectedStepId === stepId) return; // no-op if same step
+  if (STATE.selectedStepId === stepId) {
+    // If clicking the same step, toggle the inspector
+    if (stepId && els.panelInspector && !els.panelInspector.classList.contains('is-collapsed')) {
+      closeInspector();
+      return;
+    }
+  }
   STATE.selectedStepId = stepId;
+  if (stepId) openInspector();
+  renderPipelineList();
+  renderInspector();
+}
+
+/** Open the slide-out inspector panel. */
+export function openInspector() {
+  if (!els.panelInspector) return;
+  els.panelInspector.classList.remove('is-collapsed');
+}
+
+/** Close the slide-out inspector panel. */
+export function closeInspector() {
+  if (!els.panelInspector) return;
+  els.panelInspector.classList.add('is-collapsed');
+  STATE.selectedStepId = null;
+  _lastInspectorStepId = null;
   renderPipelineList();
   renderInspector();
 }

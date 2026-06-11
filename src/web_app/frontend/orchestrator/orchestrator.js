@@ -23,27 +23,12 @@ import {
   removeStepById,
   addStep,
   filteredSteps,
+  closeInspector,
 } from './index.js';
 
 function attachInspectorResizer() {
-  if (!els.inspectorResizer || !els.workspaceGrid) return;
-  const minInspector = 260;
-  const maxInspector = 640;
-  const setInspectorWidth = width => {
-    const clamped = Math.max(minInspector, Math.min(maxInspector, width));
-    STATE.inspectorWidth = clamped;
-    document.documentElement.style.setProperty('--inspector', `${clamped}px`);
-  };
-  setInspectorWidth(STATE.inspectorWidth || 340);
-  els.inspectorResizer.addEventListener('mousedown', ev => {
-    ev.preventDefault();
-    const startX = ev.clientX;
-    const current = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--inspector'), 10) || 340;
-    const onMove = moveEvent => { const delta = startX - moveEvent.clientX; setInspectorWidth(current + delta); };
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  });
+  // Inspector is now a fixed overlay with CSS-driven width.
+  // No resizer needed — width is controlled by --inspector CSS variable.
 }
 
 async function refreshJobs() {
@@ -102,7 +87,8 @@ async function bootstrap() {
   els.pipelineList      = document.getElementById('pipeline-list');
   els.pipelineSummary   = document.getElementById('pipeline-summary');
   els.workspaceGrid     = document.querySelector('.workspace-grid');
-  els.inspectorResizer  = document.getElementById('inspector-resizer');
+  els.panelInspector    = document.getElementById('panel-inspector');
+  els.inspectorCloseBtn = document.getElementById('inspector-close-btn');
   els.inspectorTitle    = document.getElementById('inspector-title');
   els.inspectorSubtitle = document.getElementById('inspector-subtitle');
   els.inspectorBody     = document.getElementById('inspector-body');
@@ -124,6 +110,7 @@ async function bootstrap() {
   if (els.runBtn)        els.runBtn.addEventListener('click', runPipeline);
   if (els.stopBtn)       els.stopBtn.addEventListener('click', stopPipeline);
   if (els.setupNameInput) els.setupNameInput.addEventListener('change', syncSetupNameFromInput);
+  if (els.inspectorCloseBtn) els.inspectorCloseBtn.addEventListener('click', closeInspector);
   if (els.stepSearch) {
     els.stepSearch.addEventListener('input', () => {
       STATE.searchQuery = els.stepSearch.value.toLowerCase();
@@ -161,7 +148,7 @@ async function bootstrap() {
       if (ev.altKey && ev.key === 'ArrowDown') { ev.preventDefault(); moveStep(idx, 1); }
       if (ev.key === 'Delete') { ev.preventDefault(); removeStepById(STATE.selectedStepId); }
     }
-    if (ev.key === 'Escape') closeLoadMenu();
+    if (ev.key === 'Escape') { closeLoadMenu(); closeInspector(); }
   });
 
   window._pageRefresh = async () => {
