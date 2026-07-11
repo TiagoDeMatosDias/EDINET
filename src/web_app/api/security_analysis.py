@@ -7,6 +7,7 @@ Database resolution is server-side via DB2_PATH — never exposed to clients.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,18 @@ def _safe_float(value: Any) -> float | None:
     if value is None: return None
     try: return float(value)
     except (TypeError, ValueError): return None
+
+
+def _safe_str(value: Any) -> str:
+    """Return a normalised string for display and matching."""
+    if value is None:
+        return ""
+    try:
+        if isinstance(value, float) and value != value:  # NaN
+            return ""
+    except Exception:
+        pass
+    return str(value).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -352,3 +365,526 @@ def get_history(
     except Exception as e:
         logger.error("History failed: %s", str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Taxonomy tree — hierarchical tree grid with financial data
+# ---------------------------------------------------------------------------
+
+_FAMILY_TABLE_MAP = {
+    "incomestatement": "IncomeStatement",
+    "balancesheet": "BalanceSheet",
+    "cashflowstatement": "CashflowStatement",
+    "sharemetrics": "ShareMetrics",
+}
+
+
+@router.get("/taxonomy-tree")
+def get_taxonomy_tree(
+    company_code: str = Query(...),
+    statement_family: str = Query(...),
+    periods: int = Query(default=20),
+) -> dict:
+    """Return a hierarchical taxonomy tree with financial values for each node.
+
+    Queries the Taxonomy table to build the parent/child tree, then matches
+    each concept's ``primary_label_en`` to actual columns in the corresponding
+    financial statement table.  Nodes without a matching column are returned
+    as abstract grouping headers (``has_data: false``).
+    """
+    if not company_code.strip():
+        raise HTTPException(status_code=400, detail="company_code is required")
+    family = statement_family.strip()
+    if not family:
+        raise HTTPException(status_code=400, detail="statement_family is required")
+
+    try:
+        db = _resolve_db()
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        try:
+            return _build_taxonomy_tree_response(
+                conn, db, company_code.strip(), family, max(1, int(periods))
+            )
+        finally:
+            conn.close()
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error("Taxonomy tree failed: %s", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _build_taxonomy_tree_response(
+    conn: sqlite3.Connection,
+    db_path: str,
+    company_code: str,
+    statement_family: str,
+    periods: int,
+) -> dict:
+    """Core logic for building the taxonomy tree response."""
+
+    # ── 1. Resolve table names ──────────────────────────────────────────
+    table_map = {
+        r[0].lower(): r[0]
+        for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+
+    fs_table = _resolve_table_case_insensitive(table_map, "financialstatements")
+    if not fs_table:
+        raise ValueError("FinancialStatements table not found")
+
+    # Find the financial data table for this statement family
+    family_lower = re.sub(r"[^a-z]", "", statement_family.lower())
+    data_table_candidate = _FAMILY_TABLE_MAP.get(family_lower, statement_family)
+    data_table = _resolve_table_case_insensitive(table_map, data_table_candidate)
+
+    # ── 2. Get code column from FinancialStatements ──────────────────────
+    fs_cols = {
+        c[1].lower(): c[1]
+        for c in conn.execute(f"PRAGMA table_info({_q(fs_table)})")
+    }
+    code_col = (
+        fs_cols.get("edinetcode")
+        or fs_cols.get("company_code")
+        or fs_cols.get("edinetcode")
+    )
+    if not code_col:
+        # fallback: find any column with 'code' in name
+        for c in fs_cols:
+            if "code" in c:
+                code_col = fs_cols[c]
+                break
+    if not code_col:
+        raise ValueError("Cannot find company code column in FinancialStatements")
+    period_col = fs_cols.get("periodend", "periodEnd")
+    docid_col = fs_cols.get("docid", "docID")
+    release_col = fs_cols.get("release_id")
+
+    # ── 3. Fetch docIDs, periods, and release_ids ────────────────────────
+    select_cols = [
+        f"{_q(docid_col)} AS docID",
+        f"{_q(period_col)} AS period_end",
+    ]
+    if release_col:
+        select_cols.append(f"{_q(release_col)} AS release_id")
+
+    doc_rows = conn.execute(
+        f"SELECT {', '.join(select_cols)} FROM {_q(fs_table)} "
+        f"WHERE {_q(code_col)} = ? "
+        f"ORDER BY {_q(period_col)} DESC, {_q(docid_col)} DESC LIMIT ?",
+        (company_code, periods),
+    ).fetchall()
+
+    if not doc_rows:
+        return {
+            "statement_family": statement_family,
+            "release_id": None,
+            "periods": [],
+            "tree": [],
+        }
+
+    # Reverse so periods are chronological (oldest first)
+    doc_rows_rev = list(reversed(doc_rows))
+    doc_ids = [r["docID"] for r in doc_rows_rev]
+    period_labels = [_safe_date_label(r["period_end"]) for r in doc_rows_rev]
+
+    # Pick the most recent release_id (first row in original order = most recent)
+    release_id = None
+    if release_col:
+        release_id = _safe_str(doc_rows[0]["release_id"]) or None
+
+    # ── 4. Get available columns in the data table ───────────────────────
+    data_columns: dict[str, str] = {}  # lower → actual
+    if data_table:
+        data_columns = {
+            c[1].lower(): c[1]
+            for c in conn.execute(f"PRAGMA table_info({_q(data_table)})")
+        }
+        # Remove metadata columns
+        for meta in ("docid", "edinetcode", "company_code", "periodend"):
+            data_columns.pop(meta, None)
+
+    # ── 5. Build taxonomy tree ──────────────────────────────────────────
+    taxonomy_table = _resolve_table_case_insensitive(table_map, "taxonomy")
+
+    if taxonomy_table and release_id and data_columns:
+        tree = _build_tree_from_taxonomy(
+            conn, taxonomy_table, release_id, statement_family,
+            data_table, data_columns, doc_ids,
+        )
+    elif data_columns:
+        # No taxonomy — build flat list from table columns
+        tree = _build_flat_tree_from_columns(
+            conn, data_table, data_columns, doc_ids,
+        )
+    else:
+        tree = []
+
+    return {
+        "statement_family": statement_family,
+        "release_id": release_id,
+        "periods": period_labels,
+        "tree": tree,
+    }
+
+
+def _build_tree_from_taxonomy(
+    conn: sqlite3.Connection,
+    taxonomy_table: str,
+    release_id: str,
+    statement_family: str,
+    data_table: str | None,
+    data_columns: dict[str, str],
+    doc_ids: list[str],
+) -> list[dict]:
+    """Build a hierarchical tree from the Taxonomy table, attaching values."""
+
+    # Query taxonomy rows for this release + family, ordered by level then label
+    tax_rows = conn.execute(
+        f"SELECT concept_qname, parent_concept_qname, primary_label_en, level, value_type "
+        f"FROM {_q(taxonomy_table)} "
+        f"WHERE release_id = ? AND statement_family = ? "
+        f"ORDER BY level, primary_label_en",
+        (release_id, statement_family),
+    ).fetchall()
+
+    if not tax_rows:
+        return _build_flat_tree_from_columns(conn, data_table, data_columns, doc_ids)
+
+    # Convert sqlite3.Row objects to plain dicts
+    tax_dicts = [dict(r) for r in tax_rows]
+
+    # ── Phase 1: Group rows by (parent_qname, label, level) to merge
+    #    industry-variant concepts that share the same display label ──
+    groups: dict[tuple[str, str, int], list[dict]] = {}
+    for row in tax_dicts:
+        parent = _safe_str(row.get("parent_concept_qname") or "")
+        label = _safe_str(row.get("primary_label_en", "")) or _safe_str(row.get("concept_qname", ""))
+        lvl = row.get("level", 0) or 0
+        key = (parent, label.lower(), lvl)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(row)
+
+    # ── Phase 2: Create merged nodes (one per unique label+parent+level) ──
+    # Map from every original concept_qname → merged concept_qname
+    qname_to_merged: dict[str, str] = {}
+    nodes_by_qname: dict[str, dict] = {}
+
+    for (parent, _label_lower, lvl), variants in groups.items():
+        # Pick the "best" qname: prefer one whose label matches a data column
+        best_qname = variants[0].get("concept_qname", "")
+        best_has_data = False
+        best_is_number = False
+
+        for row in variants:
+            qname = _safe_str(row.get("concept_qname", ""))
+            label = _safe_str(row.get("primary_label_en", "")) or qname
+            col_name = data_columns.get(label.lower()) if data_columns else None
+            is_number = _safe_str(row.get("value_type", "")).lower() == "number"
+            if col_name and is_number:
+                best_qname = qname  # prefer the first variant with actual data
+                best_has_data = True
+                best_is_number = True
+                break
+            if is_number:
+                best_is_number = True
+
+        if not best_has_data and best_is_number:
+            # No variant matched a column, but there are number-type variants
+            # Check again more carefully
+            for row in variants:
+                label = _safe_str(row.get("primary_label_en", "")) or _safe_str(row.get("concept_qname", ""))
+                col_name = data_columns.get(label.lower()) if data_columns else None
+                if col_name:
+                    best_qname = row.get("concept_qname", "")
+                    best_has_data = True
+                    break
+
+        display_label = _safe_str(variants[0].get("primary_label_en", "")) or _safe_str(variants[0].get("concept_qname", ""))
+
+        nodes_by_qname[best_qname] = {
+            "concept_qname": best_qname,
+            "label": display_label,
+            "level": lvl,
+            "has_data": best_has_data,
+            "values": None,
+            "children": [],
+        }
+
+        # Map all variant qnames → the chosen merged qname
+        for row in variants:
+            qname_to_merged[_safe_str(row.get("concept_qname", ""))] = best_qname
+
+    # ── Phase 3: Build tree using merged qnames for parent references ──
+    roots: list[dict] = []
+    seen_in_roots: set[str] = set()
+
+    for (parent_raw, _label_lower, lvl), variants in groups.items():
+        merged_qname = qname_to_merged.get(
+            _safe_str(variants[0].get("concept_qname", ""))
+        )
+        if not merged_qname or merged_qname not in nodes_by_qname:
+            continue
+        node = nodes_by_qname[merged_qname]
+
+        merged_parent = qname_to_merged.get(parent_raw) if parent_raw else None
+
+        if merged_parent and merged_parent in nodes_by_qname:
+            parent_node = nodes_by_qname[merged_parent]
+            if merged_qname not in {c.get("concept_qname") for c in parent_node["children"]}:
+                parent_node["children"].append(node)
+        else:
+            if merged_qname not in seen_in_roots:
+                seen_in_roots.add(merged_qname)
+                roots.append(node)
+
+    # ── Phase 4: Sort children within each parent by their natural order ──
+    _sort_tree_children(roots, tax_dicts)
+
+    # ── Phase 5: Query values for all data nodes in one batch ──
+    if data_table and doc_ids:
+        _populate_tree_values(conn, data_table, data_columns, doc_ids, nodes_by_qname)
+
+    # ── Phase 6: Remove empty abstract nodes ──
+    roots = _prune_empty_branches(roots)
+
+    # ── Phase 7: Recursively merge sibling duplicates (industry variants
+    #    from different merged parents end up as siblings) ──
+    return _merge_sibling_duplicates(roots)
+
+
+def _merge_sibling_duplicates(nodes: list[dict]) -> list[dict]:
+    """Recursively merge sibling nodes that share the same display label.
+
+    After merging industry-variant parents, children from different variants
+    end up as siblings with the same label.  This pass collapses them.
+    """
+    # Group children by (label.lower(), level)
+    groups: dict[tuple[str, int], list[dict]] = {}
+    for node in nodes:
+        key = (node["label"].lower(), node["level"])
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(node)
+
+    merged: list[dict] = []
+    for (_label_lower, _lvl), variants in groups.items():
+        if len(variants) == 1:
+            # Single node — just recurse into children
+            v = variants[0]
+            v["children"] = _merge_sibling_duplicates(v["children"])
+            merged.append(v)
+        else:
+            # Multiple siblings with same label — merge them
+            keeper = variants[0]
+            keeper["has_data"] = keeper["has_data"] or any(v["has_data"] for v in variants[1:])
+            # Combine all children, deduplicating by label
+            all_children: dict[str, dict] = {}
+            for v in variants:
+                for child in v.get("children", []):
+                    ckey = child["label"].lower()
+                    if ckey not in all_children:
+                        all_children[ckey] = child
+                    else:
+                        # Merge child data flag
+                        all_children[ckey]["has_data"] = (
+                            all_children[ckey]["has_data"] or child["has_data"]
+                        )
+                        # Combine their grandchildren
+                        for gc in child.get("children", []):
+                            gckey = gc["label"].lower()
+                            existing = {c["label"].lower() for c in all_children[ckey].get("children", [])}
+                            if gckey not in existing:
+                                all_children[ckey].setdefault("children", []).append(gc)
+                            else:
+                                # Merge grandchild
+                                for existing_gc in all_children[ckey].get("children", []):
+                                    if existing_gc["label"].lower() == gckey:
+                                        existing_gc["has_data"] = existing_gc["has_data"] or gc["has_data"]
+                                        break
+            keeper["children"] = _merge_sibling_duplicates(list(all_children.values()))
+            merged.append(keeper)
+
+    return merged
+
+
+def _sort_tree_children(nodes: list[dict], tax_dicts: list[dict]) -> None:
+    """Sort children within each node to match taxonomy presentation order."""
+    # Build a qname → position map from the original taxonomy order
+    qname_order: dict[str, int] = {}
+    for i, row in enumerate(tax_dicts):
+        qname = _safe_str(row.get("concept_qname", ""))
+        if qname not in qname_order:
+            qname_order[qname] = i
+
+    def sort_recursive(children: list[dict]) -> None:
+        children.sort(key=lambda n: qname_order.get(n.get("concept_qname", ""), 999999))
+        for child in children:
+            if child.get("children"):
+                sort_recursive(child["children"])
+
+    sort_recursive(nodes)
+
+
+def _build_flat_tree_from_columns(
+    conn: sqlite3.Connection,
+    data_table: str | None,
+    data_columns: dict[str, str],
+    doc_ids: list[str],
+) -> list[dict]:
+    """Build a flat (level=0) tree from table columns when Taxonomy is unavailable."""
+    tree: list[dict] = []
+    if not data_table or not doc_ids:
+        return tree
+
+    # Get all values for all columns in one query
+    placeholders = ",".join(["?"] * len(doc_ids))
+    rows = conn.execute(
+        f"SELECT * FROM {_q(data_table)} WHERE docID IN ({placeholders})",
+        doc_ids,
+    ).fetchall()
+
+    # Build values per column
+    col_values: dict[str, list] = {col: [None] * len(doc_ids) for col in data_columns.values()}
+    for i, row in enumerate(rows):
+        row_dict = dict(row)
+        for col_lower, col_actual in data_columns.items():
+            if col_actual in row_dict:
+                val = row_dict[col_actual]
+                col_values[col_actual][i] = None if val is None else (
+                    float(val) if not isinstance(val, (int, float)) or _is_nan(val) else val
+                )
+
+    for col_actual in sorted(data_columns.values()):
+        values = col_values.get(col_actual, [None] * len(doc_ids))
+        # Skip columns where all values are None
+        if all(v is None for v in values):
+            continue
+        tree.append({
+            "concept_qname": col_actual,
+            "label": _prettify_column_name(col_actual),
+            "level": 0,
+            "has_data": True,
+            "values": values,
+            "children": [],
+        })
+
+    return tree
+
+
+def _populate_tree_values(
+    conn: sqlite3.Connection,
+    data_table: str,
+    data_columns: dict[str, str],
+    doc_ids: list[str],
+    nodes_by_qname: dict[str, dict],
+) -> None:
+    """Query the financial table once and populate values for all data nodes."""
+    # Collect which columns we need
+    needed_cols: list[str] = []
+    qname_to_col: dict[str, str] = {}
+    for qname, node in nodes_by_qname.items():
+        if not node["has_data"]:
+            continue
+        col = data_columns.get(node["label"].lower())
+        if col:
+            needed_cols.append(col)
+            qname_to_col[qname] = col
+
+    if not needed_cols:
+        return
+
+    # Deduplicate columns
+    unique_cols = list(dict.fromkeys(needed_cols))
+
+    placeholders = ",".join(["?"] * len(doc_ids))
+    select = ", ".join(f"{_q(c)}" for c in unique_cols)
+    rows = conn.execute(
+        f"SELECT {select} FROM {_q(data_table)} WHERE docID IN ({placeholders})",
+        doc_ids,
+    ).fetchall()
+
+    # Build column → values mapping
+    col_values: dict[str, list] = {}
+    for col in unique_cols:
+        col_values[col] = [None] * len(doc_ids)
+
+    for i, row in enumerate(rows):
+        row_dict = dict(row)
+        for col in unique_cols:
+            val = row_dict.get(col)
+            if val is not None and not _is_nan(val):
+                try:
+                    col_values[col][i] = float(val)
+                except (TypeError, ValueError):
+                    col_values[col][i] = None
+
+    # Assign values back to nodes
+    for qname, node in nodes_by_qname.items():
+        if not node["has_data"]:
+            continue
+        col = qname_to_col.get(qname)
+        if col:
+            node["values"] = col_values.get(col, [None] * len(doc_ids))
+
+
+def _prune_empty_branches(nodes: list[dict]) -> list[dict]:
+    """Remove nodes that have no data and no children with data."""
+    result: list[dict] = []
+    for node in nodes:
+        node["children"] = _prune_empty_branches(node["children"])
+        has_children = len(node["children"]) > 0
+        if node["has_data"] or has_children:
+            result.append(node)
+    return result
+
+
+def _resolve_table_case_insensitive(
+    table_map: dict[str, str], target: str
+) -> str | None:
+    """Find a table name case-insensitively."""
+    key = target.lower()
+    return table_map.get(key)
+
+
+def _q(name: str) -> str:
+    """Quote an SQLite identifier."""
+    return f'"{name}"'
+
+
+def _safe_date_label(value: Any) -> str:
+    """Return YYYY-MM or YYYY-MM-DD from a date-ish value."""
+    text = _safe_str(value)
+    if not text:
+        return "?"
+    # Prefer YYYY-MM if it's a standard period end
+    if len(text) >= 7:
+        return text[:7]
+    return text[:10]
+
+
+def _is_nan(value: Any) -> bool:
+    """Check if a value is NaN."""
+    if value is None:
+        return False
+    try:
+        return value != value  # NaN check
+    except Exception:
+        return False
+
+
+def _prettify_column_name(name: str) -> str:
+    """Convert a database column name to a readable label."""
+    text = name.replace("_", " ")
+    text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+    parts = []
+    for token in text.split():
+        if token.isupper() and len(token) <= 4:
+            parts.append(token)
+        else:
+            parts.append(token[0].upper() + token[1:] if len(token) > 1 else token.upper())
+    return " ".join(parts)

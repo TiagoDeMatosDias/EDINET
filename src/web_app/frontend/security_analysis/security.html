@@ -37,6 +37,8 @@
 
       <main class="workspace">
         <section class="view is-active" data-view-panel="security">
+
+          <!-- ── Search bar ── -->
           <div class="sa-toolbar" id="sa-toolbar">
             <div class="sa-search-wrap">
               <input type="text" class="sa-search-input" id="sa-search"
@@ -44,16 +46,30 @@
                 autocomplete="off" disabled />
               <div class="sa-search-dropdown" id="sa-search-dropdown"></div>
             </div>
+            <div class="sa-recent-chips" id="sa-recent-chips"></div>
             <div class="sa-status" id="sa-status">Initializing…</div>
           </div>
-          <div class="sa-header" id="sa-header"></div>
+
+          <!-- ── Summary section ── -->
+          <div class="sa-summary" id="sa-summary"></div>
           <div class="sa-banner sa-banner-warn" id="sa-banner" style="display:none"></div>
-          <div class="sa-tabbar" id="sa-tabbar"></div>
-          <div class="sa-table-view" id="sa-table-view"></div>
+
+          <!-- ── Empty state ── -->
           <div class="sa-empty" id="sa-empty">
             <div class="sa-empty-icon">📊</div>
             <div class="sa-empty-title" id="sa-empty-title">Search for a company to begin</div>
+            <div class="sa-empty-sub" id="sa-empty-sub">Type a ticker, EDINET code, or company name above.</div>
           </div>
+
+          <!-- ── Tab bar ── -->
+          <div class="sa-tabbar" id="sa-tabbar"></div>
+
+          <!-- ── Tree grid + Chart panel (split view) ── -->
+          <div class="sa-workspace-split" id="sa-workspace-split">
+            <div class="sa-tree-panel" id="sa-tree-panel"></div>
+            <div class="sa-chart-panel" id="sa-chart-panel"></div>
+          </div>
+
         </section>
       </main>
     </div>
