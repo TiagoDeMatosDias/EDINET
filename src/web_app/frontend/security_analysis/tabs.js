@@ -8,12 +8,18 @@ import { renderChartPanel } from './chartpanel.js';
 import { renderPriceTab } from './price.js';
 
 const TAB_DEFS = [
-  { key: 'IncomeStatement',  label: 'Income',       icon: '📈' },
-  { key: 'BalanceSheet',     label: 'Balance',      icon: '📊' },
-  { key: 'CashflowStatement',label: 'Cashflow',     icon: '💵' },
-  { key: 'Financial_Ratios', label: 'Ratios',       icon: '📐' },
-  { key: 'PerShare_Metrics', label: 'Per Share',    icon: '📋' },
-  { key: 'ShareMetrics',     label: 'Share Data',   icon: '👥' },
+  { key: 'IncomeStatement',         label: 'Income',          icon: '📈' },
+  { key: 'IncomeStatement_Rolling', label: 'Income (Rolling)',icon: '📈' },
+  { key: 'BalanceSheet',            label: 'Balance',         icon: '📊' },
+  { key: 'BalanceSheet_Rolling',    label: 'Balance (Rolling)',icon: '📊' },
+  { key: 'CashflowStatement',       label: 'Cashflow',        icon: '💵' },
+  { key: 'CashflowStatement_Rolling',label: 'Cashflow (Roll.)',icon: '💵' },
+  { key: 'Financial_Ratios',        label: 'Ratios',          icon: '📐' },
+  { key: 'Financial_Ratios_Rolling',label: 'Ratios (Rolling)',icon: '📐' },
+  { key: 'PerShare_Metrics',        label: 'Per Share',       icon: '📋' },
+  { key: 'PerShare_Metrics_Rolling',label: 'Per Share (Roll.)',icon: '📋' },
+  { key: 'ShareMetrics',            label: 'Share Data',      icon: '👥' },
+  { key: 'ShareMetrics_Rolling',    label: 'Share Data (Roll.)',icon: '👥' },
 ];
 
 const H = {
@@ -47,12 +53,18 @@ export function renderTabs() {
   tabbar.classList.add('is-visible');
   tabbar.innerHTML = '';
 
+  // Auto-set default tab when none is selected
+  if (state.activeTab === null) {
+    if (hasTicker) {
+      state.activeTab = '__stock_price__';
+    } else if (hasCompany) {
+      state.activeTab = 'IncomeStatement';
+    }
+  }
+
   // Stock Price tab (always first if ticker exists)
   if (hasTicker) {
-    const isActive = state.activeTab === '__stock_price__' || state.activeTab === null;
-    if (state.activeTab === null && hasTicker) {
-      // Don't auto-set — let renderWorkspace decide
-    }
+    const isActive = state.activeTab === '__stock_price__';
     tabbar.appendChild(H.el('button', {
       class: `sa-tab${isActive ? ' is-active' : ''}`,
       text: '💹 Price',
@@ -69,10 +81,6 @@ export function renderTabs() {
   // Financial statement tabs
   for (const def of TAB_DEFS) {
     const isActive = state.activeTab === def.key;
-    if (state.activeTab === null && hasCompany && def.key === 'IncomeStatement') {
-      // Default to Income Statement when first loading
-      // (handled in renderWorkspace)
-    }
     tabbar.appendChild(H.el('button', {
       class: `sa-tab${isActive ? ' is-active' : ''}`,
       text: `${def.icon} ${def.label}`,

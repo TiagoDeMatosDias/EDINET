@@ -330,6 +330,8 @@ _TAXONOMY_COLUMNS = (
     "concept_qname",
     "parent_concept_qname",
     "primary_label_en",
+    "column_concept_qname",
+    "display_order",
 )
 _ROLE_DERIVED_STATEMENT_FAMILIES = (
     "BalanceSheet",
@@ -509,6 +511,8 @@ def _taxonomy_schema_sql() -> str:
             concept_qname TEXT NOT NULL,
             parent_concept_qname TEXT,
             primary_label_en TEXT NOT NULL,
+            column_concept_qname TEXT,
+            display_order REAL,
             PRIMARY KEY (release_id, concept_qname),
             CHECK (statement_family IN ('{supported_families}')),
             CHECK (value_type IN ('number', 'string')),
@@ -523,6 +527,25 @@ def _taxonomy_schema_sql() -> str:
             ON \"{_TAXONOMY_TABLE_NAME}\"(release_id, statement_family, level);
         CREATE INDEX IF NOT EXISTS idx_taxonomy_release_parent
             ON \"{_TAXONOMY_TABLE_NAME}\"(release_id, parent_concept_qname);
+        CREATE INDEX IF NOT EXISTS idx_taxonomy_release_column
+            ON \"{_TAXONOMY_TABLE_NAME}\"(release_id, column_concept_qname);
+
+        CREATE TABLE IF NOT EXISTS Statement_Hierarchy (
+            statement_family      TEXT NOT NULL,
+            concept_qname         TEXT NOT NULL PRIMARY KEY,
+            parent_concept_qname  TEXT,
+            column_concept_qname  TEXT NOT NULL,
+            level                 INTEGER NOT NULL,
+            primary_label_en      TEXT NOT NULL,
+            display_order         REAL,
+            is_column             INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_sh_family_parent
+            ON Statement_Hierarchy(statement_family, parent_concept_qname);
+        CREATE INDEX IF NOT EXISTS idx_sh_family_column
+            ON Statement_Hierarchy(statement_family, column_concept_qname);
+        CREATE INDEX IF NOT EXISTS idx_sh_family_level
+            ON Statement_Hierarchy(statement_family, level);
     """
 
 
@@ -1310,6 +1333,8 @@ def _build_taxonomy_level_rows(
                     "primary_label_en": normalized_primary_label_en(concept_qname),
                     "parent_concept_qname": None,
                     "level": 0,
+                    "column_concept_qname": concept_qname,
+                    "display_order": None,
                 }
             )
 
@@ -1404,6 +1429,50 @@ def _build_taxonomy_level_rows(
         standardized_parent_cache[concept_qname] = parent_qname
         return parent_qname
 
+    # Build column_anchor_by_group keyed by (statement_family, standardized_parent, label_key).
+    # This ensures same-label concepts under DIFFERENT parents get DIFFERENT columns.
+    visible_non_abstract_by_parent_label: dict[tuple[str | None, str | None, str], list[str]] = {}
+    for concept_qname in visible_concept_qnames:
+        if is_abstract_concept(concept_qname):
+            continue
+        concept = concepts.get(concept_qname) or {}
+        parent = standardized_parent_qname(concept_qname)
+        key = (concept.get("statement_family_default"), parent, concept_label_key(concept_qname))
+        visible_non_abstract_by_parent_label.setdefault(key, []).append(concept_qname)
+
+    column_anchor_by_group: dict[tuple[str | None, str | None, str], str] = {}
+    for key, qnames in visible_non_abstract_by_parent_label.items():
+        if len(qnames) < 2:
+            continue
+
+        candidates = [
+            concept_qname
+            for concept_qname in qnames
+            if is_clear_generic_anchor_candidate(concept_qname)
+        ]
+        if not candidates:
+            continue
+
+        candidates.sort(
+            key=lambda c: (
+                concept_local_name_core(c)[1],
+                concept_local_name_core(c)[2],
+                len(concept_local_name_core(c)[0]),
+                concept_local_name_core(c)[0],
+                c,
+            )
+        )
+        column_anchor_by_group[key] = candidates[0]
+
+    def column_concept_qname(concept_qname: str) -> str:
+        """Return the anchor concept that this concept maps to for column purposes."""
+        if concept_qname not in visible_concept_qnames or is_abstract_concept(concept_qname):
+            return concept_qname
+        concept = concepts.get(concept_qname) or {}
+        parent = standardized_parent_qname(concept_qname)
+        key = (concept.get("statement_family_default"), parent, concept_label_key(concept_qname))
+        return column_anchor_by_group.get(key, concept_qname)
+
     clear_anchor_candidates_by_parent: dict[tuple[str | None, str | None], list[str]] = {}
     for concept_qname in visible_concept_qnames:
         if is_abstract_concept(concept_qname) or not is_clear_generic_anchor_candidate(concept_qname):
@@ -1438,6 +1507,7 @@ def _build_taxonomy_level_rows(
             continue
         parent_concept_qname = standardized_parent_qname(concept_qname)
         level = max(len(visible_path(concept_qname)) - 1, 0)
+        col_qname = column_concept_qname(concept_qname)
 
         rows.append(
             {
@@ -1448,6 +1518,8 @@ def _build_taxonomy_level_rows(
                 "primary_label_en": normalized_primary_label_en(concept_qname),
                 "parent_concept_qname": parent_concept_qname,
                 "level": level,
+                "column_concept_qname": col_qname,
+                "display_order": concept.get("primary_line_order"),
             }
         )
 
@@ -1679,8 +1751,10 @@ def _persist_taxonomy_package(
                 level,
                 concept_qname,
                 parent_concept_qname,
-                primary_label_en
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                primary_label_en,
+                column_concept_qname,
+                display_order
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -1691,6 +1765,46 @@ def _persist_taxonomy_package(
                     row["concept_qname"],
                     row.get("parent_concept_qname"),
                     row.get("primary_label_en"),
+                    row.get("column_concept_qname"),
+                    row.get("display_order"),
+                )
+                for row in taxonomy_rows
+            ],
+        )
+
+        # Populate Statement_Hierarchy.
+        # Only number concepts can be columns (the generator skips string concepts).
+        column_qnames = {
+            row["column_concept_qname"]
+            for row in taxonomy_rows
+            if row.get("column_concept_qname") and row.get("value_type") == "number"
+        }
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO Statement_Hierarchy (
+                statement_family,
+                concept_qname,
+                parent_concept_qname,
+                column_concept_qname,
+                level,
+                primary_label_en,
+                display_order,
+                is_column
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    row.get("statement_family"),
+                    row["concept_qname"],
+                    row.get("parent_concept_qname"),
+                    row.get("column_concept_qname"),
+                    row.get("level"),
+                    row.get("primary_label_en"),
+                    row.get("display_order"),
+                    1 if (
+                        row.get("value_type") == "number"
+                        and row.get("concept_qname") in column_qnames
+                    ) else 0,
                 )
                 for row in taxonomy_rows
             ],
@@ -1946,8 +2060,10 @@ def import_local_taxonomy_xsd(
                     level,
                     concept_qname,
                     parent_concept_qname,
-                    primary_label_en
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    primary_label_en,
+                    column_concept_qname,
+                    display_order
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -1958,6 +2074,45 @@ def import_local_taxonomy_xsd(
                         row["concept_qname"],
                         row.get("parent_concept_qname"),
                         row.get("primary_label_en"),
+                        row.get("column_concept_qname"),
+                        row.get("display_order"),
+                    )
+                    for row in taxonomy_rows
+                ],
+            )
+            # Populate Statement_Hierarchy for local imports too.
+            # Only number concepts can be columns.
+            column_qnames = {
+                row["column_concept_qname"]
+                for row in taxonomy_rows
+                if row.get("column_concept_qname") and row.get("value_type") == "number"
+            }
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO Statement_Hierarchy (
+                    statement_family,
+                    concept_qname,
+                    parent_concept_qname,
+                    column_concept_qname,
+                    level,
+                    primary_label_en,
+                    display_order,
+                    is_column
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row.get("statement_family"),
+                        row["concept_qname"],
+                        row.get("parent_concept_qname"),
+                        row.get("column_concept_qname"),
+                        row.get("level"),
+                        row.get("primary_label_en"),
+                        row.get("display_order"),
+                        1 if (
+                            row.get("value_type") == "number"
+                            and row.get("concept_qname") in column_qnames
+                        ) else 0,
                     )
                     for row in taxonomy_rows
                 ],

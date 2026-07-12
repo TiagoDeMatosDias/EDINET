@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 import uuid
+from collections import Counter
 
 import pandas as pd
 
@@ -294,12 +295,34 @@ def _load_metadata_batch(helper, conn, source_schema, source_table, doc_ids):
 
 def _load_taxonomy_bundle(conn, helper, taxonomy_table_name, release_id, granularity_level):
     family_placeholders = ", ".join("?" for _ in _STATEMENT_TABLES)
+
+    # Detect whether the Taxonomy table has the new column_concept_qname column
+    tax_cols = {
+        str(row[1]).lower()
+        for row in conn.execute(f"PRAGMA table_info({taxonomy_table_name})").fetchall()
+    }
+    has_column_qname = "column_concept_qname" in tax_cols
+    has_parent_qname = "parent_concept_qname" in tax_cols
+
+    col_qname_expr = (
+        "CAST(COALESCE(column_concept_qname, concept_qname) AS TEXT) AS column_concept_qname"
+        if has_column_qname
+        else "CAST(concept_qname AS TEXT) AS column_concept_qname"
+    )
+    parent_expr = (
+        "CAST(parent_concept_qname AS TEXT) AS parent_concept_qname"
+        if has_parent_qname
+        else "CAST(NULL AS TEXT) AS parent_concept_qname"
+    )
+
     rows = conn.execute(
         f"""
         SELECT
             CAST(statement_family AS TEXT) AS statement_family,
             CAST(concept_qname AS TEXT) AS concept_qname,
-            CAST(primary_label_en AS TEXT) AS primary_label_en
+            CAST(primary_label_en AS TEXT) AS primary_label_en,
+            {col_qname_expr},
+            {parent_expr}
         FROM {taxonomy_table_name}
         WHERE release_id = ?
           AND statement_family IN ({family_placeholders})
@@ -314,30 +337,56 @@ def _load_taxonomy_bundle(conn, helper, taxonomy_table_name, release_id, granula
             f"No Taxonomy rows were found for release_id={release_id!r} at granularity_level={granularity_level}."
         )
 
+    # Load hierarchy metadata from Statement_Hierarchy for column name disambiguation
+    hierarchy = {}
+    try:
+        hier_rows = conn.execute(
+            """
+            SELECT concept_qname, parent_concept_qname, column_concept_qname,
+                   primary_label_en, level
+            FROM Statement_Hierarchy
+            """
+        ).fetchall()
+        for hr in hier_rows:
+            hierarchy[str(hr["concept_qname"] or "")] = {
+                "parent_concept_qname": str(hr["parent_concept_qname"] or "") if hr["parent_concept_qname"] else None,
+                "column_concept_qname": str(hr["column_concept_qname"] or ""),
+                "primary_label_en": str(hr["primary_label_en"] or ""),
+                "level": hr["level"],
+            }
+    except Exception:
+        pass  # Statement_Hierarchy may not exist yet; proceed without it
+
+    # Group by column_concept_qname (fall back to concept_qname if NULL)
     groups_by_family = {family: {} for family in _STATEMENT_TABLES}
 
     for row in rows:
         statement_family = str(row["statement_family"] or "")
         concept_qname = helper._normalise_taxonomy_term(row["concept_qname"]) or str(row["concept_qname"] or "")
+        column_qname = str(row["column_concept_qname"] or "") or concept_qname
         display_label = _clean_label(row["primary_label_en"])
 
         if statement_family not in _STATEMENT_TABLES or not concept_qname or not display_label:
             continue
 
-        label_key = display_label.lower()
+        group_key = column_qname
         family_groups = groups_by_family[statement_family]
-        group = family_groups.get(label_key)
+        group = family_groups.get(group_key)
         if group is None:
             group = {
-                "label_key": label_key,
+                "column_key": group_key,
+                "column_concept_qname": column_qname,
                 "display_label": display_label,
                 "column_name": display_label,
                 "concepts": [],
             }
-            family_groups[label_key] = group
+            family_groups[group_key] = group
 
         if concept_qname not in group["concepts"]:
             group["concepts"].append(concept_qname)
+
+    # Resolve cross-parent label collisions by prepending parent label
+    _resolve_column_names(groups_by_family, hierarchy)
 
     concept_set = {
         concept_qname
@@ -349,6 +398,71 @@ def _load_taxonomy_bundle(conn, helper, taxonomy_table_name, release_id, granula
         "groups_by_family": groups_by_family,
         "concept_set": concept_set,
     }
+
+
+def _resolve_column_names(groups_by_family, hierarchy):
+    """Ensure unique column names within each statement family.
+
+    Only ~21 labels have cross-parent collisions (e.g., 'Accumulated depreciation'
+    under 62 different parents). For these, prepend the parent label.
+    Falls back to using the concept_qname local name if hierarchy data is unavailable.
+    """
+    for family, groups in groups_by_family.items():
+        label_counts = Counter(g["display_label"].lower() for g in groups.values())
+        for group in groups.values():
+            label = group["display_label"]
+            if label_counts[label.lower()] <= 1:
+                group["column_name"] = label
+                continue
+
+            # Try hierarchy-based disambiguation first
+            col_qname = group.get("column_concept_qname")
+            disambiguated = None
+            if col_qname and hierarchy:
+                hier_entry = hierarchy.get(col_qname, {})
+                parent_qname = hier_entry.get("parent_concept_qname")
+                if parent_qname:
+                    parent_entry = hierarchy.get(parent_qname, {})
+                    parent_label = parent_entry.get("primary_label_en", "")
+                    if parent_label:
+                        disambiguated = f"{parent_label} - {label}"
+
+            # Fallback: use the local part of column_concept_qname to disambiguate
+            if not disambiguated and col_qname:
+                local = col_qname.split(":", 1)[-1] if ":" in col_qname else col_qname
+                # Humanise the concept name
+                local = (local
+                    .replace("Abstract", "").replace("LineItems", "")
+                    .replace("Heading", "").replace("Table", ""))
+                # Split camelCase
+                parts = re.findall(r"[A-Z][a-z]+|[A-Z]{2,}(?=[A-Z]|$)|[a-z]+", local)
+                if parts:
+                    suffix = " ".join(p for p in parts if p.lower() not in {
+                        "bnk", "ins", "sec", "ele", "hwy", "ca", "cmd", "cna",
+                        "edu", "fnd", "gas", "inv", "ivt", "lea", "liq", "med",
+                        "rw", "rwy", "spf", "wat",
+                    })
+                    if suffix:
+                        disambiguated = f"{suffix} - {label}"
+
+            # Last resort: append the column_concept_qname itself
+            if not disambiguated and col_qname:
+                disambiguated = f"{col_qname} - {label}"
+
+            group["column_name"] = disambiguated or label
+
+        # Final safety pass: ensure no duplicate column names remain.
+        # This handles edge cases where disambiguation still produced duplicates.
+        seen: set[str] = set()
+        for group in groups.values():
+            name = group["column_name"]
+            base = name
+            suffix = 2
+            while name.lower() in seen:
+                name = f"{base}_{suffix}"
+                suffix += 1
+            seen.add(name.lower())
+            group["column_name"] = name
 
 
 def _build_taxonomy_mapping_frame(taxonomy_bundle):
@@ -382,9 +496,12 @@ def _source_term_candidates(concept_qnames):
 
 def _synchronize_statement_tables(helper, conn, taxonomy_bundle):
     for statement_family in _STATEMENT_TABLES:
+        groups = list(taxonomy_bundle["groups_by_family"][statement_family].values())
+        if not groups:
+            continue
         group_columns = [
-            (group["display_label"], "REAL")
-            for group in taxonomy_bundle["groups_by_family"][statement_family].values()
+            (group["column_name"], "REAL")
+            for group in groups
         ]
         resolved_columns = _ensure_case_insensitive_columns(
             helper,
@@ -392,10 +509,11 @@ def _synchronize_statement_tables(helper, conn, taxonomy_bundle):
             statement_family,
             group_columns,
         )
-        for group in taxonomy_bundle["groups_by_family"][statement_family].values():
+        for group in groups:
+            lookup_key = group["column_name"].lower()
             group["column_name"] = resolved_columns.get(
-                group["label_key"],
-                group["display_label"],
+                lookup_key,
+                group["column_name"],
             )
 
 

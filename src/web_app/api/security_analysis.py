@@ -327,17 +327,19 @@ def get_history(
 
         display_names = {
             "IncomeStatement": "Income Statement",
+            "IncomeStatement_Rolling": "Income Statement (Rolling)",
             "BalanceSheet": "Balance Sheet",
+            "BalanceSheet_Rolling": "Balance Sheet (Rolling)",
             "CashflowStatement": "Cashflow Statement",
-            "PerShare": "Share Metrics", "ShareMetrics": "Share Metrics",
-            "Valuation": "Financial Ratios", "Financial_Ratios": "Financial Ratios",
+            "CashflowStatement_Rolling": "Cashflow Statement (Rolling)",
+            "PerShare": "Share Metrics",
+            "ShareMetrics": "Share Metrics",
+            "ShareMetrics_Rolling": "Share Metrics (Rolling)",
+            "Valuation": "Financial Ratios",
+            "Financial_Ratios": "Financial Ratios",
             "Financial_Ratios_Rolling": "Financial Ratios (Rolling)",
             "PerShare_Metrics": "Per Share Metrics",
             "PerShare_Metrics_Rolling": "Per Share Metrics (Rolling)",
-            "BalanceSheet_Rolling": "Balance Sheet (Rolling)",
-            "IncomeStatement_Rolling": "Income Statement (Rolling)",
-            "CashflowStatement_Rolling": "Cashflow Statement (Rolling)",
-            "ShareMetrics_Rolling": "Share Metrics (Rolling)",
         }
 
         tables_out = {}
@@ -574,6 +576,9 @@ def _build_tree_from_taxonomy(
     qname_to_merged: dict[str, str] = {}
     nodes_by_qname: dict[str, dict] = {}
 
+    # Build concept → column mapping (handles disambiguated column names)
+    concept_to_col = _build_concept_column_map(conn, data_columns) if data_columns else {}
+
     for (parent, _label_lower, lvl), variants in groups.items():
         # Pick the "best" qname: prefer one whose label matches a data column
         best_qname = variants[0].get("concept_qname", "")
@@ -583,10 +588,13 @@ def _build_tree_from_taxonomy(
         for row in variants:
             qname = _safe_str(row.get("concept_qname", ""))
             label = _safe_str(row.get("primary_label_en", "")) or qname
-            col_name = data_columns.get(label.lower()) if data_columns else None
+            # Try concept_qname mapping first, then label-based fallback
+            col_name = concept_to_col.get(qname) if concept_to_col else None
+            if not col_name and data_columns:
+                col_name = data_columns.get(label.lower())
             is_number = _safe_str(row.get("value_type", "")).lower() == "number"
             if col_name and is_number:
-                best_qname = qname  # prefer the first variant with actual data
+                best_qname = qname
                 best_has_data = True
                 best_is_number = True
                 break
@@ -594,11 +602,12 @@ def _build_tree_from_taxonomy(
                 best_is_number = True
 
         if not best_has_data and best_is_number:
-            # No variant matched a column, but there are number-type variants
-            # Check again more carefully
             for row in variants:
-                label = _safe_str(row.get("primary_label_en", "")) or _safe_str(row.get("concept_qname", ""))
-                col_name = data_columns.get(label.lower()) if data_columns else None
+                qname = _safe_str(row.get("concept_qname", ""))
+                label = _safe_str(row.get("primary_label_en", "")) or qname
+                col_name = concept_to_col.get(qname) if concept_to_col else None
+                if not col_name and data_columns:
+                    col_name = data_columns.get(label.lower())
                 if col_name:
                     best_qname = row.get("concept_qname", "")
                     best_has_data = True
@@ -776,6 +785,85 @@ def _build_flat_tree_from_columns(
     return tree
 
 
+def _build_concept_column_map(
+    conn: sqlite3.Connection,
+    data_columns: dict[str, str],
+) -> dict[str, str]:
+    """Build a mapping from concept_qname to the actual wide-table column name.
+
+    Uses Statement_Hierarchy to resolve disambiguated column names
+    (e.g., 'Buildings - Accumulated depreciation').
+    """
+    result: dict[str, str] = {}
+    if not data_columns:
+        return result
+
+    # Try to use Statement_Hierarchy for parent-aware disambiguation
+    sh_exists = False
+    try:
+        conn.execute("SELECT 1 FROM Statement_Hierarchy LIMIT 1")
+        sh_exists = True
+    except Exception:
+        pass
+
+    if sh_exists:
+        # Build a column_concept_qname → disambiguated column name mapping
+        col_concept_to_name: dict[str, str] = {}
+        col_rows = conn.execute(
+            "SELECT concept_qname, parent_concept_qname, primary_label_en "
+            "FROM Statement_Hierarchy WHERE is_column = 1"
+        ).fetchall()
+
+        # Detect which labels have collisions
+        from collections import Counter
+        label_counts = Counter(
+            str(r["primary_label_en"] or "").lower() for r in col_rows
+        )
+        for r in col_rows:
+            cq = str(r["concept_qname"] or "")
+            label = str(r["primary_label_en"] or "")
+            name = label
+            if label_counts.get(label.lower(), 0) > 1:
+                parent_qname = str(r["parent_concept_qname"] or "")
+                if parent_qname:
+                    parent_row = conn.execute(
+                        "SELECT primary_label_en FROM Statement_Hierarchy "
+                        "WHERE concept_qname = ?",
+                        (parent_qname,),
+                    ).fetchone()
+                    if parent_row:
+                        parent_label = str(parent_row[0] or "")
+                        if parent_label:
+                            name = f"{parent_label} - {label}"
+            # Match against actual column names
+            actual_col = data_columns.get(name.lower())
+            if actual_col:
+                col_concept_to_name[cq] = actual_col
+
+        # Map every taxonomy concept to its column (via column_concept_qname)
+        tax_rows = conn.execute(
+            "SELECT concept_qname, column_concept_qname FROM Statement_Hierarchy"
+        ).fetchall()
+        for tr in tax_rows:
+            cq = str(tr["concept_qname"] or "")
+            ccq = str(tr["column_concept_qname"] or "")
+            if ccq in col_concept_to_name:
+                result[cq] = col_concept_to_name[ccq]
+    else:
+        # Fallback: match by label only (no Statement_Hierarchy available)
+        tax_rows = conn.execute(
+            "SELECT concept_qname, primary_label_en FROM Taxonomy WHERE value_type = 'number'"
+        ).fetchall()
+        for tr in tax_rows:
+            cq = str(tr["concept_qname"] or "")
+            label = str(tr["primary_label_en"] or "")
+            actual_col = data_columns.get(label.lower())
+            if actual_col:
+                result[cq] = actual_col
+
+    return result
+
+
 def _populate_tree_values(
     conn: sqlite3.Connection,
     data_table: str,
@@ -784,13 +872,19 @@ def _populate_tree_values(
     nodes_by_qname: dict[str, dict],
 ) -> None:
     """Query the financial table once and populate values for all data nodes."""
+    # Build concept → column mapping (handles disambiguated column names)
+    concept_to_col = _build_concept_column_map(conn, data_columns)
+
     # Collect which columns we need
     needed_cols: list[str] = []
     qname_to_col: dict[str, str] = {}
     for qname, node in nodes_by_qname.items():
         if not node["has_data"]:
             continue
-        col = data_columns.get(node["label"].lower())
+        # Try concept_qname-based mapping first, then fall back to label matching
+        col = concept_to_col.get(qname)
+        if not col:
+            col = data_columns.get(node["label"].lower())
         if col:
             needed_cols.append(col)
             qname_to_col[qname] = col
