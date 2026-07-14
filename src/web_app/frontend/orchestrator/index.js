@@ -16,13 +16,17 @@ import { MetricTile, MetricGrid, Badge, Button, ListItem, ListSection, SectionCa
 // Render batching — prevents redundant renders within a single frame
 // =============================================================================
 
+let _renderQueue = [];
 let _renderScheduled = false;
 function scheduleRender(fn) {
+  _renderQueue.push(fn);
   if (_renderScheduled) return;
   _renderScheduled = true;
   requestAnimationFrame(() => {
     _renderScheduled = false;
-    fn();
+    const queue = _renderQueue;
+    _renderQueue = [];
+    for (const f of queue) f();
   });
 }
 
@@ -731,7 +735,9 @@ function buildPipelineStepRow(step, index) {
   const owBtn = Button({
     variant: 'icon',
     label: 'OW',
-    title: meta?.supports_overwrite ? 'Toggle overwrite' : 'Overwrite not supported',
+    title: meta?.supports_overwrite
+      ? (step.overwrite ? 'Overwrite enabled — click to disable' : 'Overwrite disabled — click to enable')
+      : 'Overwrite not supported',
     disabled: !meta?.supports_overwrite,
     onClick: () => {
       step.overwrite = !step.overwrite;
@@ -739,6 +745,8 @@ function buildPipelineStepRow(step, index) {
       scheduleRender(() => renderPipelineList());
     },
   });
+  owBtn.dataset.role = 'overwrite';
+  if (step.overwrite) owBtn.classList.add('is-active');
 
   actions.append(upBtn, downBtn, inspectBtn, owBtn, removeBtn);
   row.append(handle, el('div', { class: 'step-enable' }, checkbox), content, actions);
@@ -809,6 +817,16 @@ function patchPipelineStepRow(row, step, index) {
       Badge({ text: step.status, tone: badgeToneForStatus(step.status) }),
       ...(meta?.supports_overwrite && step.overwrite ? [Badge({ text: 'overwrite', tone: 'accent' })] : []),
     );
+  }
+
+  // Update overwrite button visual state
+  const owBtn = row.querySelector('[data-role="overwrite"]');
+  if (owBtn && meta) {
+    owBtn.classList.toggle('is-active', step.overwrite);
+    owBtn.title = meta.supports_overwrite
+      ? (step.overwrite ? 'Overwrite enabled — click to disable' : 'Overwrite disabled — click to enable')
+      : 'Overwrite not supported';
+    owBtn.disabled = !meta.supports_overwrite;
   }
 
   // Update drag index (for move/drop handlers)

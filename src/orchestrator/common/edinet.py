@@ -249,6 +249,9 @@ class Edinet:
             connection = None
             doc_id = doc.get("docID")
             doc_filter = self.generate_filter("docID", "=", doc_id)
+            if doc_id == "S100YH3H":
+                print("Debugging document S100YH3H")
+
             doc_status = self.STATUS_CHECKED_ERROR
             folder = os.path.join(self.defaultLocation, "downloadeddocs", str(doc_id))
 
@@ -285,6 +288,7 @@ class Edinet:
                             #Load files to DB
                             self.load_financial_data(financialFiles, output_table, doc, connection)
                             doc_status = self.STATUS_DOWNLOADED
+                            logger.info("Document %s processed successfully.", doc_id)
             except Exception as e:
                 doc_status = self.STATUS_CHECKED_ERROR
                 logger.error("Error downloading document %s: %s", doc_id, e)
@@ -302,6 +306,55 @@ class Edinet:
         self.delete_folder(os.path.join(self.defaultLocation, "downloadeddocs"))
 
         logger.info("All files downloaded successfully.")
+
+    @staticmethod
+    def _normalize_sql_value(value):
+        """Normalize values so that pandas/SQLite rows can be compared safely."""
+        if value is None:
+            return None
+        if pd.isna(value):
+            return None
+        return value
+
+    def _filter_existing_rows(self, df, table_name, connection, doc_id=None):
+        """Return only rows that are not already stored for the current document."""
+        if df is None or df.empty:
+            return df
+        if not doc_id:
+            return df
+
+        quoted_table = self._quote_identifier(table_name)
+        quoted_doc_id = self._quote_identifier("docID")
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                f"SELECT * FROM {quoted_table} WHERE {quoted_doc_id} = ?",
+                (doc_id,),
+            )
+            existing_rows = cursor.fetchall()
+        except sqlite3.OperationalError:
+            return df
+
+        if not existing_rows:
+            return df
+
+        existing_keys = {
+            tuple(self._normalize_sql_value(value) for value in row)
+            for row in existing_rows
+        }
+        rows_to_insert = []
+
+        for row in df.itertuples(index=False, name=None):
+            row_tuple = tuple(self._normalize_sql_value(value) for value in row)
+            if row_tuple not in existing_keys:
+                rows_to_insert.append(row)
+                existing_keys.add(row_tuple)
+
+        if not rows_to_insert:
+            logger.info("All rows already exist in table %s for docID %s; skipping insert.", table_name, doc_id)
+            return pd.DataFrame(columns=df.columns)
+
+        return pd.DataFrame(rows_to_insert, columns=df.columns)
 
     def load_financial_data(self, financialFiles, table_name, doc, connection=None):
         """Read financial data from extracted CSV files and load it into the database.
@@ -343,12 +396,25 @@ class Edinet:
                 columns = list(df.columns)
                 self.create_table(table_name, columns, connection)
 
-                # Insert data into table, ignoring duplicate constraint violations
+                # First try the direct append; if the table has a uniqueness constraint,
+                # fall back to a row-by-row check for only the rows that are not already present.
+                df = df.drop_duplicates()
                 try:
                     df.to_sql(table_name, conn, if_exists='append', index=False)
-                except sqlite3.IntegrityError:
-                    # Ignore duplicate constraint violations
-                    pass
+                    logger.info("Inserted %d rows from %s into table %s.", len(df), csv_file, table_name)
+                except sqlite3.IntegrityError as exc:
+                    logger.warning("Integrity error inserting into %s for %s: %s", table_name, csv_file, exc)
+                    doc_id = doc.get("docID")
+                    df_to_insert = self._filter_existing_rows(df, table_name, conn, doc_id)
+                    if df_to_insert.empty:
+                        logger.info("Skipping %s because all rows already exist in table %s.", csv_file, table_name)
+                        continue
+
+                    try:
+                        df_to_insert.to_sql(table_name, conn, if_exists='append', index=False)
+                        logger.info("Inserted %d new rows from %s into table %s after fallback check.", len(df_to_insert), csv_file, table_name)
+                    except sqlite3.IntegrityError as fallback_exc:
+                        logger.exception("Integrity error during fallback insert into %s: %s", table_name, fallback_exc)
 
             conn.commit()
         except FileNotFoundError:

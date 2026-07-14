@@ -99,9 +99,17 @@ def get_overview(
     try:
         db = _resolve_db()
         result = _security.get_security_overview(db, company_code=code, ticker=tkr)
-        result["metrics"] = _compute_metrics(db, code or tkr,
-                                              result.get("market", {}),
-                                              result.get("company", {}))
+        try:
+            result["metrics"] = _compute_metrics(db, code or tkr,
+                                                  result.get("market", {}),
+                                                  result.get("company", {}))
+        except Exception as exc:
+            logger.warning("Metrics computation failed for %s: %s", code or tkr, exc)
+            result["metrics"] = {k: None for k in (
+                "LatestPrice", "MarketCap", "PERatio", "PriceToBook",
+                "PriceToSales", "DividendsYield", "PayoutRatio",
+                "ReturnOnAssets", "ReturnOnEquity", "CurrentRatio",
+            )}
         return result
     except HTTPException: raise
     except ValueError as e:

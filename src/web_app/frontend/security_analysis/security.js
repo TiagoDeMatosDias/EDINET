@@ -40,9 +40,17 @@ async function bootstrap() {
   // Check URL params first, then sessionStorage
   const params = new URLSearchParams(window.location.search);
   const urlCode = params.get('company_code');
-  const urlSymbol = params.get('symbol');
+  const urlSymbol = params.get('symbol') || params.get('ticker');
   if (urlCode) {
-    try { await selectCompany(urlCode); } catch (e) { log('warn', e.message); }
+    try {
+      await selectCompany(urlCode);
+    } catch (e) {
+      log('warn', `Company lookup failed: ${e.message}`);
+      // Fall back to ticker if available
+      if (urlSymbol) {
+        try { await selectTicker(urlSymbol); } catch (e2) { log('warn', e2.message); }
+      }
+    }
   } else if (urlSymbol) {
     try { await selectTicker(urlSymbol); } catch (e) { log('warn', e.message); }
   } else {

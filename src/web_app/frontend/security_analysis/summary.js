@@ -44,6 +44,15 @@ export function renderSummary() {
     return;
   }
 
+  const c = state.company;
+  if (!c?.company) {
+    // Malformed response — show empty state rather than a blank area
+    el.classList.remove('is-visible');
+    banner.style.display = 'none';
+    empty.classList.remove('hidden');
+    return;
+  }
+
   empty.classList.add('hidden');
 
   // Banner
@@ -58,12 +67,6 @@ export function renderSummary() {
     }).join(' ');
   } else {
     banner.style.display = 'none';
-  }
-
-  const c = state.company;
-  if (!c?.company) {
-    el.classList.remove('is-visible');
-    return;
   }
 
   el.classList.add('is-visible');

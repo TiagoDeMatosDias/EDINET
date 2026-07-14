@@ -96,6 +96,36 @@ _OVERVIEW_TAXONOMY_METRICS = {
     "IncomeStatement": ("netSales", "operatingIncome", "netIncome"),
     "BalanceSheet": ("totalAssets", "shareholdersEquity"),
 }
+
+# Columns needed from each wide (non-taxonomy) statement table for the overview
+# endpoint.  Selecting every column from every joined table can exceed SQLite's
+# 2000-column result-set limit (IncomeStatement alone often has 120+ columns).
+# We match case-insensitively against the actual column names in the table.
+_OVERVIEW_INCOME_COLS = frozenset({
+    "netsales", "operatingincome", "netincome", "grossprofit",
+    "operatingincome(loss)", "income(loss)beforeincometaxes",
+    "netincome(loss)", "netsales(revenue)", "totalrevenue",
+})
+_OVERVIEW_BALANCE_COLS = frozenset({
+    "totalassets", "shareholdersequity", "currentassets",
+    "currentliabilities", "totalliabilities",
+})
+_OVERVIEW_CASHFLOW_COLS = frozenset({
+    "operatingcashflow", "investmentcashflow", "financingcashflow",
+})
+_OVERVIEW_PERSHARE_COLS = frozenset({
+    "eps", "bookvalue", "dividends", "sharesoutstanding",
+    "netsalespershare", "operatingincomepershare",
+})
+_OVERVIEW_VALUATION_COLS = frozenset({
+    "peratio", "pricetobook", "dividendsyield", "marketcap",
+    "earningsyield", "pricetosales", "enterprisevalue",
+    "enterprisevaluetosales",
+})
+_OVERVIEW_QUALITY_COLS = frozenset({
+    "returnonequity", "debttoequity", "currentratio", "grossmargin",
+    "operatingmargin", "netprofitmargin",
+})
 _STATEMENT_LINE_ITEMS_TABLE = "statement_line_items"
 
 # ---------------------------------------------------------------------------
@@ -166,6 +196,17 @@ def _connect(db_path: str) -> sqlite3.Connection:
 def _quote_ident(name: str) -> str:
     """Return a safely quoted SQLite identifier."""
     return f"[{str(name).replace(']', ']]')}]"
+
+
+def _normalise_ident(name: str) -> str:
+    """Normalise a column/identifier for fuzzy matching.
+
+    Lowercases and strips all whitespace, underscores, hyphens, parentheses,
+    and percent signs so that ``Net sales``, ``net_sales`` and ``NetSales``
+    all compare equal.
+    """
+    import re as _re
+    return _re.sub(r"[\s_\-()%]+", "", str(name).lower())
 
 
 def _normalise_db_path(db_path: str) -> str:
@@ -1333,6 +1374,43 @@ def _load_latest_snapshot(conn: sqlite3.Connection, schema: SecuritySchema, comp
 
     join_clauses: list[str] = []
     needs_taxonomy_overview_metrics = False
+
+    # Helper: select only the columns we actually need for the overview from a
+    # wide table.  Selecting every column can blow past SQLite's 2000-column
+    # result-set limit when several wide tables are joined (e.g. IncomeStatement
+    # alone often carries 120+ columns).
+    def _add_needed_columns(
+        alias: str,
+        table_name: str,
+        needed_lower: frozenset[str],
+    ) -> None:
+        """Append *only* the columns in *needed_lower* that actually exist in
+        the table to ``select_parts``.  Matching is case-insensitive and
+        whitespace/punctuation-insensitive against the real column names
+        returned by PRAGMA table_info (e.g. database column ``Net sales``
+        matches whitelist entry ``netsales``)."""
+        real_cols = _get_columns(conn, table_name)
+        # Pre-compute normalised versions of needed entries for comparison
+        needed_normalised = {_normalise_ident(k) for k in needed_lower}
+        found = 0
+        for col in real_cols:
+            if col.lower() == "docid":
+                continue
+            if _normalise_ident(col) in needed_normalised:
+                select_parts.append(
+                    f"{alias}.{_quote_ident(col)} AS {_quote_ident(col)}"
+                )
+                found += 1
+        # If we didn't find any of the needed columns, the table probably uses a
+        # different naming convention — fall back to selecting everything (the
+        # old behaviour) so we don't silently drop data.
+        if found == 0 and real_cols:
+            for col in real_cols:
+                if col.lower() != "docid":
+                    select_parts.append(
+                        f"{alias}.{_quote_ident(col)} AS {_quote_ident(col)}"
+                    )
+
     if schema.income_table:
         if _is_taxonomy_statement_table(conn, schema.income_table):
             needs_taxonomy_overview_metrics = True
@@ -1340,9 +1418,7 @@ def _load_latest_snapshot(conn: sqlite3.Connection, schema: SecuritySchema, comp
             join_clauses.append(
                 f"LEFT JOIN {_quote_ident(schema.income_table)} i ON i.docID = fs.{_quote_ident(schema.fs_docid_col)}"
             )
-            for col in _get_columns(conn, schema.income_table):
-                if col.lower() != "docid":
-                    select_parts.append(f"i.{_quote_ident(col)} AS {_quote_ident(col)}")
+            _add_needed_columns("i", schema.income_table, _OVERVIEW_INCOME_COLS)
     if schema.balance_table:
         if _is_taxonomy_statement_table(conn, schema.balance_table):
             needs_taxonomy_overview_metrics = True
@@ -1350,38 +1426,28 @@ def _load_latest_snapshot(conn: sqlite3.Connection, schema: SecuritySchema, comp
             join_clauses.append(
                 f"LEFT JOIN {_quote_ident(schema.balance_table)} b ON b.docID = fs.{_quote_ident(schema.fs_docid_col)}"
             )
-            for col in _get_columns(conn, schema.balance_table):
-                if col.lower() != "docid":
-                    select_parts.append(f"b.{_quote_ident(col)} AS {_quote_ident(col)}")
+            _add_needed_columns("b", schema.balance_table, _OVERVIEW_BALANCE_COLS)
     if schema.cashflow_table:
         if not _is_taxonomy_statement_table(conn, schema.cashflow_table):
             join_clauses.append(
                 f"LEFT JOIN {_quote_ident(schema.cashflow_table)} cf ON cf.docID = fs.{_quote_ident(schema.fs_docid_col)}"
             )
-            for col in _get_columns(conn, schema.cashflow_table):
-                if col.lower() != "docid":
-                    select_parts.append(f"cf.{_quote_ident(col)} AS {_quote_ident(col)}")
+            _add_needed_columns("cf", schema.cashflow_table, _OVERVIEW_CASHFLOW_COLS)
     if schema.per_share_table:
         join_clauses.append(
             f"LEFT JOIN {_quote_ident(schema.per_share_table)} ps ON ps.docID = fs.{_quote_ident(schema.fs_docid_col)}"
         )
-        for col in _get_columns(conn, schema.per_share_table):
-            if col.lower() != "docid":
-                select_parts.append(f"ps.{_quote_ident(col)} AS {_quote_ident(col)}")
+        _add_needed_columns("ps", schema.per_share_table, _OVERVIEW_PERSHARE_COLS)
     if schema.valuation_table:
         join_clauses.append(
             f"LEFT JOIN {_quote_ident(schema.valuation_table)} v ON v.docID = fs.{_quote_ident(schema.fs_docid_col)}"
         )
-        for col in _get_columns(conn, schema.valuation_table):
-            if col.lower() != "docid":
-                select_parts.append(f"v.{_quote_ident(col)} AS {_quote_ident(col)}")
+        _add_needed_columns("v", schema.valuation_table, _OVERVIEW_VALUATION_COLS)
     if schema.quality_table:
         join_clauses.append(
             f"LEFT JOIN {_quote_ident(schema.quality_table)} q ON q.docID = fs.{_quote_ident(schema.fs_docid_col)}"
         )
-        for col in _get_columns(conn, schema.quality_table):
-            if col.lower() != "docid":
-                select_parts.append(f"q.{_quote_ident(col)} AS {_quote_ident(col)}")
+        _add_needed_columns("q", schema.quality_table, _OVERVIEW_QUALITY_COLS)
 
     if (
         schema.document_list_table
@@ -1630,9 +1696,8 @@ def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[st
             already_seen = any(v.lower() in seen_tickers for v in variants)
             if already_seen:
                 continue
-            # Check if the ticker matches any token
-            matched = False
-            if not matched:
+            # Check if the ticker matches any token (case-insensitive substring)
+            if not any(token in pt_lower for token in tokens):
                 continue
             # Get latest price for this ticker
             lpr = pd.read_sql_query(
@@ -1747,7 +1812,14 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
 
     conn = _connect(db_path)
     try:
-        snapshot = _load_latest_snapshot(conn, schema, code)
+        try:
+            snapshot = _load_latest_snapshot(conn, schema, code)
+        except Exception as exc:
+            logger.warning(
+                "Failed to load latest snapshot for %s (will return partial overview): %s",
+                code, exc,
+            )
+            snapshot = None
         if snapshot is None:
             snapshot = {"company_code": code, "period_end": None}
 

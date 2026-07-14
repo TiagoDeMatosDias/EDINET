@@ -56,27 +56,28 @@ function persist() {
 export function render() { renderToolbar(); renderContent(); }
 
 function renderContent() {
-  const empty = H.$('sa-empty'), hdr = H.$('sa-header'), banner = H.$('sa-banner');
-  const tabbar = H.$('sa-tabbar'), tv = H.$('sa-table-view');
+  const empty = H.$('sa-empty'), hdr = H.$('sa-summary'), banner = H.$('sa-banner');
+  const tabbar = H.$('sa-tabbar'), tv = H.$('sa-tree-panel');
+  const split = H.$('sa-workspace-split');
   const et = H.$('sa-empty-title'), es = H.$('sa-empty-sub');
 
   if (!state.initDone) {
-    hideAll(hdr, banner, tabbar, tv); show(empty);
+    hideAll(hdr, banner, tabbar, tv, split); show(empty);
     et.textContent = 'Initializing…'; if (es) es.textContent = 'Connecting…'; return;
   }
   if (state.error) {
-    hideAll(hdr, banner, tabbar, tv); show(empty);
+    hideAll(hdr, banner, tabbar, tv, split); show(empty);
     et.textContent = 'Error'; if (es) es.textContent = state.error; return;
   }
   if (state.loading) {
     hdr.classList.add('is-visible'); hdr.innerHTML = '<div class="sa-loading">Loading…</div>';
-    hideAll(banner, tabbar, tv); empty.classList.add('hidden'); return;
+    hideAll(banner, tabbar, tv, split); empty.classList.add('hidden'); return;
   }
   if (state.company) {
     renderCompanyHeader(); renderBanner(); renderHistorySection();
     empty.classList.add('hidden');
   } else {
-    hideAll(hdr, banner, tabbar, tv); show(empty);
+    hideAll(hdr, banner, tabbar, tv, split); show(empty);
     et.textContent = 'Search for a company to begin';
     if (es) es.textContent = 'Type a ticker, EDINET code, or company name above.';
   }
@@ -132,7 +133,7 @@ function onSearchKeydown(e) {
   if (!open && e.key === 'Enter') {
     e.preventDefault(); const q = H.$('sa-search').value.trim(); if (!q) return;
     clearTimeout(state.searchTimer);
-    doSearch(q).then(() => { if (state.searchResults.length) { closeDropdown(); const r = state.searchResults[0]; if (r.company_code) selectCompany(r.company_code); else selectTicker(r.ticker); } });
+    doSearch(q).then(() => { if (state.searchResults.length) { const r = state.searchResults[0]; closeDropdown(); if (r.company_code) selectCompany(r.company_code); else selectTicker(r.ticker); } });
     return;
   }
   if (!open) return;
@@ -221,7 +222,7 @@ export async function selectTicker(ticker) {
 // ---------------------------------------------------------------------------
 
 function renderCompanyHeader() {
-  const hdr = H.$('sa-header'); hdr.classList.add('is-visible'); hdr.innerHTML = '';
+  const hdr = H.$('sa-summary'); hdr.classList.add('is-visible'); hdr.innerHTML = '';
   const c = state.company; if (!c?.company) return;
   const co = c.company, mkt = c.market || {}, metrics = c.metrics || {};
 
@@ -330,7 +331,8 @@ function renderBanner() {
 
 function renderHistorySection() {
   const tabbar = H.$('sa-tabbar'); tabbar.classList.add('is-visible');
-  const tv = H.$('sa-table-view'); tv.classList.add('is-active');
+  const tv = H.$('sa-tree-panel'); tv.classList.add('is-active');
+  const split = H.$('sa-workspace-split'); if (split) split.classList.add('is-visible');
   const tables = state.history?.tables || {}, periods = state.history?.periods || [];
   const keys = Object.keys(tables);
   const ticker = state.company?.company?.ticker;
@@ -380,8 +382,8 @@ function renderHistorySection() {
 
 function renderHistoryBody() {
   // Update toggle button states
-  const tb = document.querySelector('#sa-table-view button:nth-child(1)');
-  const cb = document.querySelector('#sa-table-view button:nth-child(2)');
+  const tb = document.querySelector('#sa-tree-panel button:nth-child(1)');
+  const cb = document.querySelector('#sa-tree-panel button:nth-child(2)');
   if (tb) tb.classList.toggle('scr-btn-active', state.viewMode === 'table');
   if (cb) cb.classList.toggle('scr-btn-active', state.viewMode === 'chart');
 
@@ -493,7 +495,7 @@ async function loadPriceHistory() {
 }
 
 function renderPriceSection() {
-  const tv = H.$('sa-table-view'); tv.classList.add('is-active');
+  const tv = H.$('sa-tree-panel'); tv.classList.add('is-active');
   tv.innerHTML = '';
 
   const ctrl = H.el('div', { class: 'sa-history-controls' },
