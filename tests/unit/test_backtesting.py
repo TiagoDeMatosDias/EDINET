@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for src/backtesting.py
 
 Strategy
@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from src.orchestrator.common.backtesting import (
     get_portfolio_prices,
     get_dividend_data,
+    build_daily_portfolio_tracker,
     calculate_portfolio_returns,
     calculate_benchmark_returns,
     calculate_return_decomposition,
@@ -218,8 +219,8 @@ class TestCalculatePortfolioReturns(unittest.TestCase):
     def test_equally_weighted_portfolio(self):
         prices = self._make_prices_df()
         result = calculate_portfolio_returns(prices, {"A": 0.5, "B": 0.5})
-        # Day 2: A +10%, B +5%  → weighted 7.5%
-        # Day 3: A +10%, B ~4.76% → weighted ~7.38%
+        # Day 2: A +10%, B +5%  â†’ weighted 7.5%
+        # Day 3: A +10%, B ~4.76% â†’ weighted ~7.38%
         self.assertEqual(len(result), 2)
         self.assertAlmostEqual(result["portfolio_return"].iloc[0], 0.075, places=4)
 
@@ -250,7 +251,7 @@ class TestCalculatePortfolioReturns(unittest.TestCase):
 
     def test_missing_ticker_in_weights_is_ignored(self):
         prices = self._make_prices_df()
-        # Ticker "C" not in data – weights should be renormalised to A only
+        # Ticker "C" not in data â€“ weights should be renormalised to A only
         result = calculate_portfolio_returns(prices, {"A": 0.5, "C": 0.5})
         # All weight falls on A after renormalisation
         self.assertAlmostEqual(result["portfolio_return"].iloc[0], 0.10, places=4)
@@ -260,6 +261,109 @@ class TestCalculatePortfolioReturns(unittest.TestCase):
         prices["Date"] = pd.to_datetime(prices["Date"])
         result = calculate_portfolio_returns(prices, {"A": 1.0})
         self.assertTrue(result.empty)
+
+    # â”€â”€ Shares-based path (initial_capital > 0) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    def test_shares_based_matches_normalized_no_dividends(self):
+        """Shares-based and normalized paths produce same results."""
+        prices = self._make_prices_df()
+        norm = calculate_portfolio_returns(prices, {"A": 0.5, "B": 0.5})
+        shares = calculate_portfolio_returns(
+            prices, {"A": 0.5, "B": 0.5},
+            initial_capital=1_000_000,
+        )
+        # Cumulative returns should match
+        self.assertAlmostEqual(
+            norm["cumulative_return"].iloc[-1],
+            shares["cumulative_return"].iloc[-1],
+            places=6,
+        )
+
+    def test_shares_based_with_dividends(self):
+        """Shares-based path correctly includes dividends."""
+        prices = self._make_prices_df()
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-02"]),
+            "PerShare_Dividends": [10.0],
+        })
+        # Shares-based: 500k in A at 100 = 5000 shares; 500k in B at 200 = 2500 shares
+        result = calculate_portfolio_returns(
+            prices, {"A": 0.5, "B": 0.5}, dividends,
+            initial_capital=1_000_000,
+        )
+        # A: 5000 shares Ã— (121-100) = 105,000 cap gain + 5000Ã—10 = 50,000 div
+        # B: 2500 shares Ã— (220-200) = 50,000 cap gain
+        # End value: A=605k, B=550k, +50k div cash = 1,205,000
+        # Return: 205,000 / 1,000,000 = 20.5%
+        expected_return = 0.205
+        self.assertAlmostEqual(
+            result["cumulative_return"].iloc[-1] - 1,
+            expected_return,
+            places=4,
+        )
+
+    def test_shares_based_dividends_increase_cumulative_return(self):
+        """With dividends, cumulative return > price-only cumulative return."""
+        prices = self._make_prices_df()
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-02"]),
+            "PerShare_Dividends": [10.0],
+        })
+        with_div = calculate_portfolio_returns(
+            prices, {"A": 1.0}, dividends,
+            initial_capital=500_000,
+        )
+        without_div = calculate_portfolio_returns(
+            prices, {"A": 1.0},
+            initial_capital=500_000,
+        )
+        self.assertGreater(
+            with_div["cumulative_return"].iloc[-1],
+            without_div["cumulative_return"].iloc[-1],
+        )
+
+    def test_shares_based_consistency_with_per_company(self):
+        """Shares-based portfolio return = sum(per_company weighted_total)."""
+        prices = self._make_prices_df()
+        dividends = pd.DataFrame({
+            "Ticker": ["A", "B"],
+            "periodEnd": pd.to_datetime(["2024-01-02", "2024-01-03"]),
+            "PerShare_Dividends": [5.0, 3.0],
+        })
+        capital = 1_000_000.0
+        pf = calculate_portfolio_returns(
+            prices, {"A": 0.6, "B": 0.4}, dividends,
+            initial_capital=capital,
+        )
+        per_co = calculate_per_company_returns(
+            prices, {"A": 0.6, "B": 0.4}, dividends,
+            initial_capital=capital,
+        )
+        pf_total = pf["cumulative_return"].iloc[-1] - 1
+        per_co_sum = per_co["weighted_total"].sum()
+        self.assertAlmostEqual(pf_total, per_co_sum, places=6,
+            msg="Shares-based portfolio return must equal sum(weighted_total)")
+
+    def test_shares_based_single_ticker(self):
+        """Shares-based: single ticker, verify share count and returns."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"]),
+            "Ticker": ["X", "X", "X"],
+            "Price": [200.0, 210.0, 220.0],
+        })
+        # 1M capital, all in X:
+        # shares = 1,000,000 / 200 = 5,000
+        # end market value = 5,000 Ã— 220 = 1,100,000
+        # return = 100,000 / 1,000,000 = 10%
+        result = calculate_portfolio_returns(
+            prices, {"X": 1.0},
+            initial_capital=1_000_000,
+        )
+        self.assertAlmostEqual(
+            result["cumulative_return"].iloc[-1] - 1, 0.10, places=6,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +389,7 @@ class TestCalculateBenchmarkReturns(unittest.TestCase):
     def test_cumulative_return(self):
         prices = self._make_prices()
         result = calculate_benchmark_returns(prices, "BM")
-        # (1.05) * (110/105) ≈ 1.10
+        # (1.05) * (110/105) â‰ˆ 1.10
         self.assertAlmostEqual(result["cumulative_return"].iloc[-1], 1.10, places=4)
 
     def test_price_return_columns_present(self):
@@ -419,7 +523,7 @@ class TestCalculatePerCompanyReturns(unittest.TestCase):
         prices = self._make_prices_df()
         result = calculate_per_company_returns(prices, {"A": 1.0})
         row = result[result["Ticker"] == "A"].iloc[0]
-        # A: 100 → 120 = +20%
+        # A: 100 â†’ 120 = +20%
         self.assertAlmostEqual(row["price_return"], 0.20, places=4)
 
     def test_dividend_return(self):
@@ -441,7 +545,7 @@ class TestCalculatePerCompanyReturns(unittest.TestCase):
             prices, {"A": 0.6, "B": 0.4}
         )
         a_row = result[result["Ticker"] == "A"].iloc[0]
-        # A: price_return=20%, weight=60% → weighted_price = 12%
+        # A: price_return=20%, weight=60% â†’ weighted_price = 12%
         self.assertAlmostEqual(a_row["weighted_price"], 0.12, places=4)
 
     def test_columns_present(self):
@@ -477,10 +581,10 @@ class TestCalculatePerCompanyReturns(unittest.TestCase):
         self.assertAlmostEqual(b_row["capital_invested"], 400_000, places=0)
         self.assertAlmostEqual(b_row["shares_purchased"], 2_000, places=0)
 
-        # Market value = shares × end_price
-        # A: 6,000 × 120 = 720,000
+        # Market value = shares Ã— end_price
+        # A: 6,000 Ã— 120 = 720,000
         self.assertAlmostEqual(a_row["market_value"], 720_000, places=0)
-        # B: 2,000 × 220 = 440,000
+        # B: 2,000 Ã— 220 = 440,000
         self.assertAlmostEqual(b_row["market_value"], 440_000, places=0)
 
     def test_dividends_received(self):
@@ -813,7 +917,7 @@ class TestCalculateMetrics(unittest.TestCase):
         # Up 10%, then down 20% from peak
         pf = self._portfolio_df([0.10, -0.20])
         metrics = calculate_metrics(pf, None, "2024-01-01", "2024-01-03")
-        # Peak at 1.10, trough at 1.10*0.80=0.88  → DD = (0.88-1.10)/1.10 = -0.2
+        # Peak at 1.10, trough at 1.10*0.80=0.88  â†’ DD = (0.88-1.10)/1.10 = -0.2
         self.assertAlmostEqual(metrics["max_drawdown"], -0.20, places=4)
 
     def test_sharpe_ratio_positive(self):
@@ -960,7 +1064,7 @@ class TestRunBacktest(unittest.TestCase):
         }
         metrics = run_backtest(config, self.db_path)
         self.assertIsNone(metrics["benchmark_total_return"])
-        # Single ticker 1001: 100 → 110 = +10% price return, plus dividends
+        # Single ticker 1001: 100 â†’ 110 = +10% price return, plus dividends
         self.assertGreater(metrics["total_return"], 0.10)
 
     def test_backtest_no_data(self):
@@ -1005,7 +1109,7 @@ class TestRunBacktest(unittest.TestCase):
             "output_file": os.path.join(self.tmp_dir, "report.txt"),
         }
         metrics = run_backtest(config, self.db_path)
-        # Price return should be 10% (100 → 110)
+        # Price return should be 10% (100 â†’ 110)
         self.assertAlmostEqual(
             metrics["portfolio_price_return"], 0.10, places=2
         )
@@ -1043,7 +1147,7 @@ class TestRunBacktest(unittest.TestCase):
             "portfolio": {"1001": 0.3, "2002": 0.3},
             "output_file": os.path.join(self.tmp_dir, "report.txt"),
         }
-        # Should NOT raise — weights are auto-normalised
+        # Should NOT raise â€” weights are auto-normalised
         metrics = run_backtest(config, self.db_path)
         self.assertIn("total_return", metrics)
 
@@ -1101,7 +1205,7 @@ class TestResolvePortfolioAllocations(unittest.TestCase):
         """Weight + shares mix: implied capital derived correctly."""
         # A = 50% weight, B = 100 shares @ 1000 = 100,000
         # 50% of total = A, so total = 100,000 / 0.5 = 200,000
-        # A = 100,000, B = 100,000 → each 50%
+        # A = 100,000, B = 100,000 â†’ each 50%
         config = {
             "A": {"mode": "weight", "value": 0.5},
             "B": {"mode": "shares", "value": 100},
@@ -1137,7 +1241,7 @@ class TestResolvePortfolioAllocations(unittest.TestCase):
             "A": {"mode": "weight", "value": 0.5},
             "B": {"mode": "value", "value": 100000},
         }
-        # With 1M capital: A = 500k, B = 100k → total allocated = 600k
+        # With 1M capital: A = 500k, B = 100k â†’ total allocated = 600k
         weights, cap, warns = resolve_portfolio_allocations(
             config, {}, initial_capital=1_000_000
         )
@@ -1216,5 +1320,635 @@ class TestResolvePortfolioAllocations(unittest.TestCase):
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# Dividend edge-case tests (non-trading-day bug fix)
+# ---------------------------------------------------------------------------
+
+class TestDividendDateMatching(unittest.TestCase):
+    """Verify dividends on non-trading days are NOT silently dropped."""
+
+    def test_dividend_on_weekend_not_dropped(self):
+        """Pay date falls on Saturday â€” should map to Monday."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-05",  # Friday
+                "2024-01-08",  # Monday
+                "2024-01-09",  # Tuesday
+            ]),
+            "Ticker": ["A", "A", "A"],
+            "Price": [100.0, 102.0, 104.0],
+        })
+        # Dividend paid on Saturday Jan 6 (non-trading day)
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-06"]),  # Saturday
+            "PerShare_Dividends": [5.0],
+        })
+        with_div = calculate_portfolio_returns(prices, {"A": 1.0}, dividends)
+        without_div = calculate_portfolio_returns(prices, {"A": 1.0})
+        # With dividend should have higher cumulative return
+        self.assertGreater(
+            with_div["cumulative_return"].iloc[-1],
+            without_div["cumulative_return"].iloc[-1],
+        )
+        # Dividend of 5 on initial price of 100 = 5% contribution
+        # Total return = price return (4%) + dividend (5%) = 9%
+        expected_cum = 1.04 + 0.05  # 1.09
+        self.assertAlmostEqual(
+            with_div["cumulative_return"].iloc[-1],
+            expected_cum,
+            places=4,
+        )
+
+    def test_dividend_on_sunday_mapped_to_monday(self):
+        """Pay date on Sunday â€” should map to Monday."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-05",  # Friday
+                "2024-01-08",  # Monday
+                "2024-01-09",  # Tuesday
+            ]),
+            "Ticker": ["A", "A", "A"],
+            "Price": [100.0, 103.0, 105.0],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-07"]),  # Sunday
+            "PerShare_Dividends": [10.0],
+        })
+        result = calculate_portfolio_returns(prices, {"A": 1.0}, dividends)
+        # Price return: 105/100 - 1 = 5%
+        # Dividend: 10/100 = 10%
+        # Total cumulative = 1.05 + 0.10 = 1.15
+        self.assertAlmostEqual(
+            result["cumulative_return"].iloc[-1], 1.15, places=4,
+        )
+
+    def test_dividend_after_last_trading_day_skipped(self):
+        """Pay date after the last trading day is correctly skipped."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-08", "2024-01-09", "2024-01-10",
+            ]),
+            "Ticker": ["A", "A", "A"],
+            "Price": [100.0, 102.0, 104.0],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-15"]),  # After last trading day
+            "PerShare_Dividends": [10.0],
+        })
+        with_div = calculate_portfolio_returns(prices, {"A": 1.0}, dividends)
+        without_div = calculate_portfolio_returns(prices, {"A": 1.0})
+        # Should be identical â€” dividend skipped
+        self.assertAlmostEqual(
+            with_div["cumulative_return"].iloc[-1],
+            without_div["cumulative_return"].iloc[-1],
+            places=6,
+        )
+
+    def test_dividend_before_first_trading_day(self):
+        """Pay date before first trading day â€” maps to first trading day."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-05", "2024-01-08", "2024-01-09",
+            ]),
+            "Ticker": ["A", "A", "A"],
+            "Price": [100.0, 102.0, 104.0],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-01"]),  # Before trading starts
+            "PerShare_Dividends": [5.0],
+        })
+        result = calculate_portfolio_returns(prices, {"A": 1.0}, dividends)
+        # Dividend should be applied from day 1 (2024-01-05)
+        # Cumulative: (104/100) + 5/100 = 1.04 + 0.05 = 1.09
+        self.assertAlmostEqual(
+            result["cumulative_return"].iloc[-1], 1.09, places=4,
+        )
+
+    def test_dividend_on_exact_trading_day(self):
+        """Pay date exactly on trading day â€” works as before."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-05", "2024-01-08", "2024-01-09",
+            ]),
+            "Ticker": ["A", "A", "A"],
+            "Price": [100.0, 102.0, 104.0],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-08"]),  # Exact trading day
+            "PerShare_Dividends": [5.0],
+        })
+        result = calculate_portfolio_returns(prices, {"A": 1.0}, dividends)
+        # Price return: 4%, Dividend: 5% starting from Jan 8
+        # Cumulative: (104/100) + 5/100 = 1.09
+        self.assertAlmostEqual(
+            result["cumulative_return"].iloc[-1], 1.09, places=4,
+        )
+
+    def test_benchmark_dividend_on_weekend(self):
+        """Same fix for calculate_benchmark_returns."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-05", "2024-01-08", "2024-01-09",
+            ]),
+            "Ticker": ["BM", "BM", "BM"],
+            "Price": [500.0, 505.0, 510.0],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["BM"],
+            "periodEnd": pd.to_datetime(["2024-01-06"]),  # Saturday
+            "PerShare_Dividends": [10.0],
+        })
+        result = calculate_benchmark_returns(prices, "BM", dividends)
+        # Total return > price-only return because dividend was captured
+        self.assertGreater(
+            result["cumulative_return"].iloc[-1],
+            result["cum_price_return"].iloc[-1],
+        )
+
+    def test_multiple_dividends_mixed_trading_and_non_trading(self):
+        """Mix of trading and non-trading pay dates, all should count."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-05", "2024-01-08", "2024-01-09", "2024-01-10",
+            ]),
+            "Ticker": ["A", "A", "A", "A"],
+            "Price": [100.0, 102.0, 104.0, 106.0],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["A", "A"],
+            "periodEnd": pd.to_datetime(["2024-01-06", "2024-01-08"]),
+            "PerShare_Dividends": [3.0, 4.0],  # Sat + Mon = 7 total
+        })
+        result = calculate_portfolio_returns(prices, {"A": 1.0}, dividends)
+        # Price: 6%, Dividends: 7% â†’ total cumulative = 1.06 + 0.07 = 1.13
+        self.assertAlmostEqual(
+            result["cumulative_return"].iloc[-1], 1.13, places=4,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Portfolio-to-Per-Company consistency tests
+# ---------------------------------------------------------------------------
+
+class TestPortfolioPerCompanyConsistency(unittest.TestCase):
+    """Verify per-company weighted totals match portfolio-level metrics."""
+
+    def _make_data(self):
+        """Create sample prices and dividends for 3 tickers over 5 days."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08",
+                "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08",
+                "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08",
+            ]),
+            "Ticker": ["A"] * 5 + ["B"] * 5 + ["C"] * 5,
+            "Price": [
+                100.0, 102.0, 101.0, 105.0, 110.0,  # A: +10%
+                200.0, 198.0, 202.0, 206.0, 210.0,  # B: +5%
+                50.0,  51.0,  52.0,  53.0,  54.0,   # C: +8%
+            ],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["A", "B"],
+            "periodEnd": pd.to_datetime(["2024-01-04", "2024-01-05"]),
+            "PerShare_Dividends": [5.0, 3.0],
+        })
+        return prices, dividends
+
+    def test_weighted_total_sums_to_portfolio_return_no_dividends(self):
+        """Without dividends, sum(weighted_total) â‰ˆ portfolio total_return."""
+        prices, _ = self._make_data()
+        weights = {"A": 0.5, "B": 0.3, "C": 0.2}
+        pf = calculate_portfolio_returns(prices, weights)
+        per_co = calculate_per_company_returns(prices, weights)
+        portfolio_total = pf["cumulative_return"].iloc[-1] - 1
+        per_co_sum = per_co["weighted_total"].sum()
+        self.assertAlmostEqual(portfolio_total, per_co_sum, places=6,
+            msg="sum(weighted_total) must equal portfolio total_return")
+
+    def test_weighted_total_sums_to_portfolio_return_with_dividends(self):
+        """With dividends, sum(weighted_total) â‰ˆ portfolio total_return."""
+        prices, dividends = self._make_data()
+        weights = {"A": 0.5, "B": 0.3, "C": 0.2}
+        pf = calculate_portfolio_returns(prices, weights, dividends)
+        per_co = calculate_per_company_returns(prices, weights, dividends)
+        portfolio_total = pf["cumulative_return"].iloc[-1] - 1
+        per_co_sum = per_co["weighted_total"].sum()
+        self.assertAlmostEqual(portfolio_total, per_co_sum, places=6,
+            msg="sum(weighted_total) must equal portfolio total_return even with dividends")
+
+    def test_weighted_price_sums_to_price_only_return(self):
+        """sum(weighted_price) â‰ˆ portfolio price return (no dividends)."""
+        prices, _ = self._make_data()
+        weights = {"A": 0.5, "B": 0.3, "C": 0.2}
+        pf_no_div = calculate_portfolio_returns(prices, weights)
+        per_co = calculate_per_company_returns(prices, weights)
+        price_total = pf_no_div["cumulative_return"].iloc[-1] - 1
+        per_co_price_sum = per_co["weighted_price"].sum()
+        self.assertAlmostEqual(price_total, per_co_price_sum, places=6)
+
+    def test_weighted_dividend_matches_dividend_contribution(self):
+        """sum(weighted_dividend) should match the total dividend contribution."""
+        prices, dividends = self._make_data()
+        weights = {"A": 0.5, "B": 0.3, "C": 0.2}
+        pf_with = calculate_portfolio_returns(prices, weights, dividends)
+        pf_without = calculate_portfolio_returns(prices, weights)
+        per_co = calculate_per_company_returns(prices, weights, dividends)
+        # Dividend contribution = total - price_only at portfolio level
+        div_contribution = (
+            (pf_with["cumulative_return"].iloc[-1] - 1)
+            - (pf_without["cumulative_return"].iloc[-1] - 1)
+        )
+        per_co_div_sum = per_co["weighted_dividend"].sum()
+        self.assertAlmostEqual(div_contribution, per_co_div_sum, places=6)
+
+    def test_three_ticker_equal_weight_consistency(self):
+        """Equal-weight 3 ticker portfolio: per-company sums match."""
+        prices, dividends = self._make_data()
+        weights = {"A": 1.0/3, "B": 1.0/3, "C": 1.0/3}
+        pf = calculate_portfolio_returns(prices, weights, dividends)
+        per_co = calculate_per_company_returns(prices, weights, dividends)
+        pf_total = pf["cumulative_return"].iloc[-1] - 1
+        per_co_total = per_co["weighted_total"].sum()
+        self.assertAlmostEqual(pf_total, per_co_total, places=6)
+        # Weights should sum to ~1
+        self.assertAlmostEqual(per_co["weight"].sum(), 1.0, places=6)
+
+    def test_single_ticker_consistency(self):
+        """Single ticker: per-company should exactly match portfolio."""
+        prices, dividends = self._make_data()
+        pf = calculate_portfolio_returns(prices, {"A": 1.0}, dividends)
+        per_co = calculate_per_company_returns(prices, {"A": 1.0}, dividends)
+        pf_total = pf["cumulative_return"].iloc[-1] - 1
+        self.assertAlmostEqual(pf_total, per_co["weighted_total"].sum(), places=6)
+        self.assertEqual(len(per_co), 1)
+
+
+# ---------------------------------------------------------------------------
+# Enhanced per-company returns tests
+# ---------------------------------------------------------------------------
+
+class TestEnhancedPerCompanyReturns(unittest.TestCase):
+    """Verify new/improved per-company columns and calculations."""
+
+    def test_all_columns_present_with_capital(self):
+        """With initial_capital, all expected columns exist."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"]),
+            "Ticker": ["X", "X", "X"],
+            "Price": [100.0, 105.0, 110.0],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["X"],
+            "periodEnd": pd.to_datetime(["2024-01-03"]),
+            "PerShare_Dividends": [3.0],
+        })
+        result = calculate_per_company_returns(
+            prices, {"X": 1.0}, dividends, initial_capital=500_000,
+        )
+        expected = {
+            "Ticker", "start_price", "end_price",
+            "price_return", "dividend_return", "total_return",
+            "weight", "weighted_price", "weighted_dividend", "weighted_total",
+            "capital_invested", "shares_purchased",
+            "dividends_received", "market_value",
+        }
+        self.assertTrue(expected.issubset(set(result.columns)))
+        # Verify values
+        row = result.iloc[0]
+        self.assertAlmostEqual(row["capital_invested"], 500_000)
+        self.assertAlmostEqual(row["shares_purchased"], 5000)  # 500k / 100
+        self.assertAlmostEqual(row["dividends_received"], 15000)  # 5000 * 3
+        self.assertAlmostEqual(row["market_value"], 550000)  # 5000 * 110
+
+    def test_dividends_received_zero_when_no_dividends(self):
+        """dividends_received should be 0 when no dividends exist."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime(["2024-01-02", "2024-01-03"]),
+            "Ticker": ["X", "X"],
+            "Price": [100.0, 110.0],
+        })
+        result = calculate_per_company_returns(
+            prices, {"X": 1.0}, initial_capital=100_000,
+        )
+        self.assertAlmostEqual(result.iloc[0]["dividends_received"], 0.0)
+
+    def test_multiple_dividends_summed_correctly(self):
+        """Two dividends for same ticker: dividends_received sums both."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"]),
+            "Ticker": ["X", "X", "X"],
+            "Price": [200.0, 205.0, 210.0],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["X", "X"],
+            "periodEnd": pd.to_datetime(["2024-01-03", "2024-01-04"]),
+            "PerShare_Dividends": [4.0, 6.0],
+        })
+        result = calculate_per_company_returns(
+            prices, {"X": 1.0}, dividends, initial_capital=1_000_000,
+        )
+        row = result.iloc[0]
+        # shares = 1M / 200 = 5000
+        # dividends_received = 5000 * (4 + 6) = 50000
+        self.assertAlmostEqual(row["shares_purchased"], 5000)
+        self.assertAlmostEqual(row["dividends_received"], 50000)
+
+    def test_weighted_columns_are_weight_times_return(self):
+        """weighted_* = weight * *_return for each row."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-02", "2024-01-03",
+                "2024-01-02", "2024-01-03",
+            ]),
+            "Ticker": ["A", "A", "B", "B"],
+            "Price": [100.0, 120.0, 50.0, 55.0],
+        })
+        result = calculate_per_company_returns(
+            prices, {"A": 0.7, "B": 0.3},
+        )
+        result = tracker["per_company_per_year"]
+        for _, row in result.iterrows():
+            self.assertAlmostEqual(
+                row["weighted_price"],
+                row["price_return"] * row["weight"],
+                places=10,
+            )
+            self.assertAlmostEqual(
+                row["weighted_dividend"],
+                row["dividend_return"] * row["weight"],
+                places=10,
+            )
+            self.assertAlmostEqual(
+                row["weighted_total"],
+                row["total_return"] * row["weight"],
+                places=10,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Dividends by year long-format tests
+# ---------------------------------------------------------------------------
+
+class TestDividendsByYearLongFormat(unittest.TestCase):
+    """Tests for the long-format dividends table."""
+
+    def test_basic_long_format(self):
+        """Two tickers, two years â€” correct rows."""
+        dividends = pd.DataFrame({
+            "Ticker": ["A", "B", "A"],
+            "periodEnd": pd.to_datetime(["2024-03-01", "2024-06-01", "2025-03-01"]),
+            "PerShare_Dividends": [5.0, 3.0, 6.0],
+        })
+        from src.orchestrator.common.backtesting import (
+            calculate_dividends_by_company_year_long,
+        )
+        result = calculate_dividends_by_company_year_long(dividends)
+        self.assertIn("Year", result.columns)
+        self.assertIn("Ticker", result.columns)
+        self.assertIn("Amount", result.columns)
+        self.assertIn("Total", result.columns)
+        # 2024: A=5, B=3; 2025: A=6
+        self.assertEqual(len(result), 3)
+        totals = result.groupby("Year")["Total"].first()
+        self.assertAlmostEqual(totals.loc[2024], 8.0)
+        self.assertAlmostEqual(totals.loc[2025], 6.0)
+
+    def test_with_shares(self):
+        """Amounts should be multiplied by shares when provided."""
+        dividends = pd.DataFrame({
+            "Ticker": ["A", "B"],
+            "periodEnd": pd.to_datetime(["2024-03-01", "2024-06-01"]),
+            "PerShare_Dividends": [5.0, 3.0],
+        })
+        from src.orchestrator.common.backtesting import (
+            calculate_dividends_by_company_year_long,
+        )
+        result = calculate_dividends_by_company_year_long(
+            dividends, shares_purchased={"A": 100, "B": 200},
+        )
+        row_a = result[(result["Year"] == 2024) & (result["Ticker"] == "A")]
+        row_b = result[(result["Year"] == 2024) & (result["Ticker"] == "B")]
+        self.assertAlmostEqual(row_a["Amount"].iloc[0], 500.0)
+        self.assertAlmostEqual(row_b["Amount"].iloc[0], 600.0)
+
+    def test_empty_input(self):
+        """Empty dividends => empty DataFrame with correct columns."""
+        from src.orchestrator.common.backtesting import (
+            calculate_dividends_by_company_year_long,
+        )
+        result = calculate_dividends_by_company_year_long(None)
+        self.assertTrue(result.empty)
+        for col in ("Year", "Ticker", "Amount", "Total"):
+            self.assertIn(col, result.columns)
+
+
+# ---------------------------------------------------------------------------
+# Per-company per-year (new primary calculation engine)
+# ---------------------------------------------------------------------------
+
+class TestPerCompanyPerYear(unittest.TestCase):
+    """Tests for the per-company-per-year primary calculation."""
+
+    def _make_data(self):
+        """Two tickers, two years."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-02", "2024-01-03", "2024-12-30",
+                "2025-01-02", "2025-12-30",
+                "2024-01-02", "2024-01-03", "2024-12-30",
+                "2025-01-02", "2025-12-30",
+            ]),
+            "Ticker": ["A"] * 5 + ["B"] * 5,
+            "Price": [
+                100.0, 102.0, 110.0,  # A 2024
+                112.0, 120.0,          # A 2025
+                200.0, 198.0, 210.0,  # B 2024
+                212.0, 220.0,          # B 2025
+            ],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["A", "A", "B"],
+            "periodEnd": pd.to_datetime(["2024-06-30", "2025-06-30", "2024-12-31"]),
+            "PerShare_Dividends": [5.0, 6.0, 3.0],
+        })
+        return prices, dividends
+
+    def test_returns_rows_for_each_year_and_ticker_plus_cash(self):
+        prices, dividends = self._make_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 0.5, "B": 0.5}, dividends,
+            initial_capital=1_000_000,
+        )
+        result = tracker["per_company_per_year"]
+        # 2 tickers + 1 cash row per year Ã— 2 years = 6 rows
+        self.assertEqual(len(result), 6)
+        self.assertIn("CASH", list(result["Ticker"]))
+
+    def test_price_return_correct(self):
+        prices, dividends = self._make_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 1.0}, dividends,
+            initial_capital=1_000_000,
+        )
+        result = tracker["per_company_per_year"]
+        row_2024 = result[(result["Year"] == 2024) & (result["Ticker"] == "A")].iloc[0]
+        # A 2024: Start=100, End=110 â†’ price return = 10%
+        self.assertAlmostEqual(row_2024["Price_Return_Pct"], 0.10, places=4)
+
+    def test_dividend_return_correct(self):
+        prices, dividends = self._make_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 1.0}, dividends,
+            initial_capital=1_000_000,
+        )
+        result = tracker["per_company_per_year"]
+        row_2024 = result[(result["Year"] == 2024) & (result["Ticker"] == "A")].iloc[0]
+        # A 2024: Div/Share=5, Start Price=100 â†’ dividend return = 5%
+        self.assertAlmostEqual(row_2024["Dividend_Return_Pct"], 0.05, places=4)
+
+    def test_total_return_is_price_plus_dividend(self):
+        prices, dividends = self._make_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 0.5, "B": 0.5}, dividends,
+            initial_capital=1_000_000,
+        )
+        result = tracker["per_company_per_year"]
+        for _, row in result.iterrows():
+            if row["Ticker"] == "CASH":
+                continue
+            self.assertAlmostEqual(
+                row["Total_Return_Pct"],
+                row["Price_Return_Pct"] + row["Dividend_Return_Pct"],
+                places=10,
+            )
+
+    def test_cash_row_accumulates_dividends(self):
+        prices, dividends = self._make_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 0.5, "B": 0.5}, dividends,
+            initial_capital=1_000_000,
+        )
+        result = tracker["per_company_per_year"]
+        # Year 2024 cash row
+        cash_2024 = result[(result["Year"] == 2024) & (result["Ticker"] == "CASH")].iloc[0]
+        self.assertGreater(cash_2024["Ending_Shares"], 0)  # dividends received
+        self.assertAlmostEqual(cash_2024["Starting_Shares"], 0.0)  # starts at 0
+
+        # Year 2025 cash row â€” carries forward
+        cash_2025 = result[(result["Year"] == 2025) & (result["Ticker"] == "CASH")].iloc[0]
+        self.assertAlmostEqual(cash_2025["Starting_Shares"], cash_2024["Ending_Shares"])
+        self.assertGreater(cash_2025["Ending_Shares"], cash_2025["Starting_Shares"])
+
+    def test_shares_dont_change(self):
+        """Buy-and-hold: ending shares == starting shares for tickers."""
+        prices, dividends = self._make_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 0.5, "B": 0.5}, dividends,
+            initial_capital=1_000_000,
+        )
+        result = tracker["per_company_per_year"]
+        for _, row in result.iterrows():
+            if row["Ticker"] == "CASH":
+                continue
+            self.assertAlmostEqual(row["Starting_Shares"], row["Ending_Shares"], places=4)
+
+    def test_dividends_received_correct(self):
+        prices, dividends = self._make_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 1.0}, dividends,
+            initial_capital=1_000_000,
+        )
+        result = tracker["per_company_per_year"]
+        row_2024 = result[(result["Year"] == 2024) & (result["Ticker"] == "A")].iloc[0]
+        # Shares = 1,000,000 / 100 = 10,000
+        # Div/Share = 5
+        # Total Divs = 10,000 Ã— 5 = 50,000
+        self.assertAlmostEqual(row_2024["Total_Dividends_Received"], 50_000, places=0)
+
+    def test_market_values_correct(self):
+        prices, dividends = self._make_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 1.0}, dividends,
+            initial_capital=500_000,
+        )
+        result = tracker["per_company_per_year"]
+        row_2024 = result[(result["Year"] == 2024) & (result["Ticker"] == "A")].iloc[0]
+        # Shares = 500,000 / 100 = 5,000
+        # Start Mkt Val = 5,000 Ã— 100 = 500,000
+        # End Mkt Val = 5,000 Ã— 110 = 550,000
+        self.assertAlmostEqual(row_2024["Starting_Market_Value"], 500_000, places=0)
+        self.assertAlmostEqual(row_2024["Ending_Market_Value"], 550_000, places=0)
+
+    def test_empty_input(self):
+        """Empty prices should produce empty result."""
+        prices = pd.DataFrame({"Date": [], "Ticker": [], "Price": []})
+        prices["Date"] = pd.to_datetime(prices["Date"])
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 1.0}, None, initial_capital=1_000_000,
+        )
+        self.assertTrue(result.empty)
+
+
+class TestPortfolioMetricsFromPerCompany(unittest.TestCase):
+    """Verify portfolio metrics from build_daily_portfolio_tracker."""
+
+    def test_dividend_return_is_nonzero_when_dividends_exist(self):
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-02", "2024-12-30",
+                "2024-01-02", "2024-12-30",
+            ]),
+            "Ticker": ["A", "A", "B", "B"],
+            "Price": [100.0, 110.0, 200.0, 220.0],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["A", "B"],
+            "periodEnd": pd.to_datetime(["2024-06-30", "2024-12-31"]),
+            "PerShare_Dividends": [5.0, 3.0],
+        })
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 0.5, "B": 0.5}, dividends,
+            initial_capital=1_000_000,
+        )
+        metrics = tracker["metrics"]
+        self.assertGreater(metrics["portfolio_dividend_return"], 0.0)
+        self.assertAlmostEqual(
+            metrics["total_return"],
+            metrics["portfolio_price_return"] + metrics["portfolio_dividend_return"],
+            places=10,
+        )
+
+    def test_total_return_matches_manual_calculation(self):
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-02", "2024-12-30",
+            ]),
+            "Ticker": ["A", "A"],
+            "Price": [100.0, 115.0],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-06-30"]),
+            "PerShare_Dividends": [5.0],
+        })
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 1.0}, dividends, initial_capital=1_000_000,
+        )
+        metrics = tracker["metrics"]
+        # Shares = 10,000, End Mkt = 1,150,000, Cash = 50,000
+        # Final = 1,200,000, Return = 20%
+        self.assertAlmostEqual(metrics["total_return"], 0.20, places=4)
+        self.assertAlmostEqual(metrics["portfolio_dividend_return"], 0.05, places=4)
+        self.assertAlmostEqual(metrics["portfolio_price_return"], 0.15, places=4)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+

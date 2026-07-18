@@ -1,4 +1,4 @@
-"""
+﻿"""
 Backtesting module for portfolio strategy evaluation.
 
 Receives a date range and a portfolio (tickers + weights), calculates total
@@ -6,11 +6,11 @@ returns (price + dividends) over the period, and compares against a benchmark.
 
 Data sources
 ------------
-* ``stock_prices`` table  — daily prices (Date, Ticker, Currency, Price).
-* ``ShareMetrics`` table — per-share dividends (``Dividend paid per share``),
+* ``stock_prices`` table  â€” daily prices (Date, Ticker, Currency, Price).
+* ``ShareMetrics`` table â€” per-share dividends (``Dividend paid per share``),
     linked via ``docID`` to
     ``FinancialStatements`` for ``periodEnd`` and ``Company_Code``.
-* ``companyInfo`` table — maps ``Company_Code`` ↔ ``Company_Ticker``.
+* ``companyInfo`` table â€” maps ``Company_Code`` â†” ``Company_Ticker``.
 
 The entry point :func:`run_backtest` is called from the orchestrator as a
 workflow step.
@@ -75,9 +75,9 @@ def resolve_portfolio_allocations(
 
     Supports three allocation modes per ticker:
 
-    * ``weight`` – fraction of total portfolio (e.g. 0.5 = 50 %).
-    * ``shares`` – fixed number of shares (requires start price).
-    * ``value``  – fixed currency amount (e.g. 10 000 JPY).
+    * ``weight`` â€“ fraction of total portfolio (e.g. 0.5 = 50 %).
+    * ``shares`` â€“ fixed number of shares (requires start price).
+    * ``value``  â€“ fixed currency amount (e.g. 10 000 JPY).
 
     When the portfolio contains *only* weight-mode entries **and** no
     ``initial_capital`` is provided, the weights are returned as-is
@@ -85,23 +85,23 @@ def resolve_portfolio_allocations(
     capital amounts and then normalised.
 
     Args:
-        portfolio_config: Mapping of ticker → allocation spec.
-        start_prices: Mapping of ticker → opening price on the first day.
+        portfolio_config: Mapping of ticker â†’ allocation spec.
+        start_prices: Mapping of ticker â†’ opening price on the first day.
         initial_capital: User-specified starting capital.  ``0`` means
             "derive automatically".
 
     Returns:
         A 3-tuple ``(portfolio_weights, effective_capital, warnings)``:
 
-        * **portfolio_weights** – ``dict[str, float]`` normalised weights
+        * **portfolio_weights** â€“ ``dict[str, float]`` normalised weights
           that sum to 1.0.
-        * **effective_capital** – the total capital implied by the
+        * **effective_capital** â€“ the total capital implied by the
           resolved allocations (may differ from *initial_capital*
           depending on the input configuration).
-        * **warnings** – list of human-readable warning strings.
+        * **warnings** â€“ list of human-readable warning strings.
     """
-    weight_entries: dict[str, float] = {}   # ticker → weight fraction
-    fixed_entries: dict[str, float] = {}    # ticker → capital amount
+    weight_entries: dict[str, float] = {}   # ticker â†’ weight fraction
+    fixed_entries: dict[str, float] = {}    # ticker â†’ capital amount
     warnings: list[str] = []
 
     for ticker, spec in portfolio_config.items():
@@ -115,7 +115,7 @@ def resolve_portfolio_allocations(
                 fixed_entries[ticker] = val * price
             else:
                 warnings.append(
-                    f"No start-price data for '{ticker}' — "
+                    f"No start-price data for '{ticker}' â€” "
                     f"cannot convert {val:.0f} shares to capital; skipping."
                 )
         elif mode == "value":
@@ -124,30 +124,30 @@ def resolve_portfolio_allocations(
     total_weight_frac = sum(weight_entries.values())
     total_fixed_capital = sum(fixed_entries.values())
 
-    # ── Fast path: pure weight-only portfolio, no initial_capital ─────
+    # â”€â”€ Fast path: pure weight-only portfolio, no initial_capital â”€â”€â”€â”€â”€
     all_weight_only = (not fixed_entries)
     if all_weight_only and initial_capital <= 0:
-        # Classic behaviour — return weights directly, normalised
+        # Classic behaviour â€” return weights directly, normalised
         w_sum = total_weight_frac or 1.0
         weights = {t: w / w_sum for t, w in weight_entries.items()}
         return weights, 0.0, warnings
 
-    # ── Mixed or fixed allocations: convert everything to capital ─────
+    # â”€â”€ Mixed or fixed allocations: convert everything to capital â”€â”€â”€â”€â”€
     if initial_capital > 0:
         effective_capital = initial_capital
     elif total_weight_frac < 1.0 and total_fixed_capital > 0:
-        # Derive: weight_frac * C + fixed = C  →  C = fixed / (1 - W)
+        # Derive: weight_frac * C + fixed = C  â†’  C = fixed / (1 - W)
         effective_capital = total_fixed_capital / (1.0 - total_weight_frac)
     elif total_fixed_capital > 0:
-        # Weights already ≥ 100 %, treat fixed as additional
+        # Weights already â‰¥ 100 %, treat fixed as additional
         effective_capital = total_fixed_capital
         if total_weight_frac > 0:
             warnings.append(
                 f"Weight-mode tickers sum to {total_weight_frac * 100:.1f}% "
-                f"(≥ 100 %); fixed allocations are added on top."
+                f"(â‰¥ 100 %); fixed allocations are added on top."
             )
     else:
-        # Only weight-mode with explicit initial_capital=0 — use nominal
+        # Only weight-mode with explicit initial_capital=0 â€” use nominal
         effective_capital = 1_000_000.0
 
     allocations: dict[str, float] = {}
@@ -208,7 +208,7 @@ def get_portfolio_prices(
             raise ValueError("db_path is required when no active connection is provided.")
         conn = sqlite3.connect(db_path)
     try:
-        # Build ticker variants — try bare, with .T, and without .T
+        # Build ticker variants â€” try bare, with .T, and without .T
         # so that both "1911" and "19110" match "1911.T" in the DB.
         variants: list[str] = []
         variant_to_original: dict[str, str] = {}
@@ -373,8 +373,8 @@ def get_dividend_data(
         if not ci_code_col:
             ci_code_col = "Company_Code"
 
-        # ShareMetrics schema path: ShareMetrics(docID, Dividend paid per share) →
-        # FinancialStatements(docID, Company_Code, periodEnd) → companyInfo.
+        # ShareMetrics schema path: ShareMetrics(docID, Dividend paid per share) â†’
+        # FinancialStatements(docID, Company_Code, periodEnd) â†’ companyInfo.
         if "docID" in col_names:
             query = (
                 f"SELECT c.Company_Ticker AS Ticker, fs.periodEnd, "
@@ -451,7 +451,8 @@ def get_ticker_currency(
             rows = conn.execute(
                 f"SELECT DISTINCT Ticker, Currency FROM Stock_Prices "
                 f"WHERE Ticker IN ({placeholders}) "
-                f"AND Currency IS NOT NULL AND Currency != ''"
+                f"AND Currency IS NOT NULL AND Currency != ''",
+                variants,
             ).fetchall()
         except Exception as exc:
             logger.warning("Could not query ticker currencies: %s", exc)
@@ -514,23 +515,41 @@ def convert_prices_to_base_currency(
                 )
                 cache[pair_key] = {}
 
-        fx_series = cache[pair_key]
-        if not fx_series:
+        fx_dict = cache[pair_key]
+        if not fx_dict:
             logger.warning(
                 "No FX data for %s->%s; using native currency for '%s'.",
                 native, bc, ticker,
             )
             continue
 
+        # Build a forward-filled FX Series to handle missing dates (holidays).
+        # Reindex to cover the FULL price date range so dates beyond the
+        # FX data range use the last known rate (vital for multi-year
+        # backtests where price data may extend past available FX data).
+        fx_dates = sorted(fx_dict.keys())
+        fx_vals = [fx_dict[d] for d in fx_dates]
+        fx_s = pd.Series(fx_vals, index=pd.to_datetime(fx_dates)).sort_index()
+        price_dates = df.loc[df["Ticker"] == ticker, "Date"]
+        full_range = pd.date_range(
+            min(fx_s.index[0], price_dates.min()),
+            max(fx_s.index[-1], price_dates.max()),
+            freq="D",
+        )
+        fx_s = fx_s.reindex(full_range, method="ffill")
+
         ticker_mask = df["Ticker"] == ticker
         for idx in df[ticker_mask].index:
             date_val = df.at[idx, "Date"]
             if isinstance(date_val, pd.Timestamp):
-                date_str = date_val.strftime("%Y-%m-%d")
+                date_key = date_val
             else:
-                date_str = str(date_val)
-            rate = fx_series.get(date_str)
-            if rate is not None and rate > 0:
+                date_key = pd.Timestamp(str(date_val))
+            try:
+                rate = fx_s.loc[date_key]
+            except KeyError:
+                continue
+            if rate > 0:
                 df.at[idx, "Price"] = df.at[idx, "Price"] * rate
 
     df["Currency"] = bc
@@ -579,18 +598,33 @@ def convert_dividends_to_base_currency(
                 )
                 cache[pair_key] = {}
 
-        fx_series = cache[pair_key]
-        if not fx_series:
+        fx_dict = cache[pair_key]
+        if not fx_dict:
             continue
+
+        # Build forward-filled FX Series; fall back to closest rate at edges
+        fx_dates = sorted(fx_dict.keys())
+        fx_vals = [fx_dict[d] for d in fx_dates]
+        fx_s = pd.Series(fx_vals, index=pd.to_datetime(fx_dates)).sort_index()
 
         period_end = row["periodEnd"]
         if isinstance(period_end, pd.Timestamp):
-            date_str = period_end.strftime("%Y-%m-%d")
+            date_key = period_end
         else:
-            date_str = str(period_end)[:10]
+            date_key = pd.Timestamp(str(period_end)[:10])
 
-        rate = fx_series.get(date_str)
-        if rate is not None and rate > 0:
+        # Find the rate: exact match, or nearest available (ffill/bfill)
+        if date_key in fx_s.index:
+            rate = fx_s.loc[date_key]
+        elif date_key < fx_s.index[0]:
+            rate = fx_s.iloc[0]  # use first available rate
+        elif date_key > fx_s.index[-1]:
+            rate = fx_s.iloc[-1]  # use last available rate
+        else:
+            # Date within range but on a gap — interpolate
+            pos = fx_s.index.searchsorted(date_key)
+            rate = fx_s.iloc[pos - 1]  # last known rate before date_key
+        if rate > 0:
             df.at[idx, "PerShare_Dividends"] = (
                 row["PerShare_Dividends"] * rate
             )
@@ -681,6 +715,8 @@ def calculate_portfolio_returns(
     prices_df: pd.DataFrame,
     portfolio_weights: dict[str, float],
     dividends_df: pd.DataFrame | None = None,
+    *,
+    initial_capital: float = 0.0,
 ) -> pd.DataFrame:
     """Calculate weighted daily portfolio returns including dividends.
 
@@ -688,17 +724,26 @@ def calculate_portfolio_returns(
     daily percentage returns for each ticker, applies *portfolio_weights*,
     and adds any per-share dividend contributions on the dates they were paid.
 
+    When *initial_capital* > 0 the calculation is **shares-based**:
+    concrete share counts are derived from the weights and capital, and
+    dividends are tracked as actual cash received.  This guarantees the
+    portfolio total return matches the sum of the per-company weighted
+    totals produced by :func:`calculate_per_company_returns`.
+
     Args:
         prices_df: Long DataFrame with ``Date``, ``Ticker``, ``Price``.
-        portfolio_weights: Mapping of ticker → weight (should sum to 1.0).
+        portfolio_weights: Mapping of ticker â†’ weight (should sum to 1.0).
         dividends_df: Optional DataFrame with ``Ticker``, ``periodEnd``,
             ``PerShare_Dividends``.
+        initial_capital: Total starting capital.  When > 0 the shares-based
+            path is used, producing values directly comparable to
+            :func:`calculate_per_company_returns`.
 
     Returns:
         DataFrame indexed by ``Date`` with columns:
 
-        * ``portfolio_return`` — weighted daily return.
-        * ``cumulative_return`` — cumulative product of (1 + daily return).
+        * ``portfolio_return`` â€” weighted daily return.
+        * ``cumulative_return`` â€” cumulative product of (1 + daily return).
     """
     # Pivot to wide format: one column per ticker
     price_matrix = prices_df.pivot_table(
@@ -724,34 +769,104 @@ def calculate_portfolio_returns(
     if weights.sum() > 0:
         weights = weights / weights.sum()
 
-    # Normalise each ticker's price to its initial value
-    initial_prices = price_matrix[tickers_in_data].iloc[0]
-    normalised = price_matrix[tickers_in_data].div(initial_prices, axis=1)
+    initial_prices_series = price_matrix[tickers_in_data].iloc[0]
 
-    # Portfolio value = weighted sum of normalised price series
+    # â”€â”€ Shares-based calculation (explicit, transparent) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if initial_capital > 0:
+        # Compute shares purchased for each ticker at the start
+        shares: dict[str, float] = {}
+        for t in tickers_in_data:
+            p0 = float(initial_prices_series[t])
+            if p0 > 0:
+                shares[t] = (float(weights[t]) * initial_capital) / p0
+            else:
+                shares[t] = 0.0
+
+        # Portfolio market value each day = sum(shares Ã— price)
+        market_value = pd.Series(0.0, index=price_matrix.index)
+        for t in tickers_in_data:
+            if shares[t] > 0:
+                market_value += shares[t] * price_matrix[t].fillna(method="ffill")
+
+        # Cumulative dividends received (held as cash)
+        cumul_dividends = pd.Series(0.0, index=price_matrix.index)
+        if dividends_df is not None and not dividends_df.empty:
+            idx = price_matrix.index
+            for _, row in dividends_df.iterrows():
+                ticker = row["Ticker"]
+                pay_date = row["periodEnd"]
+                div_amount = float(row["PerShare_Dividends"])
+                if ticker not in shares or shares[ticker] <= 0:
+                    continue
+                if div_amount <= 0:
+                    continue
+                # Map payment date to next available trading day
+                pos = idx.searchsorted(pay_date, side="left")
+                if pos >= len(idx):
+                    logger.debug(
+                        "Dividend for %s on %s falls after last "
+                        "trading day %s; skipped.",
+                        ticker, pay_date.date(), idx[-1].date(),
+                    )
+                    continue
+                effective_date = idx[pos]
+                cash = shares[ticker] * div_amount
+                cumul_dividends.loc[
+                    cumul_dividends.index >= effective_date
+                ] += cash
+
+        # Total portfolio value = market value + cash from dividends
+        portfolio_value = market_value + cumul_dividends
+        initial_portfolio_value = float(portfolio_value.iloc[0])
+
+        daily_returns = portfolio_value.pct_change()
+        cumulative_return = portfolio_value / initial_portfolio_value
+
+        result = pd.DataFrame(
+            {
+                "portfolio_return": daily_returns,
+                "cumulative_return": cumulative_return,
+            }
+        )
+        result = result.iloc[1:]  # drop first NaN from pct_change
+        return result
+
+    # â”€â”€ Normalised-price calculation (legacy, weight-only) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    normalised = price_matrix[tickers_in_data].div(initial_prices_series, axis=1)
     portfolio_value = normalised.mul(weights, axis=1).sum(axis=1)
 
-    # Save the price-only initial value (before adding dividends) so that
-    # cumulative_return is always measured relative to the original
-    # investment, not an inflated base that includes day-0 dividend cash.
     initial_portfolio_value = portfolio_value.iloc[0]
 
     # Add cumulative dividend cash flows (held as cash, not reinvested)
+    # Dividends whose pay_date falls on a non-trading day (weekend / holiday)
+    # are mapped forward to the next available trading day.
     if dividends_df is not None and not dividends_df.empty:
         div_cash = pd.Series(0.0, index=portfolio_value.index)
+        idx = portfolio_value.index
         for _, row in dividends_df.iterrows():
             ticker = row["Ticker"]
             pay_date = row["periodEnd"]
-            div_amount = row["PerShare_Dividends"]
-            if ticker in tickers_in_data and pay_date in portfolio_value.index:
-                init_price = initial_prices[ticker]
-                if init_price > 0:
-                    # Cash per unit portfolio = weight * dividend / initial_price
-                    cash = weights[ticker] * div_amount / init_price
-                    div_cash.loc[div_cash.index >= pay_date] += cash
+            div_amount = float(row["PerShare_Dividends"])
+            if ticker not in tickers_in_data:
+                continue
+            if div_amount <= 0:
+                continue
+            # Find the first trading day on or after the payment date.
+            pos = idx.searchsorted(pay_date, side="left")
+            if pos >= len(idx):
+                logger.debug(
+                    "Dividend for %s on %s falls after last trading day "
+                    "%s; skipped.",
+                    ticker, pay_date.date(), idx[-1].date(),
+                )
+                continue
+            effective_date = idx[pos]
+            init_price = initial_prices_series[ticker]
+            if init_price > 0:
+                cash = weights[ticker] * div_amount / init_price
+                div_cash.loc[div_cash.index >= effective_date] += cash
         portfolio_value = portfolio_value + div_cash
 
-    # Derive daily returns and cumulative return from the value series
     daily_returns = portfolio_value.pct_change()
     cumulative_return = portfolio_value / initial_portfolio_value
 
@@ -761,8 +876,7 @@ def calculate_portfolio_returns(
             "cumulative_return": cumulative_return,
         }
     )
-    # Drop the first NaN row from pct_change
-    result = result.iloc[1:]
+    result = result.iloc[1:]  # drop first NaN from pct_change
     return result
 
 
@@ -770,19 +884,22 @@ def calculate_return_decomposition(
     prices_df: pd.DataFrame,
     portfolio_weights: dict[str, float],
     dividends_df: pd.DataFrame | None = None,
+    *,
+    initial_capital: float = 0.0,
 ) -> dict[str, pd.DataFrame]:
     """Decompose portfolio returns into price-only and dividend components.
 
     Computes three cumulative time series:
-    * **total** — the full return including dividends.
-    * **price_only** — return from share-price changes alone.
-    * **dividend_only** — the cumulative contribution of dividends.
+    * **total** â€” the full return including dividends.
+    * **price_only** â€” return from share-price changes alone.
+    * **dividend_only** â€” the cumulative contribution of dividends.
 
     Args:
         prices_df: Long DataFrame with ``Date``, ``Ticker``, ``Price``.
-        portfolio_weights: Mapping of ticker → weight (should sum to 1.0).
+        portfolio_weights: Mapping of ticker â†’ weight (should sum to 1.0).
         dividends_df: Optional DataFrame with ``Ticker``, ``periodEnd``,
             ``PerShare_Dividends``.
+        initial_capital: Forwarded to :func:`calculate_portfolio_returns`.
 
     Returns:
         Dictionary with keys ``total``, ``price_only``, ``dividend_only``
@@ -790,10 +907,16 @@ def calculate_return_decomposition(
         ``daily_return`` and ``cumulative_return`` columns.
     """
     # Total return (price + dividends)
-    total_df = calculate_portfolio_returns(prices_df, portfolio_weights, dividends_df)
+    total_df = calculate_portfolio_returns(
+        prices_df, portfolio_weights, dividends_df,
+        initial_capital=initial_capital,
+    )
 
     # Price-only return (no dividends)
-    price_only_df = calculate_portfolio_returns(prices_df, portfolio_weights, None)
+    price_only_df = calculate_portfolio_returns(
+        prices_df, portfolio_weights, None,
+        initial_capital=initial_capital,
+    )
 
     # Additive decomposition: dividend contribution = total - price_only
     if not total_df.empty and not price_only_df.empty:
@@ -844,7 +967,7 @@ def calculate_per_company_returns(
 
     Args:
         prices_df: Long DataFrame with ``Date``, ``Ticker``, ``Price``.
-        portfolio_weights: Mapping of ticker → weight.
+        portfolio_weights: Mapping of ticker â†’ weight.
         dividends_df: Optional dividends DataFrame.
         initial_capital: Total starting capital.  When > 0 the result
             includes investment-size columns.
@@ -880,12 +1003,14 @@ def calculate_per_company_returns(
 
         # Dividend return for this ticker (relative to initial price)
         div_return = 0.0
+        total_divs_per_share = 0.0
         if dividends_df is not None and not dividends_df.empty:
             tk_divs = dividends_df[dividends_df["Ticker"] == ticker]
             for _, drow in tk_divs.iterrows():
                 div_amount = drow["PerShare_Dividends"]
                 if div_amount > 0 and start_price > 0:
                     div_return += div_amount / start_price
+                    total_divs_per_share += div_amount
 
         total_return = price_return + div_return
 
@@ -907,7 +1032,8 @@ def calculate_per_company_returns(
             shares = capital_invested / start_price if start_price else 0.0
             rec["capital_invested"] = capital_invested
             rec["shares_purchased"] = shares
-            rec["dividends_received"] = shares * (div_return * start_price)
+            # Direct calculation: shares Ã— sum of per-share dividends
+            rec["dividends_received"] = shares * total_divs_per_share
             rec["market_value"] = shares * end_price
 
         records.append(rec)
@@ -993,16 +1119,16 @@ def calculate_dividends_by_company_year(
     dividends_df: pd.DataFrame | None,
     shares_purchased: dict[str, float] | None = None,
 ) -> pd.DataFrame:
-    """Pivot dividends into a Year × Ticker table.
+    """Pivot dividends into a Year Ã— Ticker table.
 
     When *shares_purchased* is provided the values represent total cash
-    dividends received (per-share dividend × shares held).  Otherwise the
+    dividends received (per-share dividend Ã— shares held).  Otherwise the
     raw per-share dividend amounts are shown.
 
     Args:
         dividends_df: DataFrame with ``Ticker``, ``periodEnd``,
             ``PerShare_Dividends``.
-        shares_purchased: Optional mapping of ticker → number of shares
+        shares_purchased: Optional mapping of ticker â†’ number of shares
             held.  When given, each per-share dividend is multiplied by
             the corresponding share count so that values (and the
             ``Total`` column) represent actual cash received.
@@ -1036,6 +1162,399 @@ def calculate_dividends_by_company_year(
     return pivot
 
 
+def calculate_dividends_by_company_year_long(
+    dividends_df: pd.DataFrame | None,
+    shares_purchased: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Return dividends in long format: Year, Ticker, Amount, Total.
+
+    An alternative to the wide pivot table produced by
+    :func:`calculate_dividends_by_company_year`.  Each row is a single
+    (Year, Ticker) pair, making it easier to read with many tickers.
+
+    Args:
+        dividends_df: DataFrame with ``Ticker``, ``periodEnd``,
+            ``PerShare_Dividends``.
+        shares_purchased: Optional mapping of ticker â†’ number of shares
+            held.  When given, ``Amount`` represents total cash received
+            rather than per-share dividends.
+
+    Returns:
+        DataFrame with columns ``Year``, ``Ticker``, ``Amount``, ``Total``,
+        sorted by Year and Ticker.
+    """
+    if dividends_df is None or dividends_df.empty:
+        return pd.DataFrame(columns=["Year", "Ticker", "Amount", "Total"])
+
+    df = dividends_df.copy()
+    df["Year"] = df["periodEnd"].dt.year
+
+    if shares_purchased:
+        shares_series = df["Ticker"].map(shares_purchased).fillna(0.0)
+        df["Amount"] = df["PerShare_Dividends"] * shares_series
+    else:
+        df["Amount"] = df["PerShare_Dividends"]
+
+    result = df.groupby(["Year", "Ticker"], as_index=False)["Amount"].sum()
+
+    # Add year totals (same value repeated for all rows in a year)
+    year_totals = result.groupby("Year")["Amount"].transform("sum")
+    result["Total"] = year_totals
+
+    return result.sort_values(["Year", "Ticker"]).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+#  5. DAILY PORTFOLIO TRACKER (SINGLE SOURCE OF TRUTH)
+# ---------------------------------------------------------------------------
+
+
+def build_daily_portfolio_tracker(
+    prices_df: pd.DataFrame,
+    portfolio_weights: dict[str, float],
+    dividends_df: pd.DataFrame | None = None,
+    *,
+    initial_capital: float = 1_000_000.0,
+    base_currency: str = "",
+    risk_free_rate: float = 0.0,
+) -> dict:
+    """Build a **daily** portfolio time series - the single source of truth.
+
+    Tracks every ticker's price, shares, and market value each trading day,
+    along with the cash balance (accumulated dividends).  **All** other
+    outputs - performance metrics, per-company-per-year aggregates, chart
+    data - are derived from this daily tracker, guaranteeing they are
+    internally consistent.
+
+    Missing price observations are forward-filled (last known price carried
+    forward).  Dividends paid on non-trading days are mapped to the next
+    available trading day.
+
+    Parameters
+    ----------
+    prices_df:
+        Long DataFrame with ``Date``, ``Ticker``, ``Price``.
+    portfolio_weights:
+        Mapping of ticker -> weight (normalised to sum to 1.0 internally).
+    dividends_df:
+        Optional DataFrame with ``Ticker``, ``periodEnd``,
+        ``PerShare_Dividends``.
+    initial_capital:
+        Total starting capital.
+    base_currency:
+        Currency code for the cash-row label (e.g. ``"JPY"``).
+
+    Returns
+    -------
+    dict
+        ``daily`` (:class:`~pd.DataFrame`) - one row per trading day with
+        columns for each ticker's price, shares, market value, plus
+        ``cash``, ``portfolio_mktval``, ``portfolio_total``,
+        ``daily_return``, ``cumulative_return``, and price-only /
+        dividend-decomposition columns.
+
+        ``per_company_per_year`` (:class:`~pd.DataFrame`) - yearly
+        aggregate derived from the daily tracker.
+
+        ``metrics`` (:class:`dict`) - portfolio performance metrics
+        (total_return, price_return, dividend_return, etc.).
+    """
+    # --- 1. Filter to tickers with price data --------------------------
+    available = set(prices_df["Ticker"].unique())
+    active = {t: w for t, w in portfolio_weights.items() if t in available}
+    if not active:
+        return {"daily": pd.DataFrame(), "per_company_per_year": pd.DataFrame(),
+                "metrics": {}}
+    w_sum = sum(active.values())
+    if w_sum > 0:
+        active = {t: w / w_sum for t, w in active.items()}
+
+    tickers = list(active.keys())
+    cash_label = base_currency or "CASH"
+
+    # --- 2. Pivot prices -> wide daily matrix (forward-fill gaps) ------
+    price_matrix = prices_df.pivot_table(
+        index="Date", columns="Ticker", values="Price", aggfunc="last",
+    )
+    price_matrix = price_matrix.sort_index()
+    price_matrix = price_matrix.ffill()  # interpolate missing prices
+
+    # Keep only portfolio tickers
+    tickers_in_data = [t for t in tickers if t in price_matrix.columns]
+    price_matrix = price_matrix[tickers_in_data]
+
+    # --- 3. Compute shares for each ticker (buy-and-hold) -------------
+    initial_prices: dict[str, float] = {}
+    shares: dict[str, float] = {}
+    for t in tickers_in_data:
+        p0 = float(price_matrix[t].iloc[0])
+        if pd.isna(p0) or p0 <= 0:
+            continue
+        initial_prices[t] = p0
+        shares[t] = (active[t] * initial_capital) / p0
+
+    # --- 4. Daily market value per ticker -----------------------------
+    daily_mktval: dict[str, pd.Series] = {}
+    for t, s in shares.items():
+        daily_mktval[t] = price_matrix[t] * s
+
+    # --- 5. Cash balance (accumulated dividends) ----------------------
+    cash_series = pd.Series(0.0, index=price_matrix.index)
+    dividend_events = pd.Series(0.0, index=price_matrix.index)
+    # Per-ticker daily dividend cash (for visibility / debugging)
+    per_ticker_div_cash: dict[str, pd.Series] = {
+        t: pd.Series(0.0, index=price_matrix.index) for t in shares
+    }
+
+    if dividends_df is not None and not dividends_df.empty:
+        idx = price_matrix.index
+        div_tickers_in_df = set(dividends_df["Ticker"].unique())
+        div_tickers_matched = div_tickers_in_df & set(shares.keys())
+        div_tickers_unmatched = div_tickers_in_df - set(shares.keys())
+        if div_tickers_unmatched:
+            logger.warning(
+                "Dividends found for tickers not in portfolio shares: %s",
+                sorted(div_tickers_unmatched),
+            )
+        logger.debug(
+            "Processing dividends: %d rows, matched tickers=%s",
+            len(dividends_df), sorted(div_tickers_matched),
+        )
+
+        for _, row in dividends_df.iterrows():
+            ticker = row["Ticker"]
+            pay_date = row["periodEnd"]
+            div_amount = float(row["PerShare_Dividends"])
+            if ticker not in shares:
+                continue
+            if shares[ticker] <= 0:
+                continue
+            if div_amount <= 0:
+                continue
+            # Map payment date to next available trading day.
+            # Dividends that fall after the last trading day are mapped
+            # to the last day (they still count toward total return).
+            pos = idx.searchsorted(pay_date, side="left")
+            if pos >= len(idx):
+                effective_date = idx[-1]  # last available trading day
+            else:
+                effective_date = idx[pos]
+            cash = shares[ticker] * div_amount
+            cash_series.loc[cash_series.index >= effective_date] += cash
+            dividend_events.loc[effective_date] += cash
+            # Per-ticker tracking
+            per_ticker_div_cash[ticker].loc[
+                per_ticker_div_cash[ticker].index >= effective_date
+            ] += cash
+
+    # --- 6. Portfolio totals ------------------------------------------
+    portfolio_mktval = pd.Series(0.0, index=price_matrix.index)
+    for t in shares:
+        portfolio_mktval += daily_mktval[t]
+    portfolio_total = portfolio_mktval + cash_series
+
+    # Price-only (no dividends) for decomposition
+    price_only_total = portfolio_mktval.copy()
+
+    # Daily returns
+    daily_return = portfolio_total.pct_change()
+    daily_price_only_return = price_only_total.pct_change()
+
+    # Cumulative returns (relative to initial capital)
+    cumulative_return = portfolio_total / initial_capital
+    price_only_cum = price_only_total / initial_capital
+    # Dividend contribution = total - price_only
+    dividend_contribution_cum = cumulative_return - price_only_cum
+
+    # --- 7. Assemble daily DataFrame -----------------------------------
+    daily_cols: dict[str, pd.Series] = {}
+    for t in tickers_in_data:
+        daily_cols[f"price_{t}"] = price_matrix[t]
+        daily_cols[f"shares_{t}"] = pd.Series(
+            shares.get(t, 0.0), index=price_matrix.index,
+        )
+        daily_cols[f"mktval_{t}"] = daily_mktval.get(
+            t, pd.Series(0.0, index=price_matrix.index),
+        )
+        daily_cols[f"div_cash_{t}"] = per_ticker_div_cash.get(
+            t, pd.Series(0.0, index=price_matrix.index),
+        )
+
+    daily_cols["cash"] = cash_series
+    daily_cols["dividend_event"] = dividend_events
+    daily_cols["portfolio_mktval"] = portfolio_mktval
+    daily_cols["portfolio_total"] = portfolio_total
+    daily_cols["daily_return"] = daily_return
+    daily_cols["cumulative_return"] = cumulative_return
+    daily_cols["price_only_total"] = price_only_total
+    daily_cols["price_only_daily_return"] = daily_price_only_return
+    daily_cols["price_only_cum_return"] = price_only_cum
+    daily_cols["dividend_cum_contribution"] = dividend_contribution_cum
+
+    daily_df = pd.DataFrame(daily_cols, index=price_matrix.index)
+    # Drop first row (NaN from pct_change)
+    daily_df = daily_df.iloc[1:]
+
+    # --- 8. Per-company-per-year aggregate (from ORIGINAL price matrix,
+    #       NOT the truncated daily_df — the first row was dropped for
+    #       pct_change, but price data needs all rows) -------------------
+    years = sorted(set(price_matrix.index.year))
+    # Build lookup DataFrames keyed by year
+    pm_by_year: dict[int, pd.DataFrame] = {}
+    cs_by_year: dict[int, pd.Series] = {}
+    for y in years:
+        mask = price_matrix.index.year == y
+        pm_by_year[y] = price_matrix[mask]
+        cs_by_year[y] = cash_series[mask]
+
+    pyp_rows: list[dict] = []
+    running_cash = 0.0
+
+    for year in years:
+        yr_pm = pm_by_year[year]
+
+        # Total portfolio start value (using FIRST trading day of year)
+        port_start_val = running_cash
+        for t in shares:
+            port_start_val += shares[t] * float(yr_pm[t].iloc[0])
+
+        # Yearly dividends per ticker
+        year_divs_per_share: dict[str, float] = {t: 0.0 for t in shares}
+        if dividends_df is not None and not dividends_df.empty:
+            div_yr = dividends_df.copy()
+            div_yr["Year"] = div_yr["periodEnd"].dt.year
+            for t in shares:
+                td = div_yr[(div_yr["Ticker"] == t) & (div_yr["Year"] == year)]
+                year_divs_per_share[t] = float(td["PerShare_Dividends"].sum())
+
+        total_year_divs_cash = 0.0
+
+        # Ticker rows
+        for t in shares:
+            s_price = float(yr_pm[t].iloc[0])
+            e_price = float(yr_pm[t].iloc[-1])
+            div_ps = year_divs_per_share[t]
+            s_shares = shares[t]
+
+            tot_divs = s_shares * div_ps
+            total_year_divs_cash += tot_divs
+            e_shares = s_shares  # buy-and-hold
+
+            start_mkt = s_shares * s_price
+            end_mkt = e_shares * e_price
+
+            price_ret = (e_price - s_price) / s_price if s_price > 0 else 0.0
+            div_ret = div_ps / s_price if s_price > 0 else 0.0
+            total_ret = price_ret + div_ret
+
+            wtd_start = start_mkt / port_start_val if port_start_val > 0 else 0.0
+            # Weighted end value uses actual portfolio end value
+            port_end_val_yr = running_cash + total_year_divs_cash
+            for t2 in shares:
+                port_end_val_yr += shares[t2] * float(yr_pm[t2].iloc[-1])
+            wtd_end = end_mkt / port_end_val_yr if port_end_val_yr > 0 else 0.0
+            wtd_ret = active[t] * total_ret
+
+            pyp_rows.append({
+                "Year": year,
+                "Ticker": t,
+                "Starting_Shares": s_shares,
+                "Dividend_Per_Share": div_ps,
+                "Start_Price": s_price,
+                "End_Price": e_price,
+                "Total_Dividends_Received": tot_divs,
+                "Dividend_Currency": "",
+                "Ending_Shares": e_shares,
+                "Starting_Market_Value": start_mkt,
+                "Ending_Market_Value": end_mkt,
+                "Price_Return_Pct": price_ret,
+                "Dividend_Return_Pct": div_ret,
+                "Total_Return_Pct": total_ret,
+                "Weighted_Value_Start": wtd_start,
+                "Weighted_Value_End": wtd_end,
+                "Weighted_Return": wtd_ret,
+            })
+
+        # Cash row
+        cash_end_yr = running_cash + total_year_divs_cash
+        port_end_val_yr2 = cash_end_yr
+        for t in shares:
+            port_end_val_yr2 += shares[t] * float(yr_pm[t].iloc[-1])
+
+        cash_wtd_start = running_cash / port_start_val if port_start_val > 0 else 0.0
+        cash_wtd_end = cash_end_yr / port_end_val_yr2 if port_end_val_yr2 > 0 else 0.0
+
+        pyp_rows.append({
+            "Year": year,
+            "Ticker": cash_label,
+            "Starting_Shares": running_cash,
+            "Dividend_Per_Share": 0.0,
+            "Start_Price": 1.0,
+            "End_Price": 1.0,
+            "Total_Dividends_Received": 0.0,
+            "Dividend_Currency": cash_label,
+            "Ending_Shares": cash_end_yr,
+            "Starting_Market_Value": running_cash,
+            "Ending_Market_Value": cash_end_yr,
+            "Price_Return_Pct": 0.0,
+            "Dividend_Return_Pct": 0.0,
+            "Total_Return_Pct": 0.0,
+            "Weighted_Value_Start": cash_wtd_start,
+            "Weighted_Value_End": cash_wtd_end,
+            "Weighted_Return": 0.0,
+        })
+
+        running_cash = cash_end_yr
+
+    pyp_df = pd.DataFrame(pyp_rows) if pyp_rows else pd.DataFrame()
+
+    # --- 9. Portfolio metrics (from daily tracker) ---------------------
+    final_total = float(portfolio_total.iloc[-1]) if len(portfolio_total) > 0 else initial_capital
+    total_return = (final_total / initial_capital) - 1.0
+
+    # Total dividends across all time
+    total_dividends = float(dividend_events.sum()) if len(dividend_events) > 0 else 0.0
+    dividend_return = total_dividends / initial_capital
+    price_return = total_return - dividend_return
+
+    # Annualized
+    if len(daily_df) > 0:
+        dt_start = daily_df.index[0]
+        dt_end = daily_df.index[-1]
+        yrs = max((dt_end - dt_start).days / 365.25, 1 / 365.25)
+        annualized_return = (1.0 + total_return) ** (1.0 / yrs) - 1.0 if total_return > -1.0 else -1.0
+    else:
+        annualized_return = total_return
+
+    dr_std = float(daily_return.std()) if len(daily_return) > 1 else 0.0
+    daily_vol = dr_std * float(np.sqrt(365))
+    sharpe = (annualized_return - risk_free_rate) / daily_vol if daily_vol > 0 else 0.0
+    cum = cumulative_return
+    running_max = cum.cummax()
+    drawdowns = (cum - running_max) / running_max
+    max_dd = float(drawdowns.min()) if len(drawdowns) > 0 else 0.0
+
+    metrics: dict = {
+        "total_return": total_return,
+        "annualized_return": annualized_return,
+        "portfolio_price_return": price_return,
+        "portfolio_dividend_return": dividend_return,
+        "volatility": daily_vol,
+        "sharpe_ratio": sharpe,
+        "max_drawdown": max_dd,
+        "start_date": str(daily_df.index[0].date()) if len(daily_df) > 0 else "",
+        "end_date": str(daily_df.index[-1].date()) if len(daily_df) > 0 else "",
+        "initial_capital": initial_capital,
+        "risk_free_rate": risk_free_rate,
+    }
+
+    return {
+        "daily": daily_df,
+        "per_company_per_year": pyp_df,
+        "metrics": metrics,
+    }
+
+
 def calculate_benchmark_returns(
     prices_df: pd.DataFrame,
     benchmark_ticker: str,
@@ -1051,12 +1570,12 @@ def calculate_benchmark_returns(
     Returns:
         DataFrame indexed by ``Date`` with columns:
 
-        * ``benchmark_return`` — daily total return (price + dividends).
-        * ``cumulative_return`` — cumulative product of (1 + daily return).
-        * ``price_return`` — daily price-only return.
-        * ``cum_price_return`` — cumulative price-only return.
-        * ``dividend_return`` — daily dividend contribution.
-        * ``cum_dividend_return`` — cumulative dividend contribution.
+        * ``benchmark_return`` â€” daily total return (price + dividends).
+        * ``cumulative_return`` â€” cumulative product of (1 + daily return).
+        * ``price_return`` â€” daily price-only return.
+        * ``cum_price_return`` â€” cumulative price-only return.
+        * ``dividend_return`` â€” daily dividend contribution.
+        * ``cum_dividend_return`` â€” cumulative dividend contribution.
     """
     bench = prices_df[prices_df["Ticker"] == benchmark_ticker].copy()
     bench = bench.sort_values("Date").set_index("Date")
@@ -1066,17 +1585,24 @@ def calculate_benchmark_returns(
     bench["price_return"] = bench["Price"].pct_change()
     bench["dividend_return"] = 0.0
 
-    # Add dividend yield on payment dates (using previous day's price)
+    # Add dividend yield on payment dates (using previous day's price).
+    # Dividends whose pay_date falls on a non-trading day are mapped
+    # forward to the next available trading day.
     if dividends_df is not None and not dividends_df.empty:
         bench_divs = dividends_df[dividends_df["Ticker"] == benchmark_ticker]
+        bench_idx = bench.index
         for _, row in bench_divs.iterrows():
             pay_date = row["periodEnd"]
             div_amount = row["PerShare_Dividends"]
-            if pay_date in bench.index:
-                loc = bench.index.get_loc(pay_date)
-                prev_price = bench["Price"].iloc[loc - 1] if loc > 0 else bench["Price"].iloc[0]
-                if prev_price and prev_price > 0:
-                    bench.loc[pay_date, "dividend_return"] = div_amount / prev_price
+            # Find the first trading day on or after the payment date.
+            pos = bench_idx.searchsorted(pay_date, side="left")
+            if pos >= len(bench_idx):
+                continue
+            effective_date = bench_idx[pos]
+            loc = bench.index.get_loc(effective_date)
+            prev_price = bench["Price"].iloc[loc - 1] if loc > 0 else bench["Price"].iloc[0]
+            if prev_price and prev_price > 0:
+                bench.loc[effective_date, "dividend_return"] = div_amount / prev_price
 
     bench["benchmark_return"] = bench["price_return"] + bench["dividend_return"]
     bench["cumulative_return"] = (1 + bench["benchmark_return"]).cumprod()
@@ -1120,14 +1646,14 @@ def calculate_metrics(
         Dictionary containing:
 
         * ``start_date``, ``end_date``
-        * ``total_return`` — cumulative portfolio return as a fraction.
+        * ``total_return`` â€” cumulative portfolio return as a fraction.
         * ``annualized_return``
-        * ``volatility`` — annualised standard deviation of daily returns.
-        * ``sharpe_ratio`` — annualised Sharpe ratio.
+        * ``volatility`` â€” annualised standard deviation of daily returns.
+        * ``sharpe_ratio`` â€” annualised Sharpe ratio.
         * ``max_drawdown``
         * ``risk_free_rate``
         * ``benchmark_total_return``, ``benchmark_annualized_return``
-        * ``excess_return`` — portfolio minus benchmark total return.
+        * ``excess_return`` â€” portfolio minus benchmark total return.
     """
     dt_start = pd.to_datetime(effective_start or start_date)
     dt_end = pd.to_datetime(effective_end or end_date)
@@ -1220,7 +1746,7 @@ def generate_report(
     lines.append("  BACKTESTING REPORT")
     lines.append("=" * 60)
     lines.append("")
-    lines.append(f"Period:              {metrics['start_date']}  →  {metrics['end_date']}")
+    lines.append(f"Period:              {metrics['start_date']}  â†’  {metrics['end_date']}")
     lines.append(f"Total Return:        {metrics['total_return']:+.2%}")
     lines.append(f"Annualized Return:   {metrics['annualized_return']:+.2%}")
     lines.append(f"Volatility (ann.):   {metrics['volatility']:.2%}")
@@ -1228,7 +1754,7 @@ def generate_report(
     lines.append(f"Sharpe Ratio:        {metrics['sharpe_ratio']:.4f}  (rf={risk_free:.2%})")
     lines.append(f"Max Drawdown:        {metrics['max_drawdown']:.2%}")
 
-    # ── Capital allocation ────────────────────────────────────────────
+    # â”€â”€ Capital allocation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     initial_capital = metrics.get("initial_capital", 0.0)
     if initial_capital > 0:
         lines.append("")
@@ -1265,11 +1791,11 @@ def generate_report(
             lines.append("")
             lines.append(
                 f"Benchmark ({bench_info['ticker']}):  "
-                f"{bench_info['capital']:,.0f} capital  →  "
+                f"{bench_info['capital']:,.0f} capital  â†’  "
                 f"{bench_info['shares']:,.2f} shares @ {bench_info['start_price']:,.2f}"
             )
 
-    # ── Return decomposition (portfolio) ──────────────────────────────
+    # â”€â”€ Return decomposition (portfolio) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if decomposition is not None:
         price_cum = decomposition["price_only"]
         div_cum = decomposition["dividend_only"]
@@ -1282,7 +1808,7 @@ def generate_report(
             lines.append(f"  Dividend Return:   {div_ret:+.2%}")
             lines.append(f"  Total Return:      {metrics['total_return']:+.2%}")
 
-    # ── Benchmark ─────────────────────────────────────────────────────
+    # â”€â”€ Benchmark â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if metrics.get("benchmark_total_return") is not None:
         lines.append("")
         lines.append("--- Benchmark ---")
@@ -1296,7 +1822,7 @@ def generate_report(
             lines.append(f"  Price Return:      {metrics['benchmark_price_return']:+.2%}")
             lines.append(f"  Dividend Return:   {metrics['benchmark_dividend_return']:+.2%}")
 
-    # ── Per-company breakdown ─────────────────────────────────────────
+    # â”€â”€ Per-company breakdown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if per_company is not None and not per_company.empty:
         has_capital = "market_value" in per_company.columns
         lines.append("")
@@ -1371,7 +1897,7 @@ def generate_report(
                 f"{per_company['weighted_total'].sum():>+9.2%}"
             )
 
-    # ── Yearly returns ────────────────────────────────────────────────
+    # â”€â”€ Yearly returns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if yearly_returns is not None and not yearly_returns.empty:
         lines.append("")
         lines.append("--- Yearly Returns ---")
@@ -1389,7 +1915,7 @@ def generate_report(
                 f"{row['Total Return']:>+9.2%}"
             )
 
-    # ── Dividends per company per year ────────────────────────────────
+    # â”€â”€ Dividends per company per year â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if dividends_by_year is not None and not dividends_by_year.empty:
         lines.append("")
         lines.append("--- Dividends Per Company Per Year ---")
@@ -1442,13 +1968,13 @@ def generate_backtest_charts(
 
     Creates up to five charts:
 
-    1. **cumulative_returns.png** — Portfolio total return vs benchmark.
-    2. **drawdown.png** — Portfolio drawdown over time.
-    3. **return_decomposition.png** — Stacked area of price vs dividend
+    1. **cumulative_returns.png** â€” Portfolio total return vs benchmark.
+    2. **drawdown.png** â€” Portfolio drawdown over time.
+    3. **return_decomposition.png** â€” Stacked area of price vs dividend
        contribution over time.
-    4. **per_company_breakdown.png** — Horizontal bar chart of each
+    4. **per_company_breakdown.png** â€” Horizontal bar chart of each
        company's price and dividend return contribution.
-    5. **dividends_by_year.png** — Stacked bar chart of per-share
+    5. **dividends_by_year.png** â€” Stacked bar chart of per-share
        dividends paid per year, broken down by company.
 
     Args:
@@ -1471,16 +1997,16 @@ def generate_backtest_charts(
         import matplotlib.dates as mdates
     except ImportError:
         logger.warning(
-            "matplotlib is not installed — skipping chart generation. "
+            "matplotlib is not installed â€” skipping chart generation. "
             "Install it with: pip install matplotlib"
         )
         return []
 
     os.makedirs(output_dir, exist_ok=True)
     created: list[str] = []
-    period_label = f"{start_date} → {end_date}"
+    period_label = f"{start_date} â†’ {end_date}"
 
-    # ── 1. Cumulative returns: portfolio vs benchmark ─────────────────
+    # â”€â”€ 1. Cumulative returns: portfolio vs benchmark â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     total_df = decomposition.get("total")
     if total_df is not None and not total_df.empty:
         fig, ax = plt.subplots(figsize=(12, 6))
@@ -1521,7 +2047,7 @@ def generate_backtest_charts(
                     color="#FFB74D",
                 )
 
-        ax.set_title(f"Cumulative Returns — {period_label}", fontsize=14)
+        ax.set_title(f"Cumulative Returns â€” {period_label}", fontsize=14)
         ax.set_ylabel("Return (%)")
         ax.set_xlabel("Date")
         ax.legend(loc="best")
@@ -1536,7 +2062,7 @@ def generate_backtest_charts(
         created.append(path)
         logger.info("Chart saved: %s", path)
 
-    # ── 2. Drawdown chart ─────────────────────────────────────────────
+    # â”€â”€ 2. Drawdown chart â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if total_df is not None and not total_df.empty:
         cum = total_df["cumulative_return"]
         running_max = cum.cummax()
@@ -1559,7 +2085,7 @@ def generate_backtest_charts(
                 label="Benchmark Drawdown",
             )
 
-        ax.set_title(f"Drawdown — {period_label}", fontsize=14)
+        ax.set_title(f"Drawdown â€” {period_label}", fontsize=14)
         ax.set_ylabel("Drawdown (%)")
         ax.set_xlabel("Date")
         ax.legend(loc="best")
@@ -1573,7 +2099,7 @@ def generate_backtest_charts(
         created.append(path)
         logger.info("Chart saved: %s", path)
 
-    # ── 3. Return decomposition (stacked area) ───────────────────────
+    # â”€â”€ 3. Return decomposition (stacked area) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     price_only = decomposition.get("price_only")
     div_only = decomposition.get("dividend_only")
     if (
@@ -1602,7 +2128,7 @@ def generate_backtest_charts(
         )
 
         ax.set_title(
-            f"Portfolio Return Decomposition — {period_label}", fontsize=14
+            f"Portfolio Return Decomposition â€” {period_label}", fontsize=14
         )
         ax.set_ylabel("Cumulative Return (%)")
         ax.set_xlabel("Date")
@@ -1618,7 +2144,7 @@ def generate_backtest_charts(
         created.append(path)
         logger.info("Chart saved: %s", path)
 
-    # ── 4. Per-company breakdown (horizontal bar) ─────────────────────
+    # â”€â”€ 4. Per-company breakdown (horizontal bar) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if per_company is not None and not per_company.empty:
         fig, ax = plt.subplots(
             figsize=(10, max(4, len(per_company) * 0.8 + 2))
@@ -1642,7 +2168,7 @@ def generate_backtest_charts(
         ax.set_yticklabels(tickers)
         ax.set_xlabel("Weighted Return Contribution (%)")
         ax.set_title(
-            f"Per-Company Return Contribution — {period_label}", fontsize=14
+            f"Per-Company Return Contribution â€” {period_label}", fontsize=14
         )
         ax.legend(loc="best")
         ax.grid(True, axis="x", alpha=0.3)
@@ -1654,7 +2180,7 @@ def generate_backtest_charts(
         created.append(path)
         logger.info("Chart saved: %s", path)
 
-    # ── 5. Dividends by company by year (stacked bar) ─────────────────
+    # â”€â”€ 5. Dividends by company by year (stacked bar) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if dividends_by_year is not None and not dividends_by_year.empty:
         ticker_cols = [c for c in dividends_by_year.columns if c != "Total"]
         if ticker_cols:
@@ -1679,7 +2205,7 @@ def generate_backtest_charts(
             ax.set_xlabel("Year")
             ax.set_ylabel("Dividends Per Share")
             ax.set_title(
-                f"Dividends Per Company Per Year — {period_label}",
+                f"Dividends Per Company Per Year â€” {period_label}",
                 fontsize=14,
             )
             ax.legend(loc="best")
@@ -1713,7 +2239,7 @@ def run_backtest(
 
     Args:
         backtesting_config: Dictionary with keys ``start_date``, ``end_date``,
-            ``portfolio`` (dict of ticker→weight), ``benchmark_ticker``
+            ``portfolio`` (dict of tickerâ†’weight), ``benchmark_ticker``
             (optional), ``output_file`` (optional).
         db_path: Path to the SQLite database.
         prices_table: Name of the stock-prices table.
@@ -1741,7 +2267,7 @@ def run_backtest(
             "Set backtesting_config.Source_Database in the UI."
         )
 
-    # ── Validate configuration ────────────────────────────────────────────
+    # â”€â”€ Validate configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if not start_date or not end_date:
         raise ValueError(
             "Backtesting config must include 'start_date' and 'end_date'."
@@ -1763,7 +2289,7 @@ def run_backtest(
     )
 
     if not has_non_weight:
-        # Legacy / pure-weight portfolio — validate sum (warning only)
+        # Legacy / pure-weight portfolio â€” validate sum (warning only)
         raw_weights = {
             t: float(v) if isinstance(v, (int, float))
             else float(v.get("value", 0))
@@ -1857,11 +2383,13 @@ def run_backtest(
         # 3. Portfolio returns
         portfolio_df = calculate_portfolio_returns(
             portfolio_prices, portfolio_weights, dividends_df,
+            initial_capital=initial_capital,
         )
 
         # 4. Return decomposition (price vs dividend)
         decomposition = calculate_return_decomposition(
             portfolio_prices, portfolio_weights, dividends_df,
+            initial_capital=initial_capital,
         )
 
         # 5. Per-company breakdown
@@ -1985,7 +2513,7 @@ def _generate_set_summary(
 
     lines: list[str] = []
     lines.append("=" * 80)
-    lines.append("  BACKTEST SET — AGGREGATE SUMMARY")
+    lines.append("  BACKTEST SET â€” AGGREGATE SUMMARY")
     lines.append("=" * 80)
     lines.append("")
 
@@ -1999,7 +2527,7 @@ def _generate_set_summary(
         lines.append(f"  Failed / no data         : {failed}")
     lines.append("")
 
-    # ── Benchmark comparison ──────────────────────────────────────────
+    # â”€â”€ Benchmark comparison â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     has_bench = [
         r for r in successful
         if r["metrics"].get("benchmark_total_return") is not None
@@ -2041,7 +2569,7 @@ def _generate_set_summary(
             )
         lines.append("")
 
-    # ── Aggregate statistics ──────────────────────────────────────────
+    # â”€â”€ Aggregate statistics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if successful:
         returns = [r["metrics"]["total_return"] for r in successful]
         ann_returns = [r["metrics"]["annualized_return"] for r in successful]
@@ -2075,7 +2603,7 @@ def _generate_set_summary(
             _row("Excess Return (vs bench)", excess)
         lines.append("")
 
-    # ── Per-backtest detail table ─────────────────────────────────────
+    # â”€â”€ Per-backtest detail table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if successful:
         lines.append("--- Individual Backtest Results ---")
         header = (
@@ -2100,11 +2628,11 @@ def _generate_set_summary(
             beat_str = ""
             if m.get("benchmark_total_return") is not None:
                 beat_str = (
-                    "  ✓"
+                    "  âœ“"
                     if m["total_return"] > m["benchmark_total_return"]
-                    else "  ✗"
+                    else "  âœ—"
                 )
-            period = f"{m['start_date']} → {m['end_date']}"
+            period = f"{m['start_date']} â†’ {m['end_date']}"
             lines.append(
                 f"  {r['year']:<6} {r['duration']:<10} {period:<25} "
                 f"{m['total_return']:>+9.2%} "
@@ -2145,14 +2673,14 @@ def run_backtest_set(
     Args:
         config: Dictionary with the following keys:
 
-            * ``csv_file`` (str) — path to the CSV with columns
+            * ``csv_file`` (str) â€” path to the CSV with columns
               ``Year``, ``Tickers``, ``Type``, ``Amount``.
-            * ``benchmark_ticker`` (str) — ticker symbol of the benchmark.
-            * ``output_dir`` (str, optional) — base directory for results.
+            * ``benchmark_ticker`` (str) â€” ticker symbol of the benchmark.
+            * ``output_dir`` (str, optional) â€” base directory for results.
               Defaults to ``data/backtest_set_results``.
-            * ``risk_free_rate`` (float, optional) — annual risk-free rate
+            * ``risk_free_rate`` (float, optional) â€” annual risk-free rate
               (default 0.0).
-            * ``initial_capital`` (float, optional) — starting capital
+            * ``initial_capital`` (float, optional) â€” starting capital
               (default 0).
 
         db_path: Path to the SQLite database file.
@@ -2174,7 +2702,7 @@ def run_backtest_set(
     if not csv_file:
         raise ValueError("backtest_set_config must contain 'csv_file'.")
 
-    # ── Read and parse CSV comments for config ───────────────────────
+    # â”€â”€ Read and parse CSV comments for config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Headers with "#" prefix are treated as comments.  Lines starting
     # with "# Benchmark:" and "# Discount Rate:" supply defaults that
     # can be overridden by explicit config keys.
@@ -2200,7 +2728,7 @@ def run_backtest_set(
             except ValueError:
                 logger.warning("Invalid risk_free_rate in CSV comments: %r", raw_rate)
 
-    # ── Read and validate CSV ─────────────────────────────────────────
+    # â”€â”€ Read and validate CSV â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     df = pd.read_csv(csv_file, comment="#")
     required_cols = {"Year", "Tickers", "Type", "Amount"}
     missing = required_cols - set(df.columns)
@@ -2214,7 +2742,7 @@ def run_backtest_set(
     years = sorted(df["Year"].unique())
 
     logger.info(
-        "Backtest set: %d year(s), %d durations each → %d backtests.",
+        "Backtest set: %d year(s), %d durations each â†’ %d backtests.",
         len(years), len(_BACKTEST_DURATIONS), len(years) * len(_BACKTEST_DURATIONS),
     )
 
@@ -2283,12 +2811,12 @@ def run_backtest_set(
                 )
             except Exception as e:
                 logger.error(
-                    "  %s %s: backtest failed — %s", year_str, dur_label, e,
+                    "  %s %s: backtest failed â€” %s", year_str, dur_label, e,
                 )
 
             all_results.append(result_entry)
 
-    # ── Generate aggregate summary ────────────────────────────────────
+    # â”€â”€ Generate aggregate summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     summary_file = os.path.join(output_dir, "backtest_set_summary.txt")
     _generate_set_summary(all_results, summary_file)
 

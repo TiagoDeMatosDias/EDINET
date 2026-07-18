@@ -13,17 +13,26 @@ import logging
 import queue
 import sqlite3
 import threading
+import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import backtesting as _bt
+from src.backtesting.zip_export import (
+    build_rolling_zip,
+    build_single_backtest_zip,
+    build_summary,
+    save_backtest_zip,
+)
 from src.orchestrator.common.db_config import get_db2, get_db3
 from src.orchestrator.common.backtesting import _sql_ident
 from src.portfolio.currency import get_available_display_currencies
+from src.portfolio.performance import get_risk_free_rate
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +84,19 @@ def _resolve_db3() -> str:
             detail="Portfolio database not found. Import transactions first."
         )
     return str(p.resolve())
+
+
+def _resolve_risk_free_rate(explicit_rf: float, base_currency: str) -> float:
+    """Return the risk-free rate: explicit if > 0, else auto-detect from inflation."""
+    if explicit_rf > 0:
+        return explicit_rf
+    try:
+        db2 = get_db2()
+        if db2:
+            return get_risk_free_rate(db2, base_currency or "EUR")
+    except Exception:
+        pass
+    return 0.02  # fallback
 
 
 def _validate_base_currency(base_currency: str) -> str:
@@ -204,21 +226,52 @@ def get_base_currencies() -> dict:
     return {"currencies": currencies}
 
 
+@router.get("/list")
+def list_backtests() -> dict:
+    """List saved backtest results."""
+    from pathlib import Path
+    base = Path("data/Backtests")
+    if not base.exists():
+        return {"backtests": []}
+    items = []
+    for d in sorted(base.iterdir(), reverse=True):
+        if d.is_dir():
+            zip_file = d / "backtest.zip"
+            items.append({
+                "id": d.name,
+                "path": str(d),
+                "created": d.name,
+                "has_zip": zip_file.exists(),
+            })
+    return {"backtests": items}
+
+
+@router.get("/download/{backtest_id}")
+def download_backtest(backtest_id: str):
+    """Serve a previously saved backtest ZIP file."""
+    zip_path = Path(f"data/Backtests/{backtest_id}/backtest.zip")
+    if not zip_path.exists():
+        raise HTTPException(status_code=404, detail="Backtest not found.")
+    return FileResponse(
+        str(zip_path),
+        media_type="application/zip",
+        filename=f"backtest_{backtest_id}.zip",
+    )
+
+
 @router.post("/run")
 async def run_backtest(request: BacktestRunRequest = Body(...)) -> dict:
-    """Run a single backtest with a manual portfolio."""
+    """Run a single backtest.  Results are saved to disk; only a summary
+    and the download path are returned to the client."""
     db = _resolve_db(request.db_path)
 
-    # Convert AllocationSpec → plain dicts for internal use
     portfolio: dict[str, dict] = {
         tk: {"mode": spec.mode, "value": spec.value}
         for tk, spec in request.portfolio.items()
     }
 
-    # Validate base currency
     base_currency = _validate_base_currency(request.base_currency)
 
-    # Resolve db3 and auto-set base_currency for portfolio benchmark
     db3 = ""
     if request.benchmark_mode == "portfolio":
         db3 = _resolve_db3()
@@ -239,23 +292,51 @@ async def run_backtest(request: BacktestRunRequest = Body(...)) -> dict:
                     base_currency=base_currency,
                     db3_path=db3,
                     initial_capital=request.initial_capital,
-                    risk_free_rate=request.risk_free_rate,
+                    risk_free_rate=_resolve_risk_free_rate(request.risk_free_rate, base_currency),
                 ),
                 timeout=120,
             )
-            return result
         except asyncio.TimeoutError:
-            raise HTTPException(
-                status_code=504,
-                detail="Backtest timed out after 120 seconds.",
-            )
+            raise HTTPException(status_code=504, detail="Backtest timed out after 120 seconds.")
         except HTTPException:
             raise
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            logger.error("Backtest run failed: %s", e)
+            import traceback
+            logger.error("Backtest run failed: %s\n%s", e, traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
+
+    # Save result JSON to disk immediately (fast), build ZIP in background
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = Path(f"data/Backtests/{ts}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save full result as JSON (daily data included)
+    def _save_and_zip():
+        import json as _json
+        (out_dir / "result.json").write_text(_json.dumps(result, default=str))
+        # Build ZIP (without daily data for speed)
+        zip_bytes = build_single_backtest_zip(result)
+        (out_dir / "backtest.zip").write_bytes(zip_bytes)
+        # Save daily CSV separately (large)
+        daily = result.get("daily")
+        if daily and len(daily) > 0:
+            import csv as _csv
+            keys = list(daily[0].keys())
+            with open(str(out_dir / "per_company_per_day.csv"), "w", newline="") as f:
+                w = _csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
+                w.writeheader()
+                w.writerows(daily)
+
+    await asyncio.to_thread(_save_and_zip)
+
+    return {
+        "id": ts,
+        "status": "complete",
+        "path": str(out_dir),
+        "summary": build_summary(result),
+    }
 
 
 @router.post("/run-from-csv")
@@ -286,16 +367,12 @@ async def run_from_csv(request: CSVBacktestRequest = Body(...)) -> dict:
                     base_currency=base_currency,
                     db3_path=db3,
                     initial_capital=request.initial_capital,
-                    risk_free_rate=request.risk_free_rate,
+                    risk_free_rate=_resolve_risk_free_rate(request.risk_free_rate, base_currency),
                 ),
                 timeout=120,
             )
-            return result
         except asyncio.TimeoutError:
-            raise HTTPException(
-                status_code=504,
-                detail="Backtest set timed out after 120 seconds.",
-            )
+            raise HTTPException(status_code=504, detail="Backtest set timed out after 120 seconds.")
         except HTTPException:
             raise
         except ValueError as e:
@@ -303,6 +380,34 @@ async def run_from_csv(request: CSVBacktestRequest = Body(...)) -> dict:
         except Exception as e:
             logger.error("CSV backtest set failed: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
+
+    # Save results to disk as JSON + summary
+    import io as _io
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = Path(f"data/Backtests/{ts}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save full result as JSON
+    (out_dir / "result.json").write_text(json.dumps(result, default=str))
+
+    # Build a simple ZIP with summary
+    zip_buf = _io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("result.json", json.dumps(result, default=str))
+        agg = result.get("aggregate", {})
+        zf.writestr("summary.json", json.dumps({
+            "total_runs": agg.get("total_runs", 0),
+            "successful": agg.get("successful", 0),
+            "failed": agg.get("failed", 0),
+        }, indent=2))
+    (out_dir / "backtest.zip").write_bytes(zip_buf.getvalue())
+
+    return {
+        "id": ts,
+        "status": "complete",
+        "path": str(out_dir),
+        "aggregate": result.get("aggregate", {}),
+    }
 
 
 @router.get("/rolling-periods")
@@ -375,16 +480,16 @@ async def run_rolling(
                 base_currency=base_currency,
                 db3_path=db3,
                 initial_capital=request.initial_capital,
-                risk_free_rate=request.risk_free_rate,
+                risk_free_rate=_resolve_risk_free_rate(request.risk_free_rate, base_currency),
                 start_period=request.start_period,
                 end_period=request.end_period,
                 progress_queue=progress_queue,
                 cancel_event=cancel_event,
             )
         )
+        final_result = None
         try:
             while True:
-                # Check if client disconnected
                 if await http_request.is_disconnected():
                     cancel_event.set()
                     break
@@ -398,15 +503,20 @@ async def run_rolling(
                         break
                     continue
 
-                yield f"data: {json.dumps(msg)}\n\n"
-                if msg.get("type") in ("result", "error"):
+                # Don't stream the full result to the client — too large
+                if msg.get("type") == "result":
+                    final_result = msg
                     break
+                if msg.get("type") == "error":
+                    yield f"data: {json.dumps(msg)}\n\n"
+                    break
+
+                yield f"data: {json.dumps(msg)}\n\n"
         finally:
             cancel_event.set()
             if not task.done():
                 task.cancel()
 
-        # After loop, check for thread exception
         if task.done() and not task.cancelled():
             exc = task.exception()
             if exc is not None:
@@ -415,6 +525,23 @@ async def run_rolling(
                     yield f"data: {json.dumps({'type': 'error', 'message': 'cancelled'})}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'message': error_msg})}\n\n"
+
+        # Build ZIP and save to disk, then yield download info
+        if final_result is not None:
+            try:
+                zip_bytes = await loop.run_in_executor(
+                    None, build_rolling_zip, final_result,
+                )
+                saved_path = await loop.run_in_executor(
+                    None, save_backtest_zip, zip_bytes,
+                )
+                backtest_id = saved_path.split("/")[-1] if "/" in saved_path else saved_path.split("\\")[-1]
+                agg = final_result.get("aggregate", {})
+                cfg = final_result.get("config", {})
+                yield f"data: {json.dumps({'type': 'result', 'id': backtest_id, 'path': saved_path, 'aggregate': agg, 'config': cfg})}\n\n"
+            except Exception as e:
+                logger.error("Failed to save rolling backtest ZIP: %s", e)
+                yield f"data: {json.dumps({'type': 'error', 'message': f'Failed to save results: {e}'})}\n\n"
 
     async with _semaphore:
         return StreamingResponse(
@@ -609,22 +736,39 @@ async def export_rolling_xlsx(request: RollingExportRequest) -> StreamingRespons
                             value=f"{dur} — Per-Company Breakdown").font = Font(bold=True)
                     row += 1
                     co_headers = ["Ticker", "Total Return", "Price Return",
-                                  "Dividend Return", "Weight", "Start Price", "End Price"]
+                                  "Dividend Return", "Weight",
+                                  "Wtd Price", "Wtd Div", "Wtd Total",
+                                  "Start Price", "End Price"]
+                    # Add cash columns if available
+                    has_capital = any(
+                        co.get("capital_invested") is not None for co in per_co
+                    )
+                    if has_capital:
+                        co_headers += ["Capital", "Shares", "Divs Received", "Market Value"]
                     for c, h in enumerate(co_headers, 1):
                         ws.cell(row=row, column=c, value=h)
                     style_header(ws, row, len(co_headers))
                     row += 1
                     for co in per_co:
-                        ws.cell(row=row, column=1, value=co.get("Ticker", ""))
-                        ws.cell(row=row, column=2, value=co.get("total_return", 0))
-                        ws.cell(row=row, column=3, value=co.get("price_return", 0))
-                        ws.cell(row=row, column=4, value=co.get("dividend_return", 0))
-                        ws.cell(row=row, column=5, value=co.get("weight", 0))
-                        ws.cell(row=row, column=6, value=co.get("start_price", 0))
-                        ws.cell(row=row, column=7, value=co.get("end_price", 0))
-                        for c in range(1, 8):
+                        col = 1
+                        ws.cell(row=row, column=col, value=co.get("Ticker", "")); col += 1
+                        ws.cell(row=row, column=col, value=co.get("total_return", 0)); col += 1
+                        ws.cell(row=row, column=col, value=co.get("price_return", 0)); col += 1
+                        ws.cell(row=row, column=col, value=co.get("dividend_return", 0)); col += 1
+                        ws.cell(row=row, column=col, value=co.get("weight", 0)); col += 1
+                        ws.cell(row=row, column=col, value=co.get("weighted_price", 0)); col += 1
+                        ws.cell(row=row, column=col, value=co.get("weighted_dividend", 0)); col += 1
+                        ws.cell(row=row, column=col, value=co.get("weighted_total", 0)); col += 1
+                        ws.cell(row=row, column=col, value=co.get("start_price", 0)); col += 1
+                        ws.cell(row=row, column=col, value=co.get("end_price", 0)); col += 1
+                        if has_capital:
+                            ws.cell(row=row, column=col, value=co.get("capital_invested", 0)); col += 1
+                            ws.cell(row=row, column=col, value=co.get("shares_purchased", 0)); col += 1
+                            ws.cell(row=row, column=col, value=co.get("dividends_received", 0)); col += 1
+                            ws.cell(row=row, column=col, value=co.get("market_value", 0)); col += 1
+                        for c in range(1, col):
                             ws.cell(row=row, column=c).border = thin_border
-                        for c in [2, 3, 4, 5]:
+                        for c in [2, 3, 4, 5, 6, 7, 8]:
                             ws.cell(row=row, column=c).number_format = pct_fmt
                         row += 1
                     break  # Only show per-company for first duration
@@ -640,5 +784,32 @@ async def export_rolling_xlsx(request: RollingExportRequest) -> StreamingRespons
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/export-rolling-zip")
+async def export_rolling_zip(request: RollingExportRequest) -> StreamingResponse:
+    """Export rolling backtest results as a ZIP archive.
+
+    The ZIP contains:
+
+    - ``summary.txt`` / ``summary.csv`` — aggregate statistics
+    - ``heatmap.csv`` — returns matrix (periods × durations × weightings)
+    - ``backtests/{period}_{weighting}_{duration}/`` — per‑backtest files:
+      ``report.txt``, chart PNGs, ``per_company.csv``,
+      ``yearly_returns.csv``, ``dividends.csv``
+    """
+    import io as _io
+    from datetime import datetime as _datetime
+
+    zip_bytes = await asyncio.to_thread(
+        build_rolling_zip, request.rolling_result,
+    )
+
+    filename = f"rolling_backtest_{_datetime.now().strftime('%Y%m%d_%H%M')}.zip"
+    return StreamingResponse(
+        _io.BytesIO(zip_bytes),
+        media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

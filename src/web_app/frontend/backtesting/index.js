@@ -775,11 +775,13 @@ async function runManualBacktest() {
       }),
     });
 
+    // API now returns {id, status, path, summary} — results saved server-side
     const resultEntry = {
       id: uid(),
       name: `Manual: ${allTickers.length} tickers, ${ST.startDate} → ${ST.endDate}`,
       results: result,
       mode: 'manual',
+      downloadId: result.id,
       params: {
         tickers: allTickers,
         startDate: ST.startDate,
@@ -793,8 +795,8 @@ async function runManualBacktest() {
     ST.activeResultTab = ST.resultsList.length - 1;
     ST.activeResultIdx = 0;
     ST.warning = null;
-    log('info', 'Backtest complete. Total return: ' +
-      (result.metrics.total_return * 100).toFixed(2) + '%');
+    const tr = (result.summary?.total_return ?? 0) * 100;
+    log('info', `Backtest complete. Total return: ${tr.toFixed(2)}%. Download: ${result.id}`);
   } catch (err) {
     if (err.name === 'AbortError') {
       log('info', 'Backtest cancelled by user.');
@@ -1162,10 +1164,17 @@ async function runRollingBacktest() {
       (event) => {
         if (event.type === 'result' || event.data?.type === 'result') {
           const data = event.type === 'result' ? event.data : event.data;
-          ST.rollingResult = data;
+          // New API: lightweight result with id/path/aggregate (ZIP saved server-side)
+          ST.rollingResult = {
+            id: data.id,
+            path: data.path,
+            aggregate: data.aggregate || {},
+            _serverSaved: true,
+          };
           ST.rollingRunning = false;
           ST.rollingProgress = null;
-          log('info', `Rolling backtest complete: ${data.aggregate?.successful || 0} successful backtests.`);
+          const succ = data.aggregate?.successful || 0;
+          log('info', `Rolling backtest complete: ${succ} successful. Download: ${data.id}`);
           render();
         } else if (event.type === 'error' || event.data?.type === 'error') {
           const data = event.type === 'error' ? event.data : event.data;
@@ -1215,15 +1224,19 @@ function renderRollingResults() {
   const result = ST.rollingResult;
   if (!result) return null;
 
-  const agg = result.aggregate;
+  const agg = result.aggregate || {};
   const container = el('div', { class: 'bt-results', id: 'bt-results-anchor' });
 
-  // Header with actions
+  // Header with download link (results saved server-side)
   const header = el('div', { class: 'bt-results-header' },
     el('span', { class: 'bt-results-header-title', text: 'Rolling Screening Results' }),
     el('div', { class: 'bt-results-actions' },
-      el('button', { class: 'bt-export-btn', text: 'Export XLSX', title: 'Download as Excel spreadsheet', onclick: () => exportRollingXLSX() }),
-      el('button', { class: 'bt-export-btn', text: 'Save', title: 'Save this rolling backtest', onclick: () => saveRollingBacktest() }),
+      result.id ? el('a', {
+        href: `/api/backtesting/download/${result.id}`,
+        class: 'bt-export-btn',
+        text: '📥 Download ZIP',
+        target: '_blank',
+      }) : null,
     ),
   );
   container.append(header);
@@ -1294,9 +1307,15 @@ function renderRollingResults() {
     container.append(renderRollingDistribution(agg));
   }
 
-  // ── Drill-down ────────────────────────────────────────────────────
+  // ── Drill-down (only when full results available) ──────────────────
   if (result.results && result.results.length) {
     container.append(renderRollingDrilldown(result));
+  } else if (result.id) {
+    container.append(
+      el('div', { class: 'bt-download-row', style: 'margin-top:1rem' },
+        el('span', { class: 'bt-muted', text: 'Full per-period details are included in the downloaded ZIP.' }),
+      ),
+    );
   }
 
   return container;
@@ -1931,6 +1950,31 @@ async function exportRollingXLSX() {
     log('info', 'Exported rolling backtest to XLSX.');
   } catch (e) {
     log('error', 'XLSX export failed: ' + e.message);
+  }
+}
+
+async function exportRollingZIP() {
+  if (!ST.rollingResult) return;
+  try {
+    const resp = await fetch('/api/backtesting/export-rolling-zip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rolling_result: ST.rollingResult }),
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(err || `HTTP ${resp.status}`);
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'rolling_backtest.zip';
+    a.click();
+    URL.revokeObjectURL(url);
+    log('info', 'Exported rolling backtest to ZIP.');
+  } catch (e) {
+    log('error', 'ZIP export failed: ' + e.message);
   }
 }
 
@@ -2585,8 +2629,8 @@ function renderResults() {
     container.append(
       el('div', { class: 'bt-result-tabs' },
         ...ST.resultsList.map((entry, idx) => {
-          const summary = entry.results.metrics
-            ? fmtPct(entry.results.metrics.total_return)
+          const summary = entry.results.summary
+            ? fmtPct(entry.results.summary.total_return)
             : (entry.results.aggregate
               ? `${entry.results.aggregate.successful}/${entry.results.aggregate.total_runs}`
               : '-');
@@ -2686,91 +2730,69 @@ function renderParamSummary(entry) {
 // ── Single backtest results ──────────────────────────────────────────
 
 function renderSingleResults(result) {
+  // Simple summary card — full details are in the downloadable ZIP
   const children = [];
-  const m = result.metrics || {};
-  const hasBench = m.benchmark_total_return != null;
+  // Support both new API format ({summary}) and old format ({metrics})
+  const s = result.summary || result.metrics || {};
+  const m = s;
 
-  // Warnings banner
-  if (result.warnings && result.warnings.length) {
+  // Warnings
+  if (s.warnings && s.warnings.length) {
     children.push(
       el('div', { class: 'bt-warning' },
-        ...result.warnings.map(w => el('div', { text: '⚠ ' + w })),
+        ...s.warnings.map(w => el('div', { text: '⚠ ' + w })),
       ),
     );
   }
 
-  // Summary metric tiles
-  children.push(renderMetricTiles(m, hasBench));
+  // Metric tiles
+  children.push(
+    el('div', { class: 'bt-metric-row' },
+      el('div', { class: 'bt-metric-tile' },
+        el('div', { class: 'bt-metric-label', text: 'Total Return' }),
+        el('div', { class: 'bt-metric-value', text: fmtPct(s.total_return) }),
+      ),
+      el('div', { class: 'bt-metric-tile' },
+        el('div', { class: 'bt-metric-label', text: 'Price Return' }),
+        el('div', { class: 'bt-metric-value', text: fmtPct(s.price_return) }),
+      ),
+      el('div', { class: 'bt-metric-tile' },
+        el('div', { class: 'bt-metric-label', text: 'Dividend Return' }),
+        el('div', { class: 'bt-metric-value', text: fmtPct(s.dividend_return) }),
+      ),
+      el('div', { class: 'bt-metric-tile' },
+        el('div', { class: 'bt-metric-label', text: 'Sharpe Ratio' }),
+        el('div', { class: 'bt-metric-value', text: (s.sharpe_ratio || 0).toFixed(2) }),
+      ),
+      el('div', { class: 'bt-metric-tile' },
+        el('div', { class: 'bt-metric-label', text: 'Max Drawdown' }),
+        el('div', { class: 'bt-metric-value', text: fmtPct(s.max_drawdown) }),
+      ),
+      s.benchmark_total_return != null ? el('div', { class: 'bt-metric-tile' },
+        el('div', { class: 'bt-metric-label', text: 'Benchmark' }),
+        el('div', { class: 'bt-metric-value', text: fmtPct(s.benchmark_total_return) }),
+      ) : null,
+      s.benchmark_total_return != null ? el('div', { class: 'bt-metric-tile' },
+        el('div', { class: 'bt-metric-label', text: 'Excess Return' }),
+        el('div', { class: 'bt-metric-value', text: fmtPct(s.excess_return) }),
+      ) : null,
+    ),
+  );
 
-  // Charts — cumulative returns
-  if (result.chart_data && result.chart_data.cumulative && result.chart_data.cumulative.length) {
+  // Download link
+  if (result.id) {
     children.push(
-      el('div', { class: 'bt-chart-container' },
-        el('div', { class: 'bt-chart-title', text: 'Cumulative Returns' }),
-        el('canvas', { id: 'bt-chart-cumulative' }),
-      ),
-    );
-
-    // Drawdown
-    children.push(
-      el('div', { class: 'bt-chart-container' },
-        el('div', { class: 'bt-chart-title', text: 'Drawdown' }),
-        el('canvas', { id: 'bt-chart-drawdown' }),
-      ),
-    );
-
-    // Decomposition + Per-Company scatter
-    children.push(
-      el('div', { class: 'bt-chart-row' },
-        el('div', { class: 'bt-chart-container', style: 'flex:1' },
-          el('div', { class: 'bt-chart-title', text: 'Return Decomposition' }),
-          el('canvas', { id: 'bt-chart-decomposition' }),
-        ),
-        el('div', { class: 'bt-chart-container', style: 'flex:1' },
-          el('div', { class: 'bt-chart-title', text: 'Per-Company: Price vs Dividend Return' }),
-          el('canvas', { id: 'bt-chart-percompany' }),
-        ),
+      el('div', { class: 'bt-download-row' },
+        el('a', {
+          href: `/api/backtesting/download/${result.id}`,
+          class: 'bt-btn',
+          text: '📥 Download Results (ZIP)',
+          target: '_blank',
+        }),
+        el('span', { class: 'bt-muted', text: `  Report, CSVs & charts for ${(s.tickers || []).length} tickers` }),
       ),
     );
   }
-
-  // Yearly returns scatter + table if we have yearly data
-  if (result.yearly_returns && result.yearly_returns.length > 1) {
-    children.push(
-      el('div', { class: 'bt-chart-container' },
-        el('div', { class: 'bt-chart-title', text: 'Annual Returns: Price vs Dividend' }),
-        el('canvas', { id: 'bt-chart-yearly-scatter' }),
-      ),
-    );
-  }
-
-  // Per-company table
-  if (result.per_company && result.per_company.length) {
-    children.push(renderPerCompanyTable(result.per_company, m.start_date, m.end_date));
-  }
-
-  // Yearly returns table
-  if (result.yearly_returns && result.yearly_returns.length) {
-    children.push(renderYearlyTable(result.yearly_returns));
-  }
-
-  // Dividends by year
-  if (result.dividends_by_year && result.dividends_by_year.length) {
-    children.push(renderDividendTable(result.dividends_by_year));
-  }
-
-  // Defer chart creation
-  setTimeout(() => {
-    if (result.chart_data) {
-      createCumulativeChart('bt-chart-cumulative', result.chart_data, hasBench);
-      createDrawdownChart('bt-chart-drawdown', result.chart_data, hasBench);
-      createDecompositionChart('bt-chart-decomposition', result.chart_data);
-      createPerCompanyChart('bt-chart-percompany', result.per_company || [], m.start_date, m.end_date);
-    }
-    if (result.yearly_returns && result.yearly_returns.length > 1) {
-      createYearlyScatterChart('bt-chart-yearly-scatter', result.yearly_returns);
-    }
-  }, 0);
 
   return children;
 }
@@ -3013,7 +3035,8 @@ function renderPerCompanyTable(companies, startDate, endDate) {
   const asc = ST.companySort.asc;
   const sorted = [...companies].sort((a, b) => {
     let va, vb;
-    if (col === 'total_return' || col === 'price_return' || col === 'dividend_return' || col === 'weight') {
+    if (col === 'total_return' || col === 'price_return' || col === 'dividend_return' || col === 'weight' ||
+        col === 'weighted_price' || col === 'weighted_dividend' || col === 'weighted_total') {
       va = a[col] || 0; vb = b[col] || 0;
     } else if (col === 'Ticker') {
       va = (a.Ticker || '').toLowerCase(); vb = (b.Ticker || '').toLowerCase();
@@ -3058,6 +3081,9 @@ function renderPerCompanyTable(companies, startDate, endDate) {
           sortableHeader('price_return', 'Price Return'),
           sortableHeader('dividend_return', 'Div Return'),
           sortableHeader('weight', 'Weight'),
+          sortableHeader('weighted_price', 'Wtd Price'),
+          sortableHeader('weighted_dividend', 'Wtd Div'),
+          sortableHeader('weighted_total', 'Wtd Total'),
           companies[0] && companies[0].capital_invested != null ? el('th', { text: 'Capital' }) : null,
           companies[0] && companies[0].shares_purchased != null ? el('th', { text: 'Shares' }) : null,
           companies[0] && companies[0].capital_invested != null ? el('th', { text: 'Divs Received' }) : null,
@@ -3076,12 +3102,33 @@ function renderPerCompanyTable(companies, startDate, endDate) {
             el('td', { class: 'num', style: colorStyle(c.price_return), text: fmtPct(c.price_return) }),
             el('td', { class: 'num', style: colorStyle(c.dividend_return), text: fmtPct(c.dividend_return) }),
             el('td', { class: 'num', text: fmtPct(c.weight) }),
+            el('td', { class: 'num', style: colorStyle(c.weighted_price), text: fmtPct(c.weighted_price) }),
+            el('td', { class: 'num', style: colorStyle(c.weighted_dividend), text: fmtPct(c.weighted_dividend) }),
+            el('td', { class: 'num', style: colorStyle(c.weighted_total), text: fmtPct(c.weighted_total) }),
             c.capital_invested != null ? el('td', { class: 'num', text: c.capital_invested.toFixed(0) }) : null,
             c.shares_purchased != null ? el('td', { class: 'num', text: c.shares_purchased.toFixed(2) }) : null,
             c.capital_invested != null ? el('td', { class: 'num', text: (c.dividends_received || 0).toFixed(2) }) : null,
             c.market_value != null ? el('td', { class: 'num', text: c.market_value.toFixed(0) }) : null,
           );
         }),
+        // ── Totals footer row ──────────────────────────────────
+        el('tr', { class: 'totals-row' },
+          el('td', { text: 'TOTAL' }),
+          el('td', { class: 'num', text: '-' }),
+          el('td', { class: 'num', text: '-' }),
+          el('td', { class: 'num', text: '-' }),
+          el('td', { class: 'num', text: '-' }),
+          el('td', { class: 'num', text: '-' }),
+          el('td', { class: 'num', text: '-' }),
+          el('td', { class: 'num', text: fmtPct(sorted.reduce((s, c) => s + (c.weight || 0), 0)) }),
+          el('td', { class: 'num', style: colorStyle(sorted.reduce((s, c) => s + (c.weighted_price || 0), 0)), text: fmtPct(sorted.reduce((s, c) => s + (c.weighted_price || 0), 0)) }),
+          el('td', { class: 'num', style: colorStyle(sorted.reduce((s, c) => s + (c.weighted_dividend || 0), 0)), text: fmtPct(sorted.reduce((s, c) => s + (c.weighted_dividend || 0), 0)) }),
+          el('td', { class: 'num', style: colorStyle(sorted.reduce((s, c) => s + (c.weighted_total || 0), 0)), text: fmtPct(sorted.reduce((s, c) => s + (c.weighted_total || 0), 0)) }),
+          companies[0] && companies[0].capital_invested != null ? el('td', { class: 'num', text: sorted.reduce((s, c) => s + (c.capital_invested || 0), 0).toFixed(0) }) : null,
+          companies[0] && companies[0].shares_purchased != null ? el('td', { class: 'num', text: sorted.reduce((s, c) => s + (c.shares_purchased || 0), 0).toFixed(2) }) : null,
+          companies[0] && companies[0].capital_invested != null ? el('td', { class: 'num', text: sorted.reduce((s, c) => s + (c.dividends_received || 0), 0).toFixed(2) }) : null,
+          companies[0] && companies[0].market_value != null ? el('td', { class: 'num', text: sorted.reduce((s, c) => s + (c.market_value || 0), 0).toFixed(0) }) : null,
+        ),
       ),
     ),
   );
@@ -3216,7 +3263,9 @@ function renderSavedResults() {
           const date = entry.savedAt ? new Date(entry.savedAt) : new Date();
           const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           let summary = '';
-          if (entry.results && entry.results.metrics) {
+          if (entry.results && entry.results.summary) {
+            summary = fmtPct(entry.results.summary.total_return);
+          } else if (entry.results && entry.results.metrics) {
             summary = fmtPct(entry.results.metrics.total_return);
           } else if (entry.results && entry.results.aggregate) {
             summary = `Set (${entry.results.aggregate.successful}/${entry.results.aggregate.total_runs})`;

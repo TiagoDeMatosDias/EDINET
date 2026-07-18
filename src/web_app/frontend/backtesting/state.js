@@ -23,7 +23,7 @@ export const ST = {
   benchmarkMode: 'ticker',          // 'ticker' | 'portfolio'
   baseCurrency: '',                 // '' = native, 'EUR', 'USD', etc.
   availableCurrencies: [],         // [{code, label}, ...]
-  initialCapital: 0,
+  initialCapital: 1_000_000,           // default: 1M units of base currency
   riskFreeRate: 0,
 
   // Screener import (from hash params via sessionStorage)
