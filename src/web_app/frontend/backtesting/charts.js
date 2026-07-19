@@ -114,6 +114,8 @@ export function createCumulativeChart(canvasId, chartData, hasBench) {
   const ctx = canvas.getContext('2d');
   const dates = chartData.cumulative.map(d => d.date);
   const portfolio = chartData.cumulative.map(d => d.portfolio * 100);
+  const hasVami = chartData.cumulative[0] && chartData.cumulative[0].vami != null;
+
   const datasets = [{
     label: 'Portfolio',
     data: portfolio,
@@ -122,7 +124,24 @@ export function createCumulativeChart(canvasId, chartData, hasBench) {
     borderWidth: 2,
     pointRadius: 0,
     tension: 0.1,
+    yAxisID: 'y',
   }];
+
+  // VAMI: dollar value of the portfolio over time
+  if (hasVami) {
+    const vami = chartData.cumulative.map(d => d.vami);
+    datasets.push({
+      label: 'VAMI',
+      data: vami,
+      borderColor: '#3fb950',
+      backgroundColor: 'transparent',
+      borderWidth: 1.5,
+      borderDash: [4, 4],
+      pointRadius: 0,
+      tension: 0.1,
+      yAxisID: 'yVami',
+    });
+  }
 
   if (hasBench && chartData.cumulative[0] && chartData.cumulative[0].benchmark != null) {
     const benchmark = chartData.cumulative.map(d => (d.benchmark || 0) * 100);
@@ -135,7 +154,28 @@ export function createCumulativeChart(canvasId, chartData, hasBench) {
       borderDash: [6, 3],
       pointRadius: 0,
       tension: 0.1,
+      yAxisID: 'y',
     });
+  }
+
+  const scales = {
+    x: { ticks: { color: '#8ea0b8', maxTicksLimit: 15, maxRotation: 0 } },
+    y: {
+      type: 'linear',
+      position: 'left',
+      ticks: { color: '#8ea0b8', callback: v => v.toFixed(1) + '%' },
+      grid: { color: 'rgba(255,255,255,0.06)' },
+    },
+  };
+
+  if (hasVami) {
+    scales.yVami = {
+      type: 'linear',
+      position: 'right',
+      ticks: { color: '#3fb950', callback: v => (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : (v / 1e3).toFixed(0) + 'K') },
+      grid: { display: false },
+      title: { display: true, text: 'VAMI', color: '#3fb950' },
+    };
   }
 
   _ST.charts[canvasId] = new Chart(ctx, {
@@ -148,13 +188,7 @@ export function createCumulativeChart(canvasId, chartData, hasBench) {
         legend: { labels: { color: '#d9e2f2', font: { family: 'IBM Plex Mono' } } },
         tooltip: { mode: 'index', intersect: false },
       },
-      scales: {
-        x: { ticks: { color: '#8ea0b8', maxTicksLimit: 15, maxRotation: 0 } },
-        y: {
-          ticks: { color: '#8ea0b8', callback: v => v.toFixed(1) + '%' },
-          grid: { color: 'rgba(255,255,255,0.06)' },
-        },
-      },
+      scales,
     },
   });
   addChartExport(canvasId, 'cumulative-returns');

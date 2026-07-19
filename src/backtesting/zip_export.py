@@ -165,10 +165,7 @@ def _add_summary_txt(
         lines.append("  Screening criteria:")
         for c in criteria:
             if isinstance(c, dict):
-                lines.append(
-                    f"    {c.get('column', c.get('field', '?'))} "
-                    f"{c.get('operator', '?')} {c.get('value', '?')}"
-                )
+                lines.append(f"    {_fmt_criterion(c)}")
 
     lines.append("")
 
@@ -182,8 +179,8 @@ def _add_summary_txt(
     date_range = agg.get("date_range", {})
     if date_range:
         lines.append(
-            f"  Date range:         {date_range.get('start', '?')} → "
-            f"{date_range.get('end', '?')}"
+            f"  Date range:         {date_range.get('first', '?')} → "
+            f"{date_range.get('last', '?')}"
         )
 
     # Overall stats
@@ -239,11 +236,18 @@ def _add_summary_txt(
         if by_dur:
             lines.append("")
             lines.append("  By duration:")
+            header = f"    {'Dur':>5}  {'Wins':>5} {'Loss':>5} {'Win %':>7}  {'Bench Ret':>10}"
+            lines.append(header)
+            lines.append("    " + "-" * (len(header) - 4))
             for dur, d in sorted(by_dur.items()):
+                wins = d.get("out", 0)
+                total = d.get("total", 0)
+                losses = total - wins
+                wr = d.get("win_rate", 0)
+                bench_ret = _fmt_pct(d.get("bench_mean_return"))
                 lines.append(
-                    f"    {dur}:  {d.get('outperformed', 0)}W / "
-                    f"{d.get('underperformed', 0)}L  "
-                    f"({d.get('win_rate', 0) * 100:.1f}%)"
+                    f"    {dur:>5}  {wins:>5} {losses:>5} {wr * 100:>6.1f}%  "
+                    f"{bench_ret:>10}"
                 )
 
     lines.append("")
@@ -527,12 +531,17 @@ def _build_report_text(
         for label, value in bench_rows:
             lines.append(f"  {label:<{max_bl}}  {value}")
 
-    # Initial capital & allocation
+    # Initial capital & VAMI
     initial_capital = metrics.get("initial_capital", 0.0)
     if initial_capital > 0:
         lines.append("")
         lines.append("--- Capital Allocation ---")
         lines.append(f"  Initial Capital: {initial_capital:,.0f}")
+        # VAMI = final value of the virtual portfolio
+        total_ret = metrics.get("total_return", 0.0) or 0.0
+        final_vami = initial_capital * (1.0 + total_ret)
+        lines.append(f"  Final VAMI:      {final_vami:,.0f}  "
+                     f"(change: {total_ret:+.2%})")
         if per_company and len(per_company) > 0:
             lines.append("")
             alloc_header = (
@@ -719,32 +728,52 @@ def _chart_png_from_json(
 def _plot_cumulative(
     dates: tuple, entries: tuple,
 ) -> bytes | None:
-    """Plot cumulative returns: portfolio vs benchmark."""
+    """Plot cumulative returns: portfolio vs benchmark, with VAMI on right axis."""
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
+    import matplotlib.ticker as mticker
 
     portfolio_vals = [e.get("portfolio", 0) * 100 for e in entries]
     benchmark_vals = [e.get("benchmark") for e in entries]
+    vami_vals = [e.get("vami") for e in entries]
     has_benchmark = any(b is not None for b in benchmark_vals)
+    has_vami = any(v is not None for v in vami_vals)
 
     if all(v == 0 for v in portfolio_vals) and not has_benchmark:
         return None
 
     fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Portfolio return (left axis, %)
     ax.plot(dates, portfolio_vals, label="Portfolio (Total)",
             linewidth=2, color=_COLORS["portfolio_total"])
 
+    # VAMI (right axis, absolute value)
+    if has_vami:
+        ax_vami = ax.twinx()
+        ax_vami.plot(dates, vami_vals, label="VAMI",
+                     linewidth=1.5, linestyle="--", color="#2ea043")
+        ax_vami.set_ylabel("VAMI (value of initial capital)", color="#2ea043")
+        ax_vami.tick_params(axis="y", labelcolor="#2ea043")
+        # Format large numbers compactly
+        ax_vami.yaxis.set_major_formatter(
+            mticker.FuncFormatter(lambda x, _: f"{x/1e6:.1f}M" if x >= 1e6 else f"{x/1e3:.0f}K")
+        )
+
     if has_benchmark:
-        # Fill None gaps with NaN so lines don't connect across gaps
         b_vals = [b * 100 if b is not None else float("nan")
                   for b in benchmark_vals]
         ax.plot(dates, b_vals, label="Benchmark (Total)",
                 linewidth=2, color=_COLORS["benchmark_total"])
 
+    # Combine legends from both axes
+    lines = ax.get_lines() + (ax_vami.get_lines() if has_vami else [])
+    labels = [l.get_label() for l in lines]
+    ax.legend(lines, labels, loc="best")
+
     ax.set_title("Cumulative Returns", fontsize=14)
     ax.set_ylabel("Return (%)")
     ax.set_xlabel("Date")
-    ax.legend(loc="best")
     ax.grid(True, alpha=0.3)
     ax.axhline(y=0, color="grey", linewidth=0.8, linestyle="-")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
@@ -935,3 +964,77 @@ def _join_list(value: Any) -> str:
     if isinstance(value, list):
         return ", ".join(str(v) for v in value)
     return str(value) if value else ""
+
+
+def _fmt_criterion(c: dict) -> str:
+    """Format a single screening criterion for display in the summary.
+
+    Handles the various comparison modes used by the screening engine.
+    """
+    mode = c.get("comparison_mode", "fixed")
+    col = c.get("column", "") or ""
+    tbl = c.get("table", "") or ""
+    op = c.get("operator", "") or ""
+    val = c.get("value")
+    field_type = c.get("field_type", "num")
+
+    # Build a qualified column name
+    if tbl and col:
+        qualified = f"{tbl}.{col}"
+    elif col:
+        qualified = col
+    else:
+        qualified = "?"
+
+    if mode == "full_expression":
+        left = c.get("left_expression") or c.get("left_side")
+        if left:
+            if isinstance(left, list):
+                left = " ".join(
+                    t.get("value", t.get("column", "?"))
+                    for t in left if isinstance(t, dict)
+                )
+            return f"{left}"
+        return f"expression: {qualified}"
+
+    if mode == "expression":
+        right = c.get("right_side")
+        if right and isinstance(right, list):
+            right_str = " ".join(
+                t.get("value", t.get("column", "?"))
+                for t in right if isinstance(t, dict)
+            )
+            return f"{qualified} {op} ({right_str})"
+        return f"{qualified} {op} {val}"
+
+    if mode == "column":
+        cmp_tbl = c.get("compare_table", "") or ""
+        cmp_col = c.get("compare_column", "") or ""
+        offset = c.get("offset")
+        cmp_qualified = f"{cmp_tbl}.{cmp_col}" if cmp_tbl else cmp_col
+        s = f"{qualified} {op} {cmp_qualified}"
+        if offset:
+            s += f" {'+' if offset > 0 else ''}{offset}"
+        return s
+
+    if mode == "between":
+        v2 = c.get("value2")
+        return f"{qualified} BETWEEN {val} AND {v2}"
+
+    if mode == "in":
+        vals = c.get("values")
+        if isinstance(vals, list):
+            return f"{qualified} IN ({', '.join(str(v) for v in vals)})"
+        return f"{qualified} IN ({val})"
+
+    if mode == "like":
+        return f"{qualified} LIKE '{val}'"
+
+    if mode == "stock_price":
+        left_expr = c.get("left_expression", "") or ""
+        return f"{left_expr or qualified} {op} Stock_Prices.Price"
+
+    # Default: fixed / simple value comparison
+    if field_type == "percent" and isinstance(val, (int, float)):
+        val = f"{float(val) * 100:.1f}%"
+    return f"{qualified} {op} {val}"

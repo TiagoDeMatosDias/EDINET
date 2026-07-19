@@ -1672,7 +1672,6 @@ class TestEnhancedPerCompanyReturns(unittest.TestCase):
         result = calculate_per_company_returns(
             prices, {"A": 0.7, "B": 0.3},
         )
-        result = tracker["per_company_per_year"]
         for _, row in result.iterrows():
             self.assertAlmostEqual(
                 row["weighted_price"],
@@ -1892,7 +1891,7 @@ class TestPerCompanyPerYear(unittest.TestCase):
         tracker = build_daily_portfolio_tracker(
             prices, {"A": 1.0}, None, initial_capital=1_000_000,
         )
-        self.assertTrue(result.empty)
+        self.assertTrue(tracker["daily"].empty)
 
 
 class TestPortfolioMetricsFromPerCompany(unittest.TestCase):
@@ -1946,6 +1945,305 @@ class TestPortfolioMetricsFromPerCompany(unittest.TestCase):
         self.assertAlmostEqual(metrics["total_return"], 0.20, places=4)
         self.assertAlmostEqual(metrics["portfolio_dividend_return"], 0.05, places=4)
         self.assertAlmostEqual(metrics["portfolio_price_return"], 0.15, places=4)
+
+
+# ---------------------------------------------------------------------------
+# Accuracy tests — verify virtual portfolio produces correct, consistent results
+# ---------------------------------------------------------------------------
+
+class TestVirtualPortfolioAccuracy(unittest.TestCase):
+    """Verify the tracker-based virtual portfolio produces accurate results.
+
+    These test a "virtual buy-and-hold portfolio" — concrete shares,
+    daily market values, and accumulated cash dividends.
+    """
+
+    def _make_two_ticker_data(self):
+        """A rising 2-ticker portfolio over 3 days with one dividend."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-02", "2024-01-03", "2024-01-04",
+                "2024-01-02", "2024-01-03", "2024-01-04",
+            ]),
+            "Ticker": ["A", "A", "A", "B", "B", "B"],
+            "Price": [100.0, 105.0, 110.0,     # A: +10%
+                       50.0,  52.0,  55.0],    # B: +10%
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["A"],
+            "periodEnd": pd.to_datetime(["2024-01-03"]),
+            "PerShare_Dividends": [5.0],
+        })
+        return prices, dividends
+
+    def test_total_return_is_price_plus_dividend(self):
+        """total_return === price_return + dividend_return (to 1e-10)."""
+        prices, dividends = self._make_two_ticker_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 0.5, "B": 0.5}, dividends,
+            initial_capital=1_000_000,
+        )
+        m = tracker["metrics"]
+        total = m["total_return"]
+        price = m["portfolio_price_return"]
+        div = m["portfolio_dividend_return"]
+        self.assertAlmostEqual(total, price + div, places=10,
+            msg=f"total={total:.10f} != price={price:.10f} + div={div:.10f}")
+
+    def test_per_company_from_tracker_matches_legacy(self):
+        """_derive_per_company_from_tracker matches calculate_per_company_returns."""
+        prices, dividends = self._make_two_ticker_data()
+
+        # Legacy
+        weights = {"A": 0.5, "B": 0.5}
+        legacy = calculate_per_company_returns(
+            prices, weights, dividends,
+            initial_capital=1_000_000,
+        )
+
+        # Tracker-based (the new helper from the web layer)
+        from src.backtesting.backtesting import _derive_per_company_from_tracker
+        tracker = build_daily_portfolio_tracker(
+            prices, weights, dividends, initial_capital=1_000_000,
+        )
+        derived = _derive_per_company_from_tracker(
+            tracker["daily"], ["A", "B"], weights,
+            initial_capital=1_000_000, dividends_df=dividends,
+        )
+
+        # Compare key numeric columns
+        for col in ["price_return", "dividend_return", "total_return",
+                     "weight", "shares_purchased", "capital_invested",
+                     "dividends_received"]:
+            for tk in ["A", "B"]:
+                legacy_val = float(legacy[legacy["Ticker"] == tk][col].iloc[0])
+                derived_val = float(derived[derived["Ticker"] == tk][col].iloc[0])
+                self.assertAlmostEqual(legacy_val, derived_val, places=8,
+                    msg=f"{tk}.{col}: legacy={legacy_val:.8f} vs derived={derived_val:.8f}")
+
+    def test_shares_times_price_equals_market_value(self):
+        """shares * price == mktval for each ticker on each day."""
+        prices, dividends = self._make_two_ticker_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 0.5, "B": 0.5}, dividends,
+            initial_capital=1_000_000,
+        )
+        daily = tracker["daily"]
+        for tk in ["A", "B"]:
+            for idx in daily.index:
+                shares = daily.loc[idx, f"shares_{tk}"]
+                price = daily.loc[idx, f"price_{tk}"]
+                mktval = daily.loc[idx, f"mktval_{tk}"]
+                expected = shares * price
+                self.assertAlmostEqual(mktval, expected, places=2,
+                    msg=f"{tk} on {idx.date()}: {shares} * {price} = {expected}, got {mktval}")
+
+    def test_portfolio_total_equals_mktval_plus_cash(self):
+        """portfolio_total == sum(mktval) + cash on every day."""
+        prices, dividends = self._make_two_ticker_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 0.5, "B": 0.5}, dividends,
+            initial_capital=1_000_000,
+        )
+        daily = tracker["daily"]
+        for idx in daily.index:
+            mktval_sum = daily.loc[idx, "mktval_A"] + daily.loc[idx, "mktval_B"]
+            cash = daily.loc[idx, "cash"]
+            portfolio_total = daily.loc[idx, "portfolio_total"]
+            self.assertAlmostEqual(portfolio_total, mktval_sum + cash, places=2,
+                msg=f"{idx.date()}: mkt={mktval_sum} + cash={cash} = {mktval_sum + cash}, got {portfolio_total}")
+
+    def test_cumulative_return_from_portfolio_total(self):
+        """cumulative_return == portfolio_total / initial_capital."""
+        prices, dividends = self._make_two_ticker_data()
+        capital = 1_000_000.0
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 0.5, "B": 0.5}, dividends,
+            initial_capital=capital,
+        )
+        daily = tracker["daily"]
+        for idx in daily.index:
+            expected_cum = daily.loc[idx, "portfolio_total"] / capital
+            actual_cum = daily.loc[idx, "cumulative_return"]
+            self.assertAlmostEqual(expected_cum, actual_cum, places=8,
+                msg=f"{idx.date()}: expected {expected_cum:.8f}, got {actual_cum:.8f}")
+
+    def test_dividend_cash_equals_sum_of_per_ticker_divs(self):
+        """cash column == sum(div_cash_{t}) for all tickers."""
+        prices, dividends = self._make_two_ticker_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 0.5, "B": 0.5}, dividends,
+            initial_capital=1_000_000,
+        )
+        daily = tracker["daily"]
+        for idx in daily.index:
+            div_sum = daily.loc[idx, "div_cash_A"] + daily.loc[idx, "div_cash_B"]
+            cash = daily.loc[idx, "cash"]
+            self.assertAlmostEqual(cash, div_sum, places=2,
+                msg=f"{idx.date()}: div_sum={div_sum}, cash={cash}")
+
+    def test_dividend_cum_contribution_adds_up(self):
+        """cumulative_return == price_only_cum_return + dividend_cum_contribution."""
+        prices, dividends = self._make_two_ticker_data()
+        tracker = build_daily_portfolio_tracker(
+            prices, {"A": 0.5, "B": 0.5}, dividends,
+            initial_capital=1_000_000,
+        )
+        daily = tracker["daily"]
+        for idx in daily.index:
+            total = daily.loc[idx, "cumulative_return"]
+            price = daily.loc[idx, "price_only_cum_return"]
+            div = daily.loc[idx, "dividend_cum_contribution"]
+            self.assertAlmostEqual(total, price + div, places=10,
+                msg=f"{idx.date()}: total={total:.10f} != price={price:.10f} + div={div:.10f}")
+
+    def test_single_ticker_no_dividends_exact(self):
+        """Single ticker, no dividends: check every number manually."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"]),
+            "Ticker": ["X", "X", "X"],
+            "Price": [200.0, 210.0, 220.0],
+        })
+        capital = 500_000.0
+        tracker = build_daily_portfolio_tracker(
+            prices, {"X": 1.0}, None, initial_capital=capital,
+        )
+        daily = tracker["daily"]
+        metrics = tracker["metrics"]
+
+        # Shares = 500k / 200 = 2500
+        self.assertAlmostEqual(float(daily["shares_X"].iloc[0]), 2500.0, places=2)
+
+        # Day 2: mktval = 2500 * 210 = 525,000; cum return = 525k/500k = 1.05
+        self.assertAlmostEqual(float(daily["mktval_X"].iloc[0]), 525000.0, places=0)
+        self.assertAlmostEqual(float(daily["cumulative_return"].iloc[0]), 1.05, places=6)
+
+        # Day 3: mktval = 2500 * 220 = 550,000; cum return = 550k/500k = 1.10
+        self.assertAlmostEqual(float(daily["mktval_X"].iloc[1]), 550000.0, places=0)
+        self.assertAlmostEqual(float(daily["cumulative_return"].iloc[1]), 1.10, places=6)
+
+        # Metrics: total return = 10%
+        self.assertAlmostEqual(metrics["total_return"], 0.10, places=6)
+        self.assertAlmostEqual(metrics["portfolio_price_return"], 0.10, places=6)
+        self.assertAlmostEqual(metrics["portfolio_dividend_return"], 0.0, places=6)
+
+    def test_benchmark_comparison_math(self):
+        """Verify benchmark_total_return and excess_return are correct."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-02", "2024-01-03", "2024-01-04",
+                "2024-01-02", "2024-01-03", "2024-01-04",
+            ]),
+            "Ticker": ["PF", "PF", "PF", "BENCH", "BENCH", "BENCH"],
+            "Price": [100.0, 110.0, 120.0,     # Portfolio: +20%
+                       50.0,  52.0,  53.0],    # Benchmark: +6%
+        })
+        # Portfolio: 20% return
+        bench_returns = calculate_benchmark_returns(prices, "BENCH")
+        pf_returns = calculate_portfolio_returns(prices, {"PF": 1.0})
+        metrics = calculate_metrics(
+            pf_returns, bench_returns,
+            "2024-01-02", "2024-01-04",
+        )
+
+        # Benchmark: 50 -> 53 = 6.0%
+        self.assertAlmostEqual(metrics["benchmark_total_return"], 0.06, places=4)
+        # Portfolio: 100 -> 120 = 20%
+        self.assertAlmostEqual(metrics["total_return"], 0.20, places=4)
+        # Excess = 20% - 6% = 14%
+        self.assertAlmostEqual(metrics["excess_return"], 0.14, places=4)
+
+    def test_three_ticker_portfolio_weighted_return(self):
+        """3-ticker portfolio: total return = weighted sum of individual returns."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime([
+                "2024-01-02", "2024-01-04",
+                "2024-01-02", "2024-01-04",
+                "2024-01-02", "2024-01-04",
+            ]),
+            "Ticker": ["A", "A", "B", "B", "C", "C"],
+            "Price": [100.0, 120.0,    # A: +20%
+                       80.0,  88.0,    # B: +10%
+                       50.0,  55.0],   # C: +10%
+        })
+        weights = {"A": 0.5, "B": 0.3, "C": 0.2}  # sum = 1.0
+        tracker = build_daily_portfolio_tracker(
+            prices, weights, None, initial_capital=1_000_000,
+        )
+
+        # Expected: 0.5*20% + 0.3*10% + 0.2*10% = 10% + 3% + 2% = 15%
+        expected = 0.5 * 0.20 + 0.3 * 0.10 + 0.2 * 0.10
+        self.assertAlmostEqual(tracker["metrics"]["total_return"], expected, places=6)
+
+        # per_company_per_year should match individual returns
+        pyp = tracker["per_company_per_year"]
+        for tk, exp_ret in [("A", 0.20), ("B", 0.10), ("C", 0.10)]:
+            row = pyp[(pyp["Ticker"] == tk)].iloc[0]
+            self.assertAlmostEqual(row["Total_Return_Pct"], exp_ret, places=6,
+                msg=f"{tk}: expected {exp_ret}, got {row['Total_Return_Pct']}")
+
+    def test_dividends_add_to_cash_and_dont_change_shares(self):
+        """Dividends increase cash, shares stay constant (buy-and-hold)."""
+        prices = pd.DataFrame({
+            "Date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"]),
+            "Ticker": ["X", "X", "X"],
+            "Price": [100.0, 105.0, 108.0],
+        })
+        dividends = pd.DataFrame({
+            "Ticker": ["X"],
+            "periodEnd": pd.to_datetime(["2024-01-03"]),
+            "PerShare_Dividends": [5.0],
+        })
+        tracker = build_daily_portfolio_tracker(
+            prices, {"X": 1.0}, dividends, initial_capital=1_000_000,
+        )
+        daily = tracker["daily"]
+
+        # Shares constant (10,000 = 1M / 100)
+        for idx in daily.index:
+            self.assertAlmostEqual(float(daily.loc[idx, "shares_X"]), 10000.0, places=2)
+
+        # Cash: daily_df starts at 2nd trading day (1st dropped for pct_change).
+        # Dividend on Jan 3 maps to first row of daily_df (Jan 3) → 50k.
+        # Both rows (Jan 3 and Jan 4) carry the 50k cash.
+        self.assertAlmostEqual(float(daily["cash"].iloc[0]), 50000.0, places=0)
+        self.assertAlmostEqual(float(daily["cash"].iloc[1]), 50000.0, places=0)
+
+        # Portfolio total: mktval + cash
+        # Row 0 (Jan 3): 10000 * 105 + 50000 = 1,100,000
+        self.assertAlmostEqual(
+            float(daily["portfolio_total"].iloc[0]), 1100000.0, places=0,
+        )
+        # Row 1 (Jan 4): 10000 * 108 + 50000 = 1,130,000
+        self.assertAlmostEqual(
+            float(daily["portfolio_total"].iloc[1]), 1130000.0, places=0,
+        )
+        # Return = 130k / 1M = 13%
+        self.assertAlmostEqual(tracker["metrics"]["total_return"], 0.13, places=6)
+        # Price return = 8% (100 → 108)
+        self.assertAlmostEqual(tracker["metrics"]["portfolio_price_return"], 0.08, places=6)
+        # Dividend return = 5% (50000 / 1M)
+        self.assertAlmostEqual(tracker["metrics"]["portfolio_dividend_return"], 0.05, places=6)
+
+    def test_initial_capital_derived_from_shares_mode(self):
+        """Shares-mode portfolio: verify capital and shares are correct."""
+        config = {"X": {"mode": "shares", "value": 100}}
+        prices_data = {"X": 50.0}
+        weights, capital, warns = resolve_portfolio_allocations(config, prices_data)
+        # 100 shares * 50 = 5000 capital
+        self.assertAlmostEqual(capital, 5000.0)
+        self.assertAlmostEqual(weights["X"], 1.0)
+
+    def test_initial_capital_derived_from_value_mode(self):
+        """Value-mode portfolio: verify capital and weights."""
+        config = {
+            "A": {"mode": "value", "value": 3000},
+            "B": {"mode": "value", "value": 7000},
+        }
+        weights, capital, warns = resolve_portfolio_allocations(config, {})
+        self.assertAlmostEqual(capital, 10000.0)
+        self.assertAlmostEqual(weights["A"], 0.3)
+        self.assertAlmostEqual(weights["B"], 0.7)
 
 
 if __name__ == "__main__":

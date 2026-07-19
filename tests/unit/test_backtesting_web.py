@@ -343,7 +343,8 @@ class TestRunBacktestWeb(unittest.TestCase):
         m = result["metrics"]
         self.assertIsNotNone(m.get("portfolio_price_return"))
         self.assertIsNotNone(m.get("portfolio_dividend_return"))
-        self.assertEqual(m["initial_capital"], 0.0)
+        # Default initial capital when none specified
+        self.assertEqual(m["initial_capital"], 1_000_000.0)
 
     def test_initial_capital_injected(self):
         result = run_backtest_web(

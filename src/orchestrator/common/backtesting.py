@@ -786,7 +786,7 @@ def calculate_portfolio_returns(
         market_value = pd.Series(0.0, index=price_matrix.index)
         for t in tickers_in_data:
             if shares[t] > 0:
-                market_value += shares[t] * price_matrix[t].fillna(method="ffill")
+                market_value += shares[t] * price_matrix[t].ffill()
 
         # Cumulative dividends received (held as cash)
         cumul_dividends = pd.Series(0.0, index=price_matrix.index)
@@ -1386,6 +1386,7 @@ def build_daily_portfolio_tracker(
     daily_cols["portfolio_total"] = portfolio_total
     daily_cols["daily_return"] = daily_return
     daily_cols["cumulative_return"] = cumulative_return
+    daily_cols["vami"] = portfolio_total  # VAMI = Value Added Monthly Index
     daily_cols["price_only_total"] = price_only_total
     daily_cols["price_only_daily_return"] = daily_price_only_return
     daily_cols["price_only_cum_return"] = price_only_cum
@@ -1527,7 +1528,7 @@ def build_daily_portfolio_tracker(
         annualized_return = total_return
 
     dr_std = float(daily_return.std()) if len(daily_return) > 1 else 0.0
-    daily_vol = dr_std * float(np.sqrt(365))
+    daily_vol = dr_std * float(np.sqrt(252))
     sharpe = (annualized_return - risk_free_rate) / daily_vol if daily_vol > 0 else 0.0
     cum = cumulative_return
     running_max = cum.cummax()
@@ -2190,7 +2191,7 @@ def generate_backtest_charts(
             x = np.arange(len(years))
             bottom = np.zeros(len(years))
 
-            cmap = plt.cm.get_cmap("Set2", max(len(ticker_cols), 1))
+            cmap = plt.get_cmap("Set2", max(len(ticker_cols), 1))
 
             for i, ticker in enumerate(ticker_cols):
                 values = dividends_by_year[ticker].values.astype(float)

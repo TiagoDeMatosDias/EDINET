@@ -1252,6 +1252,10 @@ function renderRollingResults() {
     ];
     if (cfg.benchmark_ticker) parts.push(`Benchmark: ${cfg.benchmark_ticker}`);
     if (cfg.start_period) parts.push(`Range: ${cfg.start_period} → ${cfg.end_period || 'latest'}`);
+    const criteria = cfg.criteria;
+    if (criteria && criteria.length) {
+      parts.push(`Criteria: ${criteria.length} rule${criteria.length > 1 ? 's' : ''}`);
+    }
     container.append(el('div', { class: 'bt-param-summary', text: parts.join('  ·  ') }));
   }
 
@@ -1336,6 +1340,10 @@ function renderRollingSummaryTable(agg) {
           el('th', { text: 'Median Ann. Return' }),
           el('th', { text: 'Mean Sharpe' }),
           ...(agg.benchmark_comparison?.by_duration
+            ? [el('th', { text: 'Benchmark' })]
+            : []
+          ),
+          ...(agg.benchmark_comparison?.by_duration
             ? [el('th', { text: 'Win Rate' })]
             : []
           ),
@@ -1346,6 +1354,7 @@ function renderRollingSummaryTable(agg) {
           // Use first weighting mode for the table
           const data = agg.by_weighting[wmKeys[0]][dur];
           const winRate = agg.benchmark_comparison?.by_duration?.[dur];
+          const benchRet = winRate?.bench_mean_return;
           return el('tr', {},
             el('td', { text: dur }),
             el('td', { class: 'num', text: data?.count || 0 }),
@@ -1353,7 +1362,11 @@ function renderRollingSummaryTable(agg) {
             el('td', { class: 'num', style: colorStyle(data?.median_return), text: fmtPct(data?.median_return || 0) }),
             el('td', { class: 'num', text: (data?.mean_sharpe || 0).toFixed(3) }),
             ...(winRate
-              ? [el('td', { class: 'num', text: `${(winRate.win_rate * 100).toFixed(0)}% (${winRate.out}/${winRate.total})` })]
+              ? [el('td', { class: 'num', style: colorStyle(benchRet), text: benchRet != null ? fmtPct(benchRet) : 'N/A' })]
+              : []
+            ),
+            ...(winRate
+              ? [el('td', { class: 'num', text: `${winRate.out}W / ${winRate.total - winRate.out}L (${(winRate.win_rate * 100).toFixed(0)}%)` })]
               : []
             ),
           );

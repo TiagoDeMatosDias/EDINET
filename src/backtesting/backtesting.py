@@ -25,30 +25,166 @@ import pandas as pd
 
 from src.orchestrator.common.backtesting import (
     _BACKTEST_DURATIONS,
-    _normalise_portfolio_entry,
     _sql_ident,
     build_daily_portfolio_tracker,
     calculate_benchmark_returns,
     calculate_dividends_by_company_year,
-    calculate_metrics,
-    calculate_per_company_returns,
-    calculate_portfolio_returns,
-    calculate_return_decomposition,
     calculate_yearly_returns,
     convert_dividends_to_base_currency,
     convert_prices_to_base_currency,
     get_dividend_data,
     get_portfolio_benchmark_returns,
     get_portfolio_prices,
-    get_ticker_currency,
     resolve_portfolio_allocations,
 )
 
 logger = logging.getLogger(__name__)
 
+# ── Module-level helpers ─────────────────────────────────────────────────
+
+_DUR_YEARS: dict[str, int] = {
+    "1yr": 1, "2yr": 2, "3yr": 3, "5yr": 5, "10yr": 10,
+}
+
+
+def _annualize_return(total_return: float, dur: str) -> float:
+    """Convert a total-period return to annualized (CAGR)."""
+    yrs = _DUR_YEARS.get(dur, 1)
+    if yrs <= 1:
+        return total_return
+    if total_return <= -1.0:
+        return -1.0
+    return (1.0 + total_return) ** (1.0 / yrs) - 1.0
+
+
 # ==========================================================================
 #  1. SINGLE BACKTEST RUNNER + HELPERS
 # ==========================================================================
+
+
+def _derive_per_company_from_tracker(
+    daily_df: pd.DataFrame,
+    tickers: list[str],
+    portfolio_weights: dict[str, float],
+    initial_capital: float = 0.0,
+    dividends_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Derive per-company summary from the daily portfolio tracker.
+
+    Returns a DataFrame with the same columns as
+    ``calculate_per_company_returns`` for ZIP export / report compatibility.
+
+    Note: *daily_df* has its first row dropped (pct_change), so start
+    prices are derived from ``weight * initial_capital / shares`` rather
+    than read from the truncated price columns.
+    """
+    records: list[dict] = []
+    for t in tickers:
+        price_col = f"price_{t}"
+        shares_col = f"shares_{t}"
+        div_cash_col = f"div_cash_{t}"
+        if price_col not in daily_df.columns:
+            continue
+        shares = float(daily_df[shares_col].iloc[0]) if shares_col in daily_df.columns else 0.0
+        weight = portfolio_weights.get(t, 0.0)
+        capital_invested = weight * initial_capital if initial_capital > 0 else shares * float(daily_df[price_col].iloc[0])
+        # Derive start price from capital and shares (daily_df starts at day 2)
+        start_price = capital_invested / shares if shares > 0 else 0.0
+        end_price = float(daily_df[price_col].iloc[-1])
+        market_value = shares * end_price
+        price_return = (end_price / start_price - 1.0) if start_price > 0 else 0.0
+        total_divs_received = (
+            float(daily_df[div_cash_col].iloc[-1])
+            if div_cash_col in daily_df.columns else 0.0
+        )
+        dividend_return = total_divs_received / capital_invested if capital_invested > 0 else 0.0
+        total_return = price_return + dividend_return
+        records.append({
+            "Ticker": t,
+            "start_price": start_price,
+            "end_price": end_price,
+            "price_return": price_return,
+            "dividend_return": dividend_return,
+            "total_return": total_return,
+            "weight": weight,
+            "weighted_price": price_return * weight,
+            "weighted_dividend": dividend_return * weight,
+            "weighted_total": total_return * weight,
+            "capital_invested": capital_invested,
+            "shares_purchased": shares,
+            "dividends_received": total_divs_received,
+            "market_value": market_value,
+        })
+    cols = [
+        "Ticker", "start_price", "end_price", "price_return",
+        "dividend_return", "total_return", "weight",
+        "weighted_price", "weighted_dividend", "weighted_total",
+        "capital_invested", "shares_purchased",
+        "dividends_received", "market_value",
+    ]
+    return pd.DataFrame(records, columns=cols) if records else pd.DataFrame(columns=cols)
+
+
+def _swap_native_prices_in_pyp(
+    per_company_per_year: pd.DataFrame,
+    native_prices: dict[str, pd.DataFrame],
+    ticker_native_currency: dict[str, str],
+    tickers: list[str],
+    base_currency: str,
+) -> None:
+    """Swap base-currency prices with native prices in per_company_per_year.
+
+    Saves base-currency values with ``Base_`` prefix, then replaces
+    Start_Price / End_Price / Starting_Market_Value / Ending_Market_Value
+    with their native-currency equivalents.  Modifies *per_company_per_year*
+    in place.
+    """
+    if per_company_per_year.empty:
+        return
+
+    if "Dividend_Currency" in per_company_per_year.columns:
+        per_company_per_year["Dividend_Currency"] = (
+            per_company_per_year["Ticker"].map(
+                lambda t: ticker_native_currency.get(t, base_currency)
+            )
+        )
+
+    # Save base-currency values before overwriting
+    per_company_per_year["Base_Start_Price"] = per_company_per_year["Start_Price"]
+    per_company_per_year["Base_End_Price"] = per_company_per_year["End_Price"]
+    per_company_per_year["Base_Starting_Market_Value"] = per_company_per_year["Starting_Market_Value"]
+    per_company_per_year["Base_Ending_Market_Value"] = per_company_per_year["Ending_Market_Value"]
+
+    # Build native start/end price lookup
+    native_start: dict[str, float] = {}
+    native_end: dict[str, float] = {}
+    for tk in tickers:
+        if tk in native_prices:
+            npx = native_prices[tk].sort_values("Date")
+            if len(npx) > 0:
+                native_start[tk] = float(npx[f"native_price_{tk}"].iloc[0])
+                native_end[tk] = float(npx[f"native_price_{tk}"].iloc[-1])
+
+    per_company_per_year["Start_Price"] = per_company_per_year["Ticker"].map(
+        lambda t: native_start.get(t, 1.0 if t == base_currency else None)
+    )
+    per_company_per_year["End_Price"] = per_company_per_year["Ticker"].map(
+        lambda t: native_end.get(t, 1.0 if t == base_currency else None)
+    )
+
+    # Native market values
+    for idx, row in per_company_per_year.iterrows():
+        tk = row["Ticker"]
+        if tk in native_start:
+            shares_val = row["Starting_Shares"] if row["Starting_Shares"] > 0 else 0
+            if shares_val > 0:
+                per_company_per_year.at[idx, "Starting_Market_Value"] = shares_val * native_start[tk]
+                per_company_per_year.at[idx, "Ending_Market_Value"] = shares_val * native_end[tk]
+
+    # Cash row prices are always 1.0
+    cash_mask = per_company_per_year["Start_Price"].isna()
+    per_company_per_year.loc[cash_mask, "Start_Price"] = 1.0
+    per_company_per_year.loc[cash_mask, "End_Price"] = 1.0
 
 
 def run_backtest_web(
@@ -83,6 +219,11 @@ def run_backtest_web(
 
     tickers = list(portfolio.keys())
     warnings: list[str] = []
+
+    # ── Resolve base currency early so conversion happens once ─────────
+    if benchmark_mode == "portfolio" and not base_currency:
+        base_currency = "EUR"
+
     all_tickers = list(tickers)
     if benchmark_mode == "ticker" and benchmark_ticker and benchmark_ticker not in all_tickers:
         all_tickers.append(benchmark_ticker)
@@ -202,51 +343,10 @@ def run_backtest_web(
     metrics = tracker["metrics"]
     metrics["base_currency"] = base_currency or ticker_native_currency.get(tickers[0] if tickers else "", "")
 
-    # Add dividend currency and native/base price columns
-    if not per_company_per_year.empty:
-        if "Dividend_Currency" in per_company_per_year.columns:
-            per_company_per_year["Dividend_Currency"] = per_company_per_year["Ticker"].map(
-                lambda t: ticker_native_currency.get(t, base_currency or "")
-            )
-        # Save base-currency prices before we swap
-        per_company_per_year["Base_Start_Price"] = per_company_per_year["Start_Price"]
-        per_company_per_year["Base_End_Price"] = per_company_per_year["End_Price"]
-        per_company_per_year["Base_Starting_Market_Value"] = per_company_per_year["Starting_Market_Value"]
-        per_company_per_year["Base_Ending_Market_Value"] = per_company_per_year["Ending_Market_Value"]
-        # Swap primary to native prices
-        native_start: dict[str, float] = {}
-        native_end: dict[str, float] = {}
-        for tk in tickers:
-            if tk in native_prices:
-                npx = native_prices[tk].sort_values("Date")
-                if len(npx) > 0:
-                    native_start[tk] = float(npx[f"native_price_{tk}"].iloc[0])
-                    native_end[tk] = float(npx[f"native_price_{tk}"].iloc[-1])
-        per_company_per_year["Start_Price"] = per_company_per_year["Ticker"].map(
-            lambda t: native_start.get(t, 1.0 if t == (base_currency or "") else None)
-        )
-        per_company_per_year["End_Price"] = per_company_per_year["Ticker"].map(
-            lambda t: native_end.get(t, 1.0 if t == (base_currency or "") else None)
-        )
-        # Native market values
-        for idx, row in per_company_per_year.iterrows():
-            tk = row["Ticker"]
-            if tk in native_start:
-                shares_val = row["Starting_Shares"] if row["Starting_Shares"] > 0 else 0
-                if shares_val > 0:
-                    per_company_per_year.at[idx, "Starting_Market_Value"] = shares_val * native_start[tk]
-                    per_company_per_year.at[idx, "Ending_Market_Value"] = shares_val * native_end[tk]
-                elif tk == (base_currency or ""):
-                    # Cash row — value is already correct
-                    pass
-        # Cash row native prices are 1.0
-        cash_mask = per_company_per_year["Start_Price"].isna()
-        per_company_per_year.loc[cash_mask, "Start_Price"] = 1.0
-        per_company_per_year.loc[cash_mask, "End_Price"] = 1.0
-        # Drop legacy columns
-        for col in ["Native_Start_Price", "Native_End_Price"]:
-            if col in per_company_per_year.columns and "Base_" + col.split("_", 1)[1] not in per_company_per_year.columns:
-                pass  # already handled above
+    # Swap native/base prices for display (native prices become primary)
+    _swap_native_prices_in_pyp(per_company_per_year, native_prices,
+                               ticker_native_currency, tickers,
+                               base_currency or "")
 
     # Set dates from the daily tracker (actual data range, not requested)
     if len(daily_df) > 0:
@@ -271,23 +371,25 @@ def run_backtest_web(
             "cumulative_return": daily_df["price_only_cum_return"],
         }),
         "dividend_only": pd.DataFrame({
-            "daily_return": daily_df["dividend_event"].diff().fillna(0.0),
+            "daily_return": daily_df["dividend_cum_contribution"].diff().fillna(0.0),
             "cumulative_return": 1.0 + daily_df["dividend_cum_contribution"],
         }),
     }
 
-    # ── 4. Legacy per-company (for backward-compat frontend fields) ─────
-    per_company = calculate_per_company_returns(
-        portfolio_prices, portfolio_weights, dividends_df,
+    # ── 4. Per-company (derived from tracker — single source of truth) ─
+    per_company = _derive_per_company_from_tracker(
+        daily_df, tickers, portfolio_weights,
         initial_capital=effective_initial_capital,
+        dividends_df=dividends_df,
     )
-    shares_map = None
-    if per_company is not None and "shares_purchased" in per_company.columns:
-        shares_map = dict(
-            zip(per_company["Ticker"], per_company["shares_purchased"])
-        )
+    # Extract share counts directly from the tracker columns
+    shares_map: dict[str, float] = {}
+    for t in tickers:
+        shares_col = f"shares_{t}"
+        if shares_col in daily_df.columns:
+            shares_map[t] = float(daily_df[shares_col].iloc[0])
     dividends_by_year = calculate_dividends_by_company_year(
-        dividends_df, shares_purchased=shares_map,
+        dividends_df, shares_purchased=shares_map or None,
     )
 
     # ── 5. Yearly returns (from per-company-per-year) ───────────────────
@@ -304,64 +406,10 @@ def run_backtest_web(
                 prices_df, benchmark_ticker, all_dividends_df,
             )
     elif benchmark_mode == "portfolio" and db3_path:
-        effective_base = base_currency or "EUR"
-        if not base_currency:
-            base_currency = "EUR"
-            prices_df = convert_prices_to_base_currency(
-                prices_df, "EUR", db_path,
-            )
-            if not all_dividends_df.empty:
-                all_dividends_df = convert_dividends_to_base_currency(
-                    all_dividends_df, "EUR", db_path,
-                )
-                dividends_df = all_dividends_df[
-                    all_dividends_df["Ticker"].isin(tickers)
-                ]
-                # Recompute with converted data
-                tracker = build_daily_portfolio_tracker(
-                    portfolio_prices, portfolio_weights, dividends_df,
-                    initial_capital=effective_initial_capital,
-                    base_currency=base_currency or "",
-                    risk_free_rate=risk_free_rate,
-                )
-                per_company_per_year = tracker["per_company_per_year"]
-                daily_df = tracker["daily"]
-                metrics = tracker["metrics"]
-                portfolio_df = pd.DataFrame({
-                    "portfolio_return": daily_df["daily_return"],
-                    "cumulative_return": daily_df["cumulative_return"],
-                })
-                decomposition = {
-                    "total": pd.DataFrame({
-                        "daily_return": daily_df["daily_return"],
-                        "cumulative_return": daily_df["cumulative_return"],
-                    }),
-                    "price_only": pd.DataFrame({
-                        "daily_return": daily_df["price_only_daily_return"],
-                        "cumulative_return": daily_df["price_only_cum_return"],
-                    }),
-                    "dividend_only": pd.DataFrame({
-                        "daily_return": daily_df["dividend_event"].diff().fillna(0.0),
-                        "cumulative_return": 1.0 + daily_df["dividend_cum_contribution"],
-                    }),
-                }
-                per_company = calculate_per_company_returns(
-                    portfolio_prices, portfolio_weights, dividends_df,
-                    initial_capital=effective_initial_capital,
-                )
-                shares_map = None
-                if per_company is not None and "shares_purchased" in per_company.columns:
-                    shares_map = dict(
-                        zip(per_company["Ticker"], per_company["shares_purchased"])
-                    )
-                dividends_by_year = calculate_dividends_by_company_year(
-                    dividends_df, shares_purchased=shares_map,
-                )
-                yearly_records = per_company_per_year.to_dict(orient="records") if not per_company_per_year.empty else []
-                yearly_returns = calculate_yearly_returns(decomposition) if decomposition else None
-
+        # Currency conversion already handled above (base_currency defaults
+        # to "EUR" for portfolio benchmarks).  No need to recompute tracker.
         benchmark_df = get_portfolio_benchmark_returns(
-            db3_path, start_date, end_date, effective_base, db_path,
+            db3_path, start_date, end_date, base_currency, db_path,
         )
 
     # ── Align portfolio and benchmark to common date range ──
@@ -432,6 +480,7 @@ def run_backtest_web(
     # ── Build chart data ──────────────────────────────────────────────
     chart_data = _build_chart_data(
         decomposition, benchmark_df, portfolio_df,
+        initial_capital=effective_initial_capital,
     )
 
     # ── Per-company records ───────────────────────────────────────────
@@ -634,8 +683,14 @@ def _build_chart_data(
     decomposition: dict[str, pd.DataFrame],
     benchmark_df: pd.DataFrame | None,
     portfolio_df: pd.DataFrame,
+    *,
+    initial_capital: float = 1_000_000.0,
 ) -> dict:
-    """Convert pandas DataFrames to chart.js-friendly record arrays."""
+    """Convert pandas DataFrames to chart.js-friendly record arrays.
+
+    Includes VAMI (Value Added Monthly Index) = cumulative_return ×
+    *initial_capital* in the cumulative data points.
+    """
     cumulative: list[dict] = []
     drawdown: list[dict] = []
     decomposition_data: list[dict] = []
@@ -664,9 +719,11 @@ def _build_chart_data(
 
         for d in total_cum.index:
             ds = d.strftime("%Y-%m-%d")
+            cum_val = float(total_cum.loc[d])
             cumulative.append({
                 "date": ds,
-                "portfolio": float(total_cum.loc[d]) - 1,
+                "portfolio": cum_val - 1,
+                "vami": cum_val * initial_capital,
                 "benchmark": bench_cum_map.get(ds),
             })
             drawdown.append({
@@ -1095,11 +1152,13 @@ def _discover_screening_periods(
     cadence: str,
     start_period: str | None = None,
     end_period: str | None = None,
+    *,
+    financial_statements_table: str = "FinancialStatements",
 ) -> list[str]:
     """Return screening dates (YYYY-MM-01) for the given cadence.
 
-    Queries ``FinancialStatements`` for distinct ``periodEnd`` months,
-    then samples according to *cadence*:
+    Queries the financial-statements table for distinct ``periodEnd``
+    months, then samples according to *cadence*:
 
     * ``"monthly"`` — all months.
     * ``"quarterly"`` — every 3rd month relative to the first available.
@@ -1112,7 +1171,7 @@ def _discover_screening_periods(
         cursor = conn.cursor()
         cursor.execute(
             "SELECT DISTINCT substr(periodEnd, 1, 7) AS ym "
-            "FROM FinancialStatements "
+            f"FROM {_sql_ident(financial_statements_table)} "
             "WHERE periodEnd IS NOT NULL "
             "ORDER BY ym"
         )
@@ -1308,6 +1367,10 @@ def _build_rolling_aggregate(
     by_weighting: dict[str, dict[str, list[dict]]] = {
         wm: {d: [] for d in durations} for wm in weighting_modes
     }
+    # Heatmap data collected in the same pass (avoids iterating results twice)
+    heatmap: dict[str, dict[str, list[dict]]] = {
+        wm: {d: [] for d in durations} for wm in weighting_modes
+    }
     all_returns: list[float] = []
     all_sharpes: list[float] = []
     all_drawdowns: list[float] = []
@@ -1317,20 +1380,6 @@ def _build_rolling_aggregate(
     by_duration_bench: dict[str, dict[str, int]] = {
         d: {"out": 0, "total": 0} for d in durations
     }
-
-    # Duration → years lookup for annualization
-    _dur_years: dict[str, int] = {
-        "1yr": 1, "2yr": 2, "3yr": 3, "5yr": 5, "10yr": 10,
-    }
-
-    def _annualize(total_return: float, dur: str) -> float:
-        """Convert total period return to annualized (CAGR)."""
-        yrs = _dur_years.get(dur, 1)
-        if yrs <= 1:
-            return total_return  # 1yr: total = annualized, skip fp-lossy pow
-        if total_return <= -1.0:
-            return -1.0
-        return (1.0 + total_return) ** (1.0 / yrs) - 1.0
 
     for r in success_results:
         backtests = r["backtests"]
@@ -1342,7 +1391,7 @@ def _build_rolling_aggregate(
                     continue
                 m = bt["metrics"]
                 tr = m.get("total_return", 0.0)
-                ann_ret = _annualize(tr, dur)
+                ann_ret = _annualize_return(tr, dur)
                 sr = m.get("sharpe_ratio", 0.0)
                 dd = m.get("max_drawdown", 0.0)
                 pr = m.get("portfolio_price_return", tr)
@@ -1364,11 +1413,23 @@ def _build_rolling_aggregate(
                 bm_return = m.get("benchmark_total_return")
                 if bm_return is not None:
                     by_duration_bench[dur]["total"] += 1
+                    # Annualize benchmark return for fair comparison
+                    bm_ann = _annualize_return(bm_return, dur)
+                    # Track benchmark stats per duration
+                    if "bench_returns" not in by_duration_bench[dur]:
+                        by_duration_bench[dur]["bench_returns"] = []
+                    by_duration_bench[dur]["bench_returns"].append(bm_ann)
                     if tr > bm_return:
                         by_duration_bench[dur]["out"] += 1
                         outperformed += 1
                     else:
                         underperformed += 1
+
+                # Heatmap collection (single pass — was in _build_heatmap_data)
+                heatmap[wm][dur].append({
+                    "period": r.get("period", ""),
+                    "return": ann_ret,
+                })
 
     # ── Per-duration × per-weighting summary stats ───────────────────
     by_weighting_summary: dict[str, dict] = {}
@@ -1401,6 +1462,8 @@ def _build_rolling_aggregate(
         by_dur_summary: dict[str, dict] = {}
         for dur, counts in by_duration_bench.items():
             if counts["total"] > 0:
+                bench_rets = counts.get("bench_returns", [])
+                bench_mean = float(np.mean(bench_rets)) if bench_rets else None
                 by_dur_summary[dur] = {
                     "out": counts["out"],
                     "total": counts["total"],
@@ -1408,6 +1471,7 @@ def _build_rolling_aggregate(
                         counts["out"] / counts["total"]
                         if counts["total"] > 0 else 0.0
                     ),
+                    "bench_mean_return": bench_mean,
                 }
         benchmark_comparison = {
             "outperformed": outperformed,
@@ -1432,25 +1496,9 @@ def _build_rolling_aggregate(
         "last": periods[-1] if periods else "",
     }
 
-    # ── Heatmap data ─────────────────────────────────────────────────
-    heatmap = _build_heatmap_data(
-        all_results, durations, weighting_modes,
-    )
-
     # ── Excess-returns heatmap (portfolio − benchmark) ───────────────
+    # (heatmap already collected in the main loop above)
     if benchmark_ticker or benchmark_mode == "portfolio":
-        _dur_years_ex = {
-            "1yr": 1, "2yr": 2, "3yr": 3, "5yr": 5, "10yr": 10,
-        }
-
-        def _annualize_ex(total_return: float, dur: str) -> float:
-            yrs = _dur_years_ex.get(dur, 1)
-            if yrs <= 1:
-                return total_return
-            if total_return <= -1.0:
-                return -1.0
-            return (1.0 + total_return) ** (1.0 / yrs) - 1.0
-
         excess_heatmap: dict[str, list[dict]] = {d: [] for d in durations}
         for r in all_results:
             period = r.get("period", "")
@@ -1470,7 +1518,7 @@ def _build_rolling_aggregate(
                         excess = port_ret - bench_ret
                         excess_heatmap[dur].append({
                             "period": period,
-                            "return": _annualize_ex(excess, dur),
+                            "return": _annualize_return(excess, dur),
                         })
         heatmap["excess"] = excess_heatmap
 
@@ -1495,19 +1543,10 @@ def _build_heatmap_data(
     """Build period × duration × weighting return matrix for heatmap.
 
     Returns are annualized for comparability across durations.
+
+    Note: ``_build_rolling_aggregate`` now collects heatmap data in a
+    single pass; this function remains for standalone use (e.g. tests).
     """
-    _dur_years: dict[str, int] = {
-        "1yr": 1, "2yr": 2, "3yr": 3, "5yr": 5, "10yr": 10,
-    }
-
-    def _annualize(total_return: float, dur: str) -> float:
-        yrs = _dur_years.get(dur, 1)
-        if yrs <= 1:
-            return total_return
-        if total_return <= -1.0:
-            return -1.0
-        return (1.0 + total_return) ** (1.0 / yrs) - 1.0
-
     heatmap: dict[str, dict[str, list[dict]]] = {
         wm: {d: [] for d in durations} for wm in weighting_modes
     }
@@ -1525,7 +1564,7 @@ def _build_heatmap_data(
                 ret = m.get("total_return") if m else None
                 heatmap[wm][dur].append({
                     "period": period,
-                    "return": _annualize(ret, dur) if ret is not None else None,
+                    "return": _annualize_return(ret, dur) if ret is not None else None,
                 })
 
     return heatmap
@@ -1599,6 +1638,7 @@ def run_screening_backtest_rolling(
     # ── Discover periods ─────────────────────────────────────────
     periods = _discover_screening_periods(
         db_path, cadence, start_period, end_period,
+        financial_statements_table=financial_statements_table,
     )
     if not periods:
         raise ValueError(
@@ -1891,11 +1931,3 @@ def run_screening_backtest_rolling(
         progress_queue.put(result_msg)
 
     return result
-
-    # Emit final result event
-    if progress_queue:
-        result_msg = {"type": "result"}
-        result_msg.update(output)
-        progress_queue.put(result_msg)
-
-    return output

@@ -418,12 +418,14 @@ def get_rolling_periods(
     end_period: str | None = Query(default=None, description="YYYY-MM"),
     durations: str = Query(default="1yr,2yr,3yr,5yr,10yr"),
     weighting_modes: str = Query(default="equal", description="comma-separated"),
+    financial_statements_table: str = Query(default="FinancialStatements"),
 ) -> dict:
     """Return available screening periods and estimated backtest count."""
     db = _resolve_db(db_path)
     try:
         periods = _bt._discover_screening_periods(
             db, cadence, start_period, end_period,
+            financial_statements_table=financial_statements_table,
         )
         dur_list = [d.strip() for d in durations.split(",") if d.strip()]
         wm_list = [w.strip() for w in weighting_modes.split(",") if w.strip()]
