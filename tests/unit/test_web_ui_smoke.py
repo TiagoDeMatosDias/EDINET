@@ -15,7 +15,7 @@ def _soup_for(path: str) -> BeautifulSoup:
 
 
 def test_main_page_has_topbar_with_all_tabs() -> None:
-    soup = _soup_for("/")
+    soup = _soup_for("/legacy")
     # Topbar is static HTML; tabs and brand are present before JS runs.
     assert soup.select_one("header.topbar") is not None
     tab_labels = [btn.get_text(strip=True) for btn in soup.select("nav.tabs button.tab")]
@@ -24,7 +24,7 @@ def test_main_page_has_topbar_with_all_tabs() -> None:
 
 
 def test_main_page_contains_jobs_region() -> None:
-    soup = _soup_for("/")
+    soup = _soup_for("/legacy")
     main_panel = soup.select_one("section[data-view-panel='main']")
     assert main_panel is not None
     assert main_panel.select_one("#jobs-table") is not None
@@ -58,7 +58,7 @@ def test_security_page_exists_with_correct_panel() -> None:
 
 def test_each_page_loads_correct_js_module() -> None:
     cases = [
-        ("/",             "/assets/main/main.js"),
+        ("/legacy",       "/assets/main/main.js"),
         ("/orchestrator", "/assets/orchestrator/orchestrator.js"),
         ("/screening",    "/assets/screening/screening.js"),
         ("/security",     "/assets/security_analysis/security.js"),
@@ -78,7 +78,7 @@ def test_console_only_on_orchestrator_page() -> None:
     assert soup_orch.find(id="console-toggle") is not None, "orchestrator missing #console-toggle"
 
     # Other pages must NOT have the console
-    for path in ("/", "/screening", "/security"):
+    for path in ("/legacy", "/screening", "/security"):
         soup = _soup_for(path)
         assert soup.find(id="console-log") is None, f"{path} should not have #console-log"
         assert soup.find(id="console-toggle") is None, f"{path} should not have #console-toggle"
@@ -86,7 +86,7 @@ def test_console_only_on_orchestrator_page() -> None:
 
 def test_no_toggle_console_btn_in_topbar() -> None:
     """No page should have a toggle-console-btn in the topbar."""
-    for path in ("/", "/orchestrator", "/screening", "/security"):
+    for path in ("/legacy", "/orchestrator", "/screening", "/security"):
         soup = _soup_for(path)
         assert soup.find(id="toggle-console-btn") is None, \
             f"{path} should not have #toggle-console-btn in topbar"

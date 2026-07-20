@@ -22,6 +22,7 @@ BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 PAGES_DIR = FRONTEND_DIR / "pages"
 BRAND_ASSETS_DIR = BASE_DIR.parent.parent / "assets"
+FRONTEND_V2_DIST = BASE_DIR.parent.parent / "frontend-v2" / "dist"
 
 # The API router_app from src.web_app.api already includes all API routes
 # (orchestrator, screening, security_analysis, portfolio, and auto-discovered
@@ -34,6 +35,13 @@ app.version = "1.0.0"
 
 # Serve frontend static assets.
 app.mount("/assets", StaticFiles(directory=FRONTEND_DIR), name="assets")
+
+if FRONTEND_V2_DIST.exists():
+    app.mount(
+        "/app-assets",
+        StaticFiles(directory=FRONTEND_V2_DIST / "app-assets"),
+        name="app-assets",
+    )
 
 if BRAND_ASSETS_DIR.exists():
     app.mount("/brand-assets", StaticFiles(directory=BRAND_ASSETS_DIR), name="brand-assets")
@@ -50,8 +58,23 @@ def _startup() -> None:
         _api_logger.info(f"Portfolio module loaded: {portfolio_count} routes registered")
 
 
+def _frontend_v2() -> FileResponse:
+    index = FRONTEND_V2_DIST / "index.html"
+    if not index.exists():
+        raise HTTPException(
+            status_code=503,
+            detail="Frontend build missing. Run npm run build in frontend-v2.",
+        )
+    return FileResponse(index)
+
+
 @app.get("/")
 def page_main() -> FileResponse:
+    return _frontend_v2()
+
+
+@app.get("/legacy")
+def page_legacy_main() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "main" / "main.html")
 
 
@@ -69,6 +92,26 @@ def page_screening() -> FileResponse:
 def page_backtesting() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "backtesting" / "backtesting.html")
 
+@app.get("/screen")
+def page_screen() -> FileResponse:
+    return _frontend_v2()
+
+
+@app.get("/analyze")
+@app.get("/analyze/{subpath:path}")
+def page_analyze(subpath: str = "") -> FileResponse:
+    return _frontend_v2()
+
+
+@app.get("/backtest")
+def page_backtest() -> FileResponse:
+    return _frontend_v2()
+
+
+@app.get("/pipeline")
+def page_pipeline() -> FileResponse:
+    return _frontend_v2()
+
 
 @app.get("/security")
 def page_security() -> FileResponse:
@@ -77,6 +120,11 @@ def page_security() -> FileResponse:
 
 @app.get("/portfolio")
 def page_portfolio() -> FileResponse:
+    return _frontend_v2()
+
+
+@app.get("/legacy/portfolio")
+def page_legacy_portfolio() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "portfolio" / "portfolio.html")
 
 

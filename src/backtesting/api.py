@@ -336,6 +336,10 @@ async def run_backtest(request: BacktestRunRequest = Body(...)) -> dict:
         "status": "complete",
         "path": str(out_dir),
         "summary": build_summary(result),
+        "chart_data": result.get("chart_data", {}),
+        "per_company": result.get("per_company", []),
+        "yearly_returns": result.get("yearly_returns", []),
+        "dividends_by_year": result.get("dividends_by_year", []),
     }
 
 

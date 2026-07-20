@@ -38,5 +38,3 @@ export async function refreshHealth() {
 }
 
 // Legacy no-ops kept so existing imports don't break.
-export function mountTopbar() {}
-export function mountConsoleFooter() {}

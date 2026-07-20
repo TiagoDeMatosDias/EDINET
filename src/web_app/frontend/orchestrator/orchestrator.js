@@ -5,7 +5,7 @@
 import { STATE, els, callbacks } from '../common/state.js';
 import { $, fetchJson } from '../common/utils.js';
 import { log, renderConsole, exportConsole } from '../common/console.js';
-import { mountTopbar, mountConsoleFooter, refreshHealth, setConsoleHidden, wireTopbarEvents } from '../common/topbar.js';
+import { refreshHealth, setConsoleHidden, wireTopbarEvents } from '../common/topbar.js';
 import {
   renderAll,
   renderOrchestrator,

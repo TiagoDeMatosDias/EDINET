@@ -1930,91 +1930,15 @@ def get_security_statements(
     periods: int = 8,
     statement_sources: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Return historical financial statements for a security.
+    """Return historical statements without one oversized cross-table query."""
+    from .history import get_security_statements_by_source
 
-    Args:
-        db_path (str): Path to the SQLite database.
-        company_code (str): Selected company EDINET code.
-        periods (int): Maximum number of reporting periods to return.
-        statement_sources (dict[str, str] | None): Ordered map of UI labels to
-            statement source identifiers or table names.
-
-    Returns:
-        dict[str, Any]: Statement tables and ordered period labels.
-    """
-    ensure_security_analysis_indexes(db_path)
-    schema = resolve_schema(db_path)
-    requested_sources = _statement_requested_sources(statement_sources)
-    conn = _connect(db_path)
-    try:
-        statement_specs = _build_statement_source_specs(conn, schema, requested_sources)
-        select_parts = [
-            f"fs.{_quote_ident(schema.fs_docid_col)} AS docID",
-            f"fs.{_quote_ident(schema.fs_period_end_col)} AS period_end",
-        ]
-        join_clauses: list[str] = []
-
-        for source_key in requested_sources:
-            spec = statement_specs.get(source_key)
-            if spec is None or spec.join_clause is None or not spec.metrics:
-                continue
-            join_clauses.append(spec.join_clause)
-            for metric in spec.metrics:
-                select_parts.append(
-                    f"{spec.alias}.{_quote_ident(metric.source_field)} AS {_quote_ident(metric.record_field)}"
-                )
-
-        sql = (
-            f"SELECT {', '.join(select_parts)} "
-            f"FROM {_quote_ident(schema.financial_statements_table)} fs "
-            f"{' '.join(join_clauses)} "
-            f"WHERE fs.{_quote_ident(schema.fs_code_col)} = ? "
-            f"ORDER BY fs.{_quote_ident(schema.fs_period_end_col)} DESC, "
-            f"fs.{_quote_ident(schema.fs_docid_col)} DESC LIMIT ?"
-        )
-        df = pd.read_sql_query(sql, conn, params=[company_code, max(1, int(periods))])
-
-        taxonomy_rows_by_source: dict[str, list[dict[str, Any]]] = {}
-        if not df.empty:
-            preview_records = df.iloc[::-1].reset_index(drop=True).to_dict(orient="records")
-            for source_key in requested_sources:
-                spec = statement_specs.get(source_key)
-                if spec is None or not spec.table_name or not _is_taxonomy_statement_table(conn, spec.table_name):
-                    continue
-                taxonomy_rows_by_source[source_key] = _taxonomy_statement_rows(
-                    conn,
-                    spec.table_name,
-                    preview_records,
-                    source_key,
-                )
-    finally:
-        conn.close()
-
-    result: dict[str, Any] = {
-        "periods": [],
-        "records": [],
-    }
-    for source_key in requested_sources:
-        result[source_key] = []
-
-    if df.empty:
-        return result
-
-    df["period_end"] = df["period_end"].astype(str).str[:10]
-    df = df.iloc[::-1].reset_index(drop=True)
-    records = df.to_dict(orient="records")
-
-    result["periods"] = [record["period_end"] for record in records]
-    result["records"] = records
-    for source_key in requested_sources:
-        spec = statement_specs.get(source_key)
-        if spec is None:
-            continue
-        if source_key in locals().get("taxonomy_rows_by_source", {}):
-            result[source_key] = taxonomy_rows_by_source[source_key]
-            continue
-        result[source_key] = _statement_metric_rows(records, spec.metrics, source_key)
-    return result
+    return get_security_statements_by_source(
+        db_path,
+        company_code,
+        periods,
+        statement_sources,
+    )
 
 
 def get_security_price_history(

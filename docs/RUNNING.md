@@ -1,20 +1,34 @@
-﻿# Running the Application
+# Running the Application
 
-Launch the web workstation with:
+Install and build the React frontend once:
 
+```bash
+cd frontend-v2
+npm ci
+npm run build
+cd ..
 ```
+
+Launch the web workstation:
+
+```bash
 python main.py
 ```
 
-Then open `http://127.0.0.1:8000` in your browser.
-
-Optional host/port flags:
+Open `http://127.0.0.1:8000`. Optional host/port flags:
 
 ```bash
 python main.py --host 0.0.0.0 --port 8080 --no-reload
 ```
 
-The web frontend is a multi-page vanilla JS application. It communicates with the backend through endpoints exposed in `src/web_app/api/`. The Dashboard, Orchestrator, Screening, and Security Analysis views are all fully functional.
+For frontend development, keep FastAPI running on port 8000 and start Vite in another terminal:
+
+```bash
+cd frontend-v2
+npm run dev
+```
+
+The primary frontend is a React/TypeScript single-page workspace. It communicates with the existing backend through `/api/*` and `/health`. The previous vanilla pages remain temporarily available at `/legacy`, `/orchestrator`, `/screening`, `/backtesting`, and `/security`.
 
 Most steps require an explicit source or target database path in their step configuration. The orchestrator exposes those paths directly in each step's config panel.
 

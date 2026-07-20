@@ -408,7 +408,7 @@ This reference is intentionally concise. Expand signatures, examples, and depend
 
 ### [src/web_app/server.py](../src/web_app/server.py)
 
-Responsibility: FastAPI application assembly — creates the app, mounts API routers, serves static frontend files, and defines the page routes (`/`, `/orchestrator`, `/screening`, `/backtesting`, `/security`).
+Responsibility: FastAPI application assembly — mounts API routers, the React production bundle at `/app-assets`, primary SPA entry routes, and temporary vanilla-frontend compatibility routes.
 
 ### [src/web_app/api/screening.py](../src/web_app/api/screening.py)
 
@@ -418,9 +418,13 @@ Responsibility: Screening API routes at `/api/screening/*` — metrics, periods,
 
 Responsibility: Security Analysis API routes at `/api/security/*` — search, overview, statements, price-history, peers, update-price, optimize, db-path, available-columns, chart-data.
 
+### [frontend-v2/](../frontend-v2/)
+
+Responsibility: Primary React/TypeScript/Vite workspace — application shell, feature routes, shared components, API clients, responsive styles, and Vitest coverage.
+
 ### [src/web_app/frontend/](../src/web_app/frontend/)
 
-Responsibility: Browser-side assets — vanilla JS screen modules (`orchestrator/`, `screening/`, `backtesting/`, `security_analysis/`), shared utilities (`common/`), and HTML pages.
+Responsibility: Temporary compatibility frontend for legacy specialist routes. Do not add new features here.
 
 ---
 
@@ -428,7 +432,7 @@ Responsibility: Browser-side assets — vanilla JS screen modules (`orchestrator
 
 Responsibility: public package facade for the Security Analysis backend. It re-exports the main query helpers from `src/security_analysis/security_analysis.py` and exposes package discovery state for future submodules.
 
-- Package structure: `src/security_analysis/__init__.py`, `src/security_analysis/common.py`, `src/security_analysis/security_analysis.py`.
+- Package structure: `src/security_analysis/__init__.py`, `src/security_analysis/common.py`, `src/security_analysis/history.py`, `src/security_analysis/security_analysis.py`.
 - Discovery: `DISCOVERED_SECURITY_ANALYSIS_MODULES` is built from modules under `src/security_analysis/`.
 
 Core implementation in `src/security_analysis/security_analysis.py`:
@@ -453,6 +457,7 @@ Core implementation in `src/security_analysis/security_analysis.py`:
 
 - `def get_security_statements(db_path: str, edinet_code: str, periods: int = 8, statement_sources: dict[str, str] | None = None) -> dict[str, Any]`
 	- Purpose: Return ordered historical statement rows for the requested financial statement and ratio sources.
+	- Implementation: Delegates to history.get_security_statements_by_source, which queries each wide statement source independently to stay below SQLite's result-column limit.
 
 - `def get_security_price_history(db_path: str, ticker: str, start_date: str | None = None, end_date: str | None = None) -> list[dict[str, Any]]`
 	- Purpose: Return ordered daily price history rows for charting and change calculations.

@@ -1,347 +1,104 @@
 # Frontend Architecture
 
-This document describes the structure of the web workstation's frontend and explains how to extend it with new screens.
+Updated: 2026-07-19
 
----
+## Overview
 
-## Architecture overview
-
-Each HTML page loads a thin bootstrap script that imports a screen module from its sibling directory. All screen modules share `common/state.js` (application state), `common/utils.js` (DOM/network helpers), and `common/console.js` (log panel). The browser communicates with the backend exclusively through `fetchJson` calls to API endpoints.
+The primary web workstation is a React 19, TypeScript, and Vite single-page application in `frontend-v2/`. FastAPI serves its production entry point and API routes. The previous vanilla-JavaScript pages remain temporarily available as compatibility routes while deeper specialist views are migrated.
 
 ```mermaid
 flowchart LR
-    subgraph Pages["HTML Pages"]
-        MAIN_P["/ (main.html)"]
-        ORCH_P["/orchestrator"]
-        SCR_P["/screening"]
-        BT_P["/backtesting"]
-        SEC_P["/security"]
-    end
-
-    subgraph Modules["JS Screen Modules"]
-        ORCH_MOD["orchestrator/index.js"]
-        SCR_MOD["screening/index.js"]
-        BT_MOD["backtesting/index.js"]
-        SEC_MOD["security_analysis/index.js"]
-    end
-
-    subgraph API["API Endpoints"]
-        ORCH_API["/api/steps<br/>/api/pipeline/run<br/>/api/jobs<br/>/api/config<br/>/health"]
-        SCR_API["/api/screening/metrics<br/>/api/screening/run<br/>/api/screening/saved<br/>/api/screening/export"]
-        BT_API["/api/backtesting/*"]
-        SEC_API["/api/security/*"]
-    end
-
-    MAIN_P --> ORCH_MOD
-    ORCH_P --> ORCH_MOD
-    SCR_P --> SCR_MOD
-    BT_P --> BT_MOD
-    SEC_P --> SEC_MOD
-
-    ORCH_MOD -->|"fetchJson"| ORCH_API
-    SCR_MOD -->|"fetchJson"| SCR_API
-    BT_MOD -->|"fetchJson"| BT_API
-    SEC_MOD -->|"fetchJson"| SEC_API
-
-    ORCH_MOD -.->|"imports"| common["common/ (state, utils, console, topbar)"]
-    SCR_MOD -.->|"imports"| common
-    BT_MOD -.->|"imports"| common
-    SEC_MOD -.->|"imports"| common
+    Browser["React workspace"] --> Query["TanStack Query"]
+    Browser --> Router["React Router"]
+    Query --> API["FastAPI /api/* and /health"]
+    API --> Services["Existing screening, security, backtesting, portfolio, and pipeline services"]
+    Browser --> Storage["localStorage drafts and saved workspace recipes"]
 ```
 
-The main dashboard (`/`) and the orchestrator page (`/orchestrator`) both import from `orchestrator/index.js` — the main page uses the dashboard rendering functions (`renderMain`, `renderRecentJobs`), while the orchestrator page uses the full pipeline builder.
+## Routes
+
+| Route | Workspace |
+|---|---|
+| `/` | Overview and recent work |
+| `/screen` | Company screening |
+| `/analyze` and `/analyze/:companyCode` | Company search and analysis |
+| `/backtest` | Manual, CSV, and rolling-screen backtests |
+| `/portfolio` | Portfolio overview, holdings, transactions, and performance |
+| `/pipeline` | Data-pipeline recipes and advanced step builder |
+
+Compatibility routes are `/legacy`, `/orchestrator`, `/screening`, `/backtesting`, and `/security`. New features must target the React routes.
 
 ## Directory layout
 
-```
+```text
+frontend-v2/
+├── src/
+│   ├── api/                 # typed fetch and SSE clients
+│   ├── components/          # shell, feedback, cards, fields, and data table
+│   ├── features/
+│   │   ├── overview/
+│   │   ├── screening/
+│   │   ├── analysis/
+│   │   ├── backtesting/
+│   │   ├── portfolio/
+│   │   └── pipeline/
+│   ├── hooks/
+│   ├── test/
+│   ├── App.tsx              # lazy route definitions
+│   ├── main.tsx             # providers and browser entry point
+│   ├── styles.css           # design tokens and shared layout
+│   └── features.css         # feature-specific responsive rules
+├── index.html
+├── vite.config.ts
+└── package.json
+
 src/web_app/
-├── server.py                   ← FastAPI server (Python)
-├── api/
-│   ├── __init__.py             ← API façade (re-exports router + screening routes)
-│   └── screening.py            ← Screening API routes (/api/screening/*)
-└── frontend/                   ← All browser-side assets
-    ├── common/                 ← Shared utilities used by every screen
-    │   ├── styles.css          ← Global stylesheet (design tokens + all component classes)
-    │   ├── state.js            ← Shared application state, DOM element cache, callbacks
-    │   ├── utils.js            ← Pure DOM/data helpers (el, $, fetchJson, resolveDbPath, …)
-    │   ├── console.js          ← Console log panel (log, renderConsole, exportConsole)
-    │   └── topbar.js           ← Topbar wiring: health check, refresh button, console toggle
-    ├── main/
-    │   ├── main.html           ← Main dashboard page (served at /)
-    │   └── main.js             ← Main page entry point (loads orchestrator module)
-    ├── orchestrator/
-    │   ├── orchestrator.html   ← Orchestrator page (served at /orchestrator)
-    │   ├── orchestrator.js     ← Orchestrator page entry point
-    │   └── index.js            ← Pipeline builder, step inspector, run/stop logic
-    ├── screening/
-    │   ├── screening.html      ← Screening page (served at /screening)
-    │   ├── screening.js        ← Screening page entry point
-    │   └── index.js            ← Screening screen logic (full implementation)
-    ├── backtesting/
-    │   ├── backtesting.html   ← Backtesting page (served at /backtesting)
-    │   ├── backtesting.js     ← Backtesting page entry point
-    │   └── index.js           ← Backtesting screen logic (full implementation)
-    └── security_analysis/
-        ├── security.html       ← Security Analysis page (served at /security)
-        ├── security.js         ← Security Analysis page entry point
-        └── index.js            ← Security Analysis screen logic (full implementation)
+├── server.py                # API app, SPA entry routes, static mounts
+├── api/                     # existing API routers
+└── frontend/                # compatibility-only vanilla frontend
 ```
 
-The entire frontend is vanilla ES-module JavaScript — no build step, no bundler.
-Each screen is a separate HTML page served by its own FastAPI route.
-Tabs in the topbar use inline `onclick="location.href='/...'"` to navigate between pages.
+## Application shell
 
----
+`AppShell` owns the persistent desktop sidebar, mobile navigation, global company search, and backend-health indicator. Feature pages supply only their content. Routes are lazy-loaded so charting and feature code do not inflate the initial workspace bundle.
 
-## Python layer
+The layout is desktop-first but has a 390 px mobile treatment:
 
-### `server.py`
+- persistent sidebar becomes a drawer;
+- a five-item bottom navigation keeps the main journeys reachable;
+- grids and rule builders collapse to one column;
+- tables scroll within their own region.
 
-The thin FastAPI application.  Responsibilities:
+## Data and state
 
-- Mounts `frontend/` as the static-file root (`/assets/*`).
-- Mounts `assets/` (root level) as brand assets (`/brand-assets/*`).
-- Registers all `/api/*` and `/health` routes from `src/web_app/api/`.
-- Serves each page at its own route:
-  - `/` → `frontend/main/main.html`
-  - `/orchestrator` → `frontend/orchestrator/orchestrator.html`
-  - `/screening` → `frontend/screening/screening.html`
-  - `/backtesting` → `frontend/backtesting/backtesting.html`
-  - `/security` → `frontend/security_analysis/security.html`
+- TanStack Query owns server state, loading/error states, caching, and invalidation.
+- Local component state owns transient form input.
+- Screening drafts use `shade.screening.draft` in `localStorage` so they can flow into rolling backtests.
+- Pipeline recipes use `shade.pipeline.setups` in `localStorage`.
+- The API clients in `src/api/` are the only shared network layer. `apiStream` parses the existing SSE format for rolling-backtest progress and cancellation.
+- Existing Python services and API contracts remain authoritative; the frontend does not access databases directly.
 
-### `api/__init__.py`
+## Feature behavior
 
-A façade that re-exports the `router_app` FastAPI sub-application (from `src.api.router`) plus screening routes (from `src/web_app.api.screening`). Adding new API endpoints for a specific screen should be done by creating a new route module in this package and importing it here.
+- Screening preserves legacy saved definitions and supports full expressions on both sides of a comparison. Each side can combine multiple columns, literal values, and arithmetic operators; result columns and derived ratios remain searchable and reusable.
+- Analysis supports company search, overview metrics, price history, multi-metric financial-history charts and dense tables, price refresh, peer-screen handoff, and backtest handoff.
+- Backtesting supports manual portfolios, CSV sets, and point-in-time rolling screens with cadence, durations, weighting, progress, cancellation, saved results, and downloads.
+- Portfolio supports XML imports, rebuilds, currency selection, activity, holdings, transactions, performance, and company-analysis handoff.
+- Pipeline supports recipes, dynamic step discovery, ordering, overwrite flags, generated configuration fields, cancellation, saved setups, and job history.
 
-### `api/screening.py`
+## Build and serving
 
-Dedicated screening API routes at `/api/screening/*`. Exposes endpoints for:
-- `GET /api/screening/db-path` — default database path
-- `GET /api/screening/metrics` — available table columns
-- `GET /api/screening/periods` — available fiscal period years
-- `GET /api/screening/formulas` — pre-built computed column formulas (P/E, P/B, etc.)
-- `POST /api/screening/run` — execute a screening query
-- `GET /api/screening/saved` / `POST /api/screening/save` / `DELETE /api/screening/saved/{name}` — saved criteria CRUD
-- `GET /api/screening/history` / `POST /api/screening/history` — screening run history
-- `POST /api/screening/export` — CSV or backtest-set export
+Run `npm ci` and `npm run build` from `frontend-v2/`. Vite writes the entry point to `frontend-v2/dist/index.html` and hashed chunks to `dist/app-assets/`. FastAPI mounts those chunks at `/app-assets`; this keeps them isolated from the compatibility frontend's `/assets` mount.
 
-All database interactions go through `src.screening` functions — the frontend never touches the database directly.
+During development, run FastAPI on port 8000 and `npm run dev` from `frontend-v2/`. Vite proxies `/api`, `/health`, and `/favicon.ico` to FastAPI.
 
----
+## Extending the frontend
 
-## Frontend layer
+1. Add a feature component under `src/features/<feature>/`.
+2. Add a lazy route in `App.tsx` and a navigation item in `AppShell.tsx` when it is a top-level journey.
+3. Put reusable view primitives in `src/components/`; keep feature-specific state and presentation with the feature.
+4. Add API types to `src/api/types.ts` and shared network behavior to `src/api/client.ts` or `stream.ts`.
+5. Add a Vitest test and, for a new top-level route, a FastAPI entrypoint smoke test.
+6. Run `npm run lint`, `npm test`, `npm run build`, and the focused Python web tests.
 
-### Page HTML files
-
-Each page (`main/main.html`, `orchestrator/orchestrator.html`, etc.) is a self-contained HTML document sharing the same layout:
-
-- A `<header class="topbar">` with brand, tabs, and action buttons.
-- A `<main class="workspace">` with the page's primary content.
-- A `<footer class="console">` for the terminal-style event stream.
-
-Tab buttons use inline `onclick` handlers for page navigation:
-
-```html
-<button class="tab is-active" onclick="void 0">Main</button>
-<button class="tab" onclick="location.href='/orchestrator'">Orchestrator</button>
-<button class="tab" onclick="location.href='/screening'">Screening</button>
-<button class="tab" onclick="location.href='/backtesting'">Backtesting</button>
-<button class="tab" onclick="location.href='/security'">Security Analysis</button>
-```
-
-Each page loads its own `<script type="module">` entry point (e.g. `/assets/main/main.js`).
-
-### Page entry points (e.g. `main/main.js`, `orchestrator/orchestrator.js`)
-
-Each page has its own bootstrap script that:
-
-1. Populates the `els` DOM element cache for elements on that page.
-2. Registers cross-module callbacks (`refreshJobs`) so screen modules can trigger data refreshes without importing the page script.
-3. Wires up topbar events via `wireTopbarEvents()` from `common/topbar.js`.
-4. Runs initial API fetches (health, steps, jobs).
-5. Hands off to screen-specific render functions.
-
-### `frontend/common/state.js`
-
-Exports three shared objects:
-
-| Export | Purpose |
-|--------|---------|
-| `STATE` | Single mutable object holding all application state (view, pipeline, jobs, setups, …). Every module that reads or writes application state imports `STATE` from here. |
-| `els` | Empty object populated by each page's bootstrap script with references to every named DOM element. Avoids repeated `document.querySelector` calls and keeps element lookups in one place. |
-| `callbacks` | Object with `setView` and `refreshJobs` slots. Populated by page scripts at startup so screen modules can trigger navigation or data refreshes without a circular import. |
-
-Also exports the browser-storage helpers: `loadLocalSetups`, `persistLocalSetups`, `saveLastSetupName`.
-
-### `frontend/common/utils.js`
-
-Pure utility functions with **no imports**.  Key exports:
-
-| Function | Description |
-|----------|-------------|
-| `el(tag, attrs, ...children)` | Minimal virtual-DOM builder.  Supports `class`, `dataset`, `text`, `html`, and `on*` event listener shorthands as attribute keys. |
-| `$(sel, root?)` | `document.querySelector` shorthand. |
-| `$all(sel, root?)` | `document.querySelectorAll` → plain Array. |
-| `fetchJson(url, options?)` | `fetch` wrapper that parses JSON and throws a descriptive `Error` on non-2xx responses. |
-| `deepClone(value)` | `JSON.parse(JSON.stringify(…))` clone. |
-| `formatDate(value)` | Locale-formatted date/time string. |
-| `metric(label, value, tone)` | Creates a dashboard metric tile node. |
-| `kvLine(label, value)` | Creates a two-column label/value inspector row. |
-| `section(title, subtitle, blurb, body)` | Creates a bordered section card used in the inspector. |
-
-### `frontend/common/console.js`
-
-Manages the bottom console panel.
-
-| Export | Description |
-|--------|-------------|
-| `log(level, message)` | Appends an entry to `STATE.logs` and re-renders the panel. Levels: `info`, `warn`, `error`, `debug`. |
-| `renderConsole()` | Re-renders the console from `STATE.logs`, respecting the current filter and auto-scroll setting. |
-| `exportConsole()` | Downloads all current log entries as a `.log` text file. |
-
-### `frontend/common/topbar.js`
-
-Shared topbar helpers: wires console toggle, refresh button, and health check. Does **not** handle tab navigation (tabs use inline `onclick` in HTML).
-
----
-
-## Screen modules
-
-### `orchestrator/index.js`
-
-Contains all logic for the Orchestrator screen and the Main dashboard (which surfaces a summary of orchestrator state).
-
-**Render entry-points** (called by page scripts):
-
-| Function | Called when |
-|----------|------------|
-| `renderOrchestrator()` | User navigates to the Orchestrator tab. |
-| `renderMain()` | User navigates to the Main tab, or any state change that affects the dashboard. |
-| `renderAll()` | After bulk state changes (e.g. step metadata loaded, setup hydrated). |
-| `renderStepLibrary()` | After the search query changes or step metadata is refreshed. |
-| `renderPipelineList()` | After the pipeline array changes or a step's status changes. |
-| `renderInspector()` | After the selected step or inspector tab changes. |
-| `renderRecentJobs()` | After the jobs list is refreshed. |
-
-**Pipeline mutations** (wired to UI events in page scripts):
-
-| Function | Description |
-|----------|-------------|
-| `addStep(name)` | Adds a step to the pipeline (or re-enables it if already present). |
-| `removeStepById(id)` | Removes a step and adjusts the selection. |
-| `moveStep(index, direction)` | Moves a step up (`-1`) or down (`+1`). |
-| `selectStep(stepId)` | Sets the inspector's focused step. |
-| `runPipeline()` | POSTs the current pipeline to `/api/pipeline/run` and streams step status back. |
-| `stopPipeline()` | Aborts the in-flight fetch request. |
-
-**Setup management**:
-
-| Function | Description |
-|----------|-------------|
-| `hydrateSetup(payload)` | Loads a saved setup object into `STATE` and re-renders everything. |
-| `saveSetup()` | Serialises the current pipeline + config to `localStorage`. |
-| `newSetup()` | Resets the pipeline and config to defaults. |
-| `showLoadMenu(anchor)` | Shows the floating "Load setup" popup anchored to a button. |
-| `closeLoadMenu()` | Dismisses the popup. |
-| `initializeSetup()` | Called once at bootstrap to restore the last setup name and seed defaults. |
-
-### `screening/index.js`
-
-Fully-implemented screening workspace with an expression-bar criteria builder. Features:
-- Expression-bar criteria builder (`[ [Table].[Column] > [[value]] ]` style)
-- Supports comparison modes: `fixed`, `column`, `expression`, `in`, `like`, `stock_price`, `full_expression`
-- Unified column list (regular + computed) with drag-and-drop reorder
-- Pre-built computed columns (P/E, P/B, P/S, Dividend Yield, Earnings Yield)
-- Custom computed column builder with token-based expression editor
-- Sortable results table with column drag-to-reorder (syncs config + results)
-- Formatted/raw value toggle
-- Save/Load criteria (server-side via `/api/screening/saved`)
-- Session-state caching via `sessionStorage` for cross-navigation persistence
-- Export CSV and row-click drill-down to Security Analysis
-- All API interaction via `fetchJson` to `/api/screening/*` endpoints
-
-### `backtesting/index.js`
-
-Fully-implemented backtesting workspace with three input modes. Features:
-- **Manual portfolio** — ticker autocomplete, allocation types (weight/shares/value), date range picker, benchmark ticker, initial capital, risk-free rate
-- **From Screener** — import criteria from a screening result (linked via hash params)
-- **From CSV** — upload or paste a yearly portfolio CSV
-- **Results** — Chart.js visualizations (cumulative returns with benchmarks, drawdown, yearly breakdowns, dividends), metric tiles (total return, CAGR, Sharpe, max drawdown), per-company return decomposition table
-- **Batch set** — when running from CSV: results comparison table with heatmap, per-year drill-down
-- **Multi-run comparison** — accumulate multiple runs and tab between them
-- **Session persistence** — state survives tab switches via `sessionStorage`
-- All API interaction via `fetchJson` and `fetchSSE` to `/api/backtesting/*` endpoints
-
-### `security_analysis/index.js`
-
-Fully-implemented security analysis workspace. Features:
-- **Typeahead search** — search by ticker, EDINET code, company name, or industry with keyboard-navigable dropdown
-- **Company overview** — metric tiles (price, P/E, P/B, P/S, dividend yield, earnings yield), 52-week range bar, company description with expand/collapse, data quality flags
-- **Historical data** — tabbed table/chart view for each statement source (FinancialStatements, IncomeStatement, BalanceSheet, CashflowStatement, PerShare_Metrics, ShareMetrics, Financial_Ratios, and their _Rolling variants), column visibility toggle, millions formatting toggle, metric search filter, hide-all/show-all/hide-empty controls
-- **Chart view** — Chart.js line charts with multi-series, auto colors, responsive sizing
-- **Price refresh** — update stock price for the current ticker via API
-- **Session persistence** — company selection and view state survive tab switches via `sessionStorage`
-- All API interaction via `fetchJson` to `/api/security/*` endpoints
-
----
-
-## Adding a new screen
-
-1. **Create the folder and files**
-
-   ```
-   src/web_app/frontend/my_screen/
-   ├── my_screen.html    ← Page HTML
-   ├── my_screen.js      ← Page entry point
-   └── index.js          ← Screen logic module
-   ```
-
-   `index.js` must export at minimum:
-
-   ```js
-   // frontend/my_screen/index.js
-   export function render() {
-     // Build or update the DOM inside the view panel.
-   }
-   ```
-
-   Copy the HTML structure from an existing page (topbar, workspace, console footer),
-   update the tab buttons with the correct `onclick` handlers, and point the
-   `<script type="module">` tag to your entry point.
-
-2. **Add the route** in `src/web_app/server.py`:
-
-   ```python
-   @app.get("/my_screen")
-   def page_my_screen() -> FileResponse:
-       return FileResponse(FRONTEND_DIR / "my_screen" / "my_screen.html")
-   ```
-
-3. **Add the tab button** to every page's `<nav class="tabs">` block:
-
-   ```html
-   <button class="tab" onclick="location.href='/my_screen'">My Screen</button>
-   ```
-
-4. **Add API routes** (if needed) in `src/web_app/api/` (create a new file like `my_screen.py`) and import the router in `src/web_app/api/__init__.py`:
-
-   ```python
-   from src.web_app.api.my_screen import router as _my_screen_router
-   router_app.router.routes.extend(_my_screen_router.routes)
-   ```
-
-No build step, no config changes — the browser loads the new module automatically via native ES module resolution.
-
----
-
-## Design conventions
-
-- **No build tooling.** All JavaScript is written as native ES modules loaded directly by the browser.  Import paths use relative URLs.
-- **Shared state via `STATE`.** All screens read and write the same `STATE` object.  Do not keep per-module global variables for data that other screens might need.
-- **DOM element cache via `els`.** Populate `els` in each page's bootstrap script.  Screen modules that need to access an element that isn't in `els` yet should add it there rather than calling `querySelector` at render time.
-- **Cross-module callbacks via `callbacks`.** When a screen needs to trigger navigation or a data refresh it should call `callbacks.setView(...)` or `callbacks.refreshJobs()`.
-- **`el()` over `innerHTML`.** Use the `el()` helper from `common/utils.js` to build DOM nodes programmatically.  This avoids XSS risks and keeps the code auditable.
-- **`log()` for all user-visible events.**  Use `log('info' | 'warn' | 'error' | 'debug', message)` from `common/console.js` to surface status messages to the operator in the bottom console panel.
-- **Tab navigation via inline `onclick`.** Tabs use `onclick="location.href='/...'"` — simple, no JS wiring needed.
-- **Database path resolution via `resolveDbPath`.** Database paths entered by the user in the web UI are resolved to absolute filesystem paths by querying the server's `repo_root` via `/api/config`, then prefixing relative paths. This lets the web UI submit absolute paths that the backend can use directly.
-- **File uploads via File System Access API.** The orchestrator `index.js` uses the browser's File System Access API (`window.showOpenFilePicker`, `window.showDirectoryPicker`) for file/database path picking. Uploaded files are base64-encoded and sent inline; the backend `resolve_file_uploads` decodes them to temp files.
+Do not add new logic to `src/web_app/frontend/`. Compatibility code should be removed route-by-route after its remaining specialist behavior has an explicit parity test.
