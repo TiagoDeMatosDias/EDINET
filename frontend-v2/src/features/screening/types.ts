@@ -4,6 +4,7 @@ export type ExpressionToken =
   | { type: 'column'; table: string; column: string }
   | { type: 'value'; value: string | number }
   | { type: 'op'; op: '+' | '-' | '*' | '/' }
+  | { type: 'paren'; value: '(' | ')' }
 
 export interface Criterion {
   id: string
@@ -26,10 +27,11 @@ export interface Criterion {
 export interface ComputedColumn {
   name: string
   formula_type: string
-  numerator_table: string
-  numerator_column: string
-  denominator_table: string
-  denominator_column: string
+  expression_tokens?: ExpressionToken[]
+  numerator_table?: string
+  numerator_column?: string
+  denominator_table?: string
+  denominator_column?: string
   formula?: string | null
 }
 

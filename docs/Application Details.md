@@ -484,7 +484,7 @@ Core implementation in `src/screening/screening.py`:
 - `def get_available_metrics(db_path: str) -> dict[str, list[str]]` - Introspect DB for screening table columns.
 - `def get_available_periods(db_path: str) -> list[str]` - Return distinct periodEnd years.
 - ``screening_date`` (YYYY-MM-DD) selects the most recent filing per company with ``periodEnd <= date``, and caps stock prices at that date.
-- ``computed_columns`` accepts formula specs for runtime valuation columns (P/E, P/B, etc.).
+- ``computed_columns`` accepts legacy ratio specs or validated ``expression_tokens`` (metrics, values, ``+ - * /``, and balanced parentheses) for runtime output fields.
 - Column comparisons now support an optional ``offset`` parameter for relative thresholds.
 
 - `def build_screening_query(criteria, columns, period=None, screening_date=None, available_metrics=None, column_aliases=None, computed_columns=None) -> tuple[str, list]` - Build parameterised SQL with validation.

@@ -76,6 +76,7 @@ class RankingRule(BaseModel):
 class ComputedColumn(BaseModel):
     name: str = Field(..., description="Display name for the computed column")
     formula_type: str = Field(default="price_ratio", description="Formula type")
+    expression_tokens: list[dict] | None = Field(default=None, description="Validated metric/value/operator/parenthesis formula tokens")
     numerator_table: str = Field(default="Stock_Prices", description="Numerator table")
     numerator_column: str = Field(default="Price", description="Numerator column")
     denominator_table: str = Field(default="", description="Denominator table")
@@ -346,6 +347,7 @@ def run_screening_endpoint(request: ScreeningRunRequest = Body(...)) -> dict:
             computed_specs.append({
                 "name": cc.name,
                 "formula_type": cc.formula_type,
+                "expression_tokens": cc.expression_tokens,
                 "numerator_table": cc.numerator_table,
                 "numerator_column": cc.numerator_column,
                 "denominator_table": cc.denominator_table,
@@ -448,6 +450,7 @@ def save_screening(request: ScreeningSaveRequest = Body(...)) -> dict:
             computed_specs.append({
                 "name": cc.name,
                 "formula_type": cc.formula_type,
+                "expression_tokens": cc.expression_tokens,
                 "numerator_table": cc.numerator_table,
                 "numerator_column": cc.numerator_column,
                 "denominator_table": cc.denominator_table,
@@ -527,6 +530,7 @@ def export_results(request: ScreeningExportRequest = Body(...)) -> StreamingResp
                 computed_specs.append({
                     "name": cc.name,
                     "formula_type": cc.formula_type,
+                "expression_tokens": cc.expression_tokens,
                     "numerator_table": cc.numerator_table,
                     "numerator_column": cc.numerator_column,
                     "denominator_table": cc.denominator_table,
@@ -555,6 +559,7 @@ def export_results(request: ScreeningExportRequest = Body(...)) -> StreamingResp
                 computed_specs.append({
                     "name": cc.name,
                     "formula_type": cc.formula_type,
+                "expression_tokens": cc.expression_tokens,
                     "numerator_table": cc.numerator_table,
                     "numerator_column": cc.numerator_column,
                     "denominator_table": cc.denominator_table,

@@ -80,7 +80,7 @@ The layout is desktop-first but has a 390 px mobile treatment:
 
 ## Feature behavior
 
-- Screening preserves legacy saved definitions and supports full expressions on both sides of a comparison. Each side can combine multiple columns, literal values, and arithmetic operators; result columns and derived ratios remain searchable and reusable.
+- Screening preserves legacy saved definitions and supports full expressions on both sides of a comparison. Rule expressions and derived output fields share metric, literal-value, arithmetic-operator, and parenthesis tokens; validated parentheses provide explicit PEMDAS grouping while legacy numerator/denominator ratios remain editable.
 - Analysis supports company search, overview metrics, price history, multi-metric financial-history charts and dense tables, price refresh, peer-screen handoff, and backtest handoff.
 - Backtesting supports manual portfolios, CSV sets, and point-in-time rolling screens with cadence, durations, weighting, progress, cancellation, saved results, and downloads.
 - Portfolio supports XML imports, rebuilds, currency selection, activity, holdings, transactions, performance, and company-analysis handoff.

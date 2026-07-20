@@ -469,24 +469,28 @@ def _build_query_column_plan(
 
 
 def _build_expression_sql(tokens: list[dict]) -> tuple[str, list]:
-    """Build a SQL expression from a token array for arithmetic right sides.
+    """Build and validate a parameterised SQL arithmetic expression.
 
-    Each token is a dict with:
-        type: "value" | "column" | "op"
-        value: literal value (for "value" tokens)
-        table, column: (for "column" tokens)
-        op: "+" | "-" | "*" | "/" (for "op" tokens)
-
-    Returns (sql_fragment, params_list).
+    Tokens may be values, columns, arithmetic operators, or explicit opening
+    and closing parentheses. The small grammar rejects malformed sequences
+    before any SQL is executed; SQL itself then applies standard precedence.
     """
     parts: list[str] = []
     params: list = []
-    for token in tokens:
-        t = token.get("type", "")
-        if t == "value":
+    expect_operand = True
+    parenthesis_depth = 0
+
+    for index, token in enumerate(tokens):
+        token_type = token.get("type", "")
+        if token_type == "value":
+            if not expect_operand:
+                raise ValueError(f"Expression token {index + 1}: expected an operator")
             parts.append("?")
             params.append(token.get("value"))
-        elif t == "column":
+            expect_operand = False
+        elif token_type == "column":
+            if not expect_operand:
+                raise ValueError(f"Expression token {index + 1}: expected an operator")
             table = token.get("table", "")
             column = token.get("column", "")
             if not table or not column:
@@ -494,15 +498,39 @@ def _build_expression_sql(tokens: list[dict]) -> tuple[str, list]:
             alias = _get_table_alias(table)
             safe_col = _safe_identifier(column)
             parts.append(f"{alias}.[{safe_col}]")
-        elif t == "op":
+            expect_operand = False
+        elif token_type == "op":
             op_val = str(token.get("op", "")).strip()
             if op_val not in ("+", "-", "*", "/"):
                 raise ValueError(f"Invalid arithmetic operator: {op_val!r}")
+            if expect_operand:
+                raise ValueError(f"Expression token {index + 1}: expected a value, metric, or '('")
             parts.append(op_val)
+            expect_operand = True
+        elif token_type == "paren":
+            paren = str(token.get("value", ""))
+            if paren == "(":
+                if not expect_operand:
+                    raise ValueError(f"Expression token {index + 1}: expected an operator")
+                parts.append(paren)
+                parenthesis_depth += 1
+            elif paren == ")":
+                if expect_operand or parenthesis_depth == 0:
+                    raise ValueError(f"Expression token {index + 1}: unmatched ')'")
+                parts.append(paren)
+                parenthesis_depth -= 1
+                expect_operand = False
+            else:
+                raise ValueError(f"Invalid parenthesis token: {paren!r}")
         else:
-            raise ValueError(f"Unknown expression token type: {t!r}")
+            raise ValueError(f"Unknown expression token type: {token_type!r}")
+
     if not parts:
         raise ValueError("Expression must have at least one token")
+    if expect_operand:
+        raise ValueError("Expression cannot end with an operator or '('")
+    if parenthesis_depth:
+        raise ValueError("Expression has an unmatched '('")
     return " ".join(parts), params
 
 
@@ -586,6 +614,17 @@ def build_screening_query(
                 compare_table = crit.get("compare_table")
                 if compare_table:
                     needed_tables.add(compare_table)
+    for computed in computed_columns or []:
+        expression_tokens = computed.get("expression_tokens") or []
+        if expression_tokens:
+            for token in expression_tokens:
+                if token.get("type") == "column" and token.get("table"):
+                    needed_tables.add(token["table"])
+        elif str(computed.get("formula_type", "")).lower() == "price_ratio":
+            for table_key in ("numerator_table", "denominator_table"):
+                table = str(computed.get(table_key, "")).strip()
+                if table:
+                    needed_tables.add(table)
 
     # --- Resolve actual CompanyInfo column names ---
     if available_metrics and "CompanyInfo" in available_metrics:
@@ -640,6 +679,22 @@ def build_screening_query(
                         raise ValueError(
                             f"Column {compare_column!r} not in table {compare_table!r}"
                         )
+        for computed in computed_columns or []:
+            expression_tokens = computed.get("expression_tokens") or []
+            if expression_tokens:
+                for token in expression_tokens:
+                    if token.get("type") != "column":
+                        continue
+                    table = str(token.get("table", "")).strip()
+                    column = str(token.get("column", "")).strip()
+                    if not table or not column or not _validate_column_ref(f"{table}.{column}", available_metrics):
+                        raise ValueError(f"Column {column!r} not in table {table!r}")
+            elif str(computed.get("formula_type", "")).lower() == "price_ratio":
+                for table_key, column_key in (("numerator_table", "numerator_column"), ("denominator_table", "denominator_column")):
+                    table = str(computed.get(table_key, "")).strip()
+                    column = str(computed.get(column_key, "")).strip()
+                    if not table or not column or not _validate_column_ref(f"{table}.{column}", available_metrics):
+                        raise ValueError(f"Column {column!r} not in table {table!r}")
 
     # Validate operators
     for crit in criteria:
@@ -667,36 +722,36 @@ def build_screening_query(
     if computed_columns:
         for cc in computed_columns:
             cc_name = str(cc.get("name", f"Computed{computed_col_count + 1}"))
-            ft = str(cc.get("formula_type", "")).lower()
+            formula_type = str(cc.get("formula_type", "")).lower()
+            expression_tokens = cc.get("expression_tokens") or []
             custom_formula = cc.get("formula")
             computed_col_count += 1
 
-            if custom_formula:
-                # Custom SQL expression — must use table aliases
+            if expression_tokens:
+                expression_sql, expression_params = _build_expression_sql(expression_tokens)
+                select_parts.append(f"({expression_sql}) AS {_quote_identifier(cc_name)}")
+                params.extend(expression_params)
+            elif formula_type == "expression":
+                raise ValueError(f"Computed column {cc_name!r} requires expression_tokens")
+            elif custom_formula:
+                # Legacy custom SQL formula support for existing saved screens.
                 select_parts.append(
                     f"({custom_formula}) AS {_quote_identifier(cc_name)}"
                 )
-            elif ft == "price_ratio":
+            elif formula_type == "price_ratio":
                 num_table = str(cc.get("numerator_table", "Stock_Prices"))
                 num_col = _safe_identifier(str(cc.get("numerator_column", "Price")))
                 den_table = str(cc.get("denominator_table", ""))
                 den_col = _safe_identifier(str(cc.get("denominator_column", "")))
-
-                num_alias = "s_p" if num_table == "Stock_Prices" else _get_table_alias(num_table)
-                if num_table not in ("FinancialStatements", "CompanyInfo", "Stock_Prices"):
-                    needed_tables.add(num_table)
-
-                den_alias = "s_p" if den_table == "Stock_Prices" else _get_table_alias(den_table)
-                if den_table and den_table not in ("FinancialStatements", "CompanyInfo", "Stock_Prices"):
-                    needed_tables.add(den_table)
-
+                num_alias = _get_table_alias(num_table)
+                den_alias = _get_table_alias(den_table)
                 select_parts.append(
                     f"CASE WHEN COALESCE({den_alias}.[{den_col}], 0) != 0 "
                     f"THEN {num_alias}.[{num_col}] * 1.0 / {den_alias}.[{den_col}] "
                     f"ELSE NULL END AS {_quote_identifier(cc_name)}"
                 )
             else:
-                logger.warning("Unknown formula_type %r for computed column %r", ft, cc_name)
+                logger.warning("Unknown formula_type %r for computed column %r", formula_type, cc_name)
 
         # Update result aliases for these computed columns
         for cc in computed_columns:
@@ -739,6 +794,25 @@ def build_screening_query(
                 col_name = crit.get("compare_column", "")
                 if col_name and col_name not in _FS_BASE_COLS:
                     _fs_extra_cols.add(col_name)
+    for computed in computed_columns or []:
+        expression_tokens = computed.get("expression_tokens") or []
+        if expression_tokens:
+            refs = [
+                str(token.get("column", ""))
+                for token in expression_tokens
+                if token.get("type") == "column" and token.get("table") == "FinancialStatements"
+            ]
+        elif str(computed.get("formula_type", "")).lower() == "price_ratio":
+            refs = [
+                str(computed.get(column_key, ""))
+                for table_key, column_key in (("numerator_table", "numerator_column"), ("denominator_table", "denominator_column"))
+                if computed.get(table_key) == "FinancialStatements"
+            ]
+        else:
+            refs = []
+        for column in refs:
+            if column and column not in _FS_BASE_COLS:
+                _fs_extra_cols.add(column)
 
     # --- Build FROM / JOIN ---
     # Always restrict FinancialStatements to the latest filing per company.

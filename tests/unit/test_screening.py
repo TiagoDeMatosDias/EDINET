@@ -1641,3 +1641,69 @@ def test_build_query_with_arbitrary_table(tmp_path):
     # Should use table name as alias
     assert "[Financial_Ratios_Rolling]" in sql
     assert "Net_Margin_3Y" in sql
+
+def test_parenthesized_expression_uses_standard_precedence():
+    """Parenthesis tokens should be retained and values parameterised."""
+    sql, params = build_screening_query(
+        criteria=[{
+            "comparison_mode": "full_expression",
+            "operator": ">",
+            "left_side": [
+                {"type": "paren", "value": "("},
+                {"type": "value", "value": 2},
+                {"type": "op", "op": "+"},
+                {"type": "value", "value": 3},
+                {"type": "paren", "value": ")"},
+                {"type": "op", "op": "*"},
+                {"type": "value", "value": 4},
+            ],
+            "right_side": [{"type": "value", "value": 19}],
+        }],
+        columns=["CompanyInfo.Company_Code"],
+    )
+    assert "( ? + ? ) * ?" in sql
+    assert params == [2, 3, 4, 19]
+
+
+def test_unbalanced_expression_parentheses_are_rejected():
+    """Malformed formulas must fail before reaching SQLite."""
+    with pytest.raises(ValueError, match="unmatched"):
+        build_screening_query(
+            criteria=[{
+                "comparison_mode": "full_expression",
+                "operator": ">",
+                "left_side": [
+                    {"type": "paren", "value": "("},
+                    {"type": "value", "value": 1},
+                    {"type": "op", "op": "+"},
+                    {"type": "value", "value": 2},
+                ],
+                "right_side": [{"type": "value", "value": 0}],
+            }],
+            columns=["CompanyInfo.Company_Code"],
+        )
+
+
+def test_computed_expression_column_supports_metrics_values_and_parentheses(sample_db):
+    """Derived output fields use the same token grammar as screening rules."""
+    df = run_screening(
+        sample_db,
+        criteria=[],
+        columns=["CompanyInfo.CompanyName"],
+        period="2024",
+        computed_columns=[{
+            "name": "Adjusted EPS",
+            "formula_type": "expression",
+            "expression_tokens": [
+                {"type": "paren", "value": "("},
+                {"type": "column", "table": "PerShare", "column": "EPS"},
+                {"type": "op", "op": "+"},
+                {"type": "value", "value": 10},
+                {"type": "paren", "value": ")"},
+                {"type": "op", "op": "*"},
+                {"type": "value", "value": 2},
+            ],
+        }],
+    )
+    values = dict(zip(df["CompanyName"], df["Adjusted EPS"]))
+    assert values == {"Alpha Corp": 320, "Beta Co": 180, "Gamma Ltd": 620}

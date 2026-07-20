@@ -8,10 +8,11 @@ import type { ScreeningResult } from '../../api/types';
 import { DataTable } from '../../components/DataTable';
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback';
 import { Card, Field, PageHeader } from '../../components/Page';
-import { CriterionEditor } from './ExpressionEditorDense';
+import { serializeComputedColumn, serializeCriterion } from './criterion-values';
+import { CriterionEditor, ExpressionTokenList } from './ExpressionEditorDense';
 import { newExpressionCriterion, normalizeCriterion } from './expression-model';
-import { MetricSelect } from './MetricSelect';
-import type { ComputedColumn, Criterion, MetricCatalog, SavedScreen } from './types';
+
+import type { ComputedColumn, Criterion, ExpressionToken, MetricCatalog, SavedScreen } from './types';
 type ResultRow = Record<string, unknown>;
 const DEFAULT_COLUMNS = ['CompanyInfo.EdinetCode', 'CompanyInfo.Company_Ticker', 'CompanyInfo.Company_Name', 'CompanyInfo.Company_Industry'];
 const DRAFT_KEY = 'shade.screening.draft';
@@ -24,7 +25,6 @@ function readDraft(): SavedScreen | null {
         return null;
     }
 }
-function cleanCriterion({ id: _id, ...criterion }: Criterion) { void _id; return criterion; }
 function resultRows(result?: ScreeningResult): ResultRow[] {
     return result?.rows.map(row => Object.fromEntries(result.columns.map((column, index) => [column, row[index]]))) ?? [];
 }
@@ -37,19 +37,48 @@ function ResultColumnPicker({ catalog, selected, onChange }: {
     const [table, setTable] = useState(tables.includes('CompanyInfo') ? 'CompanyInfo' : tables[0] ?? '');
     const [search, setSearch] = useState('');
     const columns = (catalog[table] ?? []).filter(column => column.toLowerCase().includes(search.toLowerCase()));
-    return <div className="result-column-picker"><div className="column-picker-controls"><select className="select" value={table} onChange={event => { setTable(event.target.value); setSearch(''); }} aria-label="Result column table">{tables.map(item => <option key={item}>{item}</option>)}</select><input className="input" value={search} onChange={event => setSearch(event.target.value)} placeholder="Filter columns"/></div><div className="column-picker column-picker--dense">{columns.map(column => { const ref = `${table}.${column}`; return <label className="check" key={ref}><input type="checkbox" checked={selected.includes(ref)} onChange={event => onChange(event.target.checked ? [...selected, ref] : selected.filter(item => item !== ref))}/>{column}</label>; })}</div><div className="selected-columns">{selected.slice(0, 8).map(ref => <button key={ref} title="Remove" onClick={() => onChange(selected.filter(item => item !== ref))}>{ref.split('.').at(-1)}</button>)}{selected.length > 8 && <span>+{selected.length - 8}</span>}</div></div>;
+    return <div className="result-column-picker"><div className="column-picker-controls"><select className="select" value={table} onChange={event => { setTable(event.target.value); setSearch(''); }} aria-label="Result column table">{tables.map(item => <option key={item}>{item}</option>)}</select><input className="input" value={search} onChange={event => setSearch(event.target.value)} placeholder="Filter columns"/></div><div className="column-picker column-picker--dense">{columns.map(column => { const ref = `${table}.${column}`; return <label className="check" key={ref}><input type="checkbox" checked={selected.includes(ref)} onChange={event => onChange(event.target.checked ? [...selected, ref] : selected.filter(item => item !== ref))}/>{column}</label>; })}</div><div className="selected-columns"><strong>{selected.length} selected</strong>{selected.slice(0, 8).map(ref => <button key={ref} title="Remove" onClick={() => onChange(selected.filter(item => item !== ref))}>{ref.split('.').at(-1)}</button>)}{selected.length > 8 && <span>+{selected.length - 8}</span>}</div></div>;
+}
+function computedExpressionTokens(column: ComputedColumn): ExpressionToken[] {
+    if (column.expression_tokens) return column.expression_tokens;
+    if (column.formula_type === 'price_ratio' && column.numerator_table && column.numerator_column && column.denominator_table && column.denominator_column) {
+        return [
+            { type: 'column', table: column.numerator_table, column: column.numerator_column },
+            { type: 'op', op: '/' },
+            { type: 'column', table: column.denominator_table, column: column.denominator_column },
+        ];
+    }
+    return [];
 }
 function defaultComputed(catalog: MetricCatalog): ComputedColumn {
     const table = catalog.ShareMetrics ? 'ShareMetrics' : Object.keys(catalog)[0] ?? '';
-    return { name: 'Price / metric', formula_type: 'price_ratio', numerator_table: 'Stock_Prices', numerator_column: 'Price', denominator_table: table, denominator_column: catalog[table]?.[0] ?? '' };
+    return {
+        name: 'Derived metric',
+        formula_type: 'expression',
+        expression_tokens: [
+            { type: 'column', table: 'Stock_Prices', column: 'Price' },
+            { type: 'op', op: '/' },
+            { type: 'column', table, column: catalog[table]?.[0] ?? '' },
+        ],
+    };
 }
-function DerivedColumns({ value, catalog, onChange }: {
+export function DerivedColumns({ value, catalog, onChange }: {
     value: ComputedColumn[];
     catalog: MetricCatalog;
     onChange: (next: ComputedColumn[]) => void;
 }) {
     const update = (index: number, patch: Partial<ComputedColumn>) => onChange(value.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
-    return <div className="derived-list">{value.map((column, index) => <div className="derived-column" key={`${column.name}-${index}`}><input className="input" aria-label="Derived column name" value={column.name} onChange={event => update(index, { name: event.target.value })}/><MetricSelect catalog={catalog} table={column.numerator_table} column={column.numerator_column} label="Numerator" onChange={(table, metric) => update(index, { numerator_table: table, numerator_column: metric })}/><span>÷</span><MetricSelect catalog={catalog} table={column.denominator_table} column={column.denominator_column} label="Denominator" onChange={(table, metric) => update(index, { denominator_table: table, denominator_column: metric })}/><button className="icon-button" onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}><Trash2 /></button></div>)}<button className="button button--ghost" onClick={() => onChange([...value, defaultComputed(catalog)])}><Plus />Derived ratio</button></div>;
+    const updateFormula = (index: number, expression_tokens: ExpressionToken[]) => update(index, { formula_type: 'expression', expression_tokens, formula: null });
+    return <div className="derived-list">
+        {value.map((column, index) => <div className="derived-column" key={`derived-${index}`}>
+            <div className="derived-column-head">
+                <input className="input" aria-label="Derived column name" value={column.name} onChange={event => update(index, { name: event.target.value })}/>
+                <button className="icon-button" type="button" aria-label={`Remove derived column ${column.name}`} onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}><Trash2 /></button>
+            </div>
+            <ExpressionTokenList label="Formula" value={computedExpressionTokens(column)} catalog={catalog} onChange={tokens => updateFormula(index, tokens)}/>
+        </div>)}
+        <button className="button button--ghost" type="button" onClick={() => onChange([...value, defaultComputed(catalog)])}><Plus />Derived field</button>
+    </div>;
 }
 function buildColumns(result: ScreeningResult | undefined, navigate: ReturnType<typeof useNavigate>) {
     const columns: ColumnDef<ResultRow>[] = (result?.columns ?? []).map(column => ({ accessorKey: column, header: column.split('.').at(-1) ?? column, cell: info => String(info.getValue() ?? '—') }));
@@ -81,7 +110,7 @@ export default function ScreeningWorkspaceDense() {
             screenings: string[];
         }>('/api/screening/saved') });
     const catalog = metrics.data?.tables ?? {};
-    const payload = useCallback(() => ({ criteria: criteria.map(cleanCriterion), columns, computed_columns: computed, screening_date: screeningDate || null, ranking_algorithm: rankingAlgorithm, ranking_rules: rankingRules }), [criteria, columns, computed, screeningDate, rankingAlgorithm, rankingRules]);
+    const payload = useCallback(() => ({ criteria: criteria.map(serializeCriterion), columns, computed_columns: computed.map(serializeComputedColumn), screening_date: screeningDate || null, ranking_algorithm: rankingAlgorithm, ranking_rules: rankingRules }), [criteria, columns, computed, screeningDate, rankingAlgorithm, rankingRules]);
     const run = useMutation({ mutationFn: () => apiPost<ScreeningResult>('/api/screening/run', { db_path: db.data!.db_path, ...payload(), sort_order: 'DESC' }), onSuccess: setResult });
     const save = useMutation({ mutationFn: () => apiPost('/api/screening/save', { name: saveName.trim(), ...payload() }), onSuccess: () => { setSelectedSaved(saveName.trim()); setSaveName(''); void queryClient.invalidateQueries({ queryKey: ['saved-screenings'] }); } });
     const removeSaved = useMutation({ mutationFn: () => apiRequest(`/api/screening/saved/${encodeURIComponent(selectedSaved)}`, { method: 'DELETE' }), onSuccess: () => { setSelectedSaved(''); void queryClient.invalidateQueries({ queryKey: ['saved-screenings'] }); } });
