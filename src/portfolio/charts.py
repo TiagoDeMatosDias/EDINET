@@ -140,25 +140,103 @@ def get_holdings_by_currency(
 
 
 # ---------------------------------------------------------------------------
-# Chart 3: Portfolio value over time, per holding (stacked line)
+# Chart 3: Portfolio value over time and flow-adjusted risk series
 # ---------------------------------------------------------------------------
+
+def _load_portfolio_daily(db3_path: str) -> list[sqlite3.Row]:
+    conn = sqlite3.connect(db3_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT date, total_value, net_inflow FROM Portfolio_Daily ORDER BY date"
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def _convert_base_values(
+    values: list[float | None],
+    dates: list[str],
+    display_currency: str,
+    db2_path: str,
+) -> list[float | None]:
+    if display_currency.upper() == "EUR":
+        return [round(value, 2) if value is not None else None for value in values]
+    fx = get_fx_series("EUR", display_currency, db2_path)
+    if not fx:
+        return [round(value, 2) if value is not None else None for value in values]
+    converted: list[float | None] = []
+    for date_str, value in zip(dates, values):
+        if value is None:
+            converted.append(None)
+            continue
+        rate = get_rate_at_date(date_str, fx) or 1.0
+        converted.append(round(value * rate, 2))
+    return converted
+
+
+def _flow_adjusted_series(
+    daily_rows: list[sqlite3.Row],
+    dates: list[str],
+    display_currency: str,
+    db2_path: str,
+) -> dict[str, list[float | None]]:
+    by_date = {row["date"]: row for row in daily_rows}
+    base_values = [
+        float(by_date[date]["total_value"])
+        if date in by_date and by_date[date]["total_value"] is not None
+        else None
+        for date in dates
+    ]
+    base_inflows = [
+        float(by_date[date]["net_inflow"] or 0)
+        if date in by_date
+        else None
+        for date in dates
+    ]
+    values = _convert_base_values(base_values, dates, display_currency, db2_path)
+    inflows = _convert_base_values(base_inflows, dates, display_currency, db2_path)
+
+    daily_returns: list[float | None] = []
+    cumulative_returns: list[float | None] = []
+    wealth = 1.0
+    previous_value: float | None = None
+    for value, inflow in zip(values, inflows):
+        if value is None:
+            daily_returns.append(None)
+            cumulative_returns.append(None)
+            continue
+        daily_return = 0.0
+        if previous_value is not None and previous_value > 0:
+            denominator = previous_value + (inflow or 0.0)
+            if abs(denominator) > 0.01:
+                raw_return = (value - previous_value - (inflow or 0.0)) / denominator
+                daily_return = max(min(raw_return, 1.0), -1.0)
+        wealth *= 1 + daily_return
+        daily_returns.append(round(daily_return, 8))
+        cumulative_returns.append(round(wealth - 1, 8))
+        previous_value = value
+
+    return {
+        "portfolio_values": values,
+        "net_inflows": inflows,
+        "daily_returns": daily_returns,
+        "cumulative_returns": cumulative_returns,
+    }
+
 
 def get_portfolio_value_history(
     db3_path: str,
     db2_path: str,
     display_currency: str = "EUR",
 ) -> dict:
-    """Daily market value per holding, for stacked area chart.
+    """Return daily holdings and flow-adjusted portfolio risk series.
 
-    Returns ``{dates: [str], holdings: {symbol: [float]}, currency: str}``.
-
-    Non-stock items (cash, options) are excluded.  Positions that were fully
-    sold have zeroed values after their last holding date.  All values are
-    converted to *display_currency*.
+    ``daily_returns`` removes deposits and withdrawals using Modified Dietz,
+    so analytics never mistake a cash flow or a newly observed holding for a
+    market return. Values are converted to the requested display currency.
     """
     conn = sqlite3.connect(db3_path)
     conn.row_factory = sqlite3.Row
-
     hh_rows = conn.execute(
         "SELECT date, symbol, market_value_native, currency "
         "FROM Holdings_History "
@@ -166,81 +244,65 @@ def get_portfolio_value_history(
         "AND market_value_native IS NOT NULL "
         "ORDER BY date, symbol"
     ).fetchall()
-
     cur_held = {
-        r["symbol"] for r in conn.execute(
+        row["symbol"] for row in conn.execute(
             "SELECT symbol FROM Portfolio_Holdings WHERE quantity > 0 "
             "AND asset_category != 'CASH'"
         ).fetchall()
     }
     conn.close()
+    daily_rows = _load_portfolio_daily(db3_path)
 
-    if not hh_rows:
-        return {"dates": [], "holdings": {}, "currency": display_currency}
+    if not hh_rows and not daily_rows:
+        return {
+            "dates": [], "holdings": {}, "currency": display_currency,
+            "portfolio_values": [], "net_inflows": [],
+            "daily_returns": [], "cumulative_returns": [],
+        }
 
     dc = display_currency.upper()
     series_by_symbol: dict[str, dict[str, float]] = defaultdict(dict)
     native_ccy_by_symbol: dict[str, str] = {}
-    date_set: set[str] = set()
-    for r in hh_rows:
-        d = r["date"]
-        sym = r["symbol"]
-        val = r["market_value_native"] or 0
-        date_set.add(d)
-        series_by_symbol[sym][d] = val
-        native_ccy_by_symbol[sym] = r["currency"] or "EUR"
-
+    date_set: set[str] = {row["date"] for row in daily_rows}
+    for row in hh_rows:
+        date_set.add(row["date"])
+        series_by_symbol[row["symbol"]][row["date"]] = row["market_value_native"] or 0
+        native_ccy_by_symbol[row["symbol"]] = row["currency"] or "EUR"
     date_list = sorted(date_set)
 
-    # Pre-load FX series for each unique native currency
     fx_series_cache: dict[str, dict[str, float]] = {}
-    for nccy in set(native_ccy_by_symbol.values()):
-        nccy_u = nccy.upper()
-        if nccy_u != dc:
-            fx = get_fx_series(nccy, dc, db2_path)
+    for native_currency in set(native_ccy_by_symbol.values()):
+        native_upper = native_currency.upper()
+        if native_upper != dc:
+            fx = get_fx_series(native_currency, dc, db2_path)
             if fx:
-                fx_series_cache[nccy_u] = fx
+                fx_series_cache[native_upper] = fx
 
     result_series: dict[str, list[float | None]] = {}
-    n_dates = len(date_list)
-    for sym, day_map in series_by_symbol.items():
-        vals: list[float | None] = [day_map.get(d) for d in date_list]
-        nccy = native_ccy_by_symbol.get(sym, "EUR").upper()
-
-        last_idx = -1
-        for i in range(n_dates - 1, -1, -1):
-            if vals[i] is not None:
-                last_idx = i
-                break
-
-        if last_idx >= 0 and last_idx < n_dates - 1:
-            for i in range(last_idx + 1, n_dates):
-                vals[i] = 0.0
-        elif last_idx >= 0 and sym in cur_held:
-            last_val = vals[last_idx]
-            for i in range(last_idx + 1, n_dates):
-                vals[i] = last_val
-
-        # Convert to display currency
-        if nccy != dc and nccy in fx_series_cache:
-            fx = fx_series_cache[nccy]
-            for i in range(n_dates):
-                v = vals[i]
-                if v is not None:
-                    rate = get_rate_at_date(date_list[i], fx)
-                    if rate:
-                        vals[i] = round(v * rate, 2)
+    for symbol, day_map in series_by_symbol.items():
+        values: list[float | None] = [day_map.get(date) for date in date_list]
+        last_idx = max((index for index, value in enumerate(values) if value is not None), default=-1)
+        if last_idx >= 0 and last_idx < len(values) - 1:
+            for index in range(last_idx + 1, len(values)):
+                values[index] = 0.0 if symbol not in cur_held else values[last_idx]
+        native_upper = native_ccy_by_symbol.get(symbol, "EUR").upper()
+        fx = fx_series_cache.get(native_upper)
+        if fx:
+            values = [
+                round(value * (get_rate_at_date(date, fx) or 1.0), 2)
+                if value is not None else None
+                for date, value in zip(date_list, values)
+            ]
         else:
-            for i in range(n_dates):
-                if vals[i] is not None:
-                    vals[i] = round(vals[i], 2)
+            values = [round(value, 2) if value is not None else None for value in values]
+        result_series[symbol] = values
 
-        result_series[sym] = vals
-
+    risk_series = _flow_adjusted_series(daily_rows, date_list, display_currency, db2_path)
     return {
         "dates": date_list,
         "holdings": result_series,
         "currency": display_currency,
+        **risk_series,
     }
 
 

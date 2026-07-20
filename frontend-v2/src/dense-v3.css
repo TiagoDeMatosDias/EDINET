@@ -143,3 +143,22 @@
   .criterion-editor { grid-template-columns: 1fr; }
   .criterion-toolbar { border-right: 0; border-bottom: 1px solid var(--border); }
 }
+
+.analytics-risk-card { grid-column: 1 / -1; }
+.analytics-risk-card .card-body { min-width: 0; }
+.analytics-explainer { margin: 0 0 7px; color: var(--muted); font-size: .68rem; line-height: 1.35; }
+.analytics-stat-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin-bottom: 7px; }
+.analytics-stat-strip .metric { padding: 6px; }
+.analytics-risk-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.analytics-risk-panel { min-width: 0; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-subtle); }
+.analytics-risk-panel > strong { display: block; margin-bottom: 3px; font-size: .72rem; }
+.analytics-risk-chart { height: 205px; }
+.analytics-distribution-card { grid-column: span 2; }
+.analytics-distribution-card .portfolio-advanced-chart { height: 225px; }
+.analytics-concentration-card { grid-column: span 1; }
+
+@media (max-width: 1100px) {
+  .analytics-risk-charts { grid-template-columns: 1fr; }
+  .analytics-distribution-card, .analytics-concentration-card { grid-column: auto; }
+  .analytics-stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

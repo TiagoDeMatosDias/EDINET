@@ -19,7 +19,7 @@ type Holding = { symbol: string; asset_category?: string; quantity?: number; avg
 type Transaction = { id?: number; trade_date?: string; activity_type?: string; symbol?: string; description?: string; quantity?: number; amount?: number; currency?: string; source_file?: string }
 type Performance = Record<string, unknown> & { dividend_breakdown?: Record<string, unknown>; return_distribution?: Record<string, unknown>; return_attribution?: Record<string, unknown> }
 type PieData = { labels: string[]; values: number[]; total: number; currency: string }
-type ValueHistory = { dates: string[]; holdings: Record<string, Array<number | null>>; currency: string }
+type ValueHistory = { dates: string[]; holdings: Record<string, Array<number | null>>; currency: string; portfolio_values?: Array<number | null>; daily_returns?: Array<number | null>; cumulative_returns?: Array<number | null> }
 type DividendHistory = { periods: string[]; companies: Record<string, number[]>; currency: string }
 type HeatmapData = { years: number[]; months: number[]; values: Array<Array<number | null>> }
 type ScatterPoint = { symbol: string; cost_basis_display: number; annualized_return: number; is_open: boolean }
@@ -37,7 +37,7 @@ function compactPie(data?: PieData, limit = 8) {
 }
 
 function ValueChart({ data, currency }: { data?: ValueHistory; currency: string }) {
-  const totals = data?.dates.map((_, index) => Object.values(data.holdings).reduce((sum, values) => sum + Number(values[index] ?? 0), 0)) ?? []
+  const totals = data?.portfolio_values?.length === data?.dates.length ? data?.portfolio_values?.map(value => value ?? 0) ?? [] : data?.dates.map((_, index) => Object.values(data?.holdings ?? {}).reduce((sum, values) => sum + Number(values[index] ?? 0), 0)) ?? []
   const chart = { labels: data?.dates ?? [], datasets: [{ label: `Portfolio value (${currency})`, data: totals, borderColor: COLORS[0], backgroundColor: '#146ef518', fill: true, pointRadius: 0, tension: .18 }] }
   return <div className="portfolio-value-chart"><Line data={chart} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { position: 'right', ticks: { callback: value => Number(value).toLocaleString(undefined, { notation: 'compact' }) } } } }} /></div>
 }
