@@ -7,7 +7,9 @@ function persistedValue(value: string | number | null | undefined) {
 }
 
 function persistedToken(token: ExpressionToken): ExpressionToken {
-  return token.type === 'value' ? { ...token, value: persistedValue(token.value) ?? '' } : token
+  if (token.type === 'value') return { ...token, value: persistedValue(token.value) ?? '' }
+  if (token.type === 'tag') return token
+  return token
 }
 
 export function serializeExpressionTokens(tokens: ExpressionToken[] | undefined) {

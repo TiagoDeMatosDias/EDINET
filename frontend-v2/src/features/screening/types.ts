@@ -3,6 +3,7 @@ export type MetricCatalog = Record<string, string[]>
 export type ExpressionToken =
   | { type: 'column'; table: string; column: string }
   | { type: 'value'; value: string | number }
+  | { type: 'tag'; value: string }
   | { type: 'op'; op: '+' | '-' | '*' | '/' }
   | { type: 'paren'; value: '(' | ')' }
 

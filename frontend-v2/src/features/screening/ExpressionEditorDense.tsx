@@ -5,23 +5,25 @@ import { MetricSelect } from './MetricSelect'
 import type { Criterion, ExpressionToken, MetricCatalog } from './types'
 
 const ARITHMETIC = ['+', '-', '*', '/'] as const
-const COMPARISONS = ['>', '>=', '<', '<=', '=', '!=', 'IS', 'IS NOT']
+const COMPARISONS = ['>', '>=', '<', '<=', '=', '!=', 'IN', 'IS', 'IS NOT']
 
-function Token({ token, catalog, onChange, onRemove }: { token: ExpressionToken; catalog: MetricCatalog; onChange: (token: ExpressionToken) => void; onRemove: () => void }) {
+function Token({ token, catalog, tagNames, onChange, onRemove }: { token: ExpressionToken; catalog: MetricCatalog; tagNames: string[]; onChange: (token: ExpressionToken) => void; onRemove: () => void }) {
   return <span className={`expr-token expr-token--${token.type}`}>
     {token.type === 'column' && <MetricSelect catalog={catalog} table={token.table} column={token.column} label="Expression metric" onChange={(table, column) => onChange({ type: 'column', table, column })} />}
     {token.type === 'value' && <input className="expr-value" inputMode="decimal" value={String(token.value ?? '')} onChange={event => onChange({ type: 'value', value: event.target.value })} aria-label="Expression value" />}
+    {token.type === 'tag' && <select className="expr-tag" value={token.value} onChange={event => onChange({ type: 'tag', value: event.target.value })} aria-label="Tag value"><option value="">— tag —</option>{tagNames.map(t => <option key={t} value={t}>{t}</option>)}</select>}
     {token.type === 'op' && <select className="expr-op" value={token.op} onChange={event => onChange({ type: 'op', op: event.target.value as typeof ARITHMETIC[number] })}>{ARITHMETIC.map(operator => <option key={operator}>{operator}</option>)}</select>}
     {token.type === 'paren' && <span className="expr-paren" aria-label={token.value === '(' ? 'Open parenthesis' : 'Close parenthesis'}>{token.value}</span>}
     <button className="expr-remove" type="button" onClick={onRemove} aria-label="Remove expression token"><X /></button>
   </span>
 }
 
-export function ExpressionTokenList({ value, catalog, onChange, label }: { value: ExpressionToken[]; catalog: MetricCatalog; onChange: (tokens: ExpressionToken[]) => void; label: string }) {
+export function ExpressionTokenList({ value, catalog, tagNames, onChange, label }: { value: ExpressionToken[]; catalog: MetricCatalog; tagNames: string[]; onChange: (tokens: ExpressionToken[]) => void; label: string }) {
   const replace = (index: number, token: ExpressionToken) => onChange(value.map((item, itemIndex) => itemIndex === index ? token : item))
   const append = (kind: string) => {
     if (kind === 'column') onChange([...value, { type: 'column', table: '', column: '' }])
     if (kind === 'value') onChange([...value, { type: 'value', value: 0 }])
+    if (kind === 'tag') onChange([...value, { type: 'tag', value: tagNames[0] ?? '' }])
     if (kind === 'op') onChange([...value, { type: 'op', op: '*' }])
     if (kind === 'lparen') onChange([...value, { type: 'paren', value: '(' }])
     if (kind === 'rparen') onChange([...value, { type: 'paren', value: ')' }])
@@ -29,11 +31,12 @@ export function ExpressionTokenList({ value, catalog, onChange, label }: { value
   return <div className="expression-side">
     <span className="expression-label">{label}</span>
     <div className="expression-tokens">
-      {value.map((token, index) => <Token key={`${index}-${token.type}`} token={token} catalog={catalog} onChange={next => replace(index, next)} onRemove={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))} />)}
+      {value.map((token, index) => <Token key={`${index}-${token.type}`} token={token} catalog={catalog} tagNames={tagNames} onChange={next => replace(index, next)} onRemove={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))} />)}
       <select className="expression-add-select" value="" onChange={event => append(event.target.value)} aria-label={`Add ${label.toLowerCase()} expression token`}>
         <option value="">+ Add</option>
         <option value="column">Metric</option>
         <option value="value">Value</option>
+        <option value="tag">Tag</option>
         <option value="op">Math</option>
         <option value="lparen">(</option>
         <option value="rparen">)</option>
@@ -53,8 +56,8 @@ function SimpleCriterion({ criterion, catalog, onChange }: { criterion: Criterio
   return <div className="simple-rule"><MetricSelect catalog={catalog} table={criterion.table ?? ''} column={criterion.column ?? ''} label="Rule metric" onChange={(table, column) => onChange({ ...criterion, table, column })} /><strong>{criterion.operator}</strong>{criterion.operator === 'IN' && <input className="input" value={(criterion.values ?? []).join(', ')} onChange={event => onChange({ ...criterion, values: event.target.value.split(',') })} placeholder="Value 1, Value 2" />}{criterion.operator === 'LIKE' && <input className="input" value={String(criterion.value ?? '')} onChange={event => onChange({ ...criterion, value: event.target.value })} placeholder="%text%" />}{criterion.operator === 'BETWEEN' && <><input className="input" value={String(criterion.value ?? '')} onChange={event => onChange({ ...criterion, value: event.target.value })} /><span>and</span><input className="input" value={String(criterion.value2 ?? '')} onChange={event => onChange({ ...criterion, value2: event.target.value })} /></>}</div>
 }
 
-export function CriterionEditor({ criterion, catalog, index, onChange, onRemove }: { criterion: Criterion; catalog: MetricCatalog; index: number; onChange: (next: Criterion) => void; onRemove: () => void }) {
+export function CriterionEditor({ criterion, catalog, tagNames, index, onChange, onRemove }: { criterion: Criterion; catalog: MetricCatalog; tagNames: string[]; index: number; onChange: (next: Criterion) => void; onRemove: () => void }) {
   const expression = criterion.comparison_mode === 'full_expression'
   const kind = expression ? 'full_expression' : criterion.operator === 'BETWEEN' ? 'between' : criterion.comparison_mode
-  return <div className="criterion-editor"><div className="criterion-toolbar"><span>{index + 1}</span><select value={kind} onChange={event => onChange(changeKind(criterion, event.target.value))}><option value="full_expression">Expression</option><option value="like">Text contains</option><option value="in">One of</option><option value="between">Between</option></select><button className="icon-button" type="button" onClick={onRemove} aria-label={`Remove rule ${index + 1}`}><X /></button></div>{expression ? <div className="expression-rule"><ExpressionTokenList label="Left" value={criterion.left_side ?? []} catalog={catalog} onChange={left_side => onChange({ ...criterion, left_side })} /><select className="comparison-select" value={criterion.operator} onChange={event => onChange({ ...criterion, operator: event.target.value })}>{COMPARISONS.map(operator => <option key={operator}>{operator}</option>)}</select><ExpressionTokenList label="Right" value={criterion.right_side ?? []} catalog={catalog} onChange={right_side => onChange({ ...criterion, right_side })} /></div> : <SimpleCriterion criterion={criterion} catalog={catalog} onChange={onChange} />}</div>
+  return <div className="criterion-editor"><div className="criterion-toolbar"><span>{index + 1}</span><select value={kind} onChange={event => onChange(changeKind(criterion, event.target.value))}><option value="full_expression">Expression</option><option value="like">Text contains</option><option value="in">One of</option><option value="between">Between</option></select><button className="icon-button" type="button" onClick={onRemove} aria-label={`Remove rule ${index + 1}`}><X /></button></div>{expression ? <div className="expression-rule"><ExpressionTokenList label="Left" value={criterion.left_side ?? []} catalog={catalog} tagNames={tagNames} onChange={left_side => onChange({ ...criterion, left_side })} /><select className="comparison-select" value={criterion.operator} onChange={event => onChange({ ...criterion, operator: event.target.value })}>{COMPARISONS.map(operator => <option key={operator}>{operator}</option>)}</select><ExpressionTokenList label="Right" value={criterion.right_side ?? []} catalog={catalog} tagNames={tagNames} onChange={right_side => onChange({ ...criterion, right_side })} /></div> : <SimpleCriterion criterion={criterion} catalog={catalog} onChange={onChange} />}</div>
 }

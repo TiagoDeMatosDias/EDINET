@@ -1271,8 +1271,8 @@ def test_full_expression_both_sides_complex():
 
 
 def test_full_expression_rejects_invalid_operators():
-    """full_expression should reject BETWEEN, IN, LIKE."""
-    for op in ("BETWEEN", "IN", "LIKE"):
+    """full_expression should reject BETWEEN and LIKE (IN is now allowed)."""
+    for op in ("BETWEEN", "LIKE"):
         with pytest.raises(ValueError):
             build_screening_query(
                 criteria=[{

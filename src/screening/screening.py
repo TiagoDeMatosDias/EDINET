@@ -138,6 +138,7 @@ _TABLE_ALIAS: dict[str, str] = {
     "Pershare_Historical": "psh",
     "Valuation_Historical": "vh",
     "Quality_Historical": "qh",
+    "Company_Tags": "ct",
 }
 
 
@@ -298,7 +299,7 @@ def get_available_metrics(db_path: str) -> dict[str, list[str]]:
     # Columns to strip from per-document metric tables
     _METADATA_COLS = {"docID", "Company_Code", "edinetCode", "periodEnd"}
     # Tables that should keep all columns (metadata cols are meaningful here)
-    _KEEP_ALL_COLS = {"CompanyInfo", "FinancialStatements", "Stock_Prices"}
+    _KEEP_ALL_COLS = {"CompanyInfo", "FinancialStatements", "Stock_Prices", "Company_Tags"}
     # Internal/sqlite tables to skip
     _SKIP_TABLES = {"sqlite_sequence"}
 
@@ -468,6 +469,19 @@ def _build_query_column_plan(
     return query_columns, column_aliases, visible_columns
 
 
+def _expression_table(tokens: list[dict]) -> str | None:
+    """Return the table name of the first column token, or None."""
+    for token in tokens:
+        if token.get("type") == "column":
+            return str(token.get("table", ""))
+    return None
+
+
+def _expression_values(tokens: list[dict]) -> list:
+    """Extract all value / tag token values from an expression token list."""
+    return [t["value"] for t in tokens if t.get("type") in ("value", "tag")]
+
+
 def _build_expression_sql(tokens: list[dict]) -> tuple[str, list]:
     """Build and validate a parameterised SQL arithmetic expression.
 
@@ -482,7 +496,7 @@ def _build_expression_sql(tokens: list[dict]) -> tuple[str, list]:
 
     for index, token in enumerate(tokens):
         token_type = token.get("type", "")
-        if token_type == "value":
+        if token_type == "value" or token_type == "tag":
             if not expect_operand:
                 raise ValueError(f"Expression token {index + 1}: expected an operator")
             parts.append("?")
@@ -713,9 +727,20 @@ def build_screening_query(
         alias = _get_table_alias(table)
         safe_col = _safe_identifier(resolved_column)
         result_alias = result_aliases[col]
-        select_parts.append(
-            f"{alias}.[{safe_col}] AS {_quote_identifier(result_alias)}"
-        )
+        if table == "Company_Tags":
+            # Company_Tags is a company-level table (no docID).  Use a
+            # GROUP_CONCAT subquery so we get one row per company.
+            code_col = _safe_identifier(_company_code_col)
+            select_parts.append(
+                f"(SELECT GROUP_CONCAT(ct.[{safe_col}], ', ')"
+                f" FROM Company_Tags ct"
+                f" WHERE ct.edinetCode = c.[{code_col}])"
+                f" AS {_quote_identifier(result_alias)}"
+            )
+        else:
+            select_parts.append(
+                f"{alias}.[{safe_col}] AS {_quote_identifier(result_alias)}"
+            )
 
     # Computed / formula columns
     computed_col_count = 0
@@ -884,6 +909,10 @@ def build_screening_query(
     for table in sorted(needed_tables):
         if table in ("FinancialStatements", "CompanyInfo", "Stock_Prices"):
             continue
+        if table == "Company_Tags":
+            # Company_Tags has no docID — it's handled via EXISTS
+            # subqueries in the WHERE clause and GROUP_CONCAT in SELECT.
+            continue
         alias = _get_table_alias(table)
         safe_table = _safe_identifier(table)
         join_clauses.append(
@@ -908,6 +937,56 @@ def build_screening_query(
             alias = _get_table_alias(table)
             safe_col = _safe_identifier(resolved_column)
             col_ref = f"{alias}.[{safe_col}]"
+
+            # --- Company_Tags: EXISTS subquery (no docID join) ---
+            if table == "Company_Tags":
+                code_col = _safe_identifier(_company_code_col)
+                if op in ("IS", "IS NOT"):
+                    where_parts.append(
+                        f"{'NOT ' if op == 'IS NOT' else ''}EXISTS ("
+                        f"SELECT 1 FROM Company_Tags ct"
+                        f" WHERE ct.edinetCode = c.[{code_col}]"
+                        f" AND ct.[{safe_col}] IS NULL)"
+                    )
+                elif op == "=":
+                    where_parts.append(
+                        f"EXISTS (SELECT 1 FROM Company_Tags ct"
+                        f" WHERE ct.edinetCode = c.[{code_col}]"
+                        f" AND ct.[{safe_col}] = ?)"
+                    )
+                    params.append(crit["value"])
+                elif op == "!=":
+                    where_parts.append(
+                        f"NOT EXISTS (SELECT 1 FROM Company_Tags ct"
+                        f" WHERE ct.edinetCode = c.[{code_col}]"
+                        f" AND ct.[{safe_col}] = ?)"
+                    )
+                    params.append(crit["value"])
+                elif op == "IN":
+                    values = crit.get("values")
+                    if not values or not isinstance(values, list):
+                        values = [crit.get("value")] if crit.get("value") is not None else []
+                    if not values:
+                        raise ValueError("IN operator requires a list of values")
+                    placeholders = ", ".join(["?" for _ in values])
+                    where_parts.append(
+                        f"EXISTS (SELECT 1 FROM Company_Tags ct"
+                        f" WHERE ct.edinetCode = c.[{code_col}]"
+                        f" AND ct.[{safe_col}] IN ({placeholders}))"
+                    )
+                    params.extend(values)
+                elif op == "LIKE":
+                    where_parts.append(
+                        f"EXISTS (SELECT 1 FROM Company_Tags ct"
+                        f" WHERE ct.edinetCode = c.[{code_col}]"
+                        f" AND ct.[{safe_col}] LIKE ?)"
+                    )
+                    params.append(str(crit.get("value", "")))
+                else:
+                    raise ValueError(
+                        f"Company_Tags does not support operator {op!r}"
+                    )
+                continue  # skip normal handling below
 
         # IS / IS NOT — always appends NULL, no value needed
         if op in ("IS", "IS NOT"):
@@ -956,19 +1035,66 @@ def build_screening_query(
                 left_ref = col_ref
             where_parts.append(f"{left_ref} {op} s_p.[Price]")
         elif comparison_mode == "full_expression":
+            # Check whether this expression references Company_Tags.
+            # Company_Tags has no docID join — use an EXISTS subquery.
+            left_tokens = crit.get("left_side", [])
+            right_tokens = crit.get("right_side", [])
+            left_table = _expression_table(left_tokens)
+            if left_table == "Company_Tags":
+                if not left_tokens or not right_tokens:
+                    raise ValueError("full_expression requires left_side and right_side token arrays")
+                # Extract the column referenced on the left side
+                tag_token = next((t for t in left_tokens if t.get("type") == "column"), None)
+                if tag_token is None:
+                    raise ValueError("Company_Tags expression requires a column token on the left side")
+                tag_col = _safe_identifier(str(tag_token.get("column", "tag")))
+                code_col = _safe_identifier(_company_code_col)
+                if op in ("BETWEEN", "LIKE", "IS", "IS NOT"):
+                    raise ValueError(f"Company_Tags does not support operator {op!r} in full_expression mode")
+                if op == "IN":
+                    values = _expression_values(right_tokens)
+                    if not values:
+                        raise ValueError("IN requires at least one value on the right side")
+                    placeholders = ", ".join(["?" for _ in values])
+                    where_parts.append(
+                        f"EXISTS (SELECT 1 FROM Company_Tags ct"
+                        f" WHERE ct.edinetCode = c.[{code_col}]"
+                        f" AND ct.[{tag_col}] IN ({placeholders}))"
+                    )
+                    params.extend(values)
+                else:
+                    right_sql, right_params = _build_expression_sql(right_tokens)
+                    where_parts.append(
+                        f"EXISTS (SELECT 1 FROM Company_Tags ct"
+                        f" WHERE ct.edinetCode = c.[{code_col}]"
+                        f" AND ct.[{tag_col}] {op} ({right_sql}))"
+                    )
+                    params.extend(right_params)
+                continue
+
             # Both sides are free-form expression token arrays.
             # e.g. ps.[EPS] * 8 > s_p.[Price] * 0.5
-            if op in ("BETWEEN", "IN", "LIKE"):
+            if op in ("BETWEEN", "LIKE"):
                 raise ValueError(f"full_expression mode does not support {op}")
             left_tokens = crit.get("left_side", [])
             right_tokens = crit.get("right_side", [])
             if not left_tokens or not right_tokens:
                 raise ValueError("full_expression requires left_side and right_side token arrays")
-            left_sql, left_params = _build_expression_sql(left_tokens)
-            right_sql, right_params = _build_expression_sql(right_tokens)
-            where_parts.append(f"({left_sql}) {op} ({right_sql})")
-            params.extend(left_params)
-            params.extend(right_params)
+            if op == "IN":
+                left_sql, left_params = _build_expression_sql(left_tokens)
+                values = _expression_values(right_tokens)
+                if not values:
+                    raise ValueError("IN requires at least one value on the right side")
+                placeholders = ", ".join(["?" for _ in values])
+                where_parts.append(f"({left_sql}) IN ({placeholders})")
+                params.extend(left_params)
+                params.extend(values)
+            else:
+                left_sql, left_params = _build_expression_sql(left_tokens)
+                right_sql, right_params = _build_expression_sql(right_tokens)
+                where_parts.append(f"({left_sql}) {op} ({right_sql})")
+                params.extend(left_params)
+                params.extend(right_params)
         elif op == "IN":
             values = crit.get("values")
             if not values or not isinstance(values, list):
@@ -999,6 +1125,20 @@ def build_screening_query(
         sql += f"\n{where_clause}"
 
     return sql, params
+
+
+def _ensure_company_tags_table(db_path: str) -> None:
+    """Create the Company_Tags table if it doesn't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS Company_Tags ("
+        "  edinetCode TEXT NOT NULL,"
+        "  tag        TEXT NOT NULL,"
+        "  PRIMARY KEY (edinetCode, tag)"
+        ")"
+    )
+    conn.commit()
+    conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1075,6 +1215,7 @@ def run_screening(
         f"CREATE INDEX IF NOT EXISTS idx_fin_company_period "
         f"ON FinancialStatements({_safe_identifier(fs_code_col)}, periodEnd)"
     )
+    _ensure_company_tags_table(db_path)
     logger.info("screening db connected (%.2fs)", _time.monotonic() - _connect_start)
     try:
         # Log the query plan for diagnostics

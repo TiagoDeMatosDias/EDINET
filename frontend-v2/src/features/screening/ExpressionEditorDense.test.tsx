@@ -11,7 +11,7 @@ function DecimalHarness() {
     left_side: [{ type: 'column', table: 'Stock_Prices', column: 'Price' }],
     right_side: [{ type: 'value', value: 0 }],
   })
-  return <CriterionEditor criterion={criterion} catalog={{ Stock_Prices: ['Price'] }} index={0} onChange={setCriterion} onRemove={() => undefined} />
+  return <CriterionEditor criterion={criterion} catalog={{ Stock_Prices: ['Price'] }} tagNames={[]} index={0} onChange={setCriterion} onRemove={() => undefined} />
 }
 
 describe('CriterionEditor decimal values', () => {

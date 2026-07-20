@@ -24,9 +24,11 @@ router_app = _api_app
 # ---------------------------------------------------------------------------
 from src.web_app.api.screening import router as _screening_router
 from src.web_app.api.security_analysis import router as _security_router
+from src.web_app.api.tags import router as _tags_router
 
 router_app.include_router(_screening_router)
 router_app.include_router(_security_router)
+router_app.include_router(_tags_router)
 
 try:
     from src.portfolio.api import router as _portfolio_router

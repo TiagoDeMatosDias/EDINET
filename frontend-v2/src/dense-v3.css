@@ -15,6 +15,15 @@
 .company-facts div { min-width: 0; }
 .company-facts dt { color: var(--muted); font-size: .63rem; text-transform: uppercase; }
 .company-facts dd { margin: 1px 0 0; overflow: hidden; font-size: .75rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.company-tags { margin-top: 8px; }
+.tag-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.tag { display: inline-flex; align-items: center; gap: 1px; padding: 1px 2px 1px 6px; border: 1px solid var(--border); border-radius: 5px; font-size: .7rem; background: var(--surface-subtle); }
+.tag .icon-button { padding: 0; width: 14px; height: 14px; color: var(--muted); }
+.tag .icon-button:hover { color: var(--danger); }
+.tag-add { display: flex; gap: 4px; margin-top: 4px; align-items: center; }
+.tag-add .input { flex: 1; padding: 1px 6px; border: 1px solid var(--border); border-radius: 5px; font-size: .7rem; min-height: 23px; }
+.tag-add .input::placeholder { color: var(--muted); font-size: .7rem; }
+.tag-add .button { flex-shrink: 0; padding: 0 6px; min-height: 23px; }
 .analysis-workspace { min-height: calc(100vh - 132px); }
 .analysis-history-card { min-height: clamp(470px, calc(100vh - 430px), 650px); display: flex; flex: 1 1 auto; flex-direction: column; }
 .analysis-history-card > .card-body { min-height: 0; display: flex; flex: 1; padding: 7px 10px 10px; }

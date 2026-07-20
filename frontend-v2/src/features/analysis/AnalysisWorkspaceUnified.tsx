@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CategoryScale, Chart as ChartJS, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip } from 'chart.js'
-import { ArrowLeft, BarChart3, ExternalLink, RefreshCw, Star } from 'lucide-react'
+import { ArrowLeft, BarChart3, ExternalLink, Plus, RefreshCw, Star, X } from 'lucide-react'
 import { Line } from 'react-chartjs-2'
 import { useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
@@ -88,10 +88,29 @@ export default function AnalysisWorkspaceUnified() {
   const name = String(company.company_name ?? companyCode ?? 'Company')
   const ticker = String(company.ticker ?? '')
   const updatePrice = useMutation({ mutationFn: () => apiPost('/api/security/update-price', { ticker }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-overview', companyCode] }) })
+
+  // ── Tags ──
+  const [newTag, setNewTag] = useState('')
+  const tags = useQuery({
+    queryKey: ['company-tags', companyCode],
+    enabled: Boolean(companyCode),
+    queryFn: () => apiRequest<{ tags: string[] }>(`/api/tags/${encodeURIComponent(companyCode!)}`),
+  })
+  const addTag = useMutation({
+    mutationFn: (tag: string) =>
+      apiRequest(`/api/tags/${encodeURIComponent(companyCode!)}/${encodeURIComponent(tag)}`, { method: 'POST' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['company-tags', companyCode] }),
+  })
+  const removeTag = useMutation({
+    mutationFn: (tag: string) =>
+      apiRequest(`/api/tags/${encodeURIComponent(companyCode!)}/${encodeURIComponent(tag)}`, { method: 'DELETE' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['company-tags', companyCode] }),
+  })
+
   if (!companyCode) return <div className="stack dense-page analysis-empty-page"><PageHeader eyebrow="Company research" title="Analyze a company" description="Use the company search above to open price, statements, ratios, and trends." /><EmptyState title="Search for a company above" description="Enter a name, ticker, EDINET code, or industry and choose a result." /></div>
   if (overview.isLoading) return <LoadingState label="Loading company analysis" />
   if (overview.isError) return <ErrorState error={overview.error} retry={() => overview.refetch()} />
   const metricKeys = [['LatestPrice', 'Price'], ['MarketCap', 'Market cap'], ['PERatio', 'P/E'], ['PriceToBook', 'P/B'], ['PriceToSales', 'P/S'], ['ReturnOnEquity', 'ROE'], ['ReturnOnAssets', 'ROA'], ['DividendsYield', 'Dividend'], ['CurrentRatio', 'Current ratio'], ['DebtToEquity', 'Debt/equity'], ['OperatingMargin', 'Operating margin'], ['PayoutRatio', 'Payout']]
   const yahooSymbol = yahooFinanceSymbol(ticker)
-  return <div className="stack dense-page analysis-workspace"><PageHeader eyebrow="Company analysis" title={name} description={[ticker, companyCode, company.industry, company.market].filter(Boolean).join(' · ')} actions={<div className="button-row">{params.get('from') === 'screen' && <Link className="button button--ghost" to="/screen"><ArrowLeft />Screen</Link>}{yahooSymbol && <a className="button button--secondary" href={`https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`} target="_blank" rel="noreferrer"><ExternalLink />Yahoo Finance</a>}<button className="button button--secondary"><Star />Watch</button><Link className="button button--primary" to={`/backtest?symbol=${ticker}`}><BarChart3 />Backtest</Link></div>} /><div className="metric-strip analysis-metric-strip">{metricKeys.map(([key, label]) => <Metric key={key} label={label} value={formatOverview(key, metrics[key])} detail={key === 'LatestPrice' ? <button className="text-button" onClick={() => updatePrice.mutate()}><RefreshCw />Refresh</button> : undefined} />)}</div><div className="analysis-top-grid"><Card title="Price history"><PriceChart ticker={ticker} /></Card><Card title="Company snapshot"><dl className="company-facts"><div><dt>Industry</dt><dd>{String(company.industry ?? '—')}</dd></div><div><dt>Market</dt><dd>{String(company.market ?? '—')}</dd></div><div><dt>Code</dt><dd>{companyCode}</dd></div><div><dt>Ticker</dt><dd>{ticker || '—'}</dd></div></dl><p className="company-description company-description--compact">{String(company.description_summary ?? company.description ?? 'No business description available.')}</p></Card></div><Card className="analysis-history-card" title="Financial history" description="Select metrics in the table to chart them alongside the underlying values."><FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} /></Card></div>
+  return <div className="stack dense-page analysis-workspace"><PageHeader eyebrow="Company analysis" title={name} description={[ticker, companyCode, company.industry, company.market].filter(Boolean).join(' · ')} actions={<div className="button-row">{params.get('from') === 'screen' && <Link className="button button--ghost" to="/screen"><ArrowLeft />Screen</Link>}{yahooSymbol && <a className="button button--secondary" href={`https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`} target="_blank" rel="noreferrer"><ExternalLink />Yahoo Finance</a>}<button className="button button--secondary"><Star />Watch</button><Link className="button button--primary" to={`/backtest?symbol=${ticker}`}><BarChart3 />Backtest</Link></div>} /><div className="metric-strip analysis-metric-strip">{metricKeys.map(([key, label]) => <Metric key={key} label={label} value={formatOverview(key, metrics[key])} detail={key === 'LatestPrice' ? <button className="text-button" onClick={() => updatePrice.mutate()}><RefreshCw />Refresh</button> : undefined} />)}</div><div className="analysis-top-grid"><Card title="Price history"><PriceChart ticker={ticker} /></Card><Card title="Company snapshot"><dl className="company-facts"><div><dt>Industry</dt><dd>{String(company.industry ?? '—')}</dd></div><div><dt>Market</dt><dd>{String(company.market ?? '—')}</dd></div><div><dt>Code</dt><dd>{companyCode}</dd></div><div><dt>Ticker</dt><dd>{ticker || '—'}</dd></div></dl><div className="company-tags"><div className="tag-list">{(tags.data?.tags ?? []).map(tag => <span className="tag" key={tag}>{tag}<button className="icon-button" onClick={() => removeTag.mutate(tag)} aria-label={`Remove tag ${tag}`}><X /></button></span>)}</div><div className="tag-add"><input className="input" placeholder="Add tag…" value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newTag.trim()) { addTag.mutate(newTag.trim()); setNewTag('') } }} /><button className="button button--ghost" disabled={!newTag.trim()} onClick={() => { addTag.mutate(newTag.trim()); setNewTag('') }} aria-label="Add tag"><Plus /></button></div></div><p className="company-description company-description--compact">{String(company.description_summary ?? company.description ?? 'No business description available.')}</p></Card></div><Card className="analysis-history-card" title="Financial history" description="Select metrics in the table to chart them alongside the underlying values."><FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} /></Card></div>
 }
