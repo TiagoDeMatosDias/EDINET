@@ -37,8 +37,8 @@ def test_workspace_assets_are_served_from_isolated_mount() -> None:
     assert "javascript" in asset.headers.get("content-type", "")
 
 
-def test_legacy_workspace_remains_available_during_cutover() -> None:
-    response = client.get("/legacy")
+def test_screen_route_serves_frontend() -> None:
+    response = client.get("/screen")
     assert response.status_code == 200
-    assert "/assets/main/main.js" in response.text
+    assert "Shade Research" in response.text
 

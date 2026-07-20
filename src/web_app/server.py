@@ -1,11 +1,7 @@
 """FastAPI server for the web-based EDINET workstation.
 
-The frontend is a multi-page application. Each top-level route serves its own
-HTML file from ``frontend/pages/``. Static assets are served from
-``/assets`` (frontend directory) and ``/brand-assets`` (root assets/).
-
-API routes are built by ``src.web_app.api`` and mounted directly here —
-no intermediate ``extend()`` hack.
+The frontend is the React SPA at ``frontend-v2``.  API routes are built by
+``src.web_app.api`` and mounted directly here.
 """
 
 from __future__ import annotations
@@ -19,22 +15,16 @@ from fastapi.staticfiles import StaticFiles
 from src.web_app.api import cleanup_completed_jobs, router_app
 
 BASE_DIR = Path(__file__).resolve().parent
-FRONTEND_DIR = BASE_DIR / "frontend"
-PAGES_DIR = FRONTEND_DIR / "pages"
 BRAND_ASSETS_DIR = BASE_DIR.parent.parent / "assets"
 FRONTEND_V2_DIST = BASE_DIR.parent.parent / "frontend-v2" / "dist"
 
 # The API router_app from src.web_app.api already includes all API routes
 # (orchestrator, screening, security_analysis, portfolio, and auto-discovered
-# view routers). We extend it with page routes and static mounts to create
-# the complete application.
+# view routers).
 app = router_app
 app.title = "EDINET Web Workstation"
 app.description = "Bloomberg-style web frontend for EDINET research workflows."
 app.version = "1.0.0"
-
-# Serve frontend static assets.
-app.mount("/assets", StaticFiles(directory=FRONTEND_DIR), name="assets")
 
 if FRONTEND_V2_DIST.exists():
     app.mount(
@@ -68,29 +58,13 @@ def _frontend_v2() -> FileResponse:
     return FileResponse(index)
 
 
+# ── React SPA routes ──
+
+
 @app.get("/")
 def page_main() -> FileResponse:
     return _frontend_v2()
 
-
-@app.get("/legacy")
-def page_legacy_main() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "main" / "main.html")
-
-
-@app.get("/orchestrator")
-def page_orchestrator() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "orchestrator" / "orchestrator.html")
-
-
-@app.get("/screening")
-def page_screening() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "screening" / "screening.html")
-
-
-@app.get("/backtesting")
-def page_backtesting() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "backtesting" / "backtesting.html")
 
 @app.get("/screen")
 def page_screen() -> FileResponse:
@@ -113,19 +87,12 @@ def page_pipeline() -> FileResponse:
     return _frontend_v2()
 
 
-@app.get("/security")
-def page_security() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "security_analysis" / "security.html")
-
-
 @app.get("/portfolio")
 def page_portfolio() -> FileResponse:
     return _frontend_v2()
 
 
-@app.get("/legacy/portfolio")
-def page_legacy_portfolio() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "portfolio" / "portfolio.html")
+# ── Static / fallback ──
 
 
 @app.get("/favicon.ico")

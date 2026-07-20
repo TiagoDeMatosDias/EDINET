@@ -14,7 +14,7 @@ def test_web_root_serves_html() -> None:
 
 
 def test_page_routes_serve_html() -> None:
-    for route in ("/orchestrator", "/screening", "/security"):
+    for route in ("/screen", "/analyze/test-code", "/backtest", "/pipeline", "/portfolio"):
         response = client.get(route)
         assert response.status_code == 200
         assert "text/html" in response.headers.get("content-type", "")
