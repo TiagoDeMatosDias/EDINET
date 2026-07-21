@@ -8,7 +8,6 @@ This project has a comprehensive logging system that automatically:
 - **Archives old logs** to a dedicated archive folder
 - **Logs with timestamps** for easy tracking and debugging
 - **Displays critical info** on console while storing detailed logs to files
-- **Streams logs to the GUI** when running in GUI mode
 
 ## Directory Structure
 
@@ -25,7 +24,6 @@ logs/
 2. **File Creation**: Each run creates a new timestamped log file (e.g., `run_20260225_175213.log`)
 3. **Auto-archiving**: Previous log files are automatically moved to `logs/archive/` when the application starts
 4. **Console + File**: All messages are logged to both console and file
-5. **GUI Panel**: When running in GUI mode, an additional handler streams `INFO`-level messages into the live output panel
 
 ## Using the Logger
 
@@ -50,11 +48,10 @@ logger.error("Error occurred", exc_info=True)  # exc_info=True includes tracebac
 - **WARNING**: Warning messages
 - **ERROR**: Error messages with exception details
 
-## Console vs File vs GUI
+## Console vs File
 
 - **Console**: Shows INFO level and above only (cleaner output)
 - **File**: Shows DEBUG level and above (complete record)
-- **GUI**: Shows INFO level and above in the output panel of the desktop UI
 
 ## Git Ignore
 

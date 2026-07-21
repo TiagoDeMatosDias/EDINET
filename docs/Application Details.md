@@ -1,8 +1,8 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-05-25
-- Central reference for runtime/test Python modules (`src/`), web app modules (`src/web_app/`), and top-level scripts.
+Last updated: 2026-07-21
+- Central reference for runtime/test Python modules (`src/`), web app modules (`src/web_app/`), React frontend (`frontend-v2/`), and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
 
@@ -29,11 +29,11 @@ Suggested per-function format:
 
 ## Current project status
 
-- Default interface: the web workstation (FastAPI + vanilla JS) launched by `python main.py` is the primary maintained UI.
-- Maintained top-level views: `Dashboard`, `Orchestrator`, `Screening`, `Backtesting`, `Security Analysis`, and `Portfolio`.
+- Default interface: the web workstation (FastAPI + React/TypeScript SPA) launched by `python main.py` is the primary maintained UI.
+- Maintained top-level views: `Overview`, `Pipeline`, `Screening`, `Analysis`, `Backtesting`, and `Portfolio`.
 - Architecture status: `src.orchestrator` is a thin dispatcher with dynamically discovered step packages; backend modules are decoupled from `Config` and called with explicit parameters.
-- Mature user-facing workflows: ingestion, ETL, ratio generation, backtesting, screening, security analysis, and portfolio management all have dedicated test coverage.
-- Web workstation: full-featured web UI (FastAPI + vanilla JS) served at `/`, `/orchestrator`, `/screening`, `/backtesting`, `/security`, `/portfolio`. All views are fully functional.
+- Mature user-facing workflows: ingestion, ETL, ratio generation, backtesting, screening, security analysis, portfolio management, and company tags all have dedicated test coverage.
+- Web workstation: full-featured React SPA (`frontend-v2/`) served at `/`, `/pipeline`, `/screen`, `/analyze`, `/backtest`, `/portfolio`. All views are fully functional.
 
 ---
 
@@ -41,7 +41,7 @@ Suggested per-function format:
 
 ## Architecture overview
 
-The application has a web workstation UI backed by a FastAPI server. The orchestrator is the central dispatcher: it discovers step packages and delegates work to backend modules.
+The application has a React/TypeScript web workstation UI backed by a FastAPI server. The orchestrator is the central dispatcher: it discovers step packages and delegates work to backend modules.
 
 ```mermaid
 flowchart LR
@@ -50,33 +50,38 @@ flowchart LR
     end
 
     subgraph UI["UI Layer"]
-        WEB["Web Workstation<br/>(FastAPI + vanilla JS)"]
+        REACT["React SPA<br/>(frontend-v2/)"]
     end
 
     subgraph API["API"]
         RTR["/api/*"]
         SCR_API["/api/screening/*"]
         SEC_API["/api/security/*"]
+        PF_API["/api/portfolio/*"]
+        TAG_API["/api/tags/*"]
     end
 
     subgraph Core["Core"]
         ORCH["Orchestrator<br/>(src/orchestrator/)"]
         SCR["Screening<br/>(src/screening/)"]
         SA["Security Analysis<br/>(src/security_analysis/)"]
+        PF["Portfolio<br/>(src/portfolio/)"]
     end
 
-    MAIN --> WEB
-    WEB -->|"HTTP"| RTR
-    WEB -->|"HTTP"| SCR_API
-    WEB -->|"HTTP"| SEC_API
+    MAIN --> REACT
+    REACT -->|"TanStack Query"| RTR
+    REACT -->|"TanStack Query"| SCR_API
+    REACT -->|"TanStack Query"| SEC_API
+    REACT -->|"TanStack Query"| PF_API
     RTR --> ORCH
     SCR_API --> SCR
     SEC_API --> SA
+    PF_API --> PF
     ORCH --> SCR
     ORCH --> SA
 ```
 
-The web workstation server mounts orchestrator API routes (`/api/steps`, `/api/pipeline/run`, `/api/jobs`), screening routes (`/api/screening/*`), and security analysis routes (`/api/security/*`) into a single FastAPI application. The browser's vanilla JS modules call these endpoints via `fetchJson`.
+The FastAPI server mounts orchestrator (`/api/steps`, `/api/pipeline/run`, `/api/jobs`), screening (`/api/screening/*`), security analysis (`/api/security/*`), portfolio (`/api/portfolio/*`), and tags (`/api/tags/*`) API routes. The React frontend communicates with all endpoints via the API client layer in `frontend-v2/src/api/`.
 
 ### [src/orchestrator/__init__.py](../src/orchestrator/__init__.py)
 
@@ -408,7 +413,7 @@ This reference is intentionally concise. Expand signatures, examples, and depend
 
 ### [src/web_app/server.py](../src/web_app/server.py)
 
-Responsibility: FastAPI application assembly — mounts API routers, the React production bundle at `/app-assets`, primary SPA entry routes, and temporary vanilla-frontend compatibility routes.
+Responsibility: FastAPI application assembly — mounts API routers, the React production bundle at `/app-assets`, primary SPA entry routes.
 
 ### [src/web_app/api/screening.py](../src/web_app/api/screening.py)
 
@@ -418,13 +423,17 @@ Responsibility: Screening API routes at `/api/screening/*` — metrics, periods,
 
 Responsibility: Security Analysis API routes at `/api/security/*` — search, overview, statements, price-history, peers, update-price, optimize, db-path, available-columns, chart-data.
 
+### [src/web_app/api/tags.py](../src/web_app/api/tags.py)
+
+Responsibility: Company tags API routes at `/api/tags/*` — CRUD operations for user-defined company tags.
+
+### [src/portfolio/api.py](../src/portfolio/api.py)
+
+Responsibility: Portfolio API routes at `/api/portfolio/*` — import, holdings, transactions, performance, charts, currency, options.
+
 ### [frontend-v2/](../frontend-v2/)
 
-Responsibility: Primary React/TypeScript/Vite workspace — application shell, feature routes, shared components, API clients, responsive styles, and Vitest coverage.
-
-### [src/web_app/frontend/](../src/web_app/frontend/)
-
-Responsibility: Temporary compatibility frontend for legacy specialist routes. Do not add new features here.
+Responsibility: Primary React/TypeScript/Vite workspace — application shell (AppShell), feature routes (Overview, Screening, Analysis, Backtesting, Portfolio, Pipeline), shared components (DataTable, Feedback, GlobalCompanySearch), API clients, responsive styles, and Vitest coverage.
 
 ---
 
@@ -503,27 +512,46 @@ Core implementation in `src/screening/screening.py`:
 
 ## Tests (`tests/`)
 
-Responsibility: Unit tests covering core logic and UI helpers.
+Responsibility: Unit and integration tests covering core logic, API endpoints, and UI helpers.
 
-- **[test_backtesting.py](../tests/test_backtesting.py)** - tests backtest data retrieval, calculations, report and chart generation, and end-to-end `run_backtest` flows.
-- **[test_edinet_api.py](../tests/test_edinet_api.py)** - tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
-- **[test_security_analysis.py](../tests/test_security_analysis.py)** - tests schema normalization, search ranking, overview payloads, price history, peer selection, and single-ticker price updates.
-- **[test_update_fx_data.py](../tests/test_update_fx_data.py)** - tests ECB FX data download, transform, and database ingestion with dedup.
-- **[test_stockprice_api.py](../tests/test_stockprice_api.py)** - tests CSV import and stock price ingestion logic.
-- **[test_screening.py](../tests/test_screening.py)** - Backend screening tests: query building, execution, persistence, formatting, SQL injection prevention.
-- **[test_screening_api.py](../tests/test_screening_api.py)** - Web API screening endpoint tests.
-- **[test_orchestrator.py](../tests/test_orchestrator.py)** - Orchestrator tests: `run_pipeline` basic flow, cancellation, error handling, `execute_step` dispatch, `validate_config`, `Config.from_dict` independence and singleton behaviour.
-- **[test_orchestrator_services.py](../tests/test_orchestrator_services.py)** - Tests for individual orchestrator step services.
-- **[test_playwright_orchestrator.py](../tests/test_playwright_orchestrator.py)** - Browser-level orchestrator E2E tests.
-- **[test_playwright_screening.py](../tests/test_playwright_screening.py)** - Browser-level screening E2E tests.
-- **[test_taxonomy_processing.py](../tests/test_taxonomy_processing.py)** - Taxonomy parsing and processing tests.
-- **[test_utils.py](../tests/test_utils.py)** - small helper tests for URL generation and CSV export.
-- **[test_web_app_server.py](../tests/test_web_app_server.py)** - Tests for the FastAPI web application server.
-- **[test_web_ui_smoke.py](../tests/test_web_ui_smoke.py)** - Web UI smoke tests.
+### Unit tests (`tests/unit/`)
+
+- **[test_backtesting.py](../tests/unit/test_backtesting.py)** - tests backtest data retrieval, calculations, report and chart generation, and end-to-end `run_backtest` flows.
+- **[test_backtesting_api.py](../tests/unit/test_backtesting_api.py)** - Backtesting API endpoint tests.
+- **[test_backtesting_chart_response.py](../tests/unit/test_backtesting_chart_response.py)** - Chart response format tests.
+- **[test_backtesting_web.py](../tests/unit/test_backtesting_web.py)** - Web backtesting interface tests.
+- **[test_edinet_api.py](../tests/unit/test_edinet_api.py)** - tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
+- **[test_frontend_v2_server.py](../tests/unit/test_frontend_v2_server.py)** - Tests for the React SPA serving and API integration.
+- **[test_orchestrator.py](../tests/unit/test_orchestrator.py)** - Orchestrator tests: `run_pipeline` basic flow, cancellation, error handling, `execute_step` dispatch, `validate_config`, `Config.from_dict` independence and singleton behaviour.
+- **[test_orchestrator_services.py](../tests/unit/test_orchestrator_services.py)** - Tests for individual orchestrator step services.
+- **[test_portfolio_additional.py](../tests/unit/test_portfolio_additional.py)** - Additional portfolio edge case tests.
+- **[test_portfolio_api.py](../tests/unit/test_portfolio_api.py)** - Portfolio API endpoint tests.
+- **[test_portfolio_options.py](../tests/unit/test_portfolio_options.py)** - Portfolio options pricing tests.
+- **[test_portfolio_parser.py](../tests/unit/test_portfolio_parser.py)** - IBKR FlexQuery XML parser tests.
+- **[test_portfolio_performance.py](../tests/unit/test_portfolio_performance.py)** - Portfolio performance metrics tests.
+- **[test_portfolio_schema.py](../tests/unit/test_portfolio_schema.py)** - Portfolio database schema tests.
+- **[test_portfolio_state.py](../tests/unit/test_portfolio_state.py)** - Portfolio state management tests.
+- **[test_portfolio_transactions.py](../tests/unit/test_portfolio_transactions.py)** - Portfolio transaction processing tests.
+- **[test_screening.py](../tests/unit/test_screening.py)** - Backend screening tests: query building, execution, persistence, formatting, SQL injection prevention.
+- **[test_screening_api.py](../tests/unit/test_screening_api.py)** - Web API screening endpoint tests.
+- **[test_security_analysis.py](../tests/unit/test_security_analysis.py)** - tests schema normalization, search ranking, overview payloads, price history, peer selection, and single-ticker price updates.
+- **[test_security_analysis_api.py](../tests/unit/test_security_analysis_api.py)** - Security analysis API endpoint tests.
+- **[test_security_history_scaling.py](../tests/unit/test_security_history_scaling.py)** - History scaling tests.
+- **[test_stockprice_api.py](../tests/unit/test_stockprice_api.py)** - tests CSV import and stock price ingestion logic.
+- **[test_taxonomy_processing.py](../tests/unit/test_taxonomy_processing.py)** - Taxonomy parsing and processing tests.
+- **[test_update_fx_data.py](../tests/unit/test_update_fx_data.py)** - tests ECB FX data download, transform, and database ingestion with dedup.
+- **[test_utils.py](../tests/unit/test_utils.py)** - small helper tests for URL generation and CSV export.
+- **[test_web_app_server.py](../tests/unit/test_web_app_server.py)** - Tests for the FastAPI web application server.
+- **[test_web_ui_smoke.py](../tests/unit/test_web_ui_smoke.py)** - Web UI smoke tests.
+
+### Integration tests (`tests/integration/`)
+
+- **[test_backtesting_integration.py](../tests/integration/test_backtesting_integration.py)** - End-to-end backtesting integration tests.
+- **[test_rolling_screening_backtest.py](../tests/integration/test_rolling_screening_backtest.py)** - Rolling screening backtest integration tests.
 
 ---
 
-Last updated: 2026-05-03
+Last updated: 2026-07-21
 
 Keep this document aligned with code changes in the same PR or commit.
 

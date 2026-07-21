@@ -15,6 +15,7 @@ The final `.zip` contains:
 ## Prerequisites
 
 - **Python 3.10+** (the same version you develop with)
+- **Node.js 18+** with npm (for building the React frontend before packaging)
 - **PyInstaller** — `pip install pyinstaller`
 - **All runtime dependencies** from `requirements.txt` installed in the
   same environment
@@ -31,7 +32,20 @@ The final `.zip` contains:
 pip install -r requirements.txt
 ```
 
-### 2. Build the EXE
+### 2. Build the React frontend
+
+The EXE bundles the production build of the React SPA. Build it before running PyInstaller:
+
+```bash
+cd frontend-v2
+npm ci
+npm run build
+cd ..
+```
+
+This produces `frontend-v2/dist/` containing `index.html` and hashed JS/CSS chunks under `app-assets/`.
+
+### 3. Build the EXE
 
 ```bash
 pyinstaller EDINET.spec
@@ -39,14 +53,14 @@ pyinstaller EDINET.spec
 
 This runs PyInstaller using the project's spec file, which:
 - Bundles all Python source from `src/`, `config.py`, and `main.py`
-- Includes the web frontend (`src/web_app/frontend/`)
+- Includes the React frontend build (`frontend-v2/dist/`)
 - Includes brand assets (`assets/icon.*`, etc.)
 - Includes ratio and rolling-metrics definition JSONs
 - Explicitly lists dynamically-discovered modules as hidden imports
 
 The output is `dist/EDINET.exe`.
 
-### 3. Prepare the distribution directory
+### 4. Prepare the distribution directory
 
 ```bash
 mkdir dist\EDINET-dist
@@ -59,7 +73,7 @@ copy config\database_paths.json dist\EDINET-dist\config\
 mkdir dist\EDINET-dist\data\databases
 ```
 
-### 4. Create empty databases in the distribution directory
+### 5. Create empty databases in the distribution directory
 
 ⚠ **Do not copy the databases from `data/databases/` — they contain your
 development data.** Create fresh empty ones in the release directory:
@@ -100,7 +114,7 @@ powershell -Command "Compress-Archive -Path dist\EDINET-dist\* -DestinationPath 
 | File / directory                    | Inside EXE? | In ZIP? | Notes |
 |-------------------------------------|:-----------:|:-------:|-------|
 | Python source (`src/`, `main.py`, `config.py`) | ✅ bundled  | —       | Compiled into the EXE |
-| Web frontend (`src/web_app/frontend/`) | ✅ bundled  | —       | HTML, JS, CSS served by FastAPI |
+| React frontend build (`frontend-v2/dist/`) | ✅ bundled  | —       | Production build served by FastAPI |
 | Brand assets (`assets/icon.*`, `ShadeResearch.svg`) | ✅ bundled  | —       | Favicon & branding |
 | `ratios_definitions.json`           | ✅ bundled  | —       | Ratio calculation formulas |
 | `rolling_metrics.json`              | ✅ bundled  | —       | Rolling-metric column specs |
@@ -223,8 +237,9 @@ python scripts/build.py
 
 It will:
 1. Verify Python version
-2. Install PyInstaller if needed
-3. Run `pyinstaller EDINET.spec`
-4. Assemble the distribution directory (creates fresh empty databases in
+2. Build the React frontend (`npm run build` in `frontend-v2/`)
+3. Install PyInstaller if needed
+4. Run `pyinstaller EDINET.spec`
+5. Assemble the distribution directory (creates fresh empty databases in
    `dist/EDINET-dist/` — never touches your dev databases)
-5. Create the `.zip` at `dist/EDINET-Release.zip`
+6. Create the `.zip` at `dist/EDINET-Release.zip`

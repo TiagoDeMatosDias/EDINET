@@ -26,7 +26,7 @@ flowchart LR
 | `/portfolio` | Portfolio overview, holdings, transactions, and performance |
 | `/pipeline` | Data-pipeline recipes and advanced step builder |
 
-Compatibility routes are `/legacy`, `/orchestrator`, `/screening`, `/backtesting`, and `/security`. New features must target the React routes.
+All routes target the React SPA; there are no legacy compatibility routes.
 
 ## Directory layout
 
@@ -54,8 +54,12 @@ frontend-v2/
 
 src/web_app/
 ├── server.py                # API app, SPA entry routes, static mounts
-├── api/                     # existing API routers
-└── frontend/                # compatibility-only vanilla frontend
+├── api/                     # API routers (screening, security_analysis, tags, portfolio)
+│   ├── __init__.py
+│   ├── screening.py
+│   ├── security_analysis.py
+│   └── tags.py
+└── static/
 ```
 
 ## Application shell
@@ -88,7 +92,7 @@ The layout is desktop-first but has a 390 px mobile treatment:
 
 ## Build and serving
 
-Run `npm ci` and `npm run build` from `frontend-v2/`. Vite writes the entry point to `frontend-v2/dist/index.html` and hashed chunks to `dist/app-assets/`. FastAPI mounts those chunks at `/app-assets`; this keeps them isolated from the compatibility frontend's `/assets` mount.
+Run `npm ci` and `npm run build` from `frontend-v2/`. Vite writes the entry point to `frontend-v2/dist/index.html` and hashed chunks to `dist/app-assets/`. FastAPI mounts those chunks at `/app-assets`.
 
 During development, run FastAPI on port 8000 and `npm run dev` from `frontend-v2/`. Vite proxies `/api`, `/health`, and `/favicon.ico` to FastAPI.
 
@@ -100,5 +104,3 @@ During development, run FastAPI on port 8000 and `npm run dev` from `frontend-v2
 4. Add API types to `src/api/types.ts` and shared network behavior to `src/api/client.ts` or `stream.ts`.
 5. Add a Vitest test and, for a new top-level route, a FastAPI entrypoint smoke test.
 6. Run `npm run lint`, `npm test`, `npm run build`, and the focused Python web tests.
-
-Do not add new logic to `src/web_app/frontend/`. Compatibility code should be removed route-by-route after its remaining specialist behavior has an explicit parity test.

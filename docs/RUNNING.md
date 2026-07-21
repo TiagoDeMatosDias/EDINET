@@ -28,7 +28,7 @@ cd frontend-v2
 npm run dev
 ```
 
-The primary frontend is a React/TypeScript single-page workspace. It communicates with the existing backend through `/api/*` and `/health`. The previous vanilla pages remain temporarily available at `/legacy`, `/orchestrator`, `/screening`, `/backtesting`, and `/security`.
+The primary frontend is a React/TypeScript single-page workspace in `frontend-v2/`. It communicates with the backend through `/api/*` and `/health`.
 
 Most steps require an explicit source or target database path in their step configuration. The orchestrator exposes those paths directly in each step's config panel.
 

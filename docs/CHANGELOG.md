@@ -5,14 +5,25 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Removed
+- **Legacy vanilla JS frontend (`src/web_app/frontend/`)** — retired in favor of the React/TypeScript SPA (`frontend-v2/`). All legacy routes (`/legacy`, `/orchestrator`, `/screening`, `/backtesting`, `/security`) removed.
 - **Tk desktop UI (`ui_tk/`)** — retired in favor of the web workstation (`src/web_app/`). All Tkinter-dependent code, tests, and dependencies removed:
   - `ui_tk/` package (app, controllers, style, utils, pages, shared widgets)
   - `tests/test_ui_tk_smoke.py` and `tests/test_ui_screenshots.py`
   - `customtkinter` and `pillow` dependencies
   - `docs/Feature Development/Update User Interface.md`
 - **`--web` / `--no-api` / `--api-host` / `--api-port` flags** — simplified to `--host`, `--port`, `--no-reload`; web is now the only mode.
+- **`docs/design/UX Design Language.md`** — removed; was the design spec for the pre-React vanilla JS UI.
 
 ### Added
+- **React/TypeScript frontend (`frontend-v2/`)** — new primary web workstation built with React 19, TypeScript, Vite, TanStack Query, and React Router:
+  - Six feature modules: Overview, Screening, Analysis, Backtesting, Portfolio, and Pipeline.
+  - Shared component library: AppShell (sidebar + mobile nav), DataTable, Feedback states, GlobalCompanySearch.
+  - TanStack Query for server-state management with caching and background refetch.
+  - Lazy-loaded routes, localStorage drafts for screening and pipeline recipes.
+  - Responsive layout: desktop-first with 390px mobile treatment (drawer sidebar, bottom navigation).
+  - Vitest test suite for React components.
+- **Company tags** — CRUD operations for user-defined company tags (`src/web_app/api/tags.py`).
+- **Portfolio module** — full portfolio management with IBKR FlexQuery XML import, multi-currency holdings, transactions, performance metrics, and Chart.js dashboard.
 - **Screening view** — new top-level view for filtering companies by financial criteria:
   - Backend package (`src/screening/`): package facade plus screening implementation for parameterised SQL query building, screening execution, CSV export, financial value formatting, and persistence for saved criteria and screening history.
   - Web UI: dynamic criteria builder, column picker, sortable results, save/load/history/export, drill-in to Security Analysis.

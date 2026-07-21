@@ -8,7 +8,7 @@ Following these guidelines helps to communicate that you respect the time of the
 
 Use this checklist when your change affects behavior, UI, workflows, or architecture:
 
-- Update user-facing docs impacted by the change (for example `docs/Readme.md` and `docs/RUNNING.md`)
+- Update user-facing docs impacted by the change (for example `README.md` and `docs/RUNNING.md`)
 - Update technical docs when implementation details changed (especially `docs/Application Details.md`)
 - Update contributing guidance if contributor workflows changed (for example screenshot/dev loops in `docs/Contributing.md`)
 - If UI changed, capture new screenshots (see the Screenshots section below) and update assets in `docs/images/`
@@ -22,11 +22,9 @@ Use this checklist when your change affects behavior, UI, workflows, or architec
 - Keep files organized. Each type of file should be in its relevant folder:
     - Documentation in `docs/`
     - Tests in `tests/`
-    - Configuration reference files in `config/reference/`
     - Configuration state (runtime config, saved setups) in `config/state/`
-    - Configuration examples in `config/examples/`
     - Source code in `src/`
-    - Web frontend code in `src/web_app/frontend/`
+    - Web frontend code in `frontend-v2/`
     - Data files in `data/`
 
 ## Your First Contribution
@@ -119,13 +117,13 @@ _NON_PREDICTOR_COLUMNS: frozenset[str] = frozenset({
 
 ### UI Development — Screenshots
 
-The web workstation UI can be captured using Playwright or a standard browser screenshot tool. Launch the app with `python main.py`, open the desired page in your browser, and capture screenshots for documentation.
+The web workstation UI can be captured using Playwright. Build the frontend, launch the app, and capture screenshots for documentation.
 
 #### Taking screenshots
 
-1. Launch the web server: `python main.py`
-2. Open `http://127.0.0.1:8000` (or the appropriate view URL) in your browser
-3. Use your browser's dev tools or a screenshot extension to capture each view
+1. Build the frontend: `cd frontend-v2 && npm run build && cd ..`
+2. Launch the web server: `python main.py`
+3. Use Playwright (or browser dev tools) to capture each view at 1280×800 viewport
 4. Save screenshots to `docs/images/` with descriptive names (e.g., `web-dashboard.png`, `web-screening.png`)
 5. Update markdown image links in the README to reference the new screenshots
 
@@ -134,6 +132,7 @@ Notes:
 - Prefer PNG files for UI screenshots.
 - Keep image dimensions consistent across related screenshots when possible.
 - Use a consistent browser window size (e.g., 1280×800).
+- The existing capture script at `tests/capture_screenshots.py` can be used as a starting point for automated captures.
 
 ---
 
