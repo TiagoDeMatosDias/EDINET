@@ -21,6 +21,7 @@ type Performance = Record<string, unknown> & { dividend_breakdown?: Record<strin
 type PieData = { labels: string[]; values: number[]; total: number; currency: string }
 type ValueHistory = { dates: string[]; holdings: Record<string, Array<number | null>>; currency: string; portfolio_values?: Array<number | null>; daily_returns?: Array<number | null>; cumulative_returns?: Array<number | null> }
 type DividendHistory = { periods: string[]; companies: Record<string, number[]>; currency: string }
+type DividendCurrencyHistory = { periods: string[]; currencies: Record<string, number[]>; currency: string }
 type HeatmapData = { years: number[]; months: number[]; values: Array<Array<number | null>> }
 type ScatterPoint = { symbol: string; cost_basis_display: number; annualized_return: number; is_open: boolean }
 
@@ -54,10 +55,18 @@ function ReturnHeatmap({ data }: { data?: HeatmapData }) {
   return <div className="return-heatmap"><div className="heatmap-row heatmap-head"><span>Year</span>{data.months.map(month => <span key={month}>{new Date(2020, month - 1).toLocaleString(undefined, { month: 'short' })}</span>)}</div>{data.years.map((year, row) => <div className="heatmap-row" key={year}><strong>{year}</strong>{data.values[row].map((value, column) => <span key={column} style={{ background: color(value) }} title={value == null ? 'No data' : `${value.toFixed(2)}%`}>{value == null ? '·' : value.toFixed(1)}</span>)}</div>)}</div>
 }
 
-function DividendChart({ data }: { data?: DividendHistory }) {
-  const top = Object.entries(data?.companies ?? {}).map(([symbol, values]) => ({ symbol, values, total: values.reduce((sum, value) => sum + value, 0) })).sort((a, b) => b.total - a.total).slice(0, 10)
-  const chart = { labels: data?.periods ?? [], datasets: top.map((row, index) => ({ label: row.symbol, data: row.values, backgroundColor: COLORS[index % COLORS.length] })) }
+function DividendsByCurrencyChart({ data }: { data?: DividendCurrencyHistory }) {
+  const currencies = Object.entries(data?.currencies ?? {}).map(([ccy, values]) => ({ ccy, values, total: values.reduce((sum, v) => sum + v, 0) })).sort((a, b) => b.total - a.total)
+  const chart = { labels: data?.periods ?? [], datasets: currencies.map((row, i) => ({ label: row.ccy, data: row.values, backgroundColor: COLORS[i % COLORS.length] })) }
   return <div className="analytics-chart"><Bar data={chart} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 9, font: { size: 10 } } } }, scales: { x: { stacked: true }, y: { stacked: true, position: 'right' } } }} /></div>
+}
+
+function DividendsByCompanyPie({ data }: { data?: DividendHistory }) {
+  const totals = Object.entries(data?.companies ?? {}).map(([symbol, values]) => ({ label: symbol, value: values.reduce((sum, v) => sum + v, 0) })).sort((a, b) => b.value - a.value)
+  const total = totals.reduce((sum, t) => sum + t.value, 0)
+  const compact = compactPie({ labels: totals.map(t => t.label), values: totals.map(t => t.value), total, currency: data?.currency ?? 'EUR' })
+  const chart = { labels: compact.labels, datasets: [{ data: compact.values, backgroundColor: COLORS, borderWidth: 0 }] }
+  return <div className="mini-chart"><strong>Total dividends by company</strong><Doughnut data={chart} options={{ responsive: true, maintainAspectRatio: false, cutout: '64%', plugins: { legend: { position: 'right', labels: { boxWidth: 9, font: { size: 10 } } } } }} /></div>
 }
 
 function CostReturnChart({ data }: { data?: ScatterPoint[] }) {
@@ -84,6 +93,7 @@ function TransactionsTable({ data, currency }: { data: Transaction[]; currency: 
 export default function PortfolioWorkspace() {
   const [tab, setTab] = useState<'overview' | 'holdings' | 'analytics' | 'transactions'>('overview')
   const [currency, setCurrency] = useState('EUR')
+  const [dividendPeriod, setDividendPeriod] = useState<'monthly' | 'quarterly' | 'yearly'>('quarterly')
   const [uploadStatus, setUploadStatus] = useState('')
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -96,7 +106,8 @@ export default function PortfolioWorkspace() {
   const valueHistory = useQuery({ queryKey: ['portfolio-value-history', currency], queryFn: () => apiRequest<ValueHistory>(`/api/portfolio/charts/portfolio-value-history${suffix}`), retry: false })
   const allocation = useQuery({ queryKey: ['portfolio-allocation', currency], queryFn: () => apiRequest<PieData>(`/api/portfolio/charts/holdings-by-value${suffix}`), retry: false })
   const currenciesChart = useQuery({ queryKey: ['portfolio-currency-chart', currency], queryFn: () => apiRequest<PieData>(`/api/portfolio/charts/holdings-by-currency${suffix}`), retry: false })
-  const dividends = useQuery({ queryKey: ['portfolio-dividends-chart', currency], queryFn: () => apiRequest<DividendHistory>(`/api/portfolio/charts/dividends-by-company${suffix}&period=yearly`), retry: false })
+  const dividendsByCurrency = useQuery({ queryKey: ['portfolio-dividends-currency', currency, dividendPeriod], queryFn: () => apiRequest<DividendCurrencyHistory>(`/api/portfolio/charts/dividends-by-currency${suffix}&period=${dividendPeriod}`), retry: false })
+  const dividendsByCompanyPie = useQuery({ queryKey: ['portfolio-dividends-company-pie', currency], queryFn: () => apiRequest<DividendHistory>(`/api/portfolio/charts/dividends-by-company${suffix}&period=yearly`), retry: false })
   const heatmap = useQuery({ queryKey: ['portfolio-return-heatmap', currency], queryFn: () => apiRequest<HeatmapData>(`/api/portfolio/charts/returns-heatmap${suffix}`), retry: false })
   const scatter = useQuery({ queryKey: ['portfolio-return-cost', currency], queryFn: () => apiRequest<ScatterPoint[]>(`/api/portfolio/charts/return-vs-cost${suffix}`), retry: false })
   const invalidate = () => queryClient.invalidateQueries({ predicate: query => String(query.queryKey[0]).startsWith('portfolio') })
@@ -110,7 +121,7 @@ export default function PortfolioWorkspace() {
     {unavailable ? <Card title="Connect portfolio activity"><label className="file-drop"><FileUp /><strong>Import IBKR FlexQuery XML</strong><input type="file" accept=".xml,text/xml" multiple onChange={event => void uploadFiles(event.target.files)} /></label></Card> : <><PerformanceMetrics data={performance.data} currency={currency} /><div className="step-tabs"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>Overview</button><button className={tab === 'holdings' ? 'active' : ''} onClick={() => setTab('holdings')}>Holdings</button><button className={tab === 'analytics' ? 'active' : ''} onClick={() => setTab('analytics')}>Analytics</button><button className={tab === 'transactions' ? 'active' : ''} onClick={() => setTab('transactions')}>Transactions</button></div>
       {tab === 'overview' && <div className="portfolio-overview-grid"><Card title="Portfolio value" description={`${money(totalValue, currency)} · ${performance.data?.start_date ?? '—'} to ${performance.data?.end_date ?? '—'}`}>{valueHistory.isLoading ? <LoadingState label="Loading value history" /> : <ValueChart data={valueHistory.data} currency={currency} />}</Card><Card title="Current exposure"><div className="allocation-grid"><AllocationChart data={allocation.data} title="Holdings" /><AllocationChart data={currenciesChart.data} title="Currencies" /></div></Card><Card title="Activity" description="Imported records by type"><div className="activity-grid activity-grid--dense">{Object.entries(activity.data?.by_activity ?? {}).map(([name, count]) => <Metric key={name} label={name.replaceAll('_', ' ')} value={count.toLocaleString()} />)}</div></Card></div>}
       {tab === 'holdings' && <Card title={`${holdings.data?.length ?? 0} open holdings`} description="Value, cost, P&L, and native/display-currency returns.">{holdings.isLoading ? <LoadingState label="Loading holdings" /> : holdings.isError ? <ErrorState error={holdings.error} /> : <div className="fixed-table"><HoldingsTable data={holdings.data ?? []} currency={currency} navigate={navigate} /></div>}</Card>}
-      {tab === 'analytics' && <div className="analytics-grid"><Card title="Monthly return heatmap"><ReturnHeatmap data={heatmap.data} /></Card><Card title="Dividends by company"><DividendChart data={dividends.data} /></Card><Card title="Return versus cost basis"><CostReturnChart data={scatter.data} /></Card><PortfolioAdvancedAnalytics valueHistory={valueHistory.data} allocation={allocation.data} holdings={holdings.data ?? []} /></div>}
+      {tab === 'analytics' && <div className="analytics-grid"><Card title="Monthly return heatmap"><ReturnHeatmap data={heatmap.data} /></Card><Card title="Dividends by currency" style={{ gridColumn: '1 / -1' }}><div className="period-toolbar"><span className="period-label">Aggregation</span><div className="period-tabs">{['monthly','quarterly','yearly'].map(p => <button key={p} className={`period-tab${dividendPeriod === p ? ' active' : ''}`} onClick={() => setDividendPeriod(p as typeof dividendPeriod)}>{p}</button>)}</div></div><DividendsByCurrencyChart data={dividendsByCurrency.data} /></Card><Card title="Dividends by company (total)"><DividendsByCompanyPie data={dividendsByCompanyPie.data} /></Card><Card title="Return versus cost basis"><CostReturnChart data={scatter.data} /></Card><PortfolioAdvancedAnalytics valueHistory={valueHistory.data} allocation={allocation.data} holdings={holdings.data ?? []} /></div>}
       {tab === 'transactions' && <Card title="Transactions" description="Latest 1,000 imported activity records.">{transactions.isLoading ? <LoadingState label="Loading transactions" /> : transactions.isError ? <ErrorState error={transactions.error} /> : <div className="fixed-table"><TransactionsTable data={transactions.data ?? []} currency={currency} /></div>}</Card>}</>}
   </div>
 }

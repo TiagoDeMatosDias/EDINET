@@ -88,6 +88,12 @@
 .analytics-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px; }
 .analytics-grid > :first-child { grid-column: 1 / -1; }
 .analytics-chart { height: 300px; }
+.period-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.period-label { font-size: .72rem; color: var(--muted); }
+.period-tabs { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.period-tab { min-height: 26px; padding: 3px 10px; border: 0; border-radius: 0; font-size: .72rem; color: var(--muted); background: transparent; cursor: pointer; }
+.period-tab.active { color: var(--primary); background: var(--primary-soft); font-weight: 600; }
+.period-tab:not(.active):hover { background: var(--surface-subtle); }
 .return-heatmap { min-width: 760px; overflow-x: auto; font-size: .68rem; }
 .heatmap-row { display: grid; grid-template-columns: 46px repeat(12, minmax(45px, 1fr)); gap: 2px; margin-bottom: 2px; }
 .heatmap-row > * { display: grid; min-height: 25px; place-items: center; border-radius: 3px; }
