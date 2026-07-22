@@ -22,6 +22,7 @@ type PieData = { labels: string[]; values: number[]; total: number; currency: st
 type ValueHistory = { dates: string[]; holdings: Record<string, Array<number | null>>; currency: string; portfolio_values?: Array<number | null>; daily_returns?: Array<number | null>; cumulative_returns?: Array<number | null> }
 type DividendHistory = { periods: string[]; companies: Record<string, number[]>; currency: string }
 type DividendCurrencyHistory = { periods: string[]; currencies: Record<string, number[]>; currency: string }
+type DividendGrowthData = { years: number[]; companies: Record<string, { currency: string; dps: Array<number | null>; yoy_growth: Array<number | null>; avg_market_value_eur: Array<number | null> }>; weighted_average_growth: Array<number | null> }
 type HeatmapData = { years: number[]; months: number[]; values: Array<Array<number | null>> }
 type ScatterPoint = { symbol: string; cost_basis_display: number; annualized_return: number; is_open: boolean }
 
@@ -61,17 +62,95 @@ function DividendsByCurrencyChart({ data }: { data?: DividendCurrencyHistory }) 
   return <div className="analytics-chart"><Bar data={chart} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 9, font: { size: 10 } } } }, scales: { x: { stacked: true }, y: { stacked: true, position: 'right' } } }} /></div>
 }
 
+function DividendsByCompanyBar({ data }: { data?: DividendHistory }) {
+  const companies = Object.entries(data?.companies ?? {}).map(([symbol, values], i) => ({ symbol, values, total: values.reduce((sum, v) => sum + v, 0), color: COLORS[i % COLORS.length] })).sort((a, b) => b.total - a.total)
+  const [selected, setSelected] = useState<string[]>(() => companies.map(c => c.symbol))
+  const filtered = companies.filter(c => selected.includes(c.symbol))
+  const chart = { labels: data?.periods ?? [], datasets: filtered.map(row => ({ label: row.symbol, data: row.values, backgroundColor: row.color })) }
+  return <div>
+    <CompanyFilter companies={companies} selected={selected} onChange={setSelected} />
+    <div className="analytics-chart"><Bar data={chart} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { stacked: true }, y: { stacked: true, position: 'right' } } }} /></div>
+  </div>
+}
+
 function DividendsByCompanyPie({ data }: { data?: DividendHistory }) {
-  const totals = Object.entries(data?.companies ?? {}).map(([symbol, values]) => ({ label: symbol, value: values.reduce((sum, v) => sum + v, 0) })).sort((a, b) => b.value - a.value)
-  const total = totals.reduce((sum, t) => sum + t.value, 0)
-  const compact = compactPie({ labels: totals.map(t => t.label), values: totals.map(t => t.value), total, currency: data?.currency ?? 'EUR' })
-  const chart = { labels: compact.labels, datasets: [{ data: compact.values, backgroundColor: COLORS, borderWidth: 0 }] }
-  return <div className="mini-chart"><strong>Total dividends by company</strong><Doughnut data={chart} options={{ responsive: true, maintainAspectRatio: false, cutout: '64%', plugins: { legend: { position: 'right', labels: { boxWidth: 9, font: { size: 10 } } } } }} /></div>
+  const companies = Object.entries(data?.companies ?? {}).map(([symbol, values], i) => ({ symbol, values, total: values.reduce((sum, v) => sum + v, 0), color: COLORS[i % COLORS.length] })).sort((a, b) => b.total - a.total)
+  const [selected, setSelected] = useState<string[]>(() => companies.map(c => c.symbol))
+  const filtered = companies.filter(c => selected.includes(c.symbol))
+  const total = filtered.reduce((sum, c) => sum + c.total, 0)
+  const compact = compactPie({ labels: filtered.map(c => c.symbol), values: filtered.map(c => c.total), total, currency: data?.currency ?? 'EUR' })
+  const chart = { labels: compact.labels, datasets: [{ data: compact.values, backgroundColor: filtered.map(c => c.color).concat(compact.labels.length > filtered.length ? [COLORS[6]] : []), borderWidth: 0 }] }
+  return <div className="mini-chart">
+    <strong>Total dividends by company</strong>
+    <CompanyFilter companies={companies} selected={selected} onChange={setSelected} />
+    <Doughnut data={chart} options={{ responsive: true, maintainAspectRatio: false, cutout: '64%', plugins: { legend: { display: false } } }} />
+  </div>
+}
+
+function CompanyFilter({ companies, selected, onChange }: { companies: { symbol: string; color: string }[]; selected: string[]; onChange: (s: string[]) => void }) {
+  const [open, setOpen] = useState(false)
+  return <div className="company-filter">
+    <button className="company-filter-toggle" onClick={() => setOpen(o => !o)}>{selected.length} of {companies.length}</button>
+    {open && <div className="company-filter-dropdown">
+      <label className="company-filter-item"><input type="checkbox" checked={selected.length === companies.length} onChange={() => onChange(selected.length === companies.length ? [] : companies.map(c => c.symbol))} /> All</label>
+      {companies.map(c => <label key={c.symbol} className="company-filter-item"><input type="checkbox" checked={selected.includes(c.symbol)} onChange={() => onChange(selected.includes(c.symbol) ? selected.filter(s => s !== c.symbol) : [...selected, c.symbol])} /><span className="company-filter-dot" style={{ background: c.color }} />{c.symbol}</label>)}
+    </div>}
+  </div>
+}
+
+function DividendGrowthChart({ data }: { data?: DividendGrowthData }) {
+  const companies = Object.entries(data?.companies ?? {})
+    .map(([symbol, c], i) => ({ symbol, currency: c.currency, yoy: c.yoy_growth, mv: c.avg_market_value_eur ?? [], total: c.dps.reduce((sum, v) => sum + (v ?? 0), 0), color: COLORS[i % COLORS.length] }))
+    .filter(c => c.yoy.some(v => v != null))
+    .sort((a, b) => b.total - a.total)
+  const [selected, setSelected] = useState<string[]>(() => companies.map(c => c.symbol))
+  if (!companies.length) return <EmptyState title="No dividend growth data" description="No companies with dividend history found." />
+  const filtered = companies.filter(c => selected.includes(c.symbol))
+  const allMv = filtered.flatMap(c => c.mv.filter((v): v is number => v != null))
+  const maxMv = Math.max(...allMv, 1)
+  const scale = (mv: number | null) => mv ? Math.max(3, Math.sqrt((mv || 1) / maxMv) * 16) : 3
+  const datasets: any[] = filtered.map(c => ({
+    label: c.symbol,
+    data: c.yoy.map((growth, j) => growth != null ? { x: (data?.years ?? [])[j], y: growth } : null).filter(Boolean),
+    pointRadius: c.yoy.map((_, j) => scale(c.mv[j])),
+    backgroundColor: c.color + 'aa',
+    borderColor: c.color,
+    borderWidth: 1,
+  }))
+  if (data?.weighted_average_growth?.some((v): v is number => v != null)) {
+    datasets.push({
+      type: 'line' as const,
+      label: 'Portfolio avg',
+      data: data.weighted_average_growth.map((v, j) => v != null ? { x: (data?.years ?? [])[j], y: v } : null).filter(Boolean),
+      borderColor: '#1e293b',
+      borderWidth: 2.5,
+      pointRadius: 4,
+      pointBackgroundColor: '#1e293b',
+      backgroundColor: 'transparent',
+    })
+  }
+  return <div>
+    <CompanyFilter companies={companies} selected={selected} onChange={setSelected} />
+    <div className="analytics-chart">
+      <Scatter data={{ datasets }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${(ctx.parsed.y ?? 0).toFixed(1)}%` } } }, scales: { x: { type: 'linear', grid: { display: false }, title: { display: true, text: 'Year' }, ticks: { stepSize: 1, callback: v => String(v) } }, y: { position: 'right', title: { display: true, text: 'YoY growth %' }, ticks: { callback: v => v.toFixed(0) + '%' } } } }} />
+    </div>
+  </div>
 }
 
 function CostReturnChart({ data }: { data?: ScatterPoint[] }) {
-  const chart = { datasets: [{ label: 'Open', data: (data ?? []).filter(point => point.is_open).map(point => ({ x: point.cost_basis_display, y: point.annualized_return, symbol: point.symbol })), backgroundColor: COLORS[0] }, { label: 'Closed', data: (data ?? []).filter(point => !point.is_open).map(point => ({ x: point.cost_basis_display, y: point.annualized_return, symbol: point.symbol })), backgroundColor: COLORS[6] }] }
-  return <div className="analytics-chart"><Scatter data={chart} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' }, tooltip: { callbacks: { label: context => { const raw = context.raw as { x: number; y: number; symbol: string }; return `${raw.symbol}: ${raw.y.toFixed(1)}% on ${raw.x.toLocaleString()}` } } } }, scales: { x: { title: { display: true, text: 'Cost basis' } }, y: { position: 'right', title: { display: true, text: 'Annualized return %' } } } }} /></div>
+  const symbols = [...new Set((data ?? []).map(p => p.symbol))].sort()
+  const colorMap = Object.fromEntries(symbols.map((s, i) => [s, COLORS[i % COLORS.length]]))
+  const companies = symbols.map(s => ({ symbol: s, color: colorMap[s] }))
+  const [selected, setSelected] = useState<string[]>(() => symbols)
+  const filtered = (data ?? []).filter(p => selected.includes(p.symbol))
+  const chart = { datasets: [
+    { label: 'Open', data: filtered.filter(p => p.is_open).map(p => ({ x: p.cost_basis_display, y: p.annualized_return, symbol: p.symbol })), backgroundColor: filtered.filter(p => p.is_open).map(p => colorMap[p.symbol] + 'cc'), borderColor: filtered.filter(p => p.is_open).map(p => colorMap[p.symbol]), borderWidth: 1 },
+    { label: 'Closed', data: filtered.filter(p => !p.is_open).map(p => ({ x: p.cost_basis_display, y: p.annualized_return, symbol: p.symbol })), backgroundColor: filtered.filter(p => !p.is_open).map(p => colorMap[p.symbol] + '66'), borderColor: filtered.filter(p => !p.is_open).map(p => colorMap[p.symbol]), borderWidth: 1, pointStyle: 'triangle' },
+  ]}
+  return <div>
+    <CompanyFilter companies={companies} selected={selected} onChange={setSelected} />
+    <div className="analytics-chart"><Scatter data={chart} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: context => { const raw = context.raw as { x: number; y: number; symbol: string }; return `${raw.symbol}: ${raw.y.toFixed(1)}% on ${raw.x.toLocaleString()}` } } } }, scales: { x: { title: { display: true, text: 'Cost basis' } }, y: { position: 'right', title: { display: true, text: 'Annualized return %' } } } }} /></div>
+  </div>
 }
 
 function PerformanceMetrics({ data, currency }: { data?: Performance; currency: string }) {
@@ -107,7 +186,9 @@ export default function PortfolioWorkspace() {
   const allocation = useQuery({ queryKey: ['portfolio-allocation', currency], queryFn: () => apiRequest<PieData>(`/api/portfolio/charts/holdings-by-value${suffix}`), retry: false })
   const currenciesChart = useQuery({ queryKey: ['portfolio-currency-chart', currency], queryFn: () => apiRequest<PieData>(`/api/portfolio/charts/holdings-by-currency${suffix}`), retry: false })
   const dividendsByCurrency = useQuery({ queryKey: ['portfolio-dividends-currency', currency, dividendPeriod], queryFn: () => apiRequest<DividendCurrencyHistory>(`/api/portfolio/charts/dividends-by-currency${suffix}&period=${dividendPeriod}`), retry: false })
+  const dividendsByCompany = useQuery({ queryKey: ['portfolio-dividends-by-company', currency], queryFn: () => apiRequest<DividendHistory>(`/api/portfolio/charts/dividends-by-company${suffix}&period=yearly`), retry: false })
   const dividendsByCompanyPie = useQuery({ queryKey: ['portfolio-dividends-company-pie', currency], queryFn: () => apiRequest<DividendHistory>(`/api/portfolio/charts/dividends-by-company${suffix}&period=yearly`), retry: false })
+  const dividendGrowth = useQuery({ queryKey: ['portfolio-dividend-growth', currency], queryFn: () => apiRequest<DividendGrowthData>('/api/portfolio/dividends/yoy/per-company'), retry: false })
   const heatmap = useQuery({ queryKey: ['portfolio-return-heatmap', currency], queryFn: () => apiRequest<HeatmapData>(`/api/portfolio/charts/returns-heatmap${suffix}`), retry: false })
   const scatter = useQuery({ queryKey: ['portfolio-return-cost', currency], queryFn: () => apiRequest<ScatterPoint[]>(`/api/portfolio/charts/return-vs-cost${suffix}`), retry: false })
   const invalidate = () => queryClient.invalidateQueries({ predicate: query => String(query.queryKey[0]).startsWith('portfolio') })
@@ -121,7 +202,7 @@ export default function PortfolioWorkspace() {
     {unavailable ? <Card title="Connect portfolio activity"><label className="file-drop"><FileUp /><strong>Import IBKR FlexQuery XML</strong><input type="file" accept=".xml,text/xml" multiple onChange={event => void uploadFiles(event.target.files)} /></label></Card> : <><PerformanceMetrics data={performance.data} currency={currency} /><div className="step-tabs"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>Overview</button><button className={tab === 'holdings' ? 'active' : ''} onClick={() => setTab('holdings')}>Holdings</button><button className={tab === 'analytics' ? 'active' : ''} onClick={() => setTab('analytics')}>Analytics</button><button className={tab === 'transactions' ? 'active' : ''} onClick={() => setTab('transactions')}>Transactions</button></div>
       {tab === 'overview' && <div className="portfolio-overview-grid"><Card title="Portfolio value" description={`${money(totalValue, currency)} · ${performance.data?.start_date ?? '—'} to ${performance.data?.end_date ?? '—'}`}>{valueHistory.isLoading ? <LoadingState label="Loading value history" /> : <ValueChart data={valueHistory.data} currency={currency} />}</Card><Card title="Current exposure"><div className="allocation-grid"><AllocationChart data={allocation.data} title="Holdings" /><AllocationChart data={currenciesChart.data} title="Currencies" /></div></Card><Card title="Activity" description="Imported records by type"><div className="activity-grid activity-grid--dense">{Object.entries(activity.data?.by_activity ?? {}).map(([name, count]) => <Metric key={name} label={name.replaceAll('_', ' ')} value={count.toLocaleString()} />)}</div></Card></div>}
       {tab === 'holdings' && <Card title={`${holdings.data?.length ?? 0} open holdings`} description="Value, cost, P&L, and native/display-currency returns.">{holdings.isLoading ? <LoadingState label="Loading holdings" /> : holdings.isError ? <ErrorState error={holdings.error} /> : <div className="fixed-table"><HoldingsTable data={holdings.data ?? []} currency={currency} navigate={navigate} /></div>}</Card>}
-      {tab === 'analytics' && <div className="analytics-grid"><Card title="Monthly return heatmap"><ReturnHeatmap data={heatmap.data} /></Card><Card title="Dividends by currency" style={{ gridColumn: '1 / -1' }}><div className="period-toolbar"><span className="period-label">Aggregation</span><div className="period-tabs">{['monthly','quarterly','yearly'].map(p => <button key={p} className={`period-tab${dividendPeriod === p ? ' active' : ''}`} onClick={() => setDividendPeriod(p as typeof dividendPeriod)}>{p}</button>)}</div></div><DividendsByCurrencyChart data={dividendsByCurrency.data} /></Card><Card title="Dividends by company (total)"><DividendsByCompanyPie data={dividendsByCompanyPie.data} /></Card><Card title="Return versus cost basis"><CostReturnChart data={scatter.data} /></Card><PortfolioAdvancedAnalytics valueHistory={valueHistory.data} allocation={allocation.data} holdings={holdings.data ?? []} /></div>}
+      {tab === 'analytics' && <div className="analytics-grid"><Card title="Monthly return heatmap"><ReturnHeatmap data={heatmap.data} /></Card><Card title="Dividends by currency" style={{ gridColumn: '1 / -1' }}><div className="period-toolbar"><span className="period-label">Aggregation</span><div className="period-tabs">{['monthly','quarterly','yearly'].map(p => <button key={p} className={`period-tab${dividendPeriod === p ? ' active' : ''}`} onClick={() => setDividendPeriod(p as typeof dividendPeriod)}>{p}</button>)}</div></div><DividendsByCurrencyChart data={dividendsByCurrency.data} /></Card><Card title="Dividend per share growth" style={{ gridColumn: '1 / -1' }}><DividendGrowthChart data={dividendGrowth.data} /></Card><Card title="Dividends by company (total)"><DividendsByCompanyPie data={dividendsByCompanyPie.data} /></Card><Card title="Yearly dividends by company"><DividendsByCompanyBar data={dividendsByCompany.data} /></Card><Card title="Return versus cost basis"><CostReturnChart data={scatter.data} /></Card><PortfolioAdvancedAnalytics valueHistory={valueHistory.data} allocation={allocation.data} holdings={holdings.data ?? []} /></div>}
       {tab === 'transactions' && <Card title="Transactions" description="Latest 1,000 imported activity records.">{transactions.isLoading ? <LoadingState label="Loading transactions" /> : transactions.isError ? <ErrorState error={transactions.error} /> : <div className="fixed-table"><TransactionsTable data={transactions.data ?? []} currency={currency} /></div>}</Card>}</>}
   </div>
 }

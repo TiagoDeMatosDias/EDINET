@@ -809,7 +809,13 @@ async def dividends_yoy(
 
 @router.get("/dividends/yoy/per-company")
 async def dividends_per_company_yoy():
-    """Dividend per share per company per year with YoY growth."""
+    """Dividend per share per company per year with YoY growth.
+
+    Computes shares owned at each dividend date from trade transactions
+    (not Holdings_History, which can be missing entries for closed or
+    non-Japanese positions).  DPS = net dividend / shares at that date,
+    then aggregated per company per year.
+    """
     import sqlite3
     from collections import defaultdict
 
@@ -817,104 +823,179 @@ async def dividends_per_company_yoy():
     conn = sqlite3.connect(db3_path)
     conn.row_factory = sqlite3.Row
 
-    # Get dividend transactions: dividend income and withholding tax per company per year
+    # ── 1. Load all trades to build running share counts per symbol ──
+    trade_rows = conn.execute("""
+        SELECT symbol, trade_date, buy_sell, quantity
+        FROM Transactions
+        WHERE activity_type = 'TRADE'
+          AND symbol NOT LIKE 'CASH%'
+          AND buy_sell IN ('BUY', 'SELL', 'BUY (Ca.)')
+        ORDER BY symbol, trade_date, id
+    """).fetchall()
+
+    # Build sorted list of (date, cumulative_shares) per symbol
+    shares_ts: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for sym in {r["symbol"] for r in trade_rows}:
+        running = 0.0
+        sym_trades = [r for r in trade_rows if r["symbol"] == sym]
+        for r in sym_trades:
+            bs = r["buy_sell"]
+            qty = abs(r["quantity"] or 0)
+            if bs == "BUY":
+                running += qty
+            elif bs in ("SELL", "BUY (Ca.)"):
+                running -= qty
+            shares_ts[sym].append((r["trade_date"], max(running, 0.0)))
+
+    # ── 2. Load individual dividend / tax events ──
     div_rows = conn.execute("""
-        SELECT
-            symbol,
-            CAST(substr(trade_date, 1, 4) AS INTEGER) AS year,
-            activity_type,
-            SUM(CASE WHEN activity_type IN ('DIVIDEND','PIL_DIVIDEND') THEN ABS(amount) * COALESCE(fx_rate_to_base, 1) ELSE 0 END) AS gross_eur,
-            SUM(CASE WHEN activity_type = 'WITHHOLDING_TAX' THEN ABS(amount) * COALESCE(fx_rate_to_base, 1) ELSE 0 END) AS tax_eur,
-            SUM(CASE WHEN activity_type IN ('DIVIDEND','PIL_DIVIDEND') THEN ABS(amount) ELSE 0 END) AS gross_native,
-            SUM(CASE WHEN activity_type = 'WITHHOLDING_TAX' THEN ABS(amount) ELSE 0 END) AS tax_native,
-            MAX(currency) AS currency
+        SELECT symbol, trade_date, activity_type, amount, currency
         FROM Transactions
         WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')
           AND symbol NOT LIKE 'CASH%'
-        GROUP BY symbol, year
-        ORDER BY symbol, year
+        ORDER BY symbol, trade_date
     """).fetchall()
 
     if not div_rows:
         conn.close()
         return {"years": [], "companies": {}}
 
-    # Get avg shares per year from Holdings_History (approximate DPS = total_div / avg_shares)
-    hh_rows = conn.execute("""
+    # ── 3. For each dividend, find shares at that date from trade history ──
+    def _shares_at(sym: str, date_str: str) -> float:
+        ts = shares_ts.get(sym, [])
+        if not ts:
+            return 0.0
+        # Find latest entry ≤ date_str
+        for d, q in reversed(ts):
+            if d <= date_str:
+                return q
+        return 0.0
+
+    # ── 3. Pair gross/tax on the same date into per-event DPS ──
+    # Key insight: DPS must be computed per dividend *event*, not per year,
+    # because shares can change intra-year.  Averaging per-event DPS gives
+    # the true per-share rate independent of share-count changes.
+    from collections import defaultdict as _dd
+
+    # { (symbol, date): {"gross": 0, "tax": 0, "shares": 0, "currency": ""} }
+    events: dict[tuple[str, str], dict] = _dd(
+        lambda: {"gross": 0.0, "tax": 0.0, "shares": 0.0, "currency": ""}
+    )
+    currency_by_sym: dict[str, str] = {}
+
+    for r in div_rows:
+        sym = r["symbol"]
+        d = r["trade_date"]
+        amt = abs(r["amount"] or 0)
+        atype = r["activity_type"]
+
+        shares = _shares_at(sym, d)
+        if shares <= 0:
+            continue
+
+        key = (sym, d)
+        ev = events[key]
+        ev["currency"] = r["currency"] or ev["currency"] or "EUR"
+        ev["shares"] = shares  # same date → same share count
+        if atype in ("DIVIDEND", "PIL_DIVIDEND"):
+            ev["gross"] += amt
+        elif atype == "WITHHOLDING_TAX":
+            ev["tax"] += amt
+        currency_by_sym[sym] = ev["currency"]
+
+    # Compute per-event DPS, then aggregate by (symbol, year) as average
+    per_year_dps: dict[str, dict[int, list[float]]] = _dd(lambda: _dd(list))
+    per_year_net: dict[str, dict[int, float]] = _dd(lambda: _dd(float))
+
+    for (sym, d), ev in events.items():
+        if ev["shares"] <= 0:
+            continue
+        net = ev["gross"] - ev["tax"]
+        per_share = net / ev["shares"]
+        y = int(d[:4])
+        per_year_dps[sym][y].append(per_share)
+        per_year_net[sym][y] += net
+
+    # ── Fetch market values per company per year (EUR) for bubble sizing ──
+    mv_rows = conn.execute("""
         SELECT symbol, CAST(substr(date, 1, 4) AS INTEGER) AS year,
-               AVG(quantity) AS avg_qty
+               AVG(market_value) AS avg_mv
         FROM Holdings_History
-        WHERE quantity > 0 AND symbol NOT LIKE 'CASH%'
+        WHERE market_value IS NOT NULL AND symbol NOT LIKE 'CASH%' AND is_option = 0
         GROUP BY symbol, year
-        ORDER BY symbol, year
     """).fetchall()
+    mv_map: dict[str, dict[int, float]] = {}
+    for r in mv_rows:
+        mv_map.setdefault(r["symbol"], {})[r["year"]] = r["avg_mv"]
+
     conn.close()
 
-    # Build shares map: {symbol: {year: avg_qty}}
-    shares_map: dict[str, dict[int, float]] = defaultdict(dict)
-    for r in hh_rows:
-        shares_map[r["symbol"]][r["year"]] = r["avg_qty"]
-
-    # Collect all years
+    # ── 4. Collect years and build per-company aligned arrays ──
     all_years: set[int] = set()
-    for r in div_rows:
-        all_years.add(r["year"])
-    for sym, ym in shares_map.items():
-        all_years.update(ym.keys())
+    for sym_years in per_year_dps.values():
+        all_years.update(sym_years.keys())
     years = sorted(all_years)
     if not years:
         return {"years": [], "companies": {}}
 
-    # Build per-company series
-    companies: dict[str, dict] = {}
-    for r in div_rows:
-        sym = r["symbol"]
-        y = r["year"]
-        shares = shares_map.get(sym, {}).get(y, 0)
-        gross = round(r["gross_native"] or 0, 2)
-        tax = round(r["tax_native"] or 0, 2)
-        net_native = gross - tax
-        dps = round(net_native / shares, 4) if shares > 0 else 0
-
-        if sym not in companies:
-            companies[sym] = {
-                "currency": r["currency"] or "EUR",
-                "year_data": {},
-            }
-        companies[sym]["year_data"][y] = {
-            "gross": gross,
-            "tax": tax,
-            "net": net_native,
-            "shares": round(shares, 2),
-            "dps": dps,
-        }
-
-    # Build aligned arrays per company
     result: dict[str, dict] = {}
-    for sym, cdata in companies.items():
+    for sym in per_year_dps:
+        year_map = per_year_dps[sym]
         dps_arr: list[float | None] = []
         growth_arr: list[float | None] = []
-        prev_dps = None
+        prev_dps: float | None = None
         for y in years:
-            yd = cdata["year_data"].get(y)
-            if yd and yd["shares"] > 0:
-                dps = yd["dps"]
-                dps_arr.append(dps)
+            values = year_map.get(y, [])
+            if values:
+                avg_dps = round(sum(values) / len(values), 4)
+                dps_arr.append(avg_dps)
                 if prev_dps is not None and prev_dps > 0:
-                    growth_arr.append(round((dps / prev_dps - 1) * 100, 2))
+                    growth_arr.append(round((avg_dps / prev_dps - 1) * 100, 2))
                 else:
                     growth_arr.append(None)
-                prev_dps = dps
+                prev_dps = avg_dps
             else:
                 dps_arr.append(None)
                 growth_arr.append(None)
+        sym_mv = mv_map.get(sym, {})
         result[sym] = {
-            "currency": cdata["currency"],
+            "currency": currency_by_sym.get(sym, "EUR"),
             "dps": dps_arr,
             "yoy_growth": growth_arr,
+            "avg_market_value_eur": [round(sym_mv.get(y), 2) if sym_mv.get(y) else None for y in years],
         }
 
-    return {"years": years, "companies": result}
+    # ── 5. Compute portfolio weighted-average YoY growth ──
+    # Weight = company's net dividends in the previous year (native currency).
+    weighted_avg: list[float | None] = []
+    for yi, y in enumerate(years):
+        if yi == 0:
+            weighted_avg.append(None)
+            continue
+        y_prev = years[yi - 1]
+        total_weight = 0.0
+        weighted_sum = 0.0
+        for sym in per_year_dps:
+            prev_values = per_year_dps[sym].get(y_prev, [])
+            curr_values = per_year_dps[sym].get(y, [])
+            if not prev_values or not curr_values:
+                continue
+            prev_avg = sum(prev_values) / len(prev_values)
+            curr_avg = sum(curr_values) / len(curr_values)
+            if prev_avg <= 0:
+                continue
+            weight = per_year_net[sym].get(y_prev, 0)
+            if weight <= 0:
+                continue
+            growth = (curr_avg / prev_avg - 1) * 100
+            weighted_sum += growth * weight
+            total_weight += weight
+        if total_weight > 0:
+            weighted_avg.append(round(weighted_sum / total_weight, 2))
+        else:
+            weighted_avg.append(None)
+
+    return {"years": years, "companies": result, "weighted_average_growth": weighted_avg}
 
 
 @router.get("/returns/by-company")
