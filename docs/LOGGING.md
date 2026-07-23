@@ -1,74 +1,63 @@
-# Logging System
+# Logging and Correlation
 
-## Overview
+Updated: 2026-07-22
 
-This project has a comprehensive logging system that automatically:
+`main.py` initializes the root logger through `src.utilities.logger.setup_logging()`.
 
-- **Captures all output** to timestamped log files
-- **Archives old logs** to a dedicated archive folder
-- **Logs with timestamps** for easy tracking and debugging
-- **Displays critical info** on console while storing detailed logs to files
+## Files and levels
 
-## Directory Structure
-
-```
+```text
 logs/
-├── run_YYYYMMDD_HHMMSS.log    # Current session log (created per run)
+├── run_YYYYMMDD_HHMMSS.log
 └── archive/
-    └── run_YYYYMMDD_HHMMSS.log # Archived logs from previous runs
+    └── run_YYYYMMDD_HHMMSS.log
 ```
 
-## How It Works
+- A new timestamped file is created for each launcher run.
+- Previous `run_*.log` files move to `logs/archive/` at startup.
+- Files receive DEBUG and above; the console receives INFO and above.
+- Logs are runtime/operator state and are ignored by Git. There is no automatic age-based archive deletion; operators should apply their normal retention policy.
 
-1. **Automatic Setup**: The logging system is automatically initialized in `main.py`
-2. **File Creation**: Each run creates a new timestamped log file (e.g., `run_20260225_175213.log`)
-3. **Auto-archiving**: Previous log files are automatically moved to `logs/archive/` when the application starts
-4. **Console + File**: All messages are logged to both console and file
+## Request correlation
 
-## Using the Logger
+Every HTTP response carries `X-Correlation-ID`. Safe error responses use one envelope:
 
-Import the logger in any module and use it:
+```json
+{
+  "code": "internal_error",
+  "detail": "Internal server error",
+  "correlation_id": "uuid"
+}
+```
+
+Unexpected tracebacks are logged server-side with the correlation ID. Client-facing 500 responses do not include tracebacks, SQL, secrets, repository roots, or private database paths.
+
+## Pipeline jobs
+
+Pipeline transition messages include the job ID and, when relevant, the step name. Durable status, timing, progress, and bounded results live in `config/state/pipeline_jobs.db`; they are not reconstructed from logs. Retention is controlled by `EDINET_JOB_RETENTION_HOURS` and cleanup removes both expired rows and owned workspaces.
+
+Do not log:
+
+- EDINET/API bearer tokens;
+- complete configuration dictionaries;
+- embedded base64 bodies or uploaded Portfolio XML;
+- unbounded step results;
+- arbitrary operator file contents.
+
+The job redaction layer removes secret-like keys and bounds serialized output before persistence. This is defense in depth; callers must still avoid placing secrets in status messages.
+
+## Usage
 
 ```python
 import logging
 
 logger = logging.getLogger(__name__)
-
-# Different log levels
-logger.debug("Detailed debug information")
-logger.info("General informational message")
-logger.warning("Warning about potential issues")
-logger.error("Error occurred", exc_info=True)  # exc_info=True includes traceback
+logger.info("Queued pipeline job %s", job_id)
+try:
+    run_operation()
+except Exception:
+    logger.exception("Operation failed for job %s", job_id)
+    raise
 ```
 
-## Log Levels
-
-- **DEBUG**: Detailed diagnostic information
-- **INFO**: General informational messages (displayed in console and GUI)
-- **WARNING**: Warning messages
-- **ERROR**: Error messages with exception details
-
-## Console vs File
-
-- **Console**: Shows INFO level and above only (cleaner output)
-- **File**: Shows DEBUG level and above (complete record)
-
-## Git Ignore
-
-The `logs/` directory is excluded from git tracking to prevent log files from being committed.
-
-## Example Log Output
-
-```
-2026-02-25 17:52:13 - INFO - __main__ - ================================================================================
-2026-02-25 17:52:13 - INFO - __main__ - APPLICATION START
-2026-02-25 17:52:13 - INFO - __main__ - ================================================================================
-2026-02-25 17:52:13 - INFO - orchestrator - Starting Program
-2026-02-25 17:52:13 - INFO - orchestrator - Loading Config
-2026-02-25 17:52:13 - INFO - orchestrator - Getting all documents with metadata...
-...
-2026-02-25 17:55:42 - INFO - orchestrator - Program Ended
-2026-02-25 17:55:42 - INFO - __main__ - ================================================================================
-2026-02-25 17:55:42 - INFO - __main__ - APPLICATION COMPLETED SUCCESSFULLY
-2026-02-25 17:55:42 - INFO - __main__ - ================================================================================
-```
+Use parameterized logger calls. Include identifiers needed to correlate work, and keep sensitive values out of both messages and exception text.

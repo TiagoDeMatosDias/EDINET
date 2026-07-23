@@ -740,6 +740,7 @@ def test_save_and_load_criteria(tmp_path):
     criteria = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 5}]
     columns = ["CompanyInfo.Company_Code", "Valuation.PERatio"]
     period = "2024"
+    screening_date = "2024-06-30"
     ranking_rules = [{
         "table": "Valuation",
         "column": "PERatio",
@@ -755,6 +756,7 @@ def test_save_and_load_criteria(tmp_path):
         str(tmp_path),
         ranking_algorithm="weighted_minmax",
         ranking_rules=ranking_rules,
+        screening_date=screening_date,
     )
     loaded = load_screening_criteria("test_screen", str(tmp_path))
 
@@ -763,6 +765,34 @@ def test_save_and_load_criteria(tmp_path):
     assert loaded["period"] == period
     assert loaded["ranking_algorithm"] == "weighted_minmax"
     assert loaded["ranking_rules"] == ranking_rules
+    assert loaded["screening_date"] == screening_date
+
+
+def test_load_legacy_criteria_defaults_screening_date(tmp_path):
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(
+        json.dumps({
+            "name": "legacy",
+            "criteria": [],
+            "columns": [],
+            "period": None,
+        }),
+        encoding="utf-8",
+    )
+
+    assert load_screening_criteria("legacy", str(tmp_path))["screening_date"] is None
+
+
+def test_save_rejects_non_iso_screening_date(tmp_path):
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        save_screening_criteria(
+            "invalid-date",
+            [],
+            [],
+            None,
+            str(tmp_path),
+            screening_date="06/30/2024",
+        )
 
 
 def test_list_saved_screenings(tmp_path):

@@ -9,15 +9,52 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import logging
-import os
+import shutil
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
+
+
+class ExportSizeLimitExceeded(ValueError):
+    """Raised before a generated archive can exceed its disk budget."""
+
+    def __init__(self, limit_bytes: int, attempted_bytes: int) -> None:
+        self.limit_bytes = limit_bytes
+        self.attempted_bytes = attempted_bytes
+        super().__init__(
+            f"Generated archive exceeds the {limit_bytes}-byte limit"
+        )
+
+
+class _SizeLimitedWriter:
+    """Seekable file wrapper that rejects writes beyond a fixed size."""
+
+    def __init__(self, stream: BinaryIO, max_bytes: int) -> None:
+        self._stream = stream
+        self._max_bytes = max_bytes
+
+    def write(self, data: bytes) -> int:
+        attempted_end = self._stream.tell() + len(data)
+        if attempted_end > self._max_bytes:
+            raise ExportSizeLimitExceeded(self._max_bytes, attempted_end)
+        return self._stream.write(data)
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._stream.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._stream.tell()
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
 
 # ---------------------------------------------------------------------------
 # Public entry points
@@ -79,25 +116,63 @@ def build_rolling_zip(rolling_result: dict[str, Any]) -> bytes:
     """Build a ZIP archive from a rolling backtest result."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        config = rolling_result.get("config", {})
-        agg = rolling_result.get("aggregate", {})
-        results = rolling_result.get("results", [])
-
-        _add_summary_txt(zf, config, agg)
-        _add_summary_csv(zf, agg)
-        _add_heatmap_csv(zf, agg)
-        _add_backtest_files(zf, results)
+        _write_rolling_zip(zf, rolling_result)
 
     return buf.getvalue()
+
+
+def _write_rolling_zip(
+    archive: zipfile.ZipFile,
+    rolling_result: dict[str, Any],
+) -> None:
+    config = rolling_result.get("config", {})
+    aggregate = rolling_result.get("aggregate", {})
+    results = rolling_result.get("results", [])
+    _add_summary_txt(archive, config, aggregate)
+    _add_summary_csv(archive, aggregate)
+    _add_heatmap_csv(archive, aggregate)
+    _add_backtest_files(archive, results)
+
+
+def save_rolling_backtest_zip(
+    rolling_result: dict[str, Any],
+    base_dir: str,
+    max_bytes: int,
+) -> str:
+    """Build a bounded rolling archive directly on disk and return its directory."""
+    if max_bytes < 1:
+        raise ValueError("max_bytes must be positive")
+    root = Path(base_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    identifier = f"{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}"
+    out_dir = root / identifier
+    out_dir.mkdir(exist_ok=False)
+    partial_path = out_dir / "backtest.zip.partial"
+    zip_path = out_dir / "backtest.zip"
+    try:
+        with partial_path.open("w+b") as stream:
+            limited_stream = _SizeLimitedWriter(stream, max_bytes)
+            with zipfile.ZipFile(
+                limited_stream,
+                "w",
+                zipfile.ZIP_DEFLATED,
+            ) as archive:
+                _write_rolling_zip(archive, rolling_result)
+        partial_path.replace(zip_path)
+    except Exception:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
+    logger.info("Backtest saved to %s (%d bytes)", zip_path, zip_path.stat().st_size)
+    return str(out_dir)
 
 
 def save_backtest_zip(
     zip_bytes: bytes, base_dir: str = "data/Backtests"
 ) -> str:
     """Save ZIP bytes to a timestamped directory, return the relative path."""
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = f"{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}"
     out_dir = Path(base_dir) / ts
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=False)
     zip_path = out_dir / "backtest.zip"
     zip_path.write_bytes(zip_bytes)
 
@@ -690,7 +765,6 @@ def _chart_png_from_json(
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        import matplotlib.dates as mdates
     except ImportError:
         logger.warning("matplotlib not installed — skipping chart generation.")
         return None
@@ -729,8 +803,8 @@ def _plot_cumulative(
     dates: tuple, entries: tuple,
 ) -> bytes | None:
     """Plot cumulative returns: portfolio vs benchmark, with VAMI on right axis."""
-    import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
     import matplotlib.ticker as mticker
 
     portfolio_vals = [e.get("portfolio", 0) * 100 for e in entries]
@@ -792,8 +866,8 @@ def _plot_drawdown(
     dates: tuple, entries: tuple,
 ) -> bytes | None:
     """Plot drawdown: filled area + line for portfolio, optional benchmark."""
-    import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
 
     portfolio_vals = [e.get("portfolio", 0) * 100 for e in entries]
     benchmark_vals = [e.get("benchmark") for e in entries]
@@ -833,8 +907,8 @@ def _plot_decomposition(
     dates: tuple, entries: tuple,
 ) -> bytes | None:
     """Plot return decomposition: stacked area of price + dividend."""
-    import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
 
     price_vals = [e.get("price_only", 0) * 100 for e in entries]
     div_vals = [e.get("dividend_only", 0) * 100 for e in entries]

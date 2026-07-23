@@ -2233,6 +2233,7 @@ def run_backtest(
     ratios_table: str = "ShareMetrics",
     company_table: str = "companyInfo",
     financial_statements_table: str = "FinancialStatements",
+    context=None,
 ) -> dict:
     """Run a full backtest from a config dictionary.
 
@@ -2267,6 +2268,8 @@ def run_backtest(
             "Backtesting requires a Source_Database path. "
             "Set backtesting_config.Source_Database in the UI."
         )
+    if context is not None:
+        context.report_progress(0, 9, "Validating backtest configuration")
 
     # â”€â”€ Validate configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if not start_date or not end_date:
@@ -2325,6 +2328,8 @@ def run_backtest(
         prices_df = get_portfolio_prices(
             db_path, prices_table, all_tickers, start_date, end_date, conn=conn
         )
+        if context is not None:
+            context.report_progress(1, 9, "Price data loaded")
 
         if prices_df.empty:
             logger.warning("No price data found for the specified tickers/period.")
@@ -2333,6 +2338,8 @@ def run_backtest(
                 None, start_date, end_date, risk_free_rate,
             )
             generate_report(empty_metrics, output_file)
+            if context is not None:
+                context.report_progress(9, 9, "Backtest complete with no price data")
             return empty_metrics
 
         # 1b. Resolve mixed portfolio allocations into weights
@@ -2364,6 +2371,8 @@ def run_backtest(
             financial_statements_table=financial_statements_table,
             conn=conn,
         )
+        if context is not None:
+            context.report_progress(2, 9, "Dividend data loaded")
 
         # Also fetch dividends for the benchmark ticker (if any)
         all_dividends_df = dividends_df
@@ -2386,18 +2395,24 @@ def run_backtest(
             portfolio_prices, portfolio_weights, dividends_df,
             initial_capital=initial_capital,
         )
+        if context is not None:
+            context.report_progress(3, 9, "Portfolio returns calculated")
 
         # 4. Return decomposition (price vs dividend)
         decomposition = calculate_return_decomposition(
             portfolio_prices, portfolio_weights, dividends_df,
             initial_capital=initial_capital,
         )
+        if context is not None:
+            context.report_progress(4, 9, "Return decomposition calculated")
 
         # 5. Per-company breakdown
         per_company = calculate_per_company_returns(
             portfolio_prices, portfolio_weights, dividends_df,
             initial_capital=initial_capital,
         )
+        if context is not None:
+            context.report_progress(5, 9, "Company returns calculated")
 
         # 5a. Yearly returns breakdown
         yearly_returns = calculate_yearly_returns(decomposition)
@@ -2423,6 +2438,8 @@ def run_backtest(
 
         # 7. Metrics
         metrics = calculate_metrics(portfolio_df, benchmark_df, start_date, end_date, risk_free_rate)
+        if context is not None:
+            context.report_progress(6, 9, "Performance metrics calculated")
 
         # Attach decomposition summary to metrics
         if decomposition and not decomposition["price_only"].empty:
@@ -2467,6 +2484,8 @@ def run_backtest(
             yearly_returns=yearly_returns,
             dividends_by_year=dividends_by_year,
         )
+        if context is not None:
+            context.report_progress(7, 9, "Backtest report generated")
 
         # 9. Charts
         chart_files = generate_backtest_charts(
@@ -2475,6 +2494,8 @@ def run_backtest(
             dividends_by_year=dividends_by_year,
         )
         metrics["chart_files"] = chart_files
+        if context is not None:
+            context.report_progress(9, 9, "Backtest complete")
 
         logger.info("Backtest complete. Total return: %.2f%%", metrics["total_return"] * 100)
         return metrics
@@ -2662,6 +2683,7 @@ def run_backtest_set(
     ratios_table: str = "ShareMetrics",
     company_table: str = "companyInfo",
     financial_statements_table: str = "FinancialStatements",
+    context=None,
 ) -> list[dict]:
     """Run a batch of backtests from a CSV file of scored companies.
 
@@ -2749,6 +2771,8 @@ def run_backtest_set(
 
     os.makedirs(output_dir, exist_ok=True)
     all_results: list[dict] = []
+    total_runs = len(years) * len(_BACKTEST_DURATIONS)
+    completed_runs = 0
 
     for year_str in years:
         year_df = df[df["Year"] == year_str]
@@ -2765,9 +2789,16 @@ def run_backtest_set(
 
         if not portfolio:
             logger.warning("Year %s: no portfolio entries found, skipping.", year_str)
+            completed_runs += len(_BACKTEST_DURATIONS)
             continue
 
         for dur_label, dur_years in _BACKTEST_DURATIONS.items():
+            if context is not None:
+                context.report_progress(
+                    completed_runs,
+                    total_runs,
+                    f"Running backtest {completed_runs + 1} of {total_runs}",
+                )
             start_date = f"{year_str}-01-01"
             end_year = int(year_str) + dur_years
             end_date = f"{end_year}-01-01"
@@ -2811,15 +2842,21 @@ def run_backtest_set(
                     year_str, dur_label, metrics["total_return"] * 100,
                 )
             except Exception as e:
+                if context is not None and context.is_cancelled:
+                    raise
                 logger.error(
                     "  %s %s: backtest failed â€” %s", year_str, dur_label, e,
                 )
 
             all_results.append(result_entry)
+            completed_runs += 1
 
     # â”€â”€ Generate aggregate summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     summary_file = os.path.join(output_dir, "backtest_set_summary.txt")
     _generate_set_summary(all_results, summary_file)
+
+    if context is not None and total_runs:
+        context.report_progress(total_runs, total_runs, "Backtest set complete")
 
     return all_results 
 

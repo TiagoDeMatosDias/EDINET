@@ -1,10 +1,10 @@
 # Frontend Architecture
 
-Updated: 2026-07-19
+Updated: 2026-07-22
 
 ## Overview
 
-The primary web workstation is a React 19, TypeScript, and Vite single-page application in `frontend-v2/`. FastAPI serves its production entry point and API routes. The previous vanilla-JavaScript pages remain temporarily available as compatibility routes while deeper specialist views are migrated.
+The primary and only maintained workstation UI is the React 19, TypeScript, and Vite single-page application in `frontend-v2/`. FastAPI serves its production entry point and API routes. Compatibility URLs such as `/security` and `/backtesting` resolve to the same React bundle; no legacy page implementation is mounted.
 
 ```mermaid
 flowchart LR
@@ -22,11 +22,12 @@ flowchart LR
 | `/` | Overview and recent work |
 | `/screen` | Company screening |
 | `/analyze` and `/analyze/:companyCode` | Company search and analysis |
-| `/backtest` | Manual, CSV, and rolling-screen backtests |
+| `/backtest` (`/backtesting` alias) | Manual, CSV, and rolling-screen backtests |
 | `/portfolio` | Portfolio overview, holdings, transactions, and performance |
 | `/pipeline` | Data-pipeline recipes and advanced step builder |
+| `/security` | Compatibility alias for the React analysis workspace |
 
-All routes target the React SPA; there are no legacy compatibility routes.
+All routes target one React SPA. Compatibility means URL aliasing only.
 
 ## Directory layout
 
@@ -79,6 +80,7 @@ The layout is desktop-first but has a 390 px mobile treatment:
 - Local component state owns transient form input.
 - Screening drafts use `shade.screening.draft` in `localStorage` so they can flow into rolling backtests.
 - Pipeline recipes use `shade.pipeline.setups` in `localStorage`.
+- Pipeline execution state is server-owned. Submission returns `202` plus a job ID; TanStack Query polls `/api/jobs/{job_id}`, stops at a terminal state, and retrieves bounded output separately. Reloading restores persisted jobs from the API rather than assuming a held request is still alive.
 - The API clients in `src/api/` are the only shared network layer. `apiStream` parses the existing SSE format for rolling-backtest progress and cancellation.
 - Existing Python services and API contracts remain authoritative; the frontend does not access databases directly.
 
@@ -88,7 +90,11 @@ The layout is desktop-first but has a 390 px mobile treatment:
 - Analysis supports company search, overview metrics, price history, multi-metric financial-history charts and dense tables, price refresh, peer-screen handoff, and backtest handoff.
 - Backtesting supports manual portfolios, CSV sets, and point-in-time rolling screens with cadence, durations, weighting, progress, cancellation, saved results, and downloads.
 - Portfolio supports XML imports, rebuilds, currency selection, activity, holdings, transactions, performance, and company-analysis handoff.
-- Pipeline supports recipes, dynamic step discovery, ordering, overwrite flags, generated configuration fields, cancellation, saved setups, and job history.
+- Pipeline supports recipes, dynamic step discovery, ordering, overwrite flags, generated configuration fields, persisted job history, cooperative cancellation, per-step progress, and safe terminal output.
+
+## API contract checks
+
+Frontend-facing method/path pairs and unique OpenAPI operation IDs are checked by `tests/unit/test_openapi_contract.py`. Shared TypeScript shapes live in `frontend-v2/src/api/types.ts`; a backend contract change must update those types and the OpenAPI compatibility test in the same change.
 
 ## Build and serving
 

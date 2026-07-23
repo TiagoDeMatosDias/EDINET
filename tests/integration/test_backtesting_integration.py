@@ -5,24 +5,22 @@ Verifies that the backtesting API endpoints, data structures, edge cases,
 and cross-page flows work correctly with the real database.
 """
 
-import io
 import json
+import sqlite3
+import tempfile
 import unittest
-import uuid
+from pathlib import Path
 
 import pandas as pd
-import sqlite3
 from fastapi.testclient import TestClient
 
-from src.web_app.server import app
+import src.backtesting.api as backtesting_api
 from src.backtesting.backtesting import (
-    run_backtest_web,
-    run_backtest_set_web,
-    _build_chart_data,
     _empty_result,
+    run_backtest_set_web,
+    run_backtest_web,
 )
-from src.backtesting.api import router
-
+from src.web_app.server import app
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,11 +56,35 @@ def _build_weight_portfolio(tickers: list[str]) -> dict:
     return {t: {"mode": "weight", "value": w} for t in tickers}
 
 
+def _load_saved_result(response_data: dict) -> dict:
+    result_path = (
+        backtesting_api._BACKTEST_ROOT
+        / response_data["id"]
+        / "result.json"
+    )
+    return json.loads(result_path.read_text(encoding="utf-8"))
+
+
 # ---------------------------------------------------------------------------
 # Test client
 # ---------------------------------------------------------------------------
 
 client = TestClient(app)
+_output_directory: tempfile.TemporaryDirectory | None = None
+_original_backtest_root = backtesting_api._BACKTEST_ROOT
+
+
+def setUpModule() -> None:
+    """Keep all generated backtests out of operator-owned data."""
+    global _output_directory
+    _output_directory = tempfile.TemporaryDirectory()
+    backtesting_api._BACKTEST_ROOT = Path(_output_directory.name).resolve()
+
+
+def tearDownModule() -> None:
+    backtesting_api._BACKTEST_ROOT = _original_backtest_root
+    if _output_directory is not None:
+        _output_directory.cleanup()
 
 
 # ===========================================================================
@@ -105,7 +127,7 @@ class TestBacktestingAPIIntegration(unittest.TestCase):
         data = resp.json()
         for t in data["tickers"]:
             self.assertIsInstance(t, str)
-            self.assertTrue(len(t) > 0, f"Empty ticker found")
+            self.assertTrue(len(t) > 0, "Empty ticker found")
             self.assertNotEqual(t, "null")
             self.assertNotEqual(t, "None")
             self.assertNotEqual(t, "undefined")
@@ -122,28 +144,26 @@ class TestBacktestingAPIIntegration(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
 
-        # Check BacktestResult structure
-        self.assertIn("metrics", data)
+        # The API returns a bounded summary while persisting the full result.
+        self.assertIn("summary", data)
         self.assertIn("chart_data", data)
         self.assertIn("per_company", data)
         self.assertIn("yearly_returns", data)
         self.assertIn("dividends_by_year", data)
-        self.assertIn("warnings", data)
+        self.assertEqual(data["path"], data["id"])
 
-        # Metrics completeness
-        m = data["metrics"]
+        # Summary completeness
+        m = data["summary"]
         required = {
             "total_return", "annualized_return", "volatility",
             "sharpe_ratio", "max_drawdown", "start_date", "end_date",
-            "portfolio_price_return", "portfolio_dividend_return",
-            "initial_capital",
+            "price_return", "dividend_return", "initial_capital", "warnings",
         }
         for key in required:
             self.assertIn(key, m, f"Missing metric: {key}")
 
         # Benchmark fields should be None (no benchmark)
         self.assertIsNone(m["benchmark_total_return"])
-        self.assertIsNone(m["benchmark_annualized_return"])
         self.assertIsNone(m["excess_return"])
 
         # Chart data structure
@@ -186,7 +206,7 @@ class TestBacktestingAPIIntegration(unittest.TestCase):
         })
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
-        m = data["metrics"]
+        m = _load_saved_result(data)["metrics"]
 
         # Benchmark fields should be populated
         self.assertIsNotNone(m["benchmark_total_return"],
@@ -241,9 +261,9 @@ class TestBacktestingAPIIntegration(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
 
-        # BacktestSetResult structure
+        # The API returns aggregate data; detailed runs remain in result.json.
         self.assertIn("aggregate", data)
-        self.assertIn("results", data)
+        results = _load_saved_result(data)["results"]
 
         agg = data["aggregate"]
         self.assertEqual(agg["total_runs"], 2)  # 2 durations
@@ -253,7 +273,6 @@ class TestBacktestingAPIIntegration(unittest.TestCase):
         self.assertIn("total_return", agg["stats"])
         self.assertIn("sharpe_ratio", agg["stats"])
 
-        results = data["results"]
         self.assertEqual(len(results), 2)
         for r in results:
             self.assertIn("metrics", r)
@@ -281,7 +300,7 @@ class TestBacktestingAPIIntegration(unittest.TestCase):
         data = resp.json()
 
         # Benchmark should be picked up from CSV header
-        r = data["results"][0]
+        r = _load_saved_result(data)["results"][0]
         m = r["metrics"]
         self.assertIsNotNone(m.get("benchmark_total_return"),
                              "CSV # Benchmark: comment header not applied")
@@ -307,7 +326,7 @@ class TestBacktestingAPIIntegration(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["aggregate"]["total_runs"], 0)
-        self.assertEqual(data["results"], [])
+        self.assertEqual(_load_saved_result(data)["results"], [])
 
     # ── Multi-year CSV ───────────────────────────────────────────────
 
@@ -332,7 +351,7 @@ class TestBacktestingAPIIntegration(unittest.TestCase):
         self.assertEqual(agg["successful"], 6)
 
         # Verify all year/duration combinations
-        results = data["results"]
+        results = _load_saved_result(data)["results"]
         years = set(r["year"] for r in results)
         durations = set(r["duration"] for r in results)
         self.assertEqual(years, {"2019", "2020", "2021"})
@@ -344,10 +363,8 @@ class TestBacktestingAPIIntegration(unittest.TestCase):
         resp = client.get("/backtesting")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("text/html", resp.headers.get("content-type", ""))
-        # Should load Chart.js
-        self.assertIn("chart.js", resp.text.lower())
-        # Should have the bt-root element
-        self.assertIn("bt-root", resp.text)
+        self.assertIn('<div id="root"></div>', resp.text)
+        self.assertIn("/app-assets/", resp.text)
 
     # ── OpenAPI ──────────────────────────────────────────────────────
 
@@ -765,7 +782,7 @@ class TestChartDataIntegrity(unittest.TestCase):
             self.assertIsInstance(rec["Ticker"], str,
                                   f"Ticker not a string: {type(rec['Ticker'])}")
             self.assertTrue(len(rec["Ticker"]) > 0,
-                            f"Ticker is empty string")
+                            "Ticker is empty string")
             self.assertNotIn(rec["Ticker"], ("null", "None", "undefined"),
                              f"Ticker is literal '{rec['Ticker']}' string")
 
@@ -798,7 +815,9 @@ class TestScreeningToBacktestingFlow(unittest.TestCase):
                 screening_date="2023-03-31",
             )
         except Exception as e:
-            raise unittest.SkipTest(f"Screening criteria not applicable: {e}")
+            raise unittest.SkipTest(
+                f"Screening criteria not applicable: {e}"
+            ) from e
 
         # Extract tickers (simulate what screening/index.js does)
         ticker_col = None
@@ -844,7 +863,9 @@ class TestScreeningToBacktestingFlow(unittest.TestCase):
                 screening_date="2022-12-31",
             )
         except Exception as e:
-            raise unittest.SkipTest(f"Screening criteria not applicable: {e}")
+            raise unittest.SkipTest(
+                f"Screening criteria not applicable: {e}"
+            ) from e
 
         if screen_df is None or screen_df.empty:
             raise unittest.SkipTest("Screening returned no results")

@@ -1,11 +1,17 @@
+# Generated compatibility input. pyproject.toml is authoritative.
+# Regenerate/check with: python scripts/sync_requirements.py [--check]
+
+# Runtime
 beautifulsoup4==4.13.4
 certifi==2025.1.31
 chardet==5.2.0
 charset-normalizer==3.4.1
 colorama==0.4.6
+fastapi==0.136.1
 frozendict==2.4.6
 idna==3.10
 joblib==1.5.2
+matplotlib==3.9.4
 multitasking==0.0.11
 numpy==2.2.4
 packaging==25.0
@@ -15,11 +21,9 @@ peewee==3.17.9
 platformdirs==4.3.7
 python-dateutil==2.9.0.post0
 python-dotenv==1.1.1
-pytest==8.3.2
+python-multipart==0.0.20
 pytz==2025.2
 requests==2.32.3
-fastapi==0.136.1
-uvicorn==0.46.0
 scikit-learn==1.7.2
 scipy==1.16.2
 six==1.17.0
@@ -28,9 +32,16 @@ threadpoolctl==3.6.0
 typing_extensions==4.13.2
 tzdata==2025.2
 urllib3==2.4.0
+uvicorn==0.46.0
 yfinance==0.2.55
-pyinstaller==6.16.0
-matplotlib==3.9.4
-python-multipart==0.0.20
-pytest-playwright==0.7.0
+
+# Development
+mypy>=1.16,<2
 playwright==1.52.0
+pytest==8.3.2
+pytest-cov>=6,<8
+pytest-playwright==0.7.0
+ruff>=0.12,<1
+
+# Build
+pyinstaller==6.16.0

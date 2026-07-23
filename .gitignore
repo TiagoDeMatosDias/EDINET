@@ -4,6 +4,8 @@ files/downloadeddocs/*
 data/
 logs/
 __pycache__/
+.pytest_cache/
+tests/.pytest-tmp-*/
 .idea/
 .venv/
 .venv2/
@@ -12,6 +14,8 @@ __pycache__/
 .claude/
 .env
 docs/Feature Development/*
+!docs/Feature Development/Project Hardening Plan.md
+!docs/Feature Development/Deferred Functionality Backlog.md
 
 # Runtime state (user-specific, not committed)
 config/state/*
@@ -19,7 +23,6 @@ config/state/*
 # PyInstaller
 build/
 dist/
-*.spec
 
 debug.log
 __pycache__/config.cpython-313.pyc

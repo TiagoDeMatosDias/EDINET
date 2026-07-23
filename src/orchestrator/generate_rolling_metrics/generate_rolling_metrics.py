@@ -8,16 +8,19 @@ from . import service as rolling_metrics_services
 logger = logging.getLogger(__name__)
 
 
-def run_generate_rolling_metrics(config, overwrite=False):
+def run_generate_rolling_metrics(config, overwrite=False, context=None):
     logger.info("Generating rolling metrics tables...")
     step_cfg = config.get("generate_rolling_metrics_config", {})
     db2 = get_db2()
 
-    return rolling_metrics_services.generate_rolling_metrics(
+    kwargs = dict(
         source_database=db2,
         target_database=db2,
         overwrite=overwrite,
     )
+    if context is not None:
+        kwargs["context"] = context
+    return rolling_metrics_services.generate_rolling_metrics(**kwargs)
 
 
 STEP_DEFINITION = StepDefinition(

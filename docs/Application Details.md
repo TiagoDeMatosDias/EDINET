@@ -1,7 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 - Central reference for runtime/test Python modules (`src/`), web app modules (`src/web_app/`), React frontend (`frontend-v2/`), and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
@@ -33,11 +33,26 @@ Suggested per-function format:
 - Maintained top-level views: `Overview`, `Pipeline`, `Screening`, `Analysis`, `Backtesting`, and `Portfolio`.
 - Architecture status: `src.orchestrator` is a thin dispatcher with dynamically discovered step packages; backend modules are decoupled from `Config` and called with explicit parameters.
 - Mature user-facing workflows: ingestion, ETL, ratio generation, backtesting, screening, security analysis, portfolio management, and company tags all have dedicated test coverage.
-- Web workstation: full-featured React SPA (`frontend-v2/`) served at `/`, `/pipeline`, `/screen`, `/analyze`, `/backtest`, `/portfolio`. All views are fully functional.
+- Web workstation: React SPA served at `/`, `/pipeline`, `/screen`, `/analyze`, `/backtest`, and `/portfolio`; `/security` and `/backtesting` remain SPA compatibility aliases.
+- Pipeline execution: `POST /api/pipeline/run` validates and queues work, returning `202`; a single managed worker persists truthful job/step state in `config/state/pipeline_jobs.db`.
+- Job history accepts bounded `limit`/`offset` pagination, and `/health` exposes only aggregate queue depth and counts by status.
+- Ordinary HTTP exports and generated backtest artifacts use separate limits; rolling ZIPs are size-limited while being written to disk and incomplete archives are removed.
+- Security boundary: loopback is the default. Remote binding requires explicit opt-in, a strong bearer token, and trusted hosts. Database and generated-file access is constrained to configured roots.
 
 ---
 
 ## Runtime modules (`src`)
+
+### Hardening subsystem reference
+
+- `src/api/models.py` owns pipeline request/response contracts.
+- `src/api/runtime.py` owns the validated settings, job store, and job manager used by pipeline routes.
+- `src/api/system_routes.py`, `pipeline_routes.py`, and `job_routes.py` own discovery/health, submission, and job lifecycle endpoints; `src.api.router:app` remains the stable facade.
+- `src/pipeline_jobs/store.py` owns versioned SQLite persistence. `manager.py` owns the one-worker queue and terminal-state rules. `context.py` exposes cooperative cancellation/progress/workspace state. `redaction.py` bounds and redacts persisted output.
+- `src/web_app/security.py` owns `AppSettings`, bearer authentication, trusted hosts, request/correlation IDs, safe error envelopes, request-size limits, and `PathPolicy`.
+- `src/orchestrator/common/sqlite.py` exposes `connect_read`, `connect_write`, `transaction`, managed WAL initialization, existence helpers, and identifier quoting.
+- `src/portfolio/models.py` owns Portfolio API contracts; `src/portfolio/schema.py` remains the compatibility facade for those models while owning versioned schema migrations.
+- `src/screening/formatting.py` and `src/screening/persistence.py` own formatting and atomic saved-screen/history persistence behind the existing `src.screening` facade.
 
 ## Architecture overview
 
@@ -250,7 +265,7 @@ Responsibility: Pipeline validation - step config default application, pipeline 
 
 ---
 
-### [src/utilities/stock_prices.py](src/utilities/stock_prices.py)
+### [src/utilities/stock_prices.py](../src/utilities/stock_prices.py)
 
 Responsibility: Shared stock price provider access and persistence helpers used by stock price steps.
 
@@ -266,7 +281,7 @@ Responsibility: Shared stock price provider access and persistence helpers used 
 	- Purpose: Ensure the destination stock-prices table exists with the expected schema.
 	- Calls/Dependencies: `pd.DataFrame`, `to_sql`, `logger`.
 
-### [src/orchestrator/update_stock_prices/update_stock_prices.py](src/orchestrator/update_stock_prices/update_stock_prices.py)
+### [src/orchestrator/update_stock_prices/update_stock_prices.py](../src/orchestrator/update_stock_prices/update_stock_prices.py)
 
 Responsibility: Step-owned workflow that decides which company tickers should be refreshed before delegating actual provider queries to the shared stock price utilities.
 
@@ -305,7 +320,7 @@ Responsibility: Step-owned workflow for importing user-supplied stock price CSV 
 
 ---
 
-### [src/utilities/__init__.py](src/utilities/__init__.py)
+### [src/utilities/__init__.py](../src/utilities/__init__.py)
 
 Responsibility: public utilities package facade and discovery entry point.
 
@@ -313,7 +328,7 @@ Responsibility: public utilities package facade and discovery entry point.
 - Discovery: `DISCOVERED_UTILITY_MODULES` is built from modules under `src/utilities/`.
 - Backward compatibility: `src/utils.py` and `src/logger.py` remain as thin facades that forward to the new package modules.
 
-### [src/utilities/utils.py](src/utilities/utils.py)
+### [src/utilities/utils.py](../src/utilities/utils.py)
 
 Responsibility: Small helpers used across modules (URL building, CSV helpers, simple CSV queries).
 
@@ -328,7 +343,7 @@ Responsibility: Small helpers used across modules (URL building, CSV helpers, si
 
 ---
 
-### [src/utilities/logger.py](src/utilities/logger.py)
+### [src/utilities/logger.py](../src/utilities/logger.py)
 
 Responsibility: Centralized logging setup.
 
@@ -366,24 +381,21 @@ Responsibility: Centralized logging setup.
 
 ### [config.py](../config.py)
 
-Responsibility: Singleton configuration loader. Reads `.env` and `run_config.json` on first access.
+Responsibility: Explicit in-memory pipeline configuration with environment fallback.
 
 `class Config`
-	- Purpose: Singleton that loads settings from `.env` and `run_config.json`.
-
-	- `def __new__(cls, run_config_path=None) -> Config`
-		- Purpose: Standard singleton constructor; loads config from disk on first creation.
+	- Purpose: Wrap a request/programmatically supplied settings dictionary. It does not load `run_config.json`.
 
 	- `def get(self, key, default=None)`
 		- Purpose: Get a config value from settings dict or environment variables.
 
 	- `@classmethod def from_dict(cls, settings: dict) -> Config`
-		- Purpose: Create a Config instance from a dict **without touching disk**. Bypasses the singleton pattern. Used by the Tk UI for in-memory configuration.
+		- Purpose: Create a Config instance from an explicit dictionary. Loads `.env` only for secret/environment fallback.
 		- Inputs: `settings` dict.
 		- Output: New `Config` instance (not the singleton).
 
 	- `@classmethod def reset(cls) -> None`
-		- Purpose: Clear the singleton so the next `Config()` call reloads from disk.
+		- Purpose: No-op retained for test/source compatibility.
 
 ---
 
@@ -393,8 +405,8 @@ Responsibility: Singleton configuration loader. Reads `.env` and `run_config.jso
 
 Responsibility: Web workstation entry point launcher.
 
-- `def _run_web(host: str = "127.0.0.1", port: int = 8000, reload: bool = True) -> None`
-	- Purpose: Launch the web workstation server via uvicorn.
+- `def _run_web(host: str = "127.0.0.1", port: int = 8000, reload: bool = True, allow_remote: bool = False) -> None`
+	- Purpose: Validate bind/authentication settings, propagate them to app creation, and launch Uvicorn.
 	- Calls/Dependencies: `setup_logging`, `uvicorn.run`.
 
 ---

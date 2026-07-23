@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 _RAW_DOCUMENTS_PATH = os.path.join(_find_project_root(), "data", "raw_documents")
 
 
-def run_download_documents(config, overwrite=False):
+def run_download_documents(config, overwrite=False, context=None):
     logger.info("Downloading documents...")
     step_cfg = config.get("download_documents_config", {})
     # Hardcoded table names (moved out of .env)
@@ -30,7 +30,11 @@ def run_download_documents(config, overwrite=False):
     filters = edinet.generate_filter("csvFlag", "=", step_cfg.get("csvFlag"), filters)
     filters = edinet.generate_filter("Downloaded", "=", step_cfg.get("Downloaded"), filters)
 
-    edinet.downloadDocs(doc_list_table, financial_data_table, filters)
+    args = (doc_list_table, financial_data_table, filters)
+    if context is None:
+        edinet.downloadDocs(*args)
+    else:
+        edinet.downloadDocs(*args, context=context)
 
 
 STEP_DEFINITION = StepDefinition(

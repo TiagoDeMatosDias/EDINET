@@ -12,7 +12,7 @@ import time
 import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
@@ -1864,9 +1864,12 @@ def sync_taxonomy_releases(
     force_download: bool = False,
     force_reparse: bool = False,
     page_url: str = DEFAULT_TAXONOMY_PAGE_URL,
+    context=None,
 ) -> dict[str, int]:
     if not target_database:
         raise ValueError("target_database is required for taxonomy sync.")
+    if context is not None:
+        context.checkpoint()
 
     listing = scrape_taxonomy_listing(page_url=page_url)
     selected = _select_listing_entries(
@@ -1909,10 +1912,18 @@ def sync_taxonomy_releases(
 
         session = requests.Session()
         try:
-            for entry in selected:
+            for entry_index, entry in enumerate(selected):
+                if context is not None:
+                    context.report_progress(
+                        entry_index,
+                        len(selected),
+                        f"Processing taxonomy release {entry_index + 1} of {len(selected)}",
+                    )
                 release_id = _release_id_for_listing_entry(entry)
                 archive_path = os.path.join(download_dir, entry.archive_name)
-                downloaded_at = datetime.utcnow().isoformat(timespec="seconds")
+                downloaded_at = datetime.now(timezone.utc).isoformat(
+                    timespec="seconds"
+                )
 
                 if os.path.exists(archive_path) and not force_download:
                     with open(archive_path, "rb") as handle:
@@ -1953,6 +1964,12 @@ def sync_taxonomy_releases(
             session.close()
 
         conn.commit()
+        if context is not None:
+            context.report_progress(
+                len(selected),
+                len(selected),
+                "Taxonomy synchronization complete",
+            )
         return stats
     finally:
         conn.close()
@@ -1965,11 +1982,14 @@ def import_local_taxonomy_xsd(
     release_label: str | None = None,
     release_year: int | None = None,
     taxonomy_date: str | None = None,
+    context=None,
 ) -> dict[str, int]:
     if not target_database:
         raise ValueError("target_database is required for local taxonomy import.")
     if not xsd_file or not os.path.exists(xsd_file):
         raise FileNotFoundError(f"Taxonomy XSD file not found: {xsd_file}")
+    if context is not None:
+        context.report_progress(0, 1, "Importing local taxonomy")
 
     inferred_prefix = _normalise_namespace_prefix(namespace_prefix)
     if not inferred_prefix:
@@ -1998,7 +2018,15 @@ def import_local_taxonomy_xsd(
         namespace_uri = root.get("targetNamespace")
 
         concepts = {}
-        for element in root.findall(f"{_XSD_NS}element"):
+        elements = root.findall(f"{_XSD_NS}element")
+        progress_total = len(elements) + 1
+        for element_index, element in enumerate(elements):
+            if context is not None and element_index % 250 == 0:
+                context.report_progress(
+                    element_index,
+                    progress_total,
+                    f"Parsing taxonomy concept {element_index + 1} of {len(elements)}",
+                )
             concept_name = element.get("name")
             element_id = element.get("id")
             if element_id and re.match(r"^[A-Za-z0-9\-]+_[A-Za-z0-9\-]+_.+$", element_id):
@@ -2118,6 +2146,12 @@ def import_local_taxonomy_xsd(
                 ],
             )
         conn.commit()
+        if context is not None:
+            context.report_progress(
+                progress_total,
+                progress_total,
+                "Local taxonomy import complete",
+            )
         return {
             "releases_processed": 1,
             "archives_processed": 1,

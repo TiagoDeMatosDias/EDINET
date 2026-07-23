@@ -12,6 +12,7 @@ Returns a flat list of dicts suitable for insertion into the Transactions table.
 from __future__ import annotations
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -29,6 +30,12 @@ _CORP_ACTION_TAG = "CorporateAction"
 # levelOfDetail values we accept
 _EXECUTION_LOD = "EXECUTION"
 _DETAIL_LOD = "DETAIL"
+
+_UNSAFE_XML_DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
+
+
+class InvalidPortfolioXML(ValueError):
+    """Raised when uploaded content is not a safe IBKR FlexQuery document."""
 
 # Mapping from XML CashTransaction type → our activity_type
 _CASH_TYPE_MAP: dict[str, str] = {
@@ -243,8 +250,26 @@ def parse_ibkr_xml(xml_content: str | bytes) -> dict[str, list[dict]]:
     Returns a dict with keys ``trades``, ``cash_transactions``, ``corp_actions``,
     each containing a list of normalized entry dicts.
     """
-    root = ET.fromstring(xml_content) if isinstance(xml_content, str) else \
-           ET.fromstring(xml_content.decode("utf-8"))
+    try:
+        content = (
+            xml_content
+            if isinstance(xml_content, str)
+            else xml_content.decode("utf-8-sig")
+        )
+    except UnicodeDecodeError as exc:
+        raise InvalidPortfolioXML("The XML document is not valid UTF-8") from exc
+
+    if _UNSAFE_XML_DECLARATION.search(content):
+        raise InvalidPortfolioXML("DTD and entity declarations are not allowed")
+
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        raise InvalidPortfolioXML("The XML document is malformed") from exc
+
+    root_name = root.tag.rsplit("}", 1)[-1]
+    if root_name != "FlexQueryResponse":
+        raise InvalidPortfolioXML("The XML document is not an IBKR FlexQuery response")
 
     result: dict[str, list[dict]] = {
         "trades": [],

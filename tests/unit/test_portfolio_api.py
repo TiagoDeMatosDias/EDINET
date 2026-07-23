@@ -23,10 +23,8 @@ client = TestClient(app)
 
 class TestUpload:
     @pytest.fixture(autouse=True)
-    def setup_db(self, monkeypatch):
-        import tempfile
-        fd, path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
+    def setup_db(self, monkeypatch, tmp_path):
+        path = str(tmp_path / "portfolio.db")
         create_tables(path)
 
         def _mock_get_db3():
@@ -40,6 +38,10 @@ class TestUpload:
         monkeypatch.setattr("src.portfolio.api.get_db3", _mock_get_db3)
         monkeypatch.setattr("src.portfolio.api.get_db2", _mock_get_db2)
         monkeypatch.setattr("src.portfolio.price_fetcher.get_db2", _mock_get_db2)
+        monkeypatch.setattr(
+            "src.portfolio.api.ensure_prices_for_tickers",
+            lambda *_args, **_kwargs: {"fetched": [], "failed": []},
+        )
 
     def _read_test_xml(self):
         ibkr_dir = os.path.join(
@@ -66,6 +68,38 @@ class TestUpload:
             files={"file": ("test.txt", b"hello", "text/plain")},
         )
         assert resp.status_code == 400
+
+    def test_upload_rejects_oversized_content(self, monkeypatch):
+        monkeypatch.setattr("src.portfolio.api._MAX_XML_UPLOAD_BYTES", 16)
+        resp = client.post(
+            "/api/portfolio/upload",
+            files={"file": ("large.xml", b"x" * 17, "application/xml")},
+        )
+        assert resp.status_code == 413
+
+    def test_upload_rejects_unsafe_xml_without_leaking_parser_details(self):
+        content = b'<!DOCTYPE x [<!ENTITY y SYSTEM "file:///secret">]><x>&y;</x>'
+        resp = client.post(
+            "/api/portfolio/upload",
+            files={"file": ("unsafe.xml", content, "application/xml")},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid IBKR XML document"
+        assert "secret" not in resp.text
+
+    def test_upload_stores_only_the_filename_basename(self):
+        resp = client.post(
+            "/api/portfolio/upload",
+            files={
+                "file": (
+                    "..\\..\\portfolio.xml",
+                    b"<FlexQueryResponse />",
+                    "application/xml",
+                )
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["source_file"] == "portfolio.xml"
 
     def test_upload_twice_no_duplicates(self, monkeypatch):
         """Uploading the same file twice should skip on second insert."""

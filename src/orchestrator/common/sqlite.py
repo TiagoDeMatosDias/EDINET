@@ -1,8 +1,113 @@
+from contextlib import contextmanager
 import json
 import logging
+from pathlib import Path
 import re
+import sqlite3
+from typing import Iterator
 
 logger = logging.getLogger("src.data_processing")
+
+DEFAULT_BUSY_TIMEOUT_MS = 30_000
+
+
+class DatabaseBusyError(RuntimeError):
+    """Raised after SQLite remains locked for the configured timeout."""
+
+
+def quote_identifier(name: str) -> str:
+    """Quote an SQLite identifier without treating it as a value."""
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _configure_connection(
+    conn: sqlite3.Connection,
+    busy_timeout_ms: int,
+) -> sqlite3.Connection:
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def connect_write(
+    path: str | Path,
+    *,
+    busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
+) -> sqlite3.Connection:
+    """Open one thread-local writable connection with consistent policy."""
+    if busy_timeout_ms < 1:
+        raise ValueError("busy_timeout_ms must be positive")
+    conn = sqlite3.connect(
+        str(Path(path)),
+        timeout=busy_timeout_ms / 1000,
+    )
+    return _configure_connection(conn, busy_timeout_ms)
+
+
+def connect_read(
+    path: str | Path,
+    *,
+    busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
+) -> sqlite3.Connection:
+    """Open an existing database in SQLite read-only URI mode."""
+    resolved = Path(path).expanduser().resolve(strict=True)
+    conn = sqlite3.connect(
+        f"{resolved.as_uri()}?mode=ro",
+        uri=True,
+        timeout=busy_timeout_ms / 1000,
+    )
+    _configure_connection(conn, busy_timeout_ms)
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
+def initialize_managed_database(conn: sqlite3.Connection) -> None:
+    """Apply persistent journal policy once while initializing a managed DB."""
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+
+
+@contextmanager
+def transaction(
+    path: str | Path,
+    *,
+    busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
+    immediate: bool = True,
+) -> Iterator[sqlite3.Connection]:
+    """Open, commit, roll back, and close one explicit write transaction."""
+    conn = connect_write(path, busy_timeout_ms=busy_timeout_ms)
+    try:
+        conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+        yield conn
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        if isinstance(exc, sqlite3.OperationalError) and (
+            "locked" in str(exc).casefold() or "busy" in str(exc).casefold()
+        ):
+            raise DatabaseBusyError(
+                f"Database remained locked for {busy_timeout_ms} ms"
+            ) from exc
+        raise
+    finally:
+        conn.close()
+
+
+def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def index_exists(conn: sqlite3.Connection, index_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+        (index_name,),
+    ).fetchone()
+    return row is not None
 
 
 class OrchestratorProcessorBase:

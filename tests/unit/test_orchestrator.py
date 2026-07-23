@@ -656,7 +656,7 @@ class TestGenerateRollingMetricsStep:
 class TestResolveFileUploads:
     """Test resolve_file_uploads central file-upload handling."""
 
-    def test_plain_string_passed_through(self):
+    def test_plain_string_passed_through(self, tmp_path):
         from src.orchestrator.orchestrator import resolve_file_uploads
 
         config = {
@@ -665,10 +665,10 @@ class TestResolveFileUploads:
             }
         }
         steps = [{"name": "import_stock_prices_csv"}]
-        result = resolve_file_uploads(config, steps)
+        result = resolve_file_uploads(config, steps, workspace=tmp_path / "job")
         assert result["import_stock_prices_csv_config"]["csv_file"] == "/path/to/prices.csv"
 
-    def test_empty_string_passed_through(self):
+    def test_empty_string_passed_through(self, tmp_path):
         from src.orchestrator.orchestrator import resolve_file_uploads
 
         config = {
@@ -677,12 +677,11 @@ class TestResolveFileUploads:
             }
         }
         steps = [{"name": "import_stock_prices_csv"}]
-        result = resolve_file_uploads(config, steps)
+        result = resolve_file_uploads(config, steps, workspace=tmp_path / "job")
         assert result["import_stock_prices_csv_config"]["csv_file"] == ""
 
-    def test_upload_dict_resolved_to_temp_file(self):
+    def test_upload_dict_resolved_to_owned_workspace(self, tmp_path):
         import base64
-        import os
 
         from src.orchestrator.orchestrator import resolve_file_uploads
 
@@ -695,22 +694,20 @@ class TestResolveFileUploads:
             }
         }
         steps = [{"name": "import_stock_prices_csv"}]
-        result = resolve_file_uploads(config, steps)
+        workspace = tmp_path / "job"
+        result = resolve_file_uploads(config, steps, workspace=workspace)
 
         resolved_path = result["import_stock_prices_csv_config"]["csv_file"]
         assert isinstance(resolved_path, str)
-        assert os.path.exists(resolved_path)
+        assert Path(resolved_path).is_file()
+        assert Path(resolved_path).parent == workspace / "uploads"
         assert "test.csv" in resolved_path
 
         # Verify file content was written correctly
-        with open(resolved_path, "r") as f:
+        with open(resolved_path, "r", encoding="utf-8") as f:
             assert f.read() == csv_content
 
-        # Clean up
-        os.remove(resolved_path)
-        os.rmdir(os.path.dirname(resolved_path))
-
-    def test_non_file_fields_untouched(self):
+    def test_non_file_fields_untouched(self, tmp_path):
         from src.orchestrator.orchestrator import resolve_file_uploads
 
         config = {
@@ -721,7 +718,7 @@ class TestResolveFileUploads:
             }
         }
         steps = [{"name": "import_stock_prices_csv"}]
-        result = resolve_file_uploads(config, steps)
+        result = resolve_file_uploads(config, steps, workspace=tmp_path / "job")
         step_cfg = result["import_stock_prices_csv_config"]
         # csv_file should be resolved to a path string
         assert isinstance(step_cfg["csv_file"], str)
@@ -729,21 +726,21 @@ class TestResolveFileUploads:
         assert step_cfg["default_ticker"] == "1234"
         assert step_cfg["date_column"] == "Date"
 
-    def test_unknown_step_skipped_gracefully(self):
+    def test_unknown_step_skipped_gracefully(self, tmp_path):
         from src.orchestrator.orchestrator import resolve_file_uploads
 
         config = {"nonexistent_config": {"file_field": {"filename": "x", "content": "eA=="}}}
         steps = [{"name": "nonexistent_step"}]
-        result = resolve_file_uploads(config, steps)
+        result = resolve_file_uploads(config, steps, workspace=tmp_path / "job")
         # Should pass through unchanged since step is unknown
         assert result["nonexistent_config"]["file_field"] == {"filename": "x", "content": "eA=="}
 
-    def test_returned_dict_is_independent(self):
+    def test_returned_dict_is_independent(self, tmp_path):
         from src.orchestrator.orchestrator import resolve_file_uploads
 
         config = {"import_stock_prices_csv_config": {"csv_file": "orig.csv"}}
         steps = [{"name": "import_stock_prices_csv"}]
-        result = resolve_file_uploads(config, steps)
+        result = resolve_file_uploads(config, steps, workspace=tmp_path / "job")
         # Should be a different dict object
         assert result is not config
         # Original should be unmodified

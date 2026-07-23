@@ -4,8 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Rolling backtest archives use a separate 256 MiB configurable artifact budget and are written through a size-limited disk stream, avoiding false 25 MiB export failures and duplicate in-memory ZIP allocation.
+- Portfolio routes are registered exactly once and startup rejects duplicate method/path pairs.
+- Saved screens retain `screening_date`; old JSON without the field remains compatible and invalid non-ISO dates are rejected.
+- Pipeline failure stops later steps and reports `failed`; timing, terminal progress, current step, cancellation, and restart state now reflect actual execution.
+- Portfolio imports assign `source_file` only to newly imported rows, and schema upgrades use explicit idempotent migrations with a pre-migration backup.
+- Legacy timestamp-only backtest result IDs remain readable while new IDs include a collision-resistant suffix.
+
+### Security
+- Loopback is the default. Remote binding requires `--allow-remote`, a strong bearer token, and `EDINET_TRUSTED_HOSTS`.
+- Added correlation IDs, one safe HTTP error envelope, request/upload/export limits, and redaction of job output and secrets.
+- Database, pipeline input, upload, backtest result, and export paths are resolved against configured roots; API responses use stable database IDs instead of private absolute paths.
+- Portfolio XML and embedded pipeline uploads are size-bounded, strictly decoded/validated, and owned by deterministic cleanup workspaces.
+
+### Reliability
+- Pipeline submissions return `202` and run through a persistent single-worker job manager with per-step state, cooperative cancellation, bounded output, retention, and interrupted-job recovery.
+- Added a shared SQLite connection/transaction policy, WAL initialization for managed databases, bounded lock errors, read-only query connections, and explicit Portfolio/job migrations.
+- React Pipeline polling now survives page reloads and exposes truthful cancellation and terminal output.
+- Added `pyproject.toml`, one application version source, synchronized compatibility requirements, bounded verification scripts, OpenAPI/route contracts, CI jobs, and a packaged Windows smoke test.
+- The canonical local interpreter is `.venv3`; obsolete `.venv` and `.venv2` environments were removed.
+
 ### Removed
-- **Legacy vanilla JS frontend (`src/web_app/frontend/`)** — retired in favor of the React/TypeScript SPA (`frontend-v2/`). All legacy routes (`/legacy`, `/orchestrator`, `/screening`, `/backtesting`, `/security`) removed.
+- **Legacy vanilla JS frontend (`src/web_app/frontend/`)** — retired in favor of the React/TypeScript SPA (`frontend-v2/`). Compatibility URLs such as `/backtesting` and `/security` now serve the React SPA rather than legacy pages.
 - **Tk desktop UI (`ui_tk/`)** — retired in favor of the web workstation (`src/web_app/`). All Tkinter-dependent code, tests, and dependencies removed:
   - `ui_tk/` package (app, controllers, style, utils, pages, shared widgets)
   - `tests/test_ui_tk_smoke.py` and `tests/test_ui_screenshots.py`

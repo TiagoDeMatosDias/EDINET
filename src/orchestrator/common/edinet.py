@@ -107,7 +107,12 @@ class Edinet:
         self.DB_COMPANY_INFO_TABLE = company_info_table
         self.DB_DOC_LIST_TABLE = doc_list_table
 
-    def get_All_documents_withMetadata(self, start_date="2015-01-01", end_date=None):
+    def get_All_documents_withMetadata(
+        self,
+        start_date="2015-01-01",
+        end_date=None,
+        context=None,
+    ):
         """
         Fetch all available document IDs for a given time period from the EDINET API and store them in the database.
 
@@ -124,6 +129,9 @@ class Edinet:
         
         start_date = datetime.strptime(start_date, "%Y-%m-%d")
         end_date = datetime.strptime(end_date, "%Y-%m-%d")
+        total_days = (end_date - start_date).days + 1
+        if total_days < 1:
+            raise ValueError("end_date must not be before start_date")
         
         current_date = start_date
 
@@ -132,6 +140,13 @@ class Edinet:
         cursor = conn.cursor()
         
         while current_date <= end_date:
+            day_index = (current_date - start_date).days
+            if context is not None:
+                context.report_progress(
+                    day_index,
+                    total_days,
+                    f"Fetching filing metadata for {current_date:%Y-%m-%d}",
+                )
             date_str = current_date.strftime("%Y-%m-%d")
             url = f"{self.baseURL}.json?date={date_str}&type=2&Subscription-Key={self.key}"
             logger.debug("URL: %s", url)
@@ -176,6 +191,8 @@ class Edinet:
             current_date += timedelta(days=1)  # Move to the next day
 
         conn.close()
+        if context is not None:
+            context.report_progress(total_days, total_days, "Filing metadata complete")
 
     def downloadDoc(self, docID, fileLocation=None, docTypeCode=None):
         """Download a single EDINET document and save it as a ZIP file.
@@ -215,7 +232,13 @@ class Edinet:
             logger.error(f"Failed to download file. Status code: {response.status_code}")
             return False
 
-    def downloadDocs(self, input_table, output_table=None, filter=None):
+    def downloadDocs(
+        self,
+        input_table,
+        output_table=None,
+        filter=None,
+        context=None,
+    ):
         """Download all documents listed in the database that have not yet been downloaded.
 
         Iterates over documents from ``input_table``, downloads each as a ZIP,
@@ -244,8 +267,16 @@ class Edinet:
             return
 
         logger.info(f"Number of documents to download: {len(docList)}")
+        if not docList:
+            return
         
-        for doc in docList:
+        for index, doc in enumerate(docList):
+            if context is not None:
+                context.report_progress(
+                    index,
+                    len(docList),
+                    f"Processing document {index + 1} of {len(docList)}",
+                )
             connection = None
             doc_id = doc.get("docID")
             doc_filter = self.generate_filter("docID", "=", doc_id)
@@ -304,6 +335,13 @@ class Edinet:
                     self.delete_folder(folder)
         
         self.delete_folder(os.path.join(self.defaultLocation, "downloadeddocs"))
+
+        if context is not None:
+            context.report_progress(
+                len(docList),
+                len(docList),
+                "Document processing complete",
+            )
 
         logger.info("All files downloaded successfully.")
 

@@ -414,6 +414,7 @@ def _insert_new_pairs(
 def update_fx_data(
     db_name: str,
     prices_table: str = "Stock_Prices",
+    context=None,
 ) -> dict[str, int]:
     """Download ECB FX data and insert into the prices table.
 
@@ -421,12 +422,16 @@ def update_fx_data(
     ``fx`` and ``inflation`` keys holding the count of rows added for each.
     """
     logger.info("Starting FX and inflation data update.")
+    if context is not None:
+        context.report_progress(0, 2, "Fetching foreign-exchange data")
 
     # --- FX rates ---
     fx_df = _fetch_ecb_fx_prices()
     fx_inserted = _insert_new_pairs(fx_df, db_name, prices_table, label="FX records")
 
     # --- Inflation / CPI ---
+    if context is not None:
+        context.report_progress(1, 2, "Fetching inflation data")
     inflation_df = _fetch_all_inflation_prices()
     inflation_inserted = _insert_new_pairs(
         inflation_df, db_name, prices_table, label="inflation records",
@@ -437,16 +442,21 @@ def update_fx_data(
         fx_inserted,
         inflation_inserted,
     )
+    if context is not None:
+        context.report_progress(2, 2, "FX and inflation update complete")
     return {"fx": fx_inserted, "inflation": inflation_inserted}
 
 
-def run_update_fx_data(config, overwrite=False):  # noqa: ARG001
+def run_update_fx_data(config, overwrite=False, context=None):  # noqa: ARG001
     """Handler invoked by the orchestrator."""
     logger.info("Updating FX and inflation data...")
-    return update_fx_data(
+    kwargs = dict(
         db_name=get_db2(),
         prices_table="Stock_Prices",
     )
+    if context is not None:
+        kwargs["context"] = context
+    return update_fx_data(**kwargs)
 
 
 STEP_DEFINITION = StepDefinition(

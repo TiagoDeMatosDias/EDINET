@@ -8,21 +8,31 @@ from __future__ import annotations
 
 import io
 import logging
+from tempfile import TemporaryDirectory
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src import screening as _screening
 from src import security_analysis as _security
 from src.orchestrator.common.db_config import get_db2
+from src.screening.persistence import normalize_screening_date
+from src.web_app.security import (
+    AppSettings,
+    PathPolicyError,
+    configured_database_policy,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/screening", tags=["screening"])
+
+_APP_SETTINGS = AppSettings.from_env()
+_DB_PATH_POLICY = configured_database_policy(_APP_SETTINGS.allowed_data_roots)
 
 # ---------------------------------------------------------------------------
 # Persistence paths (same as Tk UI controllers)
@@ -84,37 +94,49 @@ class ComputedColumn(BaseModel):
     formula: str | None = Field(default=None, description="Custom SQL expression using table aliases")
 
 
-class ScreeningRunRequest(BaseModel):
+class ScreeningDateRequest(BaseModel):
+    """Strict base contract for requests with an optional point-in-time date."""
+
+    model_config = ConfigDict(extra="forbid")
+    screening_date: str | None = Field(
+        default=None,
+        description="Point-in-time date (YYYY-MM-DD)",
+    )
+
+    @field_validator("screening_date", mode="before")
+    @classmethod
+    def validate_screening_date(cls, value):
+        return normalize_screening_date(value)
+
+
+class ScreeningRunRequest(ScreeningDateRequest):
     db_path: str = Field(..., description="Absolute path to the SQLite database")
     criteria: list[ScreeningCriterion] = Field(default_factory=list)
     columns: list[str] = Field(default_factory=list)
     computed_columns: list[ComputedColumn] = Field(default_factory=list)
     period: str | None = Field(default=None, description="Year filter (e.g. '2020')")
-    screening_date: str | None = Field(default=None, description="Point-in-time date (YYYY-MM-DD)")
     sort_by: str | None = Field(default=None)
     sort_order: str = Field(default="DESC")
     ranking_algorithm: str = Field(default="none")
     ranking_rules: list[RankingRule] = Field(default_factory=list)
 
 
-class ScreeningSaveRequest(BaseModel):
+class ScreeningSaveRequest(ScreeningDateRequest):
     name: str = Field(..., description="Screening configuration name")
     criteria: list[ScreeningCriterion] = Field(default_factory=list)
     columns: list[str] = Field(default_factory=list)
     computed_columns: list[ComputedColumn] = Field(default_factory=list)
     period: str | None = Field(default=None)
-    screening_date: str | None = Field(default=None)
     ranking_algorithm: str = Field(default="none")
     ranking_rules: list[RankingRule] = Field(default_factory=list)
 
 
-class ScreeningExportRequest(BaseModel):
+class ScreeningExportRequest(ScreeningDateRequest):
     db_path: str = Field(...)
     criteria: list[ScreeningCriterion] = Field(default_factory=list)
     columns: list[str] = Field(default_factory=list)
     computed_columns: list[ComputedColumn] = Field(default_factory=list)
     period: str | None = Field(default=None)
-    screening_date: str | None = Field(default=None)
     ranking_algorithm: str = Field(default="none")
     ranking_rules: list[RankingRule] = Field(default_factory=list)
     format: str = Field(default="csv", description="csv or backtest")
@@ -122,12 +144,11 @@ class ScreeningExportRequest(BaseModel):
     historical: bool = Field(default=False)
 
 
-class ScreeningHistoryEntry(BaseModel):
+class ScreeningHistoryEntry(ScreeningDateRequest):
     name: str | None = Field(default=None)
     criteria_count: int = Field(default=0)
     result_count: int = Field(default=0)
     period: str | None = Field(default=None)
-    screening_date: str | None = Field(default=None)
     db_path: str | None = Field(default=None)
 
 
@@ -136,14 +157,14 @@ class ScreeningHistoryEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _validate_db_path(db_path: str) -> str:
-    """Validate a database path exists on the server."""
-    path = Path(db_path)
-    if not path.exists():
-        raise HTTPException(
-            status_code=400,
-            detail=f"Database not found: {db_path}",
-        )
-    return str(path.resolve())
+    """Resolve a database only when it is inside an allowed data root."""
+    reference = db_path.strip()
+    if reference in {"", "default", "standardized"}:
+        reference = get_db2()
+    try:
+        return str(_DB_PATH_POLICY.authorize_database(reference))
+    except PathPolicyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _criteria_to_dicts(criteria: list[ScreeningCriterion]) -> list[dict]:
@@ -234,9 +255,12 @@ def update_prices(request: dict = Body(...)) -> dict:
 
 @router.get("/db-path")
 def get_default_db_path() -> dict:
-    """Return the default screening database path (DB2)."""
+    """Return a stable identifier for the default screening database."""
     try:
-        return {"db_path": get_db2()}
+        _validate_db_path("default")
+        return {"db_path": "default"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Failed to get default DB path: %s", str(e))
         raise HTTPException(status_code=500, detail=str(e))
@@ -466,6 +490,7 @@ def save_screening(request: ScreeningSaveRequest = Body(...)) -> dict:
             ranking_algorithm=request.ranking_algorithm,
             ranking_rules=ranking_dicts,
             computed_columns=computed_specs,
+            screening_date=request.screening_date,
         )
         return {"saved": True, "path": str(path)}
     except Exception as e:
@@ -516,6 +541,84 @@ def save_history(entry: ScreeningHistoryEntry = Body(...)) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _computed_column_specs(columns: list[ComputedColumn]) -> list[dict]:
+    """Convert computed-column request models to screening-layer values."""
+    return [
+        {
+            "name": column.name,
+            "formula_type": column.formula_type,
+            "expression_tokens": column.expression_tokens,
+            "numerator_table": column.numerator_table,
+            "numerator_column": column.numerator_column,
+            "denominator_table": column.denominator_table,
+            "denominator_column": column.denominator_column,
+            "formula": column.formula,
+        }
+        for column in columns
+    ]
+
+
+def _enforce_export_limit(content: str) -> str:
+    """Reject generated responses that exceed the configured byte limit."""
+    if len(content.encode("utf-8")) > _APP_SETTINGS.max_export_bytes:
+        raise HTTPException(413, "Generated export exceeds the configured size limit")
+    return content
+
+
+def _export_csv_content(
+    request: ScreeningExportRequest,
+    resolved: str,
+    criteria: list[dict],
+    ranking_rules: list[dict],
+    computed_columns: list[dict],
+) -> str:
+    dataframe = _screening.run_screening(
+        db_path=resolved,
+        criteria=criteria,
+        columns=list(request.columns),
+        period=request.period,
+        screening_date=request.screening_date,
+        ranking_algorithm=request.ranking_algorithm,
+        ranking_rules=ranking_rules,
+        computed_columns=computed_columns,
+    )
+    stream = io.StringIO()
+    dataframe.to_csv(stream, index=False)
+    return _enforce_export_limit(stream.getvalue())
+
+
+def _export_backtest_content(
+    request: ScreeningExportRequest,
+    resolved: str,
+    criteria: list[dict],
+    ranking_rules: list[dict],
+    computed_columns: list[dict],
+) -> str:
+    """Generate a backtest file in an owned, request-unique workspace."""
+    export_root = _STATE_DIR / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="screening-", dir=export_root) as temp_dir:
+        output_path = Path(temp_dir) / "screening_backtest_export.csv"
+        _screening.export_screening_to_backtest_csv(
+            db_path=resolved,
+            criteria=criteria,
+            columns=request.columns,
+            output_path=str(output_path),
+            period=request.period,
+            max_companies=request.max_companies,
+            ranking_algorithm=request.ranking_algorithm,
+            ranking_rules=ranking_rules,
+            historical=request.historical,
+            computed_columns=computed_columns,
+        )
+        if output_path.stat().st_size > _APP_SETTINGS.max_export_bytes:
+            raise HTTPException(
+                413,
+                "Generated export exceeds the configured size limit",
+            )
+        return _enforce_export_limit(output_path.read_text(encoding="utf-8"))
+
+
 @router.post("/export")
 def export_results(request: ScreeningExportRequest = Body(...)) -> StreamingResponse:
     """Export screening results to CSV (or backtest CSV format)."""
@@ -523,63 +626,19 @@ def export_results(request: ScreeningExportRequest = Body(...)) -> StreamingResp
         resolved = _validate_db_path(request.db_path)
         criteria_dicts = _criteria_to_dicts(request.criteria)
         ranking_dicts = _ranking_rules_to_dicts(request.ranking_rules)
-
+        computed_specs = _computed_column_specs(request.computed_columns)
         if request.format == "backtest":
-            computed_specs = []
-            for cc in request.computed_columns:
-                computed_specs.append({
-                    "name": cc.name,
-                    "formula_type": cc.formula_type,
-                "expression_tokens": cc.expression_tokens,
-                    "numerator_table": cc.numerator_table,
-                    "numerator_column": cc.numerator_column,
-                    "denominator_table": cc.denominator_table,
-                    "denominator_column": cc.denominator_column,
-                    "formula": cc.formula,
-                })
-            output_path = _screening.export_screening_to_backtest_csv(
-                db_path=resolved,
-                criteria=criteria_dicts,
-                columns=request.columns,
-                output_path=str(Path(resolved).parent / "screening_backtest_export.csv"),
-                period=request.period,
-                max_companies=request.max_companies,
-                ranking_algorithm=request.ranking_algorithm,
-                ranking_rules=ranking_dicts,
-                historical=request.historical,
-                computed_columns=computed_specs,
+            content = _export_backtest_content(
+                request, resolved, criteria_dicts, ranking_dicts, computed_specs
             )
-            with open(output_path, "r", encoding="utf-8") as f:
-                content = f.read()
             filename = "screening_backtest_export.csv"
-        else:
-            all_columns = list(request.columns)
-            computed_specs = []
-            for cc in request.computed_columns:
-                computed_specs.append({
-                    "name": cc.name,
-                    "formula_type": cc.formula_type,
-                "expression_tokens": cc.expression_tokens,
-                    "numerator_table": cc.numerator_table,
-                    "numerator_column": cc.numerator_column,
-                    "denominator_table": cc.denominator_table,
-                    "denominator_column": cc.denominator_column,
-                    "formula": cc.formula,
-                })
-            df = _screening.run_screening(
-                db_path=resolved,
-                criteria=criteria_dicts,
-                columns=all_columns,
-                period=request.period,
-                screening_date=request.screening_date,
-                ranking_algorithm=request.ranking_algorithm,
-                ranking_rules=ranking_dicts,
-                computed_columns=computed_specs,
+        elif request.format == "csv":
+            content = _export_csv_content(
+                request, resolved, criteria_dicts, ranking_dicts, computed_specs
             )
-            stream = io.StringIO()
-            df.to_csv(stream, index=False)
-            content = stream.getvalue()
             filename = "screening_export.csv"
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported export format")
 
         return StreamingResponse(
             iter([content]),

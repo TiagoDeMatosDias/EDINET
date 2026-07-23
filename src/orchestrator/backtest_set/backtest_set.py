@@ -7,18 +7,20 @@ from src.orchestrator.common.db_config import get_db2
 logger = logging.getLogger(__name__)
 
 
-def run_backtest_set(config, overwrite=False):
+def run_backtest_set(config, overwrite=False, context=None):
     logger.info("Running backtest set...")
     step_cfg = config.get("backtest_set_config", {})
 
-    return backtesting.run_backtest_set(
-        step_cfg,
+    kwargs = dict(
         db_path=get_db2(),
         prices_table="Stock_Prices",
         ratios_table=step_cfg.get("PerShare_Table") or "ShareMetrics",
         company_table="CompanyInfo",
         financial_statements_table=step_cfg.get("Financial_Statements_Table") or "FinancialStatements",
     )
+    if context is not None:
+        kwargs["context"] = context
+    return backtesting.run_backtest_set(step_cfg, **kwargs)
 
 
 STEP_DEFINITION = StepDefinition(

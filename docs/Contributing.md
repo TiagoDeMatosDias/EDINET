@@ -1,249 +1,96 @@
-# Contributing to EDINET
+# Contributing
 
-First off, thank you for considering contributing to EDINET! It's people like you that make this project great.
+Updated: 2026-07-22
 
-Following these guidelines helps to communicate that you respect the time of the developers managing and developing this open source project. In return, they should reciprocate that respect in addressing your issue or assessing patches and features.
+## Environment
 
-## Quick Checklist: Documentation Updates
+Use Python 3.12 or 3.13 in `.venv3`, Node.js 22, and npm 10. Install from the authoritative `pyproject.toml` and lockfile:
 
-Use this checklist when your change affects behavior, UI, workflows, or architecture:
-
-- Update user-facing docs impacted by the change (for example `README.md` and `docs/RUNNING.md`)
-- Update technical docs when implementation details changed (especially `docs/Application Details.md`)
-- Update contributing guidance if contributor workflows changed (for example screenshot/dev loops in `docs/Contributing.md`)
-- If UI changed, capture new screenshots (see the Screenshots section below) and update assets in `docs/images/`
-- Remove obsolete documentation references, commands, flags, screenshots, and files
-- Verify markdown links/images render correctly in preview
-- Include documentation updates in the same PR as the code change
-
-## Ground Rules
-
-- Ensure that the project remains standardized and modular. New sections should be able to be added or removed without significant refactoring.
-- Keep files organized. Each type of file should be in its relevant folder:
-    - Documentation in `docs/`
-    - Tests in `tests/`
-    - Configuration state (runtime config, saved setups) in `config/state/`
-    - Source code in `src/`
-    - Web frontend code in `frontend-v2/`
-    - Data files in `data/`
-
-## Your First Contribution
-
-Unsure where to begin contributing to EDINET? You can start by looking through these beginner-friendly issues:
-
-- Issues tagged with `good first issue`.
-- Issues tagged with `help wanted`.
-
-## Getting Started
-
-### Code Contributions
-
-When contributing code, please keep the following in mind:
-
-1.  **Tests:** Create and run tests for every new function you create. All tests should pass before submitting a pull request.
-2.  **Comments:** Follow the comment and docstring standards described below.
-3.  **Modularity:** Keep the project standardized and modular. This allows for new sections to be added or removed without extensive rework.
-4.  **File Structure:** Place files in their respective folders to maintain project organization. For example:
-    - Documentation should be in the `docs/` folder.
-    - Tests should be in the `tests/` folder.
-    - Configuration files should be in the `config/` folder.
-
-### Comment Standards
-
-All Python code in this project follows a consistent commenting style. The standards below are derived from `src/orchestrator/generate_ratios/generate_ratios.py`, which serves as the reference implementation.
-
-#### Docstrings (Google Style)
-
-Every public function and method must have a docstring. Use **Google style** with the following sections:
-
-- A short summary sentence on the first line.
-- An extended description when the behaviour needs more explanation.
-- An `Args:` section listing every parameter with its type and a brief description.
-- A `Returns:` section describing the return value and its type.
-
-```python
-def my_function(param1: str, param2: int = 0) -> bool:
-    """Short summary of what this function does.
-
-    Extended description when the behaviour needs more explanation.
-    This can span multiple lines.
-
-    Args:
-        param1 (str): Description of the first parameter.
-        param2 (int): Description of the second parameter. Defaults to 0.
-
-    Returns:
-        bool: Description of what is returned and when.
-    """
+```powershell
+py -3.13 -m venv .venv3
+.\.venv3\Scripts\python.exe -m pip install -e ".[dev,build]"
+Set-Location frontend-v2
+npm ci
+Set-Location ..
 ```
 
-#### Inline Comments
+`requirements.txt` is a generated compatibility input. After changing dependencies, run `python scripts/sync_requirements.py`, then verify it with `--check`.
 
-- Use inline comments to explain **why** something is done, not just what the code does.
-- Use `# --- Section Name ---` dividers to group related blocks of logic within a function.
-- Write comments as full sentences where appropriate.
+## Verification
 
-```python
-# --- Data Cleaning ---
-# Replace infinite values with NaN so they can be dropped.
-df_cleaned = df.replace([np.inf, -np.inf], np.nan)
+Run the same bounded stages used by CI:
 
-# Drop rows with missing values to ensure the regression runs on a complete dataset.
-df_cleaned = df_cleaned.dropna(subset=all_vars)
+```powershell
+.\.venv3\Scripts\python.exe -B scripts\verify.py
 ```
 
-#### Module-Level Section Dividers
+For a focused change, repeat `--stage` with one or more of `unit`, `integration`, `frontend-test`, `frontend-lint`, `frontend-build`, `requirements`, `documentation`, `static-ruff`, `static-mypy`, or `package-check`. Every stage has a hard timeout and pytest workspaces are removed after each run; do not replace the verifier with an unbounded wrapper.
 
-Use a long dashed line to separate major logical sections at the module level, followed by a short description block:
+Before review:
 
-```python
-# ---------------------------------------------------------------------------
-# SECTION NAME
-# ---------------------------------------------------------------------------
-# Brief description of what this section does and why it exists.
-```
+- add or update tests for changed behavior;
+- run the relevant focused stage, then the complete verifier when practical;
+- update `docs/Application Details.md` for Python API/module changes;
+- update frontend/API contract types together;
+- run `scripts/check_docs.py` after documentation changes;
+- do not include operator databases, runtime state, uploads, logs, API keys, or generated exports.
 
-#### Module-Level Constants
+## Code structure
 
-Document module-level constants with an inline or preceding comment that explains their purpose:
+- Keep public functions cohesive and preferably below 80 lines; delegate named operations rather than growing route handlers.
+- Route handlers validate/authorize, call a service, and serialize a typed response.
+- Use `src.orchestrator.common.sqlite` for managed connections and explicit write transactions.
+- Treat API paths, uploads, and filenames as untrusted. Use `PathPolicy` and server-owned output names.
+- Log tracebacks server-side and return the shared safe error envelope.
+- Preserve stable facades when moving implementations (`src.api.router:app`, `src.screening`, Portfolio schema/model imports).
+- Do not perform a repository-wide formatting rewrite alongside behavioral changes.
 
-```python
-# Columns excluded from regression variable candidates (compared case-insensitively).
-_NON_PREDICTOR_COLUMNS: frozenset[str] = frozenset({
-    "index",       # row-number artefact
-    "edinetcode",  # company identifier
-})
-```
+## Adding a pipeline step
 
-### UI Development — Screenshots
-
-The web workstation UI can be captured using Playwright. Build the frontend, launch the app, and capture screenshots for documentation.
-
-#### Taking screenshots
-
-1. Build the frontend: `cd frontend-v2 && npm run build && cd ..`
-2. Launch the web server: `python main.py`
-3. Use Playwright (or browser dev tools) to capture each view at 1280×800 viewport
-4. Save screenshots to `docs/images/` with descriptive names (e.g., `web-dashboard.png`, `web-screening.png`)
-5. Update markdown image links in the README to reference the new screenshots
-
-Notes:
-
-- Prefer PNG files for UI screenshots.
-- Keep image dimensions consistent across related screenshots when possible.
-- Use a consistent browser window size (e.g., 1280×800).
-- The existing capture script at `tests/capture_screenshots.py` can be used as a starting point for automated captures.
-
----
-
-### Adding a New Pipeline Step
-
-The pipeline is designed so that adding a new step requires changes in exactly two places, with no UI-specific branching needed:
-
-#### 1. Orchestrator step package (`src/orchestrator/<step_name>/`)
-
-Create a new step package with an `__init__.py` and a same-named implementation module. The package should export only `STEP_DEFINITION`; the runtime handler stays internal to the step module. The orchestrator discovers the package automatically, so no core registry edit is needed:
+Create `src/orchestrator/<step_name>/__init__.py` and a same-named implementation module. Export one `STEP_DEFINITION`; discovery supplies the API/frontend metadata.
 
 ```python
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
 
 
-def run_my_new_step(config, overwrite=False):
-    step_cfg = config.get("my_new_step_config", {})
-    # ... call the relevant module with explicit params ...
+def run_my_step(config, *, overwrite=False, context=None):
+    items = load_items(config)
+    for index, item in enumerate(items):
+        if context is not None:
+            context.checkpoint()
+            context.report_progress(index, len(items), f"Processing {index + 1}")
+        process(item, overwrite=overwrite)
+
 
 STEP_DEFINITION = StepDefinition(
-    name="my_new_step",
-    handler=run_my_new_step,
+    name="my_step",
+    handler=run_my_step,
+    display_name="My Step",
+    supports_overwrite=True,
     input_fields=(
         StepFieldDefinition("Target_Database", "database", required=True),
     ),
 )
 ```
 
-Example package layout:
-
-```text
-src/orchestrator/my_new_step/
-├── __init__.py
-└── my_new_step.py
-```
-
-`__init__.py` should stay minimal:
+`__init__.py` should re-export only the definition:
 
 ```python
-from .my_new_step import STEP_DEFINITION
+from .my_step import STEP_DEFINITION
 
 __all__ = ["STEP_DEFINITION"]
 ```
 
-Declare any required top-level keys with `required_keys` and declare step-config fields directly in `input_fields`. Mark required step-config entries with `required=True` on the relevant `StepFieldDefinition`.
+Long/network/batch work must accept the optional execution context and checkpoint at safe transaction boundaries. Do not persist configuration secrets or upload bodies in job state. Add discovery, validation, success, first-failure, and cancellation tests.
 
-#### 2. Step-local field registry
+## React work
 
-Register the step's UI metadata and config fields directly in the step definition:
+- Put top-level workspaces in `frontend-v2/src/features/` and reusable primitives in `src/components/`.
+- Use the shared API client and TanStack Query for server state.
+- Update `frontend-v2/src/api/types.ts` with backend contract changes.
+- Add a Vitest test and, for route/API changes, update `tests/unit/test_openapi_contract.py`.
+- Save documentation screenshots under `docs/images/` at a consistent viewport.
 
-```python
-from src.orchestrator.common import StepDefinition, StepFieldDefinition
+## Pull requests
 
-
-STEP_DEFINITION = StepDefinition(
-    name="my_new_step",
-    handler=run_my_new_step,
-    display_name="My New Step",
-    supports_overwrite=True,
-    input_fields=(
-        StepFieldDefinition("Source_Database", "database", required=True),
-        StepFieldDefinition("output_file", "file", default="data/output.txt"),
-        StepFieldDefinition("batch_size", "num", default=1000),
-    ),
-)
-```
-
-If the step needs a custom display name, config-key override, or overwrite support, declare that metadata on `StepDefinition` as well.
-
-The UI reads `orchestrator.list_available_steps()` and derives its menu/config widgets from the discovered step definitions — there is nothing to update in the orchestrator frontend module beyond the step package itself.
-
-#### 3. Verify
-
-Run the test suite to ensure nothing is broken:
-
-```powershell
-python -m pytest tests/ -v
-```
-
-The UI config panel will automatically render the correct inputs for the new step based on the orchestrator metadata. No changes to the UI page code are needed.
-
-#### Available field types
-
-| `field_type` | Widget | Use for |
-|---|---|---|
-| `"str"` | `LabeledEntry` | Single-line text (table names, tickers, dates) |
-| `"num"` | `LabeledEntry` (stored as int/float) | Numeric values (batch sizes, rates) |
-| `"text"` | `LabeledText` (multi-line) | Large text inputs (SQL queries) |
-| `"json"` | `LabeledText` (multi-line, JSON-serialised) | Structured data (thresholds, filter dicts) |
-| `"database"` | `DatabasePickerEntry` | SQLite `.db` file paths |
-| `"file"` | `FilePickerEntry` | Any file path (CSV, XSD, config JSON) |
-| `"portfolio"` | `PortfolioGrid` | Interactive portfolio allocation table |
-
-All `StepField` options:
-
-| Parameter | Default | Description |
-|---|---|---|
-| `key` | (required) | Config dict key |
-| `field_type` | (required) | Widget type (see table above) |
-| `default` | `""` | Default value for new steps |
-| `label` | `None` (uses `key`) | Custom display label |
-| `filetypes` | `None` | File-dialog filters for `"file"` type |
-| `height` | `3` | Row count for `"text"` / `"json"` areas |
-
----
-
-### Pull Requests
-
-- Create a separate branch for each feature or bug fix.
-- Provide a clear and descriptive title for your pull request.
-- In the pull request description, explain the changes you have made and why.
-- Link any relevant issues in the pull request description.
-
-We look forward to your contributions!
+Keep changes reviewable and explain behavior, migrations, security implications, and verification results. A migration must document backup/recovery behavior. Do not commit on behalf of the operator unless explicitly asked.

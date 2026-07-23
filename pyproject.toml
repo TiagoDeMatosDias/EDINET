@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edinet-workstation"
+dynamic = ["version"]
+description = "Local EDINET research and portfolio workstation"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "beautifulsoup4==4.13.4",
+  "certifi==2025.1.31",
+  "chardet==5.2.0",
+  "charset-normalizer==3.4.1",
+  "colorama==0.4.6",
+  "fastapi==0.136.1",
+  "frozendict==2.4.6",
+  "idna==3.10",
+  "joblib==1.5.2",
+  "matplotlib==3.9.4",
+  "multitasking==0.0.11",
+  "numpy==2.2.4",
+  "packaging==25.0",
+  "pandas==2.2.3",
+  "patsy==1.0.1",
+  "peewee==3.17.9",
+  "platformdirs==4.3.7",
+  "python-dateutil==2.9.0.post0",
+  "python-dotenv==1.1.1",
+  "python-multipart==0.0.20",
+  "pytz==2025.2",
+  "requests==2.32.3",
+  "scikit-learn==1.7.2",
+  "scipy==1.16.2",
+  "six==1.17.0",
+  "soupsieve==2.6",
+  "threadpoolctl==3.6.0",
+  "typing_extensions==4.13.2",
+  "tzdata==2025.2",
+  "urllib3==2.4.0",
+  "uvicorn==0.46.0",
+  "yfinance==0.2.55",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.16,<2",
+  "playwright==1.52.0",
+  "pytest==8.3.2",
+  "pytest-cov>=6,<8",
+  "pytest-playwright==0.7.0",
+  "ruff>=0.12,<1",
+]
+build = ["pyinstaller==6.16.0"]
+
+[tool.setuptools.dynamic]
+version = {attr = "src.version.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.setuptools]
+py-modules = ["config"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated.*:starlette.exceptions.StarletteDeprecationWarning",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["BLE001"]
+"src/orchestrator/**/*.py" = ["BLE001"]
+"src/backtesting/**/*.py" = ["BLE001"]
+"src/portfolio/**/*.py" = ["BLE001"]
+"src/screening/**/*.py" = ["BLE001"]
+"src/security_analysis/**/*.py" = ["BLE001"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+follow_imports = "skip"
+ignore_missing_imports = true
+no_implicit_optional = true
+warn_unused_ignores = true
+
+[tool.coverage.run]
+branch = true
+source = ["src"]
+
+[tool.coverage.report]
+fail_under = 20
+show_missing = true
+skip_covered = true

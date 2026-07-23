@@ -17,6 +17,7 @@ from collections import defaultdict
 from datetime import date as Date, timedelta
 
 from src.orchestrator.common.db_config import get_db2, get_db3
+from src.orchestrator.common.sqlite import connect_read, connect_write
 from src.portfolio.schema import create_tables
 from src.portfolio import option_pricing as _op
 
@@ -99,17 +100,17 @@ def build_portfolio_state(
 
     create_tables(db3_path)
 
-    conn3 = sqlite3.connect(db3_path)
-    conn2 = sqlite3.connect(db2_path)
+    conn3 = connect_write(db3_path)
+    conn2 = connect_read(db2_path)
 
     try:
+        conn3.execute("BEGIN IMMEDIATE")
         # 0. Clear previous rebuild state so stale entries don't persist
         conn3.execute("DELETE FROM Holdings_History")
         conn3.execute("DELETE FROM Portfolio_Daily")
         conn3.execute("DELETE FROM Portfolio_Holdings")
 
         # 1. Load transactions sorted by date
-        conn3.row_factory = sqlite3.Row
         rows = conn3.execute(
             "SELECT * FROM Transactions ORDER BY trade_date, id"
         ).fetchall()
@@ -117,6 +118,7 @@ def build_portfolio_state(
 
         if not transactions:
             logger.info("No transactions found — nothing to build")
+            conn3.commit()
             return {"daily_rows": 0, "holdings_count": 0}
 
         # Determine date range
@@ -126,6 +128,7 @@ def build_portfolio_state(
             if _parse_date(t["trade_date"])
         )
         if not all_dates:
+            conn3.commit()
             return {"daily_rows": 0, "holdings_count": 0}
 
         first_date = all_dates[0]
@@ -303,6 +306,9 @@ def build_portfolio_state(
                      daily_rows, active_count)
         return {"daily_rows": daily_rows, "holdings_count": active_count}
 
+    except Exception:
+        conn3.rollback()
+        raise
     finally:
         conn3.close()
         conn2.close()
@@ -501,8 +507,7 @@ def get_daily_values(
 ) -> list[dict]:
     """Return daily portfolio value series."""
     db3_path = db3_path or get_db3()
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
     where = []
     params = []
     if start_date:
@@ -528,8 +533,7 @@ def get_current_holdings(db3_path: str | None = None) -> list[dict]:
     Expired options are excluded.
     """
     db3_path = db3_path or get_db3()
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
     today = Date.today().isoformat()
 
     rows = conn.execute(
@@ -596,8 +600,7 @@ def get_holdings_at_date(
     """Return holdings snapshot at a specific date."""
     db3_path = db3_path or get_db3()
     create_tables(db3_path)
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
     # Find most recent Holdings_History entry before or on date
     rows = conn.execute("""
         SELECT h.* FROM Holdings_History h
@@ -624,8 +627,7 @@ def get_closed_positions(db3_path: str | None = None) -> list[dict]:
     """
     db3_path = db3_path or get_db3()
     create_tables(db3_path)
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
     try:
         cur_syms = {r["symbol"] for r in conn.execute(
             "SELECT DISTINCT symbol FROM Portfolio_Holdings"
@@ -680,7 +682,6 @@ def get_closed_positions(db3_path: str | None = None) -> list[dict]:
 
 def _lookup_industry(symbol: str, db2_path: str) -> str | None:
     """Look up the industry for a ticker from CompanyInfo in db2."""
-    import sqlite3
     clean = str(symbol).strip()
     candidates = [clean]
     if clean.endswith('.T') or clean.endswith('.JP'):
@@ -690,7 +691,7 @@ def _lookup_industry(symbol: str, db2_path: str) -> str | None:
         candidates.append(base)
     elif len(clean) == 5 and clean.isdigit():
         candidates.append(clean[:4])
-    conn = sqlite3.connect(db2_path)
+    conn = connect_read(db2_path)
     try:
         for cand in candidates:
             row = conn.execute(
@@ -910,8 +911,7 @@ def get_holding_performance(
     )
     db3_path = db3_path or get_db3()
     db2_path = db2_path or get_db2()
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
 
     txns = conn.execute(
         "SELECT * FROM Transactions WHERE symbol = ? AND activity_type = 'TRADE' ORDER BY trade_date",
@@ -1126,10 +1126,8 @@ def get_all_holdings_performance(
     holdings = get_current_holdings(db3_path)
     result: list[dict] = []
 
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
-    conn2 = sqlite3.connect(db2_path)
-    conn2.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
+    conn2 = connect_read(db2_path)
 
     # ── Pre-load FX series to avoid repeated connection opens ──
     _fx_cache: dict[str, dict[str, float]] = {}

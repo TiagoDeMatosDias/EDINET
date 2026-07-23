@@ -32,6 +32,7 @@ class StepFieldDefinition:
     filetypes: tuple[tuple[str, str], ...] = ()
     height: int = 3
     required: bool = False
+    max_bytes: int | None = None
 
     @property
     def display_label(self) -> str:
@@ -47,6 +48,7 @@ class StepFieldDefinition:
             "filetypes": [list(filetype) for filetype in self.filetypes],
             "height": self.height,
             "required": self.required,
+            "max_bytes": self.max_bytes,
         }
 
 

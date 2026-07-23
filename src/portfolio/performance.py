@@ -13,6 +13,7 @@ import numpy as np
 from scipy import stats as scipy_stats
 
 from src.orchestrator.common.db_config import get_db2, get_db3
+from src.orchestrator.common.sqlite import connect_read
 from src.portfolio.portfolio_state import get_daily_values
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ def get_risk_free_rate(db2_path: str | None = None, base_currency: str = "EUR") 
     ticker = f"Inflation_{base_currency.upper()}"
 
     try:
-        conn = sqlite3.connect(db2_path)
+        conn = connect_read(db2_path)
         row = conn.execute(
             f"SELECT Date, Price FROM {table} WHERE Ticker = ? ORDER BY Date DESC LIMIT 13",
             (ticker,),
@@ -208,7 +209,7 @@ def _get_benchmark_returns(
     if not dates:
         return None, None
 
-    conn = sqlite3.connect(db2_path)
+    conn = connect_read(db2_path)
     min_date = dates[0]
     max_date = dates[-1]
 

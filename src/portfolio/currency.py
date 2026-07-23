@@ -10,10 +10,10 @@ Non-EUR ↔ non-EUR conversions triangulate through EUR (A → EUR → B).
 
 from __future__ import annotations
 
-import sqlite3
 import logging
 
 from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.sqlite import connect_read
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def _load_eur_ccy_series(
 
     Returns empty dict if no data.
     """
-    conn = sqlite3.connect(db2_path)
+    conn = connect_read(db2_path)
     rows = conn.execute(
         "SELECT Date, Price FROM Stock_Prices "
         "WHERE Ticker = 'EUR' AND Currency = ? ORDER BY Date",
@@ -60,7 +60,7 @@ def _load_legacy_series(
 
     Only used when the new Ticker=EUR/Currency=XXX format has no data.
     """
-    conn = sqlite3.connect(db2_path)
+    conn = connect_read(db2_path)
     rows = conn.execute(
         "SELECT Date, Price FROM Stock_Prices WHERE Ticker = ? ORDER BY Date",
         (ticker,),
@@ -207,7 +207,7 @@ def get_available_display_currencies(
     (FX data).  Also includes EUR itself.
     """
     db2_path = db2_path or get_db2()
-    conn = sqlite3.connect(db2_path)
+    conn = connect_read(db2_path)
     try:
         rows = conn.execute(
             "SELECT DISTINCT Currency FROM Stock_Prices "
@@ -236,7 +236,7 @@ def get_asset_native_currency(
     For stocks/ETFs, returns the Currency column value.
     """
     db2_path = db2_path or get_db2()
-    conn = sqlite3.connect(db2_path)
+    conn = connect_read(db2_path)
     try:
         row = conn.execute(
             "SELECT DISTINCT Currency FROM Stock_Prices WHERE Ticker = ? LIMIT 1",

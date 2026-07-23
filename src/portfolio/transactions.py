@@ -10,6 +10,7 @@ import logging
 from collections import defaultdict
 
 from src.orchestrator.common.db_config import get_db3
+from src.orchestrator.common.sqlite import connect_read, transaction
 from src.portfolio.schema import create_tables
 
 logger = logging.getLogger(__name__)
@@ -56,8 +57,7 @@ def insert_entries(
     by_activity: dict[str, int] = defaultdict(int)
     new_tickers: list[str] = []
 
-    conn = sqlite3.connect(db_path)
-    try:
+    with transaction(db_path) as conn:
         # Build set of existing transaction IDs
         existing_ids = set()
         txn_ids = [
@@ -76,8 +76,9 @@ def insert_entries(
         known_symbols = _get_known_symbols(conn)
 
         # Build INSERT statement
-        cols_str = ", ".join(_ENTRY_COLS)
-        placeholders_str = ", ".join("?" for _ in _ENTRY_COLS)
+        insert_columns = [*_ENTRY_COLS, "source_file"]
+        cols_str = ", ".join(insert_columns)
+        placeholders_str = ", ".join("?" for _ in insert_columns)
         sql = f"INSERT OR IGNORE INTO Transactions ({cols_str}) VALUES ({placeholders_str})"
 
         for e in entries:
@@ -91,9 +92,12 @@ def insert_entries(
                 continue
 
             # Build tuple
-            values = tuple(e.get(col) for col in _ENTRY_COLS)
+            values = (*tuple(e.get(col) for col in _ENTRY_COLS), source_file or None)
             try:
-                conn.execute(sql, values)
+                cursor = conn.execute(sql, values)
+                if cursor.rowcount != 1:
+                    skipped += 1
+                    continue
                 inserted += 1
                 by_activity[e.get("activity_type", "UNKNOWN")] += 1
                 existing_ids.add(txn_id)
@@ -107,17 +111,6 @@ def insert_entries(
 
             except sqlite3.IntegrityError:
                 skipped += 1
-
-        # Write source_file to all inserted rows
-        if source_file and inserted > 0:
-            conn.execute(
-                "UPDATE Transactions SET source_file = ? WHERE source_file IS NULL",
-                (source_file,),
-            )
-
-        conn.commit()
-    finally:
-        conn.close()
 
     return {
         "inserted": inserted,
@@ -149,8 +142,7 @@ def get_transactions(
         cols = "*"
     db_path = db_path or get_db3()
     create_tables(db_path)  # idempotent
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db_path)
 
     where = []
     params: list = []
@@ -174,8 +166,10 @@ def get_transactions(
     sql += " ORDER BY trade_date DESC, id DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
 
-    rows = conn.execute(sql, params).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
     return [dict(r) for r in rows]
 
 
@@ -183,14 +177,15 @@ def get_unique_symbols(db_path: str | None = None) -> list[dict]:
     """Return distinct symbols with asset categories from Transactions."""
     db_path = db_path or get_db3()
     create_tables(db_path)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT DISTINCT symbol, asset_category FROM Transactions "
-        "WHERE symbol IS NOT NULL AND symbol != '' "
-        "ORDER BY symbol"
-    ).fetchall()
-    conn.close()
+    conn = connect_read(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT symbol, asset_category FROM Transactions "
+            "WHERE symbol IS NOT NULL AND symbol != '' "
+            "ORDER BY symbol"
+        ).fetchall()
+    finally:
+        conn.close()
     return [dict(r) for r in rows]
 
 
@@ -198,11 +193,14 @@ def get_date_range(db_path: str | None = None) -> dict:
     """Return min and max trade_date from Transactions."""
     db_path = db_path or get_db3()
     create_tables(db_path)
-    conn = sqlite3.connect(db_path)
-    row = conn.execute(
-        "SELECT MIN(trade_date) AS min_date, MAX(trade_date) AS max_date FROM Transactions"
-    ).fetchone()
-    conn.close()
+    conn = connect_read(db_path)
+    try:
+        row = conn.execute(
+            "SELECT MIN(trade_date) AS min_date, "
+            "MAX(trade_date) AS max_date FROM Transactions"
+        ).fetchone()
+    finally:
+        conn.close()
     return {"min_date": row[0], "max_date": row[1]}
 
 
@@ -210,12 +208,14 @@ def get_activity_summary(db_path: str | None = None) -> dict:
     """Return counts by activity_type."""
     db_path = db_path or get_db3()
     create_tables(db_path)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT activity_type, COUNT(*) AS cnt FROM Transactions GROUP BY activity_type"
-    ).fetchall()
-    conn.close()
+    conn = connect_read(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT activity_type, COUNT(*) AS cnt "
+            "FROM Transactions GROUP BY activity_type"
+        ).fetchall()
+    finally:
+        conn.close()
     return {r["activity_type"]: r["cnt"] for r in rows}
 
 
@@ -223,22 +223,17 @@ def delete_by_source(db_path: str | None = None, source_file: str = "") -> int:
     """Delete all transactions from a given source file. Returns deleted count."""
     db_path = db_path or get_db3()
     create_tables(db_path)
-    conn = sqlite3.connect(db_path)
-    cur = conn.execute(
-        "DELETE FROM Transactions WHERE source_file = ?", (source_file,)
-    )
-    conn.commit()
-    deleted = cur.rowcount
-    conn.close()
-    return deleted
+    with transaction(db_path) as conn:
+        cursor = conn.execute(
+            "DELETE FROM Transactions WHERE source_file = ?",
+            (source_file,),
+        )
+        return cursor.rowcount
 
 
 def _get_known_symbols(conn: sqlite3.Connection) -> set[str]:
     """Return the set of symbols already in the Transactions table."""
-    try:
-        rows = conn.execute(
-            "SELECT DISTINCT symbol FROM Transactions WHERE symbol IS NOT NULL"
-        ).fetchall()
-        return {r[0] for r in rows if r[0]}
-    except sqlite3.OperationalError:
-        return set()
+    rows = conn.execute(
+        "SELECT DISTINCT symbol FROM Transactions WHERE symbol IS NOT NULL"
+    ).fetchall()
+    return {r[0] for r in rows if r[0]}

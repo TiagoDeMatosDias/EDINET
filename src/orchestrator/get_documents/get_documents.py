@@ -7,7 +7,7 @@ from src.orchestrator.common.edinet import Edinet, EDINET_BASE_URL
 logger = logging.getLogger(__name__)
 
 
-def run_get_documents(config, overwrite=False):
+def run_get_documents(config, overwrite=False, context=None):
     logger.info("Getting all documents with metadata...")
     step_cfg = config.get("get_documents_config", {})
 
@@ -17,10 +17,11 @@ def run_get_documents(config, overwrite=False):
         db_path=get_db1(),
         doc_list_table="DocumentList",
     )
-    edinet.get_All_documents_withMetadata(
-        step_cfg.get("startDate"),
-        step_cfg.get("endDate"),
-    )
+    args = (step_cfg.get("startDate"), step_cfg.get("endDate"))
+    if context is None:
+        edinet.get_All_documents_withMetadata(*args)
+    else:
+        edinet.get_All_documents_withMetadata(*args, context=context)
 
 
 STEP_DEFINITION = StepDefinition(

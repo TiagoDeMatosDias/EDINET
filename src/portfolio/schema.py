@@ -1,4 +1,4 @@
-"""Database DDL and Pydantic models for the Portfolio module.
+"""Versioned database DDL and migrations for the Portfolio module.
 
 Creates all tables in db3 (Portfolio.db) on first use.  All DDL uses
 ``IF NOT EXISTS`` so calls are idempotent.
@@ -8,10 +8,30 @@ from __future__ import annotations
 
 import sqlite3
 import logging
-from typing import Optional, Any
-from datetime import date as Date
+from datetime import datetime, timezone
+from pathlib import Path
+import shutil
 
-from pydantic import BaseModel, Field
+from src.orchestrator.common.sqlite import (
+    connect_read,
+    connect_write,
+    initialize_managed_database,
+    table_exists,
+)
+# Compatibility re-exports; new code imports contracts from portfolio.models.
+from src.portfolio.models import (
+    ActivitySummaryResponse,
+    BenchmarkInfo,
+    DateRangeResponse,
+    DividendBreakdown,
+    HoldingItem,
+    PerformanceResponse,
+    RebuildResponse,
+    ReturnAttribution,
+    ReturnDistribution,
+    TransactionEntry,
+    UploadResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +105,6 @@ CREATE TABLE IF NOT EXISTS Portfolio_Daily (
 CREATE INDEX IF NOT EXISTS idx_portdaily_date ON Portfolio_Daily(date);
 """
 
-_DDL_PORTDAILY_MIGRATE = """
-ALTER TABLE Portfolio_Daily ADD COLUMN cash_ccy_json TEXT;
-"""
-
 _DDL_HOLDINGS = """
 CREATE TABLE IF NOT EXISTS Portfolio_Holdings (
     symbol          TEXT NOT NULL,
@@ -107,10 +123,6 @@ CREATE TABLE IF NOT EXISTS Portfolio_Holdings (
     underlying      TEXT,
     PRIMARY KEY (symbol, asset_category)
 );
-"""
-
-_DDL_HOLDINGS_MIGRATE = """
-ALTER TABLE Portfolio_Holdings ADD COLUMN market_value_native REAL;
 """
 
 _DDL_HOLDINGS_HISTORY = """
@@ -133,10 +145,6 @@ CREATE TABLE IF NOT EXISTS Holdings_History (
 );
 
 CREATE INDEX IF NOT EXISTS idx_hh_date ON Holdings_History(date);
-"""
-
-_DDL_HH_MIGRATE = """
-ALTER TABLE Holdings_History ADD COLUMN market_value_native REAL;
 """
 
 _DDL_METRICS = """
@@ -179,13 +187,124 @@ _ALL_DDL = [_DDL_TRANSACTIONS, _DDL_PORTFOLIO_DAILY, _DDL_HOLDINGS,
 
 
 # ---------------------------------------------------------------------------
-# Helper
+# Versioned migrations
 # ---------------------------------------------------------------------------
 
-def _exec_ddl(db_path: str, ddl: str) -> None:
-    with sqlite3.connect(db_path) as conn:
-        conn.executescript(ddl)
+
+def _execute_ddl(conn: sqlite3.Connection, ddl: str) -> None:
+    for statement in ddl.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
+def _column_names(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {
+        str(row[1])
+        for row in conn.execute(f'PRAGMA table_info("{table_name}")')
+    }
+
+
+def _migration_1(conn: sqlite3.Connection) -> None:
+    for ddl in _ALL_DDL:
+        _execute_ddl(conn, ddl)
+
+
+def _add_column(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    declaration: str,
+) -> None:
+    if column_name not in _column_names(conn, table_name):
+        conn.execute(
+            f'ALTER TABLE "{table_name}" ADD COLUMN '
+            f'"{column_name}" {declaration}'
+        )
+
+
+def _migration_2(conn: sqlite3.Connection) -> None:
+    _add_column(conn, "Portfolio_Holdings", "market_value_native", "REAL")
+    _add_column(conn, "Holdings_History", "market_value_native", "REAL")
+    _add_column(conn, "Portfolio_Daily", "cash_ccy_json", "TEXT")
+
+
+_MIGRATIONS = ((1, _migration_1), (2, _migration_2))
+
+
+def _needs_material_migration(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    try:
+        conn = connect_read(path)
+    except (OSError, sqlite3.DatabaseError):
+        return False
+    try:
+        required_tables = {
+            "Transactions",
+            "Portfolio_Daily",
+            "Portfolio_Holdings",
+            "Holdings_History",
+            "Portfolio_Metrics",
+        }
+        existing = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if existing.intersection(required_tables) and not required_tables <= existing:
+            return True
+        required_columns = {
+            "Portfolio_Daily": "cash_ccy_json",
+            "Portfolio_Holdings": "market_value_native",
+            "Holdings_History": "market_value_native",
+        }
+        return any(
+            table_exists(conn, table)
+            and column not in _column_names(conn, table)
+            for table, column in required_columns.items()
+        )
+    finally:
+        conn.close()
+
+
+def _backup_database(path: Path) -> Path:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = path.with_name(f"{path.name}.backup-{timestamp}")
+    shutil.copy2(path, backup)
+    return backup
+
+
+def _apply_migrations(path: Path) -> None:
+    conn = connect_write(path)
+    try:
+        initialize_managed_database(conn)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+            "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
         conn.commit()
+        row = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()
+        current_version = int(row[0])
+        for version, migration in _MIGRATIONS:
+            if version <= current_version:
+                continue
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                migration(conn)
+                conn.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) "
+                    "VALUES (?, ?)",
+                    (version, datetime.now(timezone.utc).isoformat()),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -193,182 +312,11 @@ def _exec_ddl(db_path: str, ddl: str) -> None:
 # ---------------------------------------------------------------------------
 
 def create_tables(db_path: str) -> None:
-    """Create all Portfolio module tables (idempotent).
-
-    Also runs safe migrations for schema upgrades (e.g. adding
-    ``market_value_native`` column to older databases).
-    """
-    for ddl in _ALL_DDL:
-        _exec_ddl(db_path, ddl)
-    # Safe migration: add market_value_native if missing
-    try:
-        _exec_ddl(db_path, _DDL_HOLDINGS_MIGRATE)
-    except sqlite3.OperationalError:
-        pass  # column already exists
-    try:
-        _exec_ddl(db_path, _DDL_HH_MIGRATE)
-    except sqlite3.OperationalError:
-        pass  # column already exists
-    try:
-        _exec_ddl(db_path, _DDL_PORTDAILY_MIGRATE)
-    except sqlite3.OperationalError:
-        pass  # column already exists
-    logger.info("Portfolio tables created/verified at %s", db_path)
-
-
-# ---------------------------------------------------------------------------
-# Pydantic models (API request / response shapes)
-# ---------------------------------------------------------------------------
-
-class TransactionEntry(BaseModel):
-    """A single entry from IBKR XML, as stored in the Transactions table."""
-    id: Optional[int] = None
-    transaction_id: str
-    trade_id: Optional[str] = None
-    account_id: Optional[str] = None
-    activity_type: str
-    asset_category: Optional[str] = None
-    symbol: Optional[str] = None
-    description: Optional[str] = None
-    isin: Optional[str] = None
-    conid: Optional[str] = None
-    currency: str
-    trade_date: str
-    settle_date: Optional[str] = None
-    quantity: float = 0
-    trade_price: Optional[float] = None
-    trade_money: Optional[float] = None
-    amount: float = 0
-    proceeds: Optional[float] = None
-    commission: float = 0
-    taxes: float = 0
-    net_cash: Optional[float] = None
-    buy_sell: Optional[str] = None
-    fx_rate_to_base: Optional[float] = None
-    strike: Optional[float] = None
-    expiry: Optional[str] = None
-    put_call: Optional[str] = None
-    underlying_symbol: Optional[str] = None
-    underlying_conid: Optional[str] = None
-    multiplier: float = 1
-    action_description: Optional[str] = None
-    action_id: Optional[str] = None
-    source_file: Optional[str] = None
-    imported_at: Optional[str] = None
-    notes: Optional[str] = None
-
-
-class UploadResponse(BaseModel):
-    """Summary returned after an XML upload."""
-    source_file: str
-    total_entries: int
-    inserted: int
-    skipped: int
-    by_activity: dict[str, int] = Field(default_factory=dict)
-    new_tickers_fetched: list[str] = Field(default_factory=list)
-    ticker_fetch_failures: list[str] = Field(default_factory=list)
-
-
-class HoldingItem(BaseModel):
-    """One row of the current holdings snapshot."""
-    symbol: str
-    asset_category: str
-    quantity: float
-    avg_cost: Optional[float] = None
-    market_price: Optional[float] = None
-    market_value: Optional[float] = None          # base currency
-    market_value_native: Optional[float] = None   # asset native currency
-    currency: str
-    fx_rate: Optional[float] = None
-    weight: Optional[float] = None
-    is_option: bool = False
-    strike: Optional[float] = None
-    expiry: Optional[str] = None
-    put_call: Optional[str] = None
-    underlying: Optional[str] = None
-
-
-class BenchmarkInfo(BaseModel):
-    """Benchmark comparison results."""
-    ticker: Optional[str] = None
-    total_return: Optional[float] = None
-    excess_return: Optional[float] = None
-    alpha: Optional[float] = None
-    beta: Optional[float] = None
-    information_ratio: Optional[float] = None
-    tracking_error: Optional[float] = None
-    series: list[dict] = Field(default_factory=list)  # [{date, cumulative_return}]
-
-
-class DividendBreakdown(BaseModel):
-    """Dividend income breakdown from XML."""
-    total_gross: float = 0
-    total_tax: float = 0
-    total_net: float = 0
-
-
-class ReturnDistribution(BaseModel):
-    """Daily return distribution statistics."""
-    min: float = 0
-    p25: float = 0
-    median: float = 0
-    p75: float = 0
-    max: float = 0
-    skewness: float = 0
-    kurtosis: float = 0
-    positive_days: int = 0
-    negative_days: int = 0
-    zero_days: int = 0
-
-
-class ReturnAttribution(BaseModel):
-    """Breakdown of total return into components."""
-    total_return: float = 0
-    dividend_yield: float = 0
-    capital_appreciation: float = 0
-    real_return: float = 0
-    inflation_total: float = 0
-
-
-class PerformanceResponse(BaseModel):
-    """Portfolio performance metrics."""
-    start_date: str
-    end_date: str
-    base_currency: str
-    total_return: Optional[float] = None
-    annualized_return: Optional[float] = None
-    volatility: Optional[float] = None
-    sharpe_ratio: Optional[float] = None
-    sortino_ratio: Optional[float] = None
-    max_drawdown: Optional[float] = None
-    max_dd_peak_date: Optional[str] = None
-    max_dd_trough_date: Optional[str] = None
-    calmar_ratio: Optional[float] = None
-    win_rate: Optional[float] = None
-    avg_win: Optional[float] = None
-    avg_loss: Optional[float] = None
-    profit_factor: Optional[float] = None
-    var_95: Optional[float] = None
-    cvar_95: Optional[float] = None
-    total_dividend_income: float = 0
-    risk_free_rate: Optional[float] = None
-    benchmark: Optional[BenchmarkInfo] = None
-    dividend_breakdown: Optional[DividendBreakdown] = None
-    return_distribution: Optional[ReturnDistribution] = None
-    return_attribution: Optional[ReturnAttribution] = None
-    inflation_series: list[dict] = Field(default_factory=list)  # [{date, cumulative}]
-
-
-class DateRangeResponse(BaseModel):
-    min_date: Optional[str] = None
-    max_date: Optional[str] = None
-
-
-class ActivitySummaryResponse(BaseModel):
-    by_activity: dict[str, int] = Field(default_factory=dict)
-
-
-class RebuildResponse(BaseModel):
-    message: str
-    daily_rows: int
-    holdings_count: int
+    """Create or upgrade the Portfolio database through explicit migrations."""
+    path = Path(db_path).expanduser().resolve(strict=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if _needs_material_migration(path):
+        backup = _backup_database(path)
+        logger.info("Backed up Portfolio database before migration: %s", backup)
+    _apply_migrations(path)
+    logger.info("Portfolio schema is current at %s", path)

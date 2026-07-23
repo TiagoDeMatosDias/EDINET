@@ -23,6 +23,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.orchestrator.common.sqlite import connect_read, connect_write, transaction
 from src.utilities.stock_prices import _create_prices_table, load_ticker_data
 
 logger = logging.getLogger(__name__)
@@ -187,10 +188,7 @@ class StatementSourceSpec:
 
 def _connect(db_path: str) -> sqlite3.Connection:
     """Open a SQLite connection with a row factory suitable for helpers."""
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA busy_timeout = 30000")
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_read(db_path)
 
 
 def _quote_ident(name: str) -> str:
@@ -1172,9 +1170,8 @@ def ensure_security_analysis_indexes(db_path: str) -> dict[str, Any]:
             return {"ok": True, "created": [], "cached": True}
 
         schema = resolve_schema(normalised_path)
-        conn = _connect(normalised_path)
         created: list[str] = []
-        try:
+        with transaction(normalised_path) as conn:
             statements = [
                 (
                     "idx_sa_prices_ticker_date",
@@ -1210,9 +1207,6 @@ def ensure_security_analysis_indexes(db_path: str) -> dict[str, Any]:
             for index_name, sql in statements:
                 conn.execute(sql)
                 created.append(index_name)
-            conn.commit()
-        finally:
-            conn.close()
 
         _OPTIMIZED_DB_PATHS.add(normalised_path)
         logger.info(
@@ -1234,9 +1228,7 @@ def _load_company_record(db_path: str, company_code: str) -> dict[str, Any] | No
 
 def _load_company_by_ticker(db_path: str, ticker: str) -> dict[str, Any] | None:
     """Find a company record by ticker (searches CompanyInfo table directly)."""
-    import sqlite3
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db_path)
     try:
         row = conn.execute(
             "SELECT * FROM CompanyInfo WHERE Company_Ticker = ? LIMIT 1", (ticker,)
@@ -2091,7 +2083,7 @@ def update_security_price(db_path: str, ticker: str) -> dict[str, Any]:
     ensure_security_analysis_indexes(db_path)
     schema = resolve_schema(db_path)
     package_module = importlib.import_module(__package__)
-    conn = sqlite3.connect(db_path)
+    conn = connect_write(db_path)
     try:
         package_module._create_prices_table(conn, schema.prices_table)
 
@@ -2111,6 +2103,9 @@ def update_security_price(db_path: str, ticker: str) -> dict[str, Any]:
             f"SELECT MIN([Date]), MAX([Date]) FROM {_quote_ident(schema.prices_table)} WHERE Ticker = ?",
             [ticker],
         ).fetchone()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

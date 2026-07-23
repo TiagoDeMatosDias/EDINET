@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "20 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  python-unit:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python -B scripts/verify.py --stage unit
+
+  python-integration:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python -B scripts/verify.py --stage integration
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend-v2/package-lock.json
+      - run: npm ci
+        working-directory: frontend-v2
+      - run: python3 scripts/verify.py --stage frontend-test --stage frontend-lint --stage frontend-build
+
+  contracts-and-docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python -B scripts/verify.py --stage requirements --stage documentation
+      - run: >-
+          python -B -m pytest
+          tests/unit/test_openapi_contract.py
+          tests/unit/test_web_app_server.py
+          -q -p no:cacheprovider
+
+  static-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - run: >-
+          python -B scripts/verify.py
+          --stage static-ruff
+          --stage static-mypy
+          --stage package-check
+
+  windows-package-smoke:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend-v2/package-lock.json
+      - run: python -m pip install -e ".[build]"
+      - run: python -B scripts/build.py --command-timeout 180 --smoke-timeout 45
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EDINET-Windows-release
+          path: dist/EDINET-*-Release.zip
+          if-no-files-found: error

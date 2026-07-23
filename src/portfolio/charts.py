@@ -10,6 +10,7 @@ import logging
 import sqlite3
 from collections import defaultdict
 
+from src.orchestrator.common.sqlite import connect_read
 from src.portfolio.currency import (
     get_fx_series,
     get_rate_at_date,
@@ -59,7 +60,7 @@ def get_holdings_by_value(
     Excludes cash and option positions.
     Returns ``{labels: [str], values: [float], total: float, currency: str}``.
     """
-    conn = sqlite3.connect(db3_path)
+    conn = connect_read(db3_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT symbol, market_value_native, currency "
@@ -110,7 +111,7 @@ def get_holdings_by_currency(
 
     Returns ``{labels: [str], values: [float], total: float, currency: str}``.
     """
-    conn = sqlite3.connect(db3_path)
+    conn = connect_read(db3_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT market_value_native, currency FROM Portfolio_Holdings "
@@ -144,7 +145,7 @@ def get_holdings_by_currency(
 # ---------------------------------------------------------------------------
 
 def _load_portfolio_daily(db3_path: str) -> list[sqlite3.Row]:
-    conn = sqlite3.connect(db3_path)
+    conn = connect_read(db3_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT date, total_value, net_inflow FROM Portfolio_Daily ORDER BY date"
@@ -235,7 +236,7 @@ def get_portfolio_value_history(
     so analytics never mistake a cash flow or a newly observed holding for a
     market return. Values are converted to the requested display currency.
     """
-    conn = sqlite3.connect(db3_path)
+    conn = connect_read(db3_path)
     conn.row_factory = sqlite3.Row
     hh_rows = conn.execute(
         "SELECT date, symbol, market_value_native, currency "
@@ -366,7 +367,7 @@ def get_dividends_by_company(
     *period*: "monthly", "quarterly", or "yearly".
     Returns ``{periods: [str], companies: {symbol: [float]}, currency: str}``.
     """
-    conn = sqlite3.connect(db3_path)
+    conn = connect_read(db3_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT symbol, trade_date, activity_type, amount, currency "
@@ -431,7 +432,7 @@ def get_dividends_by_currency(
     *period*: "monthly", "quarterly", or "yearly".
     Returns ``{periods: [str], currencies: {ccy: [float]}, currency: str}``.
     """
-    conn = sqlite3.connect(db3_path)
+    conn = connect_read(db3_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT trade_date, activity_type, amount, currency "
@@ -493,7 +494,7 @@ def get_dividends_heatmap(
     Returns ``{years: [int], months: [int], values: [[float|null]], currency: str}``
     where ``values[y][m]`` is the net dividend for *years[y]* in month *months[m]*.
     """
-    conn = sqlite3.connect(db3_path)
+    conn = connect_read(db3_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT trade_date, activity_type, amount, currency "
@@ -558,7 +559,7 @@ def get_returns_heatmap(
     Returns ``{years: [int], months: [int], values: [[float|null]], currency: str}``
     where ``values[y][m]`` is the return *percentage* for *years[y]* in month *months[m]*.
     """
-    conn = sqlite3.connect(db3_path)
+    conn = connect_read(db3_path)
     conn.row_factory = sqlite3.Row
 
     # Portfolio_Daily: total_value, cash_balance, net_inflow, dividend_income
@@ -674,7 +675,7 @@ def get_deposits_heatmap(
 
     Returns ``{years: [int], months: [int], values: [[float|null]], currency: str}``.
     """
-    conn = sqlite3.connect(db3_path)
+    conn = connect_read(db3_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT date, net_inflow FROM Portfolio_Daily ORDER BY date"

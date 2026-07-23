@@ -1,25 +1,45 @@
 # Running the Application
 
-Install and build the React frontend once:
+## Supported environments
 
-```bash
-cd frontend-v2
+- Python 3.12 or 3.13; `.venv3` is the canonical local environment.
+- Node.js 22 and npm 10.
+- Windows is the packaged target. Linux is supported for source development and CI.
+- Base, Standardized, and Portfolio databases are selected through `config/database_paths.json`; additional roots require `EDINET_ALLOWED_DATA_ROOTS`.
+
+Create the environment and install declared extras:
+
+```powershell
+py -3.13 -m venv .venv3
+.\.venv3\Scripts\python.exe -m pip install -e ".[dev,build]"
+```
+
+Build the React frontend:
+
+```powershell
+Set-Location frontend-v2
 npm ci
 npm run build
-cd ..
+Set-Location ..
 ```
 
-Launch the web workstation:
+Launch the local workstation:
 
-```bash
-python main.py
+```powershell
+.\.venv3\Scripts\python.exe main.py --no-reload
 ```
 
-Open `http://127.0.0.1:8000`. Optional host/port flags:
+Open `http://127.0.0.1:8000`.
 
-```bash
-python main.py --host 0.0.0.0 --port 8080 --no-reload
+Remote binding requires explicit opt-in, a bearer token of at least 32 characters, and trusted hosts:
+
+```powershell
+$env:EDINET_API_TOKEN = "replace-with-at-least-32-random-characters"
+$env:EDINET_TRUSTED_HOSTS = "research.example,192.0.2.10"
+.\.venv3\Scripts\python.exe main.py --host 0.0.0.0 --port 8080 --allow-remote --no-reload
 ```
+
+Remote `/api/*` requests require `Authorization: Bearer <token>`. Tokens must not be placed in URLs, logs, or browser storage. `/health` remains minimal and unauthenticated.
 
 For frontend development, keep FastAPI running on port 8000 and start Vite in another terminal:
 
@@ -30,28 +50,49 @@ npm run dev
 
 The primary frontend is a React/TypeScript single-page workspace in `frontend-v2/`. It communicates with the backend through `/api/*` and `/health`.
 
-Most steps require an explicit source or target database path in their step configuration. The orchestrator exposes those paths directly in each step's config panel.
+Database inputs are resolved and authorized server-side. Uploads and generated outputs live beneath per-job workspaces in `config/state/jobs/`.
+
+### Runtime size limits
+
+- `EDINET_MAX_UPLOAD_BYTES` defaults to 10 MiB for incoming files.
+- `EDINET_MAX_EXPORT_BYTES` defaults to 25 MiB for ordinary response exports.
+- `EDINET_MAX_BACKTEST_ARTIFACT_BYTES` defaults to 256 MiB for server-generated backtest files. Rolling archives are built directly on disk and partial archives are removed if this limit is reached.
+
+Values are byte counts and are read at application startup. Increase the backtest artifact limit only when the expected archive and available disk space justify it, then restart the application.
 
 ## Configuration Format
 
-All execution is controlled by `config/state/run_config.json`. Each step is an object with `enabled` and `overwrite` flags:
+Execution configuration is supplied explicitly by the React UI, `POST /api/pipeline/run`, or `Config.from_dict(...)`. `Config` does not implicitly read `run_config.json`.
 
 ```json
-"run_steps": {
-  "get_documents": { "enabled": true, "overwrite": false },
-  "generate_financial_statements": { "enabled": true, "overwrite": false },
-  ...
+{
+  "steps": [
+    {"name": "get_documents", "overwrite": false},
+    {"name": "generate_financial_statements", "overwrite": false}
+  ],
+  "config": {"get_documents_config": {"startDate": "2026-02-15"}}
 }
 ```
 
-- `enabled` — set to `true` to run the step, `false` to skip it.
-- `overwrite` — when `true`, the step rebuilds or refreshes the step output. Supported by: `generate_financial_statements`, `generate_ratios`, `generate_rolling_metrics`.
+- `steps` order is execution order.
+- `overwrite` is honored only by steps that declare support.
+- Validation completes before the job is queued.
 
-Steps execute in the order they appear in the `run_steps` object. In the GUI, you can reorder steps by dragging them.
+Submission returns `202` immediately. One managed worker executes jobs, while the UI polls persisted job/step status and retrieves bounded redacted output after a terminal state.
 
 ## Pre-flight Validation
 
-Before any step runs, the orchestrator checks that all required `.env` / config keys are set for every enabled step. If anything is missing, execution halts with a clear error listing the missing keys and which steps need them.
+Before enqueueing, the orchestrator checks required keys, field limits, embedded uploads, and allowed paths. Failure stops later steps. Cancellation is cooperative at safe checkpoints and never force-kills a Python thread.
+
+## Bounded verification
+
+`scripts/verify.py` runs stages sequentially with hard timeouts and terminates the stage process tree on timeout:
+
+```powershell
+.\.venv3\Scripts\python.exe -B scripts\verify.py
+```
+
+Use repeated `--stage` options for focused checks, or `--timeout-seconds N` for a stricter cap.
 
 ## Steps
 

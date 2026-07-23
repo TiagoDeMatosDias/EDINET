@@ -100,7 +100,7 @@ function CompanyFilter({ companies, selected, onChange }: { companies: { symbol:
 
 function DividendGrowthChart({ data }: { data?: DividendGrowthData }) {
   const companies = Object.entries(data?.companies ?? {})
-    .map(([symbol, c], i) => ({ symbol, currency: c.currency, yoy: c.yoy_growth, mv: c.avg_market_value_eur ?? [], total: c.dps.reduce((sum, v) => sum + (v ?? 0), 0), color: COLORS[i % COLORS.length] }))
+    .map(([symbol, c], i) => ({ symbol, currency: c.currency, yoy: c.yoy_growth, mv: c.avg_market_value_eur ?? [], total: c.dps.reduce<number>((sum, v) => sum + (v ?? 0), 0), color: COLORS[i % COLORS.length] }))
     .filter(c => c.yoy.some(v => v != null))
     .sort((a, b) => b.total - a.total)
   const [selected, setSelected] = useState<string[]>(() => companies.map(c => c.symbol))
@@ -132,7 +132,7 @@ function DividendGrowthChart({ data }: { data?: DividendGrowthData }) {
   return <div>
     <CompanyFilter companies={companies} selected={selected} onChange={setSelected} />
     <div className="analytics-chart">
-      <Scatter data={{ datasets }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${(ctx.parsed.y ?? 0).toFixed(1)}%` } } }, scales: { x: { type: 'linear', grid: { display: false }, title: { display: true, text: 'Year' }, ticks: { stepSize: 1, callback: v => String(v) } }, y: { position: 'right', title: { display: true, text: 'YoY growth %' }, ticks: { callback: v => v.toFixed(0) + '%' } } } }} />
+      <Scatter data={{ datasets }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${(ctx.parsed.y ?? 0).toFixed(1)}%` } } }, scales: { x: { type: 'linear', grid: { display: false }, title: { display: true, text: 'Year' }, ticks: { stepSize: 1, callback: v => String(v) } }, y: { position: 'right', title: { display: true, text: 'YoY growth %' }, ticks: { callback: v => Number(v).toFixed(0) + '%' } } } }} />
     </div>
   </div>
 }

@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import src.web_app.api.screening as screening_api
+from src.web_app.security import PathPolicy
 from src.web_app.server import app
 
 
@@ -20,6 +22,19 @@ client = TestClient(app)
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def allow_temporary_databases(monkeypatch, tmp_path):
+    """Authorize only each test's temporary directory as a data root."""
+    default_database = tmp_path / "default.db"
+    default_database.touch()
+    monkeypatch.setattr(screening_api, "get_db2", lambda: str(default_database))
+    monkeypatch.setattr(
+        screening_api,
+        "_DB_PATH_POLICY",
+        PathPolicy(read_roots=(tmp_path,), write_roots=(tmp_path,)),
+    )
 
 
 def _create_test_db(path: str) -> str:
@@ -403,6 +418,7 @@ def test_save_list_load_delete_screening():
         }],
         "columns": ["CompanyInfo.Company_Code", "Valuation.PERatio"],
         "period": "2024",
+        "screening_date": "2024-06-30",
         "ranking_algorithm": "weighted_minmax",
         "ranking_rules": [{
             "table": "Valuation",
@@ -424,6 +440,7 @@ def test_save_list_load_delete_screening():
     assert resp.status_code == 200
     data = resp.json()
     assert data["period"] == "2024"
+    assert data["screening_date"] == "2024-06-30"
     assert data["ranking_algorithm"] == "weighted_minmax"
     assert len(data["criteria"]) == 1
     assert len(data["ranking_rules"]) == 1
@@ -442,6 +459,19 @@ def test_load_nonexistent_screening():
     """Loading nonexistent screening should return 404."""
     resp = client.get("/api/screening/saved/nonexistent_screening_xyz")
     assert resp.status_code == 404
+
+
+def test_save_rejects_non_iso_screening_date():
+    response = client.post(
+        "/api/screening/save",
+        json={
+            "name": "invalid-date",
+            "criteria": [],
+            "columns": [],
+            "screening_date": "June 30, 2024",
+        },
+    )
+    assert response.status_code == 422
 
 
 def test_delete_nonexistent_screening():
@@ -539,8 +569,20 @@ def test_export_csv(test_db_path):
     assert "E00001" in content
 
 
-def test_export_backtest(test_db_path):
+def test_export_backtest(test_db_path, monkeypatch):
     """Backtest export should work."""
+    original_export = screening_api._screening.export_screening_to_backtest_csv
+    generated_path = {}
+
+    def capture_output_path(**kwargs):
+        generated_path["value"] = Path(kwargs["output_path"])
+        return original_export(**kwargs)
+
+    monkeypatch.setattr(
+        screening_api._screening,
+        "export_screening_to_backtest_csv",
+        capture_output_path,
+    )
     resp = client.post("/api/screening/export", json={
         "db_path": test_db_path,
         "criteria": [],
@@ -554,6 +596,38 @@ def test_export_backtest(test_db_path):
     content = resp.text
     assert "Year" in content
     assert "Tickers" in content
+    assert generated_path["value"].parent.parent == (
+        screening_api._STATE_DIR / "exports"
+    )
+    assert not generated_path["value"].parent.exists()
+
+
+def test_export_enforces_response_size_limit(test_db_path, monkeypatch):
+    """CSV responses larger than the configured limit are rejected."""
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        screening_api,
+        "_APP_SETTINGS",
+        replace(screening_api._APP_SETTINGS, max_export_bytes=8),
+    )
+    resp = client.post("/api/screening/export", json={
+        "db_path": test_db_path,
+        "criteria": [],
+        "columns": ["CompanyInfo.Company_Code"],
+        "format": "csv",
+    })
+    assert resp.status_code == 413
+
+
+def test_export_rejects_unknown_format(test_db_path):
+    resp = client.post("/api/screening/export", json={
+        "db_path": test_db_path,
+        "criteria": [],
+        "columns": ["CompanyInfo.Company_Code"],
+        "format": "spreadsheet",
+    })
+    assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------

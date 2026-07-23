@@ -15,6 +15,7 @@ import pandas as pd
 
 from src.utilities.stock_prices import load_ticker_data, _create_prices_table
 from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.sqlite import connect_write
 from src.portfolio.etf_data import fetch_etf_history, is_etf, get_etf_info
 
 logger = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ def ensure_prices_for_tickers(
     already_present: list[str] = []
     failed: list[str] = []
 
-    conn = sqlite3.connect(db2_path)
+    conn = connect_write(db2_path)
     try:
         _create_prices_table(conn, "Stock_Prices")
 
@@ -146,6 +147,10 @@ def ensure_prices_for_tickers(
             else:
                 failed.append(ticker)
                 logger.warning("Failed to fetch prices for %s", ticker)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

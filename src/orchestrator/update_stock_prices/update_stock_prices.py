@@ -32,7 +32,12 @@ def get_tickers_from_prices(conn, table_name="CompanyInfo"):
         return []
 
 
-def update_all_stock_prices(db_name, Company_Table="CompanyInfo", prices_table="Stock_Prices"):
+def update_all_stock_prices(
+    db_name,
+    Company_Table="CompanyInfo",
+    prices_table="Stock_Prices",
+    context=None,
+):
     """Fetch and store the latest stock prices for tickers present in the database.
 
     Args:
@@ -58,31 +63,46 @@ def update_all_stock_prices(db_name, Company_Table="CompanyInfo", prices_table="
         logger.info("Found %s tickers to update stock prices for", len(tickers))
 
         provider_available = True
-        for ticker in tickers:
+        for index, ticker in enumerate(tickers):
+            if context is not None:
+                context.report_progress(
+                    index,
+                    len(tickers),
+                    f"Updating ticker {index + 1} of {len(tickers)}",
+                )
             if not provider_available:
                 logger.warning(
                     "Skipping remaining stock price updates because the price provider is unavailable."
                 )
                 break
             provider_available = stockprice_api.load_ticker_data(ticker, prices_table, conn)
+        if context is not None and tickers:
+            context.report_progress(
+                len(tickers),
+                len(tickers),
+                "Stock price update complete",
+            )
 
     except Exception as exc:
         logger.error("An error occurred: %s", exc, exc_info=True)
+        raise
 
     finally:
         if conn:
             conn.close()
 
 
-def run_update_stock_prices(config, overwrite=False):
+def run_update_stock_prices(config, overwrite=False, context=None):
     """Handler that resolves the target database path and runs the updater."""
     logger.info("Updating stock prices...")
 
-    return update_all_stock_prices(
-        get_db2(),
+    kwargs = dict(
         Company_Table="CompanyInfo",
         prices_table="Stock_Prices",
     )
+    if context is not None:
+        kwargs["context"] = context
+    return update_all_stock_prices(get_db2(), **kwargs)
 
 
 STEP_DEFINITION = StepDefinition(

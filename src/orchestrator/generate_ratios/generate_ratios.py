@@ -192,8 +192,6 @@ def _compile_formula_sql(formula, input_sql_by_name):
             if not isinstance(node.value, (int, float)):
                 raise ValueError(f"Formula '{formula}' can only use numeric constants.")
             return repr(node.value)
-        if isinstance(node, ast.Num):
-            return repr(node.n)
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             operand_sql = compile_node(node.operand)
             operator_sql = "+" if isinstance(node.op, ast.UAdd) else "-"
@@ -380,6 +378,7 @@ def generate_ratios(
     overwrite=False,
     batch_size=5000,
     helper=None,
+    context=None,
 ):
     """Generate configured ratio tables keyed by FinancialStatements.docID."""
     helper = helper or ratio_services._DB_HELPER
@@ -406,7 +405,16 @@ def generate_ratios(
             raise RuntimeError("Source table 'FinancialStatements' not found; required for generate_ratios.")
 
         target_tables = list(ratio_definitions)
-        for target_table, ratio_entries in ratio_definitions.items():
+        table_count = len(ratio_definitions)
+        for table_index, (target_table, ratio_entries) in enumerate(
+            ratio_definitions.items()
+        ):
+            if context is not None and table_count:
+                context.report_progress(
+                    table_index,
+                    table_count * 2,
+                    f"Preparing ratio table {table_index + 1} of {table_count}",
+                )
             ratio_names = [ratio_entry["name"] for ratio_entry in ratio_entries]
             _ensure_ratio_table_schema(
                 conn,
@@ -430,7 +438,15 @@ def generate_ratios(
         )
 
         successful_ratio_count = 0
-        for target_table, ratio_entries in ratio_definitions.items():
+        for table_index, (target_table, ratio_entries) in enumerate(
+            ratio_definitions.items()
+        ):
+            if context is not None and table_count:
+                context.report_progress(
+                    table_count + table_index,
+                    table_count * 2,
+                    f"Calculating ratio table {table_index + 1} of {table_count}",
+                )
             populated = _populate_ratio_table(
                 helper,
                 conn,
@@ -442,6 +458,12 @@ def generate_ratios(
             successful_ratio_count += populated
 
         conn.commit()
+        if context is not None and table_count:
+            context.report_progress(
+                table_count * 2,
+                table_count * 2,
+                "Ratio generation complete",
+            )
         logger.info(
             "Generated %d ratio(s) across %d table(s) for %d document(s).",
             successful_ratio_count,
@@ -460,15 +482,18 @@ def generate_ratios(
         conn.close()
 
 
-def run_generate_ratios(config, overwrite=False):
+def run_generate_ratios(config, overwrite=False, context=None):
     logger.info("Generating configured ratio tables...")
     step_cfg = config.get("generate_ratios_config", {})
 
-    return generate_ratios(
+    kwargs = dict(
         database=get_db2(),
         overwrite=overwrite,
         batch_size=step_cfg.get("batch_size", 5000),
     )
+    if context is not None:
+        kwargs["context"] = context
+    return generate_ratios(**kwargs)
 
 
 STEP_DEFINITION = StepDefinition(

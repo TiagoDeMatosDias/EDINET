@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.orchestrator.common.sqlite import connect_read, transaction
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -229,7 +231,7 @@ def _resolve_company_columns(db_path: str) -> tuple[str, str]:
     Returns:
         (company_code_col, ticker_col) — the resolved column names.
     """
-    conn = sqlite3.connect(db_path)
+    conn = connect_read(db_path)
     try:
         cursor = conn.cursor()
         try:
@@ -304,8 +306,7 @@ def get_available_metrics(db_path: str) -> dict[str, list[str]]:
     _SKIP_TABLES = {"sqlite_sequence"}
 
     result: dict[str, list[str]] = {}
-    conn = sqlite3.connect(db_path, timeout=10)
-    conn.execute("PRAGMA busy_timeout = 10000")
+    conn = connect_read(db_path, busy_timeout_ms=10_000)
     try:
         cursor = conn.cursor()
         # Get all user table names
@@ -341,7 +342,7 @@ def get_available_periods(db_path: str) -> list[str]:
     Returns:
         Sorted list of year strings, e.g. ``["2015", "2016", ..., "2024"]``.
     """
-    conn = sqlite3.connect(db_path)
+    conn = connect_read(db_path)
     try:
         cursor = conn.cursor()
         cursor.execute(
@@ -1129,16 +1130,34 @@ def build_screening_query(
 
 def _ensure_company_tags_table(db_path: str) -> None:
     """Create the Company_Tags table if it doesn't exist."""
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS Company_Tags ("
-        "  edinetCode TEXT NOT NULL,"
-        "  tag        TEXT NOT NULL,"
-        "  PRIMARY KEY (edinetCode, tag)"
-        ")"
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS Company_Tags ("
+            "  edinetCode TEXT NOT NULL,"
+            "  tag        TEXT NOT NULL,"
+            "  PRIMARY KEY (edinetCode, tag)"
+            ")"
+        )
+
+
+def _prepare_screening_database(db_path: str) -> None:
+    """Create managed helper objects in one explicit write transaction."""
+    with transaction(db_path) as conn:
+        fs_info = conn.execute("PRAGMA table_info(FinancialStatements)").fetchall()
+        fs_columns = [row[1] for row in fs_info]
+        code_column = _resolve_matching_column(
+            fs_columns,
+            ["Company_Code", "edinetCode", "EdinetCode"],
+        ) or "Company_Code"
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fin_company_period "
+            f"ON FinancialStatements({_safe_identifier(code_column)}, periodEnd)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS Company_Tags ("
+            "edinetCode TEXT NOT NULL, tag TEXT NOT NULL, "
+            "PRIMARY KEY (edinetCode, tag))"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1204,18 +1223,8 @@ def run_screening(
     import time as _time
     _connect_start = _time.monotonic()
     logger.info("screening connecting to db: %s", db_path)
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.execute("PRAGMA busy_timeout = 30000")
-    # Ensure the screening performance index exists (no-op if already present)
-    # Resolve the actual company-code column name in FinancialStatements
-    fs_info = conn.execute("PRAGMA table_info(FinancialStatements)").fetchall()
-    fs_cols = [row[1] for row in fs_info]
-    fs_code_col = _resolve_matching_column(fs_cols, ["Company_Code", "edinetCode", "EdinetCode"]) or "Company_Code"
-    conn.execute(
-        f"CREATE INDEX IF NOT EXISTS idx_fin_company_period "
-        f"ON FinancialStatements({_safe_identifier(fs_code_col)}, periodEnd)"
-    )
-    _ensure_company_tags_table(db_path)
+    _prepare_screening_database(db_path)
+    conn = connect_read(db_path, busy_timeout_ms=30_000)
     logger.info("screening db connected (%.2fs)", _time.monotonic() - _connect_start)
     try:
         # Log the query plan for diagnostics
@@ -1672,6 +1681,7 @@ def save_screening_criteria(
     ranking_algorithm: str = "none",
     ranking_rules: list[dict] | None = None,
     computed_columns: list[dict] | None = None,
+    screening_date: str | None = None,
 ) -> Path:
     """Persist a named screening configuration as JSON.
 
@@ -1699,7 +1709,7 @@ def save_screening_criteria(
         "ranking_algorithm": ranking_algorithm,
         "ranking_rules": ranking_rules or [],
         "computed_columns": computed_columns or [],
-        "screening_date": None,
+        "screening_date": screening_date,
     }
 
     existing_path = _find_saved_screening_path(display_name, save_path)
@@ -1730,7 +1740,9 @@ def load_screening_criteria(name: str, save_dir: str) -> dict:
         raise FileNotFoundError(f"Screening '{name}' not found in {save_path}")
 
     with open(file_path, "r", encoding="utf-8") as fh:
-        return json.load(fh)
+        data = json.load(fh)
+    data.setdefault("screening_date", None)
+    return data
 
 
 def list_saved_screenings(save_dir: str) -> list[str]:
@@ -1820,3 +1832,15 @@ def load_screening_history(history_path: str) -> list[dict]:
     # Most recent first
     entries.reverse()
     return entries
+
+
+# Stable facade: cohesive implementations live in focused modules.
+from .formatting import format_financial_value  # noqa: E402,F811
+from .persistence import (  # noqa: E402,F811
+    delete_screening_criteria,
+    list_saved_screenings,
+    load_screening_criteria,
+    load_screening_history,
+    save_screening_criteria,
+    save_screening_history,
+)

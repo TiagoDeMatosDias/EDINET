@@ -13,11 +13,15 @@ from typing import Optional
 
 from fastapi import APIRouter, UploadFile, File, Query, HTTPException
 
-from src.portfolio.schema import (
+from src.portfolio.models import (
     UploadResponse, TransactionEntry, HoldingItem, PerformanceResponse,
     DateRangeResponse, ActivitySummaryResponse, RebuildResponse,
 )
-from src.portfolio.ibkr_parser import parse_ibkr_xml, normalize_entries
+from src.portfolio.ibkr_parser import (
+    InvalidPortfolioXML,
+    normalize_entries,
+    parse_ibkr_xml,
+)
 from src.portfolio.transactions import (
     insert_entries, get_transactions, get_unique_symbols, get_date_range,
     get_activity_summary, delete_by_source,
@@ -35,37 +39,62 @@ from src.portfolio.currency import (
     get_rate_at_date_any,
 )
 from src.orchestrator.common.db_config import get_db2, get_db3
+from src.orchestrator.common.sqlite import connect_read
+from src.web_app.security import AppSettings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
+
+_UPLOAD_CHUNK_BYTES = 64 * 1024
+_MAX_XML_UPLOAD_BYTES = AppSettings.from_env().max_upload_bytes
 
 
 # ---------------------------------------------------------------------------
 # Upload
 # ---------------------------------------------------------------------------
 
+def _safe_upload_name(filename: str | None) -> str:
+    """Return a basename that is safe to persist as upload metadata."""
+    normalized = (filename or "").replace("\\", "/")
+    return Path(normalized).name
+
+
+async def _read_limited_upload(file: UploadFile, limit: int) -> bytes:
+    """Read an upload without ever buffering more than the configured limit."""
+    content = bytearray()
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            return bytes(content)
+        content.extend(chunk)
+        if len(content) > limit:
+            raise HTTPException(413, "Uploaded XML exceeds the configured size limit")
+
+
 @router.post("/upload", response_model=UploadResponse)
 async def upload_xml(file: UploadFile = File(...)):
     """Upload an IBKR FlexQuery XML file.  Parses, fetches missing ticker
     prices, and inserts all entries into the Transactions table."""
-    if not file.filename or not file.filename.lower().endswith(".xml"):
+    source = _safe_upload_name(file.filename)
+    if not source or not source.casefold().endswith(".xml"):
         raise HTTPException(400, "Only .xml files are accepted")
 
-    raw = await file.read()
-    content = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-
-    # Parse
     try:
-        xml_data = parse_ibkr_xml(content)
-    except Exception as e:
-        logger.error("Failed to parse XML: %s", e)
-        raise HTTPException(400, f"XML parse error: {e}")
+        raw = await _read_limited_upload(file, _MAX_XML_UPLOAD_BYTES)
+    finally:
+        await file.close()
+
+    try:
+        xml_data = parse_ibkr_xml(raw)
+    except InvalidPortfolioXML:
+        logger.warning("Rejected invalid IBKR XML upload", exc_info=True)
+        raise HTTPException(400, "Invalid IBKR XML document")
 
     entries = normalize_entries(xml_data)
     if not entries:
         return UploadResponse(
-            source_file=file.filename,
+            source_file=source,
             total_entries=0, inserted=0, skipped=0,
         )
 
@@ -73,8 +102,6 @@ async def upload_xml(file: UploadFile = File(...)):
     ticker_map = _build_currency_map(entries)
     db2_path = get_db2()
     db3_path = get_db3()
-    source = file.filename
-
     price_result = await asyncio.to_thread(
         ensure_prices_for_tickers, db2_path, ticker_map
     )
@@ -85,7 +112,7 @@ async def upload_xml(file: UploadFile = File(...)):
     )
 
     return UploadResponse(
-        source_file=file.filename,
+        source_file=source,
         total_entries=len(entries),
         inserted=result["inserted"],
         skipped=result["skipped"],
@@ -220,11 +247,9 @@ async def holdings_constituents(
 
     All values are converted to *base_currency*.
     """
-    import sqlite3
     from collections import defaultdict
     db3_path = get_db3()
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
     rows = conn.execute(
         """SELECT date, symbol, market_value
            FROM Holdings_History
@@ -298,10 +323,8 @@ async def dividends_history(
     Reads ``dividend_income`` from ``Portfolio_Daily`` and buckets by
     month, quarter, or year.  Returns ``[{period, gross, tax, net}, ...]``.
     """
-    import sqlite3
     db3_path = get_db3()
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
 
     # Read daily dividend income
     rows = conn.execute(
@@ -313,8 +336,7 @@ async def dividends_history(
         return []
 
     # Also read individual dividend/tax transactions for gross/tax split
-    conn2 = sqlite3.connect(db3_path)
-    conn2.row_factory = sqlite3.Row
+    conn2 = connect_read(db3_path)
     txn_rows = conn2.execute(
         "SELECT trade_date, activity_type, amount, fx_rate_to_base FROM Transactions "
         "WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
@@ -408,9 +430,7 @@ async def holding_performance(symbol: str):
 async def holding_history(symbol: str):
     """Daily market value and price history for a single holding."""
     db3_path = get_db3()
-    import sqlite3
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
     rows = conn.execute(
         "SELECT date, market_price, market_value, market_value_native "
         "FROM Holdings_History WHERE symbol = ? ORDER BY date",
@@ -457,9 +477,7 @@ async def holdings_with_performance(
         closed_syms = [cp["symbol"] for cp in closed]
         closed_hist: dict[str, list] = {}
         if closed_syms:
-            import sqlite3 as _sqlite3
-            _c = _sqlite3.connect(get_db3())
-            _c.row_factory = _sqlite3.Row
+            _c = connect_read(get_db3())
             _ph = ",".join("?" for _ in closed_syms)
             _hr = _c.execute(
                 f"SELECT symbol, date FROM Holdings_History WHERE symbol IN ({_ph}) ORDER BY symbol, date",
@@ -754,12 +772,10 @@ async def dividends_yoy(
     base_currency: str = Query("EUR"),
 ):
     """Yearly dividend totals with YoY growth for the dividend growth chart."""
-    import sqlite3
     from collections import defaultdict
 
     db3_path = get_db3()
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
 
     # Aggregate dividend_income from Portfolio_Daily by year
     rows = conn.execute(
@@ -816,12 +832,10 @@ async def dividends_per_company_yoy():
     non-Japanese positions).  DPS = net dividend / shares at that date,
     then aggregated per company per year.
     """
-    import sqlite3
     from collections import defaultdict
 
     db3_path = get_db3()
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
 
     # ── 1. Load all trades to build running share counts per symbol ──
     trade_rows = conn.execute("""
@@ -1014,12 +1028,10 @@ async def returns_by_company():
     All computed in EUR (market_value / quantity = EUR-per-share).
     Positions with zero quantity at start/end of year are skipped.
     """
-    import sqlite3
     from collections import defaultdict
 
     db3_path = get_db3()
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
 
     # 1. Holdings_History: per-symbol daily market values + quantities
     hh_rows = conn.execute("""
@@ -1169,13 +1181,11 @@ async def returns_money_weighted():
     longer exists).  This prevents the denominator from collapsing to
     near-zero values that produce spurious extreme returns.
     """
-    import sqlite3
     from collections import defaultdict
     from datetime import date as D
 
     db3_path = get_db3()
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
 
     # Holdings_History: use market_value_native for native-currency
     # MW returns that match the holdings tab.
@@ -1391,12 +1401,10 @@ async def returns_contribution(
 
     Monetary values are converted to *base_currency*.
     """
-    import sqlite3
     from collections import defaultdict
 
     db3_path = get_db3()
-    conn = sqlite3.connect(db3_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db3_path)
 
     # Per-symbol daily market values
     hh_rows = conn.execute("""
@@ -1558,5 +1566,5 @@ async def returns_contribution(
 
 @router.get("/db-path")
 async def db_path():
-    """Return the db3 path (for info/debugging)."""
-    return {"db3": get_db3(), "db2": get_db2()}
+    """Return stable database identifiers without exposing local paths."""
+    return {"db3": "portfolio", "db2": "standardized"}

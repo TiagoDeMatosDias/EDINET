@@ -369,7 +369,14 @@ def _load_taxonomy_bundle(conn, helper, taxonomy_table_name, release_id, granula
         if statement_family not in _STATEMENT_TABLES or not concept_qname or not display_label:
             continue
 
-        group_key = column_qname
+        # Older Taxonomy schemas did not store the canonical column concept.
+        # Preserve their established behavior by grouping equal display labels;
+        # newer schemas use the explicit hierarchy-derived column key.
+        group_key = (
+            column_qname
+            if has_column_qname
+            else f"label:{display_label.casefold()}"
+        )
         family_groups = groups_by_family[statement_family]
         group = family_groups.get(group_key)
         if group is None:
@@ -664,6 +671,7 @@ def generate_financial_statements(
     granularity_level,
     overwrite=False,
     helper=None,
+    context=None,
 ):
     """Generate taxonomy-backed financial statement tables from raw EDINET rows."""
     helper = helper or _DB_HELPER
@@ -710,6 +718,15 @@ def generate_financial_statements(
         )
 
         for doc_batch in _iter_doc_batches(pending_doc_ids, _DOCUMENT_BATCH_SIZE):
+            if context is not None:
+                if total_documents:
+                    context.report_progress(
+                        processed_documents,
+                        total_documents,
+                        "Generating financial statement batch",
+                    )
+                else:
+                    context.checkpoint()
             metadata_batch_df = _load_metadata_batch(
                 helper,
                 conn,
@@ -809,6 +826,12 @@ def generate_financial_statements(
 
             processed_documents += len(metadata_batch_df)
             conn.commit()
+            if context is not None and total_documents:
+                context.report_progress(
+                    processed_documents,
+                    total_documents,
+                    "Financial statement batch committed",
+                )
 
             if processed_documents % _PROGRESS_LOG_INTERVAL == 0 or processed_documents == total_documents:
                 logger.info(

@@ -248,6 +248,7 @@ def generate_rolling_metrics(
     target_database,
     overwrite=False,
     helper=None,
+    context=None,
 ):
     helper = helper or _DB_HELPER
     source_db = source_database
@@ -320,7 +321,17 @@ def generate_rolling_metrics(
 
         fs_ref = f"{helper._sql_ident(source_schema)}.{helper._sql_ident(fs_actual)}"
 
-        for configured_table_name, configured_columns in table_spec.items():
+        table_count = len(table_spec)
+        for table_index, (
+            configured_table_name,
+            configured_columns,
+        ) in enumerate(table_spec.items()):
+            if context is not None and table_count:
+                context.report_progress(
+                    table_index,
+                    table_count,
+                    f"Preparing rolling table {table_index + 1} of {table_count}",
+                )
             source_table = helper._resolve_table_name_in_schema(conn, source_schema, configured_table_name)
             if not source_table:
                 logger.warning(
@@ -415,7 +426,14 @@ def generate_rolling_metrics(
             processed_any_rows = False
             rows_processed_for_table = 0
             next_progress_log_at = _PROGRESS_LOG_EVERY_ROWS
-            for company_code in company_codes:
+            for company_index, company_code in enumerate(company_codes):
+                if context is not None and table_count:
+                    table_fraction = company_index / len(company_codes)
+                    context.report_progress(
+                        table_index + table_fraction,
+                        table_count,
+                        f"Processing company {company_index + 1} of {len(company_codes)}",
+                    )
                 select_sql = (
                     f"SELECT "
                     f"s.{helper._sql_ident(source_docid_column)} AS {helper._sql_ident('docID')}, "
@@ -458,6 +476,12 @@ def generate_rolling_metrics(
             )
             processed_tables.append(rolling_table_name)
 
+        if context is not None and table_count:
+            context.report_progress(
+                table_count,
+                table_count,
+                "Rolling metrics complete",
+            )
         logger.info("Generate Rolling Metrics completed. Processed %d table(s).", len(processed_tables))
         return {
             "status": "completed",

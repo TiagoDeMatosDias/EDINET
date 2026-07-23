@@ -2,11 +2,34 @@
 
 import os
 import pytest
-from src.portfolio.ibkr_parser import parse_ibkr_xml_file, parse_ibkr_xml, normalize_entries
+from src.portfolio.ibkr_parser import (
+    InvalidPortfolioXML,
+    normalize_entries,
+    parse_ibkr_xml,
+    parse_ibkr_xml_file,
+)
 
 IBKR_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "../..", "data", "ibkr"
 )
+
+
+class TestParserSecurity:
+    def test_rejects_doctype_and_entity_declarations(self):
+        xml = """<!DOCTYPE FlexQueryResponse [
+        <!ENTITY secret SYSTEM "file:///etc/passwd">
+        ]><FlexQueryResponse>&secret;</FlexQueryResponse>"""
+
+        with pytest.raises(InvalidPortfolioXML):
+            parse_ibkr_xml(xml)
+
+    def test_rejects_non_ibkr_root(self):
+        with pytest.raises(InvalidPortfolioXML):
+            parse_ibkr_xml("<NotAnIbkrDocument />")
+
+    def test_rejects_invalid_utf8(self):
+        with pytest.raises(InvalidPortfolioXML):
+            parse_ibkr_xml(b"\xff\xfe")
 
 
 class TestParseIbkrXmlFile:

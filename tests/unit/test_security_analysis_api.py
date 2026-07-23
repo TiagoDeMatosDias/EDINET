@@ -10,6 +10,7 @@ import json, sqlite3
 import pytest
 from fastapi.testclient import TestClient
 from src.web_app.server import app
+from src.web_app.security import PathPolicy
 
 client = TestClient(app)
 
@@ -46,6 +47,11 @@ def db(tmp_path, monkeypatch):
     _create_db(p)
     import src.web_app.api.security_analysis as m
     monkeypatch.setattr(m, "get_db2", lambda: p)
+    monkeypatch.setattr(
+        m,
+        "_DB_PATH_POLICY",
+        PathPolicy(read_roots=(tmp_path,), write_roots=(tmp_path,)),
+    )
     return p
 
 
@@ -179,7 +185,7 @@ def test_history_empty(db):
 def test_page_html(db):
     r = client.get("/security")
     assert r.status_code == 200
-    assert "sa-search" in r.text
-    assert "Security Analysis" in r.text
+    assert '<div id="root"></div>' in r.text
+    assert "/app-assets/" in r.text
     # Must not leak db_path
     assert "db_path" not in r.text

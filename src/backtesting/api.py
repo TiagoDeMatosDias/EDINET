@@ -11,12 +11,13 @@ import asyncio
 import json
 import logging
 import queue
-import sqlite3
+import re
 import threading
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -24,15 +25,21 @@ from pydantic import BaseModel, Field
 
 from src import backtesting as _bt
 from src.backtesting.zip_export import (
+    ExportSizeLimitExceeded,
     build_rolling_zip,
     build_single_backtest_zip,
     build_summary,
-    save_backtest_zip,
+    save_rolling_backtest_zip,
 )
 from src.orchestrator.common.db_config import get_db2, get_db3
-from src.orchestrator.common.backtesting import _sql_ident
+from src.orchestrator.common.sqlite import connect_read
 from src.portfolio.currency import get_available_display_currencies
 from src.portfolio.performance import get_risk_free_rate
+from src.web_app.security import (
+    AppSettings,
+    PathPolicyError,
+    configured_database_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +50,12 @@ router = APIRouter(prefix="/api/backtesting", tags=["backtesting"])
 # ---------------------------------------------------------------------------
 _MAX_CONCURRENT = 2
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
+_APP_SETTINGS = AppSettings.from_env()
+_DB_PATH_POLICY = configured_database_policy(_APP_SETTINGS.allowed_data_roots)
+_BACKTEST_ROOT = (
+    Path(__file__).resolve().parents[2] / "data" / "Backtests"
+).resolve(strict=False)
+_BACKTEST_ID = re.compile(r"^\d{8}_\d{6}(?:_[0-9a-f]{8})?$")
 
 
 # ---------------------------------------------------------------------------
@@ -51,22 +64,15 @@ _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
 def _resolve_db(db_path: str = "") -> str:
     """Resolve a database path, falling back to the configured DB2."""
-    if db_path:
-        p = Path(db_path)
-        if not p.exists():
-            raise HTTPException(
-                status_code=400,
-                detail=f"Database not found: {db_path}",
-            )
-        return str(p.resolve())
-
-    resolved = get_db2()
+    supplied = db_path.strip()
+    resolved = get_db2() if supplied in {"", "default", "standardized"} else supplied
     if not resolved:
         raise HTTPException(status_code=503, detail="No database configured.")
-    p = Path(resolved)
-    if not p.exists():
-        raise HTTPException(status_code=503, detail="Database not found.")
-    return str(p.resolve())
+    try:
+        return str(_DB_PATH_POLICY.authorize_database(resolved))
+    except PathPolicyError as exc:
+        status = 400 if supplied not in {"", "default", "standardized"} else 503
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 
 def _resolve_db3() -> str:
@@ -77,13 +83,46 @@ def _resolve_db3() -> str:
             status_code=400,
             detail="Portfolio database not configured. Import transactions first."
         )
-    p = Path(db3)
-    if not p.exists():
+    try:
+        return str(_DB_PATH_POLICY.authorize_database(db3))
+    except PathPolicyError as exc:
         raise HTTPException(
             status_code=400,
             detail="Portfolio database not found. Import transactions first."
+        ) from exc
+
+
+def _new_backtest_id() -> str:
+    return f"{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}"
+
+
+def _backtest_directory(backtest_id: str, *, require_existing: bool) -> Path:
+    if not _BACKTEST_ID.fullmatch(backtest_id):
+        raise HTTPException(status_code=404, detail="Backtest not found.")
+    raw_candidate = _BACKTEST_ROOT / backtest_id
+    if raw_candidate.is_symlink():
+        raise HTTPException(status_code=404, detail="Backtest not found.")
+    candidate = raw_candidate.resolve(strict=False)
+    if candidate.parent != _BACKTEST_ROOT:
+        raise HTTPException(status_code=404, detail="Backtest not found.")
+    if require_existing and not candidate.is_dir():
+        raise HTTPException(status_code=404, detail="Backtest not found.")
+    return candidate
+
+
+def _enforce_export_size(content: bytes) -> bytes:
+    if len(content) > _APP_SETTINGS.max_export_bytes:
+        raise HTTPException(413, "Generated export exceeds the configured size limit")
+    return content
+
+
+def _enforce_backtest_artifact_size(content: bytes) -> bytes:
+    if len(content) > _APP_SETTINGS.max_backtest_artifact_bytes:
+        raise HTTPException(
+            413,
+            "Generated backtest artifact exceeds the configured size limit",
         )
-    return str(p.resolve())
+    return content
 
 
 def _resolve_risk_free_rate(explicit_rf: float, base_currency: str) -> float:
@@ -183,9 +222,10 @@ class RollingExportRequest(BaseModel):
 
 @router.get("/db-path")
 def get_db_path() -> dict:
-    """Return the default database path."""
+    """Return a stable identifier for the default database."""
     try:
-        return {"db_path": _resolve_db()}
+        _resolve_db()
+        return {"db_path": "default"}
     except HTTPException:
         raise
     except Exception as e:
@@ -202,7 +242,7 @@ def get_available_tickers(
     """
     try:
         resolved = _resolve_db(db_path)
-        conn = sqlite3.connect(resolved)
+        conn = connect_read(resolved)
         try:
             rows = conn.execute(
                 "SELECT DISTINCT Company_Ticker FROM CompanyInfo "
@@ -229,17 +269,15 @@ def get_base_currencies() -> dict:
 @router.get("/list")
 def list_backtests() -> dict:
     """List saved backtest results."""
-    from pathlib import Path
-    base = Path("data/Backtests")
-    if not base.exists():
+    if not _BACKTEST_ROOT.exists():
         return {"backtests": []}
     items = []
-    for d in sorted(base.iterdir(), reverse=True):
-        if d.is_dir():
+    for d in sorted(_BACKTEST_ROOT.iterdir(), reverse=True):
+        if _BACKTEST_ID.fullmatch(d.name) and d.is_dir() and not d.is_symlink():
             zip_file = d / "backtest.zip"
             items.append({
                 "id": d.name,
-                "path": str(d),
+                "path": d.name,
                 "created": d.name,
                 "has_zip": zip_file.exists(),
             })
@@ -249,8 +287,11 @@ def list_backtests() -> dict:
 @router.get("/download/{backtest_id}")
 def download_backtest(backtest_id: str):
     """Serve a previously saved backtest ZIP file."""
-    zip_path = Path(f"data/Backtests/{backtest_id}/backtest.zip")
-    if not zip_path.exists():
+    zip_path = _backtest_directory(
+        backtest_id,
+        require_existing=True,
+    ) / "backtest.zip"
+    if not zip_path.is_file() or zip_path.is_symlink():
         raise HTTPException(status_code=404, detail="Backtest not found.")
     return FileResponse(
         str(zip_path),
@@ -308,33 +349,51 @@ async def run_backtest(request: BacktestRunRequest = Body(...)) -> dict:
             raise HTTPException(status_code=500, detail=str(e))
 
     # Save result JSON to disk immediately (fast), build ZIP in background
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = Path(f"data/Backtests/{ts}")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = _new_backtest_id()
+    out_dir = _backtest_directory(ts, require_existing=False)
 
     # Save full result as JSON (daily data included)
     def _save_and_zip():
+        import csv as _csv
+        import io as _io
         import json as _json
-        (out_dir / "result.json").write_text(_json.dumps(result, default=str))
-        # Build ZIP (without daily data for speed)
+        result_bytes = _json.dumps(result, default=str).encode("utf-8")
+        _enforce_backtest_artifact_size(result_bytes)
         zip_bytes = build_single_backtest_zip(result)
-        (out_dir / "backtest.zip").write_bytes(zip_bytes)
-        # Save daily CSV separately (large)
+        _enforce_backtest_artifact_size(zip_bytes)
         daily = result.get("daily")
+        daily_bytes = b""
         if daily and len(daily) > 0:
-            import csv as _csv
             keys = list(daily[0].keys())
-            with open(str(out_dir / "per_company_per_day.csv"), "w", newline="") as f:
-                w = _csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
-                w.writeheader()
-                w.writerows(daily)
+            stream = _io.StringIO(newline="")
+            writer = _csv.DictWriter(
+                stream,
+                fieldnames=keys,
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+            writer.writerows(daily)
+            daily_bytes = stream.getvalue().encode("utf-8")
+            _enforce_backtest_artifact_size(daily_bytes)
+        if sum(map(len, (result_bytes, zip_bytes, daily_bytes))) > (
+            _APP_SETTINGS.max_backtest_artifact_bytes
+        ):
+            raise HTTPException(
+                413,
+                "Generated backtest files exceed the configured size limit",
+            )
+        out_dir.mkdir(parents=True, exist_ok=False)
+        (out_dir / "result.json").write_bytes(result_bytes)
+        (out_dir / "backtest.zip").write_bytes(zip_bytes)
+        if daily_bytes:
+            (out_dir / "per_company_per_day.csv").write_bytes(daily_bytes)
 
     await asyncio.to_thread(_save_and_zip)
 
     return {
         "id": ts,
         "status": "complete",
-        "path": str(out_dir),
+        "path": ts,
         "summary": build_summary(result),
         "chart_data": result.get("chart_data", {}),
         "per_company": result.get("per_company", []),
@@ -350,6 +409,8 @@ async def run_from_csv(request: CSVBacktestRequest = Body(...)) -> dict:
 
     if not request.csv_content.strip():
         raise HTTPException(status_code=400, detail="CSV content is empty.")
+    if len(request.csv_content.encode("utf-8")) > _APP_SETTINGS.max_upload_bytes:
+        raise HTTPException(413, "CSV content exceeds the configured size limit")
 
     base_currency = _validate_base_currency(request.base_currency)
     db3 = ""
@@ -387,12 +448,11 @@ async def run_from_csv(request: CSVBacktestRequest = Body(...)) -> dict:
 
     # Save results to disk as JSON + summary
     import io as _io
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = Path(f"data/Backtests/{ts}")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = _new_backtest_id()
+    out_dir = _backtest_directory(ts, require_existing=False)
 
-    # Save full result as JSON
-    (out_dir / "result.json").write_text(json.dumps(result, default=str))
+    result_bytes = json.dumps(result, default=str).encode("utf-8")
+    _enforce_backtest_artifact_size(result_bytes)
 
     # Build a simple ZIP with summary
     zip_buf = _io.BytesIO()
@@ -404,12 +464,23 @@ async def run_from_csv(request: CSVBacktestRequest = Body(...)) -> dict:
             "successful": agg.get("successful", 0),
             "failed": agg.get("failed", 0),
         }, indent=2))
-    (out_dir / "backtest.zip").write_bytes(zip_buf.getvalue())
+    zip_bytes = _enforce_backtest_artifact_size(zip_buf.getvalue())
+    if (
+        len(result_bytes) + len(zip_bytes)
+        > _APP_SETTINGS.max_backtest_artifact_bytes
+    ):
+        raise HTTPException(
+            413,
+            "Generated backtest files exceed the configured size limit",
+        )
+    out_dir.mkdir(parents=True, exist_ok=False)
+    (out_dir / "result.json").write_bytes(result_bytes)
+    (out_dir / "backtest.zip").write_bytes(zip_bytes)
 
     return {
         "id": ts,
         "status": "complete",
-        "path": str(out_dir),
+        "path": ts,
         "aggregate": result.get("aggregate", {}),
     }
 
@@ -530,24 +601,39 @@ async def run_rolling(
                 if "cancelled" in error_msg.lower():
                     yield f"data: {json.dumps({'type': 'error', 'message': 'cancelled'})}\n\n"
                 else:
-                    yield f"data: {json.dumps({'type': 'error', 'message': error_msg})}\n\n"
+                    logger.error("Rolling backtest failed: %s", error_msg)
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'Backtest failed'})}\n\n"
 
         # Build ZIP and save to disk, then yield download info
         if final_result is not None:
             try:
-                zip_bytes = await loop.run_in_executor(
-                    None, build_rolling_zip, final_result,
-                )
                 saved_path = await loop.run_in_executor(
-                    None, save_backtest_zip, zip_bytes,
+                    None,
+                    save_rolling_backtest_zip,
+                    final_result,
+                    str(_BACKTEST_ROOT),
+                    _APP_SETTINGS.max_backtest_artifact_bytes,
                 )
                 backtest_id = saved_path.split("/")[-1] if "/" in saved_path else saved_path.split("\\")[-1]
                 agg = final_result.get("aggregate", {})
                 cfg = final_result.get("config", {})
-                yield f"data: {json.dumps({'type': 'result', 'id': backtest_id, 'path': saved_path, 'aggregate': agg, 'config': cfg})}\n\n"
+                yield f"data: {json.dumps({'type': 'result', 'id': backtest_id, 'path': backtest_id, 'aggregate': agg, 'config': cfg})}\n\n"
+            except ExportSizeLimitExceeded as exc:
+                limit_mib = exc.limit_bytes // (1024 * 1024)
+                logger.warning(
+                    "Rolling backtest archive exceeded limit: attempted=%d limit=%d",
+                    exc.attempted_bytes,
+                    exc.limit_bytes,
+                )
+                message = (
+                    "Backtest completed, but its download archive exceeded "
+                    f"the {limit_mib} MiB limit. Reduce the period range or "
+                    "increase EDINET_MAX_BACKTEST_ARTIFACT_BYTES and restart."
+                )
+                yield f"data: {json.dumps({'type': 'error', 'message': message})}\n\n"
             except Exception as e:
-                logger.error("Failed to save rolling backtest ZIP: %s", e)
-                yield f"data: {json.dumps({'type': 'error', 'message': f'Failed to save results: {e}'})}\n\n"
+                logger.error("Failed to save rolling backtest ZIP: %s", e, exc_info=True)
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Failed to save results'})}\n\n"
 
     async with _semaphore:
         return StreamingResponse(
@@ -568,9 +654,11 @@ async def export_rolling_xlsx(request: RollingExportRequest) -> StreamingRespons
     from datetime import datetime
 
     import openpyxl
-    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
+    request_bytes = json.dumps(request.rolling_result, default=str).encode("utf-8")
+    _enforce_export_size(request_bytes)
     wb = openpyxl.Workbook()
 
     # ── Styles ────────────────────────────────────────────────────
@@ -784,11 +872,11 @@ async def export_rolling_xlsx(request: RollingExportRequest) -> StreamingRespons
     # ── Write to bytes ───────────────────────────────────────────
     output = io.BytesIO()
     wb.save(output)
-    output.seek(0)
+    content = _enforce_export_size(output.getvalue())
 
     filename = f"rolling_backtest_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     return StreamingResponse(
-        output,
+        io.BytesIO(content),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
@@ -809,9 +897,12 @@ async def export_rolling_zip(request: RollingExportRequest) -> StreamingResponse
     import io as _io
     from datetime import datetime as _datetime
 
+    request_bytes = json.dumps(request.rolling_result, default=str).encode("utf-8")
+    _enforce_export_size(request_bytes)
     zip_bytes = await asyncio.to_thread(
         build_rolling_zip, request.rolling_result,
     )
+    _enforce_export_size(zip_bytes)
 
     filename = f"rolling_backtest_{_datetime.now().strftime('%Y%m%d_%H%M')}.zip"
     return StreamingResponse(

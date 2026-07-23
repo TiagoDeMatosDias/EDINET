@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -17,10 +16,18 @@ from pydantic import BaseModel, Field
 
 from src import security_analysis as _security
 from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.sqlite import connect_read
+from src.web_app.security import (
+    AppSettings,
+    PathPolicyError,
+    configured_database_policy,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/security", tags=["security_analysis"])
+_APP_SETTINGS = AppSettings.from_env()
+_DB_PATH_POLICY = configured_database_policy(_APP_SETTINGS.allowed_data_roots)
 
 
 # ---------------------------------------------------------------------------
@@ -31,10 +38,10 @@ def _resolve_db() -> str:
     db_path = get_db2()
     if not db_path:
         raise HTTPException(status_code=503, detail="No database configured.")
-    path = Path(db_path)
-    if not path.exists():
-        raise HTTPException(status_code=503, detail=f"Database not found.")
-    return str(path.resolve())
+    try:
+        return str(_DB_PATH_POLICY.authorize_database(db_path))
+    except PathPolicyError as exc:
+        raise HTTPException(status_code=503, detail="Database not found.") from exc
 
 
 def _safe_float(value: Any) -> float | None:
@@ -125,8 +132,7 @@ def _compute_metrics(db: str, code: str, market: dict, company: dict) -> dict:
     if not ticker:
         return _empty_metrics()
 
-    conn = sqlite3.connect(db)
-    conn.row_factory = sqlite3.Row
+    conn = connect_read(db)
     try:
         tables = {r[0].lower(): r[0] for r in
                   conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -311,7 +317,7 @@ def get_history(
         db = _resolve_db()
 
         # Discover all joinable tables
-        conn = sqlite3.connect(db)
+        conn = connect_read(db)
         try:
             table_map = {}
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'"):
@@ -410,8 +416,7 @@ def get_taxonomy_tree(
 
     try:
         db = _resolve_db()
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
+        conn = connect_read(db)
         try:
             return _build_taxonomy_tree_response(
                 conn, db, company_code.strip(), family, max(1, int(periods))

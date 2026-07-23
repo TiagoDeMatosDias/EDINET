@@ -6,15 +6,44 @@ export interface Health {
   jobs_active: number
 }
 
+export interface JobStep {
+  ordinal: number
+  step_name: string
+  overwrite: boolean
+  status: string
+  started_at?: string | null
+  completed_at?: string | null
+  duration_ms?: number | null
+  error_message?: string | null
+  progress_percent?: number
+  status_message?: string | null
+}
+
 export interface Job {
   job_id: string
   status: string
   current_step?: string | null
   progress_percent?: number
+  step_count?: number
+  completed_step_count?: number
   created_at?: string
   started_at?: string | null
   completed_at?: string | null
   error_message?: string | null
+  status_message?: string | null
+  steps?: JobStep[]
+}
+
+export interface JobCreateResponse {
+  job_id: string
+  status: string
+  created_at: string
+}
+
+export interface JobOutput {
+  job_id: string
+  status: string
+  output: Record<string, unknown>
 }
 
 export interface PipelineField {

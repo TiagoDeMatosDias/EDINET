@@ -442,6 +442,8 @@ class TestTaxonomyProcessing(unittest.TestCase):
                 "primary_label_en": "Total Number of Issued Shares, Summary of Business Results",
                 "parent_concept_qname": None,
                 "level": 0,
+                "column_concept_qname": "jpcrp_cor:TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+                "display_order": None,
             },
         )
         self.assertEqual(rows_by_qname["jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults"]["statement_family"], "ShareMetrics")
@@ -1357,6 +1359,8 @@ class TestTaxonomyProcessing(unittest.TestCase):
                 "concept_qname",
                 "parent_concept_qname",
                 "primary_label_en",
+                "column_concept_qname",
+                "display_order",
             ],
         )
         self.assertEqual(

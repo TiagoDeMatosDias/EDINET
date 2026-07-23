@@ -15,14 +15,14 @@ def _as_bool(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def run_parse_taxonomy(config, overwrite=False):
+def run_parse_taxonomy(config, overwrite=False, context=None):
     logger.info("Parsing EDINET taxonomy...")
     step_cfg = config.get("parse_taxonomy_config", {})
 
     xsd_file = step_cfg.get("xsd_file")
     if xsd_file:
         release_year = step_cfg.get("release_year")
-        return taxonomy_processing.import_local_taxonomy_xsd(
+        kwargs = dict(
             target_database=get_db2(),
             xsd_file=xsd_file,
             namespace_prefix=step_cfg.get("namespace_prefix"),
@@ -30,6 +30,9 @@ def run_parse_taxonomy(config, overwrite=False):
             release_year=int(release_year) if str(release_year or "").strip() else None,
             taxonomy_date=step_cfg.get("taxonomy_date"),
         )
+        if context is not None:
+            kwargs["context"] = context
+        return taxonomy_processing.import_local_taxonomy_xsd(**kwargs)
 
     raw_years = step_cfg.get("release_years") or []
     if isinstance(raw_years, str):
@@ -46,7 +49,7 @@ def run_parse_taxonomy(config, overwrite=False):
         except Exception:
             raw_namespaces = [raw_namespaces]
 
-    return taxonomy_processing.sync_taxonomy_releases(
+    kwargs = dict(
         target_database=get_db2(),
         release_selection=step_cfg.get("release_selection", "all"),
         release_years=release_years,
@@ -55,6 +58,9 @@ def run_parse_taxonomy(config, overwrite=False):
         force_download=_as_bool(step_cfg.get("force_download", False)),
         force_reparse=_as_bool(step_cfg.get("force_reparse", overwrite)),
     )
+    if context is not None:
+        kwargs["context"] = context
+    return taxonomy_processing.sync_taxonomy_releases(**kwargs)
 
 
 STEP_DEFINITION = StepDefinition(

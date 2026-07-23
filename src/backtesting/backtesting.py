@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import io
 import logging
-import sqlite3
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
 
+from src.orchestrator.common.sqlite import connect_read
 from src.orchestrator.common.backtesting import (
     _BACKTEST_DURATIONS,
     _sql_ident,
@@ -1166,7 +1166,7 @@ def _discover_screening_periods(
 
     Respects optional *start_period* / *end_period* bounds (``"YYYY-MM"``).
     """
-    conn = sqlite3.connect(db_path, timeout=10)
+    conn = connect_read(db_path, busy_timeout_ms=10_000)
     try:
         cursor = conn.cursor()
         cursor.execute(
@@ -1659,7 +1659,7 @@ def run_screening_backtest_rolling(
         columns_full = list(columns)
 
     # Check latest price date once to warn about future screenings
-    conn = sqlite3.connect(db_path, timeout=10)
+    conn = connect_read(db_path, busy_timeout_ms=10_000)
     try:
         cursor = conn.cursor()
         cursor.execute(
