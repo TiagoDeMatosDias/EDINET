@@ -407,7 +407,7 @@ Add a typed settings object for:
 
 - Bind host and port.
 - `allow_remote` flag.
-- Optional API token.
+- Optional application-authentication token, explicitly separate from the provider-only `EDINET_API_TOKEN`.
 - Allowed database/data roots.
 - Upload and export size limits.
 - Job retention and workspace location.
@@ -419,12 +419,18 @@ Load it once during app creation. Avoid global environment reads scattered throu
 
 - Loopback remains the default and requires no token.
 - Binding to a non-loopback host requires an explicit `--allow-remote` flag.
-- Non-loopback mode refuses to start without a strong API token.
+- Non-loopback mode refuses to start without a strong application-authentication token that is unrelated to `EDINET_API_TOKEN`.
 - In authenticated mode, require `Authorization: Bearer <token>` for `/api/*` except a minimal health check.
 - Compare tokens with `secrets.compare_digest`.
 - Do not put tokens in query strings, localStorage, logs, or error messages.
 - Keep CORS disabled unless explicit origins are configured.
 - Configure trusted hosts when remote mode is enabled.
+
+Credential namespace clarification (2026-07-23):
+
+- `EDINET_API_TOKEN` is reserved exclusively for outbound EDINET data-download requests.
+- Application authentication, remote-access protection, and account bootstrap must use independently generated application credentials and must never read, compare, import, or persist `EDINET_API_TOKEN`.
+- The current implementation's reuse of that provider credential in remote-access middleware is a boundary defect tracked for removal in Phase 1A of the deferred functionality plan; it is not a compatibility contract.
 
 ### 9.3 Path policy
 
@@ -841,7 +847,7 @@ Delivered outcomes:
 
 - Duplicate route ownership and historical screening-date persistence are covered by regression tests.
 - Pipeline execution uses durable SQLite jobs with ordered step state, bounded redacted output, cooperative cancellation, restart handling, retention, pagination, and aggregate health reporting.
-- Remote access fails closed unless explicitly enabled with a bearer token and trusted hosts. File, database, upload, XML, export, and error boundaries are centralized and tested.
+- Remote access fails closed unless explicitly enabled with an application bearer token and trusted hosts. This credential is conceptually distinct from the provider-only `EDINET_API_TOKEN`; the current environment-variable reuse is tracked for removal. File, database, upload, XML, export, and error boundaries are centralized and tested.
 - Shared SQLite helpers, explicit transaction boundaries, Portfolio schema migrations/backups, stable identifiers, and rollback tests cover managed data paths.
 - API assembly, pipeline job code, Portfolio models, and screening formatting/persistence were extracted behind stable facades. Further large domain-only splits remain maintenance refactors and require a separate low-risk plan.
 - `pyproject.toml`, synchronized `requirements.txt`, one version source, bounded verification/build scripts, CI, documentation checks, and a canonical PyInstaller spec now define the supported workflow.

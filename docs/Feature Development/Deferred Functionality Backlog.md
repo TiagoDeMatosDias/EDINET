@@ -1,14 +1,32 @@
 # Deferred Functionality Backlog
 
-Status: Deferred  
-Recorded: 2026-07-22  
+Status: Planning
+Recorded: 2026-07-22
 Planning trigger: Revisit after the Project Hardening Plan reaches final acceptance.
+Implementation plan: [Deferred Functionality Implementation Plan.md](Deferred%20Functionality%20Implementation%20Plan.md)
 
 ## Purpose
 
-Preserve promising product ideas from the project review without expanding the current implementation scope. These entries are reminders, not approved designs, estimates, or commitments.
+Preserve the original product ideas from the project review. Detailed sequencing, design, and acceptance criteria now live in the linked implementation plan. This backlog remains the source list; the plan controls implementation.
 
 ## Deferred ideas
+
+### Account creation and token-authenticated APIs
+
+- Add configurable account authentication with registration, login, logout, session management, and administrator account controls.
+- Keep users, Argon2id password hashes, roles, invitations, token hashes, throttling, and authentication audit events in a dedicated non-rebuildable `config/state/auth.db`.
+- Authenticate every non-public API with revocable opaque bearer access or personal API tokens; use rotating refresh tokens for browser sessions.
+- Generate application authentication tokens independently. `EDINET_API_TOKEN` remains exclusively an outbound EDINET download credential and is never accepted by account/bootstrap/inbound authentication code.
+- Allow unauthenticated loopback compatibility only when authentication is explicitly disabled. Require account mode, trusted hosts, and HTTPS for remote binding.
+- Scope research, portfolios, backtests, alerts, reports, jobs, and artifacts to their owner, with explicit operator/administrator permissions for shared pipeline and account administration.
+
+### XBRL filing archive and viewer
+
+- Download and retain eligible EDINET type-1 packages alongside the existing type-5 CSV ingestion.
+- Index Inline XBRL, XBRL instances, filing-specific taxonomies, narrative sections, images, and audit reports.
+- Add a dedicated Filing Explorer and filing workspace, with Company Analysis listing each company's available reports.
+- Keep immutable ZIP packages on disk and use a separate rebuildable filing/index database; select SQLite-only versus a SQLite/partitioned-fact hybrid from a measured pilot.
+- Introduce XBRL as a standardized-data source only after versioned CSV/XBRL parity checks pass.
 
 ### Metric provenance and data quality
 
@@ -54,5 +72,7 @@ When hardening is complete, evaluate each idea against:
 - API/frontend complexity.
 - Test and maintenance cost.
 - Whether the idea builds on the provenance and job infrastructure established by hardening.
+- Authentication threat model, password/token policy, registration/bootstrap mode, TLS deployment, permission matrix, ownership migration, account recovery, and cross-account isolation.
+- For XBRL work, measured compressed/expanded storage, parser coverage, EDINET viewing-period gaps, safe rendering, and CSV parity.
 
-Create a separate approved feature plan before implementation. Do not implement directly from this backlog.
+Review and approve the separate feature plan before implementation. Do not implement directly from this backlog.

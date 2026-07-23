@@ -16,6 +16,7 @@ tests/.pytest-tmp-*/
 docs/Feature Development/*
 !docs/Feature Development/Project Hardening Plan.md
 !docs/Feature Development/Deferred Functionality Backlog.md
+!docs/Feature Development/Deferred Functionality Implementation Plan.md
 
 # Runtime state (user-specific, not committed)
 config/state/*
