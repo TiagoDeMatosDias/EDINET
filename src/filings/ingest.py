@@ -49,6 +49,31 @@ def ingest_content(
     """
     infos = validate_zip_in_memory(zip_bytes, policy)
     metadata = metadata or {}
+    # If no company metadata was provided, try to look it up from Base.db
+    if not metadata.get("edinet_code") and not metadata.get("submitter_name"):
+        try:
+            from src.orchestrator.common.db_config import get_db1
+            from src.orchestrator.common.sqlite import connect_read
+            import os as _os
+
+            db1 = get_db1()
+            if _os.path.exists(db1):
+                conn = connect_read(db1)
+                row = conn.execute(
+                    "SELECT edinetCode, filerName, submitDateTime, periodStart, periodEnd, formCode "
+                    "FROM DocumentList WHERE docID = ?",
+                    (doc_id,),
+                ).fetchone()
+                if row:
+                    metadata.setdefault("edinet_code", row["edinetCode"] or "")
+                    metadata.setdefault("submitter_name", row["filerName"] or "")
+                    metadata.setdefault("submitted_at", row["submitDateTime"] or "")
+                    metadata.setdefault("period_start", row["periodStart"] or "")
+                    metadata.setdefault("period_end", row["periodEnd"] or "")
+                    metadata.setdefault("form_code", row["formCode"] or "")
+                conn.close()
+        except Exception:
+            pass
     now = _now()
     catalog.upsert_filing(
         {

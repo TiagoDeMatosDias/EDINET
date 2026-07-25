@@ -39,18 +39,19 @@ def _try_load_argos() -> bool:
         en = next((l for l in installed if l.code == "en"), None)
 
         if ja is None or en is None:
-            # Try to download and install the model
+            # After server restart, models may need re-indexing
             argostranslate.package.update_package_index()
             available = argostranslate.package.get_available_packages()
             ja_en_pkg = next((p for p in available if p.from_code == "ja" and p.to_code == "en"), None)
             if ja_en_pkg is None:
-                logger.info("Argos ja→en package not found in index; install with: pip install argostranslate")
+                logger.info("Argos ja→en package not found; run: pip install argostranslate")
                 return False
-            logger.info("Downloading Argos ja→en model (~200 MB, one-time)…")
-            download_path = ja_en_pkg.download()
-            argostranslate.package.install_from_path(download_path)
-            logger.info("Argos ja→en model installed — restart recommended")
-            # Re-read installed languages
+            if not ja_en_pkg.is_installed() if hasattr(ja_en_pkg, 'is_installed') else True:
+                logger.info("Installing Argos ja→en model (~200 MB, one-time)…")
+                download_path = ja_en_pkg.download()
+                argostranslate.package.install_from_path(download_path)
+                logger.info("Argos ja→en model installed")
+            # Re-read installed languages after install
             installed = argostranslate.translate.get_installed_languages()
             ja = next((l for l in installed if l.code == "ja"), None)
             en = next((l for l in installed if l.code == "en"), None)
@@ -280,7 +281,7 @@ def translate_batch(
                 cached[src] = translated
         uncached = [t for t in unique if t not in cached]
 
-    # Use Argos exclusively
+    # Use Argos exclusively — chunk long texts
     use_argos = _try_load_argos()
     new_translations: dict[str, str] = {}
     for text in uncached:
@@ -288,9 +289,19 @@ def translate_batch(
             new_translations[text] = text
             continue
         try:
-            if use_argos and len(text) <= 2000:
-                result = _argos_translate(str(text))
-                new_translations[text] = result if result and result != text else text
+            if use_argos:
+                t = str(text)
+                if len(t) <= 800:
+                    result = _argos_translate(t)
+                    new_translations[text] = result if result and result != t else t
+                else:
+                    # Chunk and reassemble
+                    chunks = [t[i:i + 700] for i in range(0, len(t), 700)]
+                    translated_chunks = [_argos_translate(c) for c in chunks]
+                    new_translations[text] = "".join(
+                        tc if tc and tc != c else c
+                        for tc, c in zip(translated_chunks, chunks)
+                    )
             else:
                 new_translations[text] = text
         except Exception:

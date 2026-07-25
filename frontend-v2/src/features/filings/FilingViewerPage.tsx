@@ -434,7 +434,6 @@ export default function FilingViewerPage() {
                       disabled={translatingHtm || !selectedHtm}
                       onClick={async () => {
                         if (!selectedHtm) return
-                        setHtmCache(prev => { const m = new Map(prev); m.delete(selectedHtm); return m })
                         setTranslatingHtm(true)
                         setHtmError('')
                         try {
@@ -442,7 +441,8 @@ export default function FilingViewerPage() {
                           if (enData.html_en) {
                             setHtmCache(prev => { const m = new Map(prev); const entry = m.get(selectedHtm) || { jp: '', en: '' }; m.set(selectedHtm, { jp: entry.jp || htmContent, en: enData.html_en! }); return m })
                             setShowEn(true)
-                          }
+                            setHtmError('')
+                          } else { setHtmError('Translation returned empty') }
                         } catch { setHtmError('Refresh failed') }
                         setTranslatingHtm(false)
                       }}

@@ -142,7 +142,7 @@ def run_download_xbrl(config, overwrite=False, context=None):
                 }
             conn.close()
     except Exception:
-        pass
+        logger.warning("Could not look up metadata from Base.db for %d documents", len(document_ids), exc_info=True)
 
     for index, doc_id in enumerate(document_ids):
         if context is not None:

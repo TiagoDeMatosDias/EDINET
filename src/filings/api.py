@@ -33,7 +33,8 @@ def _record(row: Any) -> dict[str, Any]:
     if row is None:
         return {}
     result = dict(row)
-    result.pop("archive_path", None)
+    for key in ("archive_path", "archive_content", "content"):
+        result.pop(key, None)
     return result
 
 
@@ -368,35 +369,29 @@ def get_filing_html(
         import hashlib
         from .translate import translate_batch
 
+        from .translate import _needs_translation
+
         en_soup = BeautifulSoup(str(body), "html.parser")
 
-        # If forcing, clear cache for all text in this file
+        # If forcing, clear the entire translation cache
         if force:
-            all_texts = {node.strip() for node in en_soup.find_all(string=True)
-                         if node.strip() and len(node.strip()) > 2}
-            if all_texts:
-                hashes = [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in all_texts]
-                placeholders = ",".join("?" for _ in hashes)
-                from src.orchestrator.common.sqlite import connect_write
-                conn = connect_write(catalog.path)
-                conn.execute(
-                    f"DELETE FROM filing_translations WHERE source_hash IN ({placeholders})",
-                    hashes,
-                )
-                conn.commit()
-                conn.close()
+            from src.orchestrator.common.sqlite import connect_write
+            conn = connect_write(catalog.path)
+            deleted = conn.execute("DELETE FROM filing_translations").rowcount
+            conn.commit()
+            conn.close()
+            import logging
+            logging.getLogger(__name__).info("Force translate: cleared %d cache entries for %s", deleted, doc_id)
 
         jp_nodes = []
         for node in en_soup.find_all(string=True):
             text = node.strip()
             if text and len(text) > 2 and not text.startswith("<?xml"):
-                from .translate import _needs_translation
                 if _needs_translation(text):
                     jp_nodes.append((node, text))
 
         if jp_nodes:
             unique_texts = list(dict.fromkeys(t for _, t in jp_nodes))
-            # Translate in smaller batches to avoid timeout, using cache
             batch_size = 50
             all_translations: dict[str, str] = {}
             for i in range(0, len(unique_texts), batch_size):
