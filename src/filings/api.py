@@ -26,7 +26,7 @@ class AcquireRequest(BaseModel):
     submitted_at: str | None = Field(default=None, max_length=64)
     period_start: str | None = Field(default=None, max_length=32)
     period_end: str | None = Field(default=None, max_length=32)
-    form_code: str | None = Field(default=None, max_length=32)
+    doc_type_code: str | None = Field(default=None, max_length=32)
 
 
 def _record(row: Any) -> dict[str, Any]:
@@ -178,11 +178,15 @@ def acquire_filing(request: Request, payload: AcquireRequest) -> dict[str, Any]:
 
 
 @router.get("/xbrl-eligible")
-def list_xbrl_eligible(request: Request, limit: int = 100) -> dict[str, Any]:
+def list_xbrl_eligible(
+    request: Request,
+    limit: int = 100,
+    doc_type_code: str = "120",
+) -> dict[str, Any]:
     """List documents that have CSV data but are missing XBRL archives.
 
-    Queries Base.db for documents with ``xbrlFlag = '1'`` and checks
-    which ones are not yet archived in Filings.db.
+    Set *doc_type_code* to filter by EDINET form code (030000=annual, 07A000=quarterly).
+    Leave empty for all document types.
     """
     if not isinstance(getattr(request.state, "user", None), AuthenticatedUser):
         raise HTTPException(status_code=401, detail="Account authentication is required")
@@ -199,16 +203,23 @@ def list_xbrl_eligible(request: Request, limit: int = 100) -> dict[str, Any]:
 
     conn = connect_read(db1_path)
     try:
+        where = (
+            "WHERE xbrlFlag = '1' "
+            "  AND Downloaded IN ('True', 'Checked_Unavailable') "
+            "  AND legalStatus IN ('1', '2')"
+        )
+        params: list = []
+        fc = doc_type_code.strip()
+        if fc:
+            where += " AND docTypeCode = ?"
+            params.append(fc)
+        params.append(min(max(limit, 1), 500))
         rows = conn.execute(
             "SELECT docID, edinetCode, submitDateTime, periodStart, periodEnd, "
             "formCode, docDescription, filerName, xbrlFlag "
-            "FROM DocumentList "
-            "WHERE xbrlFlag = '1' "
-            "  AND Downloaded IN ('True', 'Checked_Unavailable') "
-            "  AND legalStatus IN ('1', '2') "
-            "ORDER BY submitDateTime DESC "
-            "LIMIT ?",
-            (min(max(limit, 1), 500),),
+            "FROM DocumentList " + where +
+            " ORDER BY submitDateTime DESC LIMIT ?",
+            params,
         ).fetchall()
     finally:
         conn.close()
@@ -227,19 +238,22 @@ def list_xbrl_eligible(request: Request, limit: int = 100) -> dict[str, Any]:
             "submitter_name": row["filerName"] or "",
             "submitted_at": row["submitDateTime"] or "",
             "period_end": row["periodEnd"] or "",
-            "form_code": row["formCode"] or "",
+            "doc_type_code": row["formCode"] or "",
         })
 
     return {"eligible": eligible, "total": len(eligible)}
 
 
 @router.post("/xbrl-backfill", status_code=status.HTTP_202_ACCEPTED)
-def trigger_xbrl_backfill(request: Request, limit: int = 50) -> dict[str, Any]:
+def trigger_xbrl_backfill(
+    request: Request,
+    limit: int = 50,
+    doc_type_code: str = "120",
+) -> dict[str, Any]:
     """Download and archive XBRL packages for all eligible documents.
 
-    Queries Base.db for documents with CSV data that are missing XBRL
-    archives, then downloads and indexes each one.  Requires operator
-    or admin permission.
+    Set *doc_type_code* to filter by EDINET form code (030000=annual, 07A000=quarterly).
+    Leave empty for all document types. Requires operator or admin permission.
     """
     _require_operator(request)
     try:
@@ -255,16 +269,23 @@ def trigger_xbrl_backfill(request: Request, limit: int = 50) -> dict[str, Any]:
 
     conn = connect_read(db1_path)
     try:
+        where = (
+            "WHERE xbrlFlag = '1' "
+            "  AND Downloaded IN ('True', 'Checked_Unavailable') "
+            "  AND legalStatus IN ('1', '2')"
+        )
+        params: list = []
+        fc = doc_type_code.strip()
+        if fc:
+            where += " AND docTypeCode = ?"
+            params.append(fc)
+        params.append(min(max(limit, 1), 200))
         rows = conn.execute(
             "SELECT docID, edinetCode, submitDateTime, periodStart, periodEnd, "
             "formCode, docDescription, filerName "
-            "FROM DocumentList "
-            "WHERE xbrlFlag = '1' "
-            "  AND Downloaded IN ('True', 'Checked_Unavailable') "
-            "  AND legalStatus IN ('1', '2') "
-            "ORDER BY submitDateTime DESC "
-            "LIMIT ?",
-            (min(max(limit, 1), 200),),
+            "FROM DocumentList " + where +
+            " ORDER BY submitDateTime DESC LIMIT ?",
+            params,
         ).fetchall()
     finally:
         conn.close()
@@ -291,7 +312,7 @@ def trigger_xbrl_backfill(request: Request, limit: int = 50) -> dict[str, Any]:
                     "submitted_at": row["submitDateTime"] or "",
                     "period_start": row["periodStart"] or "",
                     "period_end": row["periodEnd"] or "",
-                    "form_code": row["formCode"] or "",
+                    "doc_type_code": row["formCode"] or "",
                 },
             )
             downloaded += 1

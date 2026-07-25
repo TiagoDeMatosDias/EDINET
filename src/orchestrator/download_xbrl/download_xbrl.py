@@ -35,6 +35,7 @@ def _backfill_ids(step_cfg: dict) -> list[str]:
     from src.filings.runtime import catalog
 
     max_docs = int(step_cfg.get("max_documents", _MAX_DOCUMENTS_PER_RUN))
+    doc_type_code = str(step_cfg.get("doc_type_code", "120")).strip()
     try:
         from src.orchestrator.common.db_config import get_db1
         from src.orchestrator.common.sqlite import connect_read
@@ -47,16 +48,24 @@ def _backfill_ids(step_cfg: dict) -> list[str]:
 
     conn = connect_read(db1_path)
     try:
+        where = (
+            "WHERE xbrlFlag = '1' "
+            "  AND Downloaded IN ('True', 'Checked_Unavailable') "
+            "  AND legalStatus IN ('1', '2')"
+        )
+        params: list = []
+        if doc_type_code:
+            where += " AND docTypeCode = ?"
+            params.append(doc_type_code)
+        params.append(max_docs)
         rows = conn.execute(
             "SELECT docID, edinetCode, submitDateTime, periodStart, periodEnd, "
             "formCode, docDescription, filerName "
             "FROM DocumentList "
-            "WHERE xbrlFlag = '1' "
-            "  AND Downloaded IN ('True', 'Checked_Unavailable') "
-            "  AND legalStatus IN ('1', '2') "
-            "ORDER BY submitDateTime DESC "
+            + where +
+            " ORDER BY submitDateTime DESC "
             "LIMIT ?",
-            (max_docs,),
+            params,
         ).fetchall()
     finally:
         conn.close()
@@ -209,6 +218,13 @@ STEP_DEFINITION = StepDefinition(
             default="100",
             label="Max documents per run",
             description="Maximum number of documents to process in one backfill run.",
+        ),
+        StepFieldDefinition(
+            "doc_type_code",
+            "str",
+            default="120",
+            label="Document type filter",
+            description="EDINET doc type: 120=annual, 130=semi-annual, 140=quarterly, leave empty for all.",
         ),
         StepFieldDefinition(
             "provider_token",
