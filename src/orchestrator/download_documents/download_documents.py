@@ -40,10 +40,31 @@ def run_download_documents(config, overwrite=False, context=None):
 STEP_DEFINITION = StepDefinition(
     name="download_documents",
     handler=run_download_documents,
+    display_name="Download EDINET documents",
     required_keys=("API_KEY",),
     input_fields=(
-        StepFieldDefinition("docTypeCode", "str", default="120"),
-        StepFieldDefinition("csvFlag", "str", default="1"),
-        StepFieldDefinition("Downloaded", "str", default="False"),
+        StepFieldDefinition(
+            "docTypeCode",
+            "str",
+            default="120",
+            label="Document type code",
+            description="EDINET document type: 120=annual, 130=semi-annual, 140=quarterly, 170=extraordinary",
+        ),
+        StepFieldDefinition(
+            "csvFlag",
+            "str",
+            default="1",
+            label="CSV flag",
+            description="1 = only documents with CSV data, 0 = all documents",
+            choices=("1", "0"),
+        ),
+        StepFieldDefinition(
+            "Downloaded",
+            "str",
+            default="False",
+            label="Download status filter",
+            description="False = only un-downloaded, True = re-download all",
+            choices=("False", "True"),
+        ),
     ),
 )

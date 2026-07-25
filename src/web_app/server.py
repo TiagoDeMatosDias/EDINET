@@ -90,6 +90,37 @@ def page_portfolio() -> FileResponse:
     return _frontend_v2()
 
 
+@app.get("/filings")
+@app.get("/filings/{subpath:path}")
+def page_filings(subpath: str = "") -> FileResponse:
+    return _frontend_v2()
+
+
+@app.get("/compare")
+def page_compare() -> FileResponse:
+    return _frontend_v2()
+
+
+@app.get("/research")
+def page_research() -> FileResponse:
+    return _frontend_v2()
+
+
+@app.get("/account")
+def page_account() -> FileResponse:
+    return _frontend_v2()
+
+
+@app.get("/admin")
+def page_admin() -> FileResponse:
+    return _frontend_v2()
+
+
+@app.get("/login")
+def page_login() -> FileResponse:
+    return _frontend_v2()
+
+
 # ── Static / fallback ──
 
 
@@ -99,10 +130,12 @@ def page_favicon() -> FileResponse:
 
 
 @app.get("/{path:path}")
-def not_found(path: str) -> FileResponse:
+def spa_fallback(path: str) -> FileResponse:
+    """Serve the SPA for unknown paths so client-side routing works on reload."""
     if path.startswith("api/") or path == "health":
         raise HTTPException(status_code=404, detail="Not found")
-    raise HTTPException(status_code=404, detail="Page not found")
+    # Treat unknown paths as SPA routes (React Router handles 404s client-side)
+    return _frontend_v2()
 
 
 def _assert_unique_method_paths() -> None:

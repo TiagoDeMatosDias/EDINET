@@ -12,6 +12,7 @@ const BacktestingPage = lazy(() => import('./features/backtesting/BacktestingPag
 const PortfolioPage = lazy(() => import('./features/portfolio/PortfolioPage'))
 const PipelinePage = lazy(() => import('./features/pipeline/PipelinePage'))
 const FilingsPage = lazy(() => import('./features/filings/FilingsPage'))
+const FilingViewerPage = lazy(() => import('./features/filings/FilingViewerPage'))
 const ComparisonPage = lazy(() => import('./features/comparison/ComparisonPage'))
 const ResearchPage = lazy(() => import('./features/research/ResearchPage'))
 const LoginPage = lazy(() => import('./features/auth/LoginPage'))
@@ -32,6 +33,7 @@ export function App() {
           <Route path="/portfolio" element={<PortfolioPage />} />
             <Route path="/pipeline" element={<PipelinePage />} />
             <Route path="/filings" element={<FilingsPage />} />
+            <Route path="/filings/:docId" element={<FilingViewerPage />} />
             <Route path="/compare" element={<ComparisonPage />} />
             <Route path="/research" element={<ResearchPage />} />
             <Route path="/login" element={<LoginPage />} />

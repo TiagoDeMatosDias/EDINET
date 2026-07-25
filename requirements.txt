@@ -3,6 +3,7 @@
 
 # Runtime
 beautifulsoup4==4.13.4
+argostranslate>=1.9  # offline neural JP→EN translation (one-time ~200MB model download)
 argon2-cffi==23.1.0
 defusedxml==0.7.1
 certifi==2025.1.31

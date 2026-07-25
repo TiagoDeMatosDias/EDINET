@@ -48,6 +48,8 @@ export interface JobOutput {
 
 export interface PipelineField {
   name: string
+  key?: string
+  label?: string
   type?: string
   description?: string
   required?: boolean

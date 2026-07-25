@@ -6,13 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.auth.models import AuthenticatedUser
 
 from .acquisition import EdinetAcquisitionError, EdinetDownloadClient
-from .runtime import ARCHIVE_ROOT, catalog
+from .runtime import catalog
 
 router = APIRouter(prefix="/api/filings", tags=["filings"])
 
@@ -143,24 +143,20 @@ def list_parse_runs(doc_id: str) -> dict[str, Any]:
 
 
 @router.get("/{doc_id}/artifact")
-def download_artifact(request: Request, doc_id: str) -> FileResponse:
+def download_artifact(request: Request, doc_id: str) -> Response:
     if not isinstance(getattr(request.state, "user", None), AuthenticatedUser):
         raise HTTPException(status_code=401, detail="Account authentication is required")
     filing = catalog.get_filing(doc_id)
     if filing is None:
         raise HTTPException(status_code=404, detail="Filing not found")
-    raw_path = Path(str(filing["archive_path"]))
-    if raw_path.is_symlink():
-        raise HTTPException(status_code=404, detail="Filing artifact not found")
-    path = raw_path.resolve(strict=False)
-    archive_root = ARCHIVE_ROOT.resolve(strict=False)
-    try:
-        path.relative_to(archive_root)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="Filing artifact not found") from exc
-    if not path.is_file() or path.is_symlink():
-        raise HTTPException(status_code=404, detail="Filing artifact not found")
-    return FileResponse(path, media_type="application/zip", filename=f"{doc_id}.zip")
+    content = filing["archive_content"]
+    if not content:
+        raise HTTPException(status_code=404, detail="Filing content not available")
+    return Response(
+        content=bytes(content),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={doc_id}.zip"},
+    )
 
 
 @router.post("/acquire", status_code=status.HTTP_202_ACCEPTED)
@@ -172,13 +168,385 @@ def acquire_filing(request: Request, payload: AcquireRequest) -> dict[str, Any]:
         client = EdinetDownloadClient.from_environment()
         fact_count = client.acquire_type1(
             payload.doc_id,
-            ARCHIVE_ROOT,
             catalog,
             metadata,
         )
     except (ValueError, EdinetAcquisitionError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"doc_id": payload.doc_id, "status": "parsed", "fact_count": fact_count}
+
+
+@router.get("/xbrl-eligible")
+def list_xbrl_eligible(request: Request, limit: int = 100) -> dict[str, Any]:
+    """List documents that have CSV data but are missing XBRL archives.
+
+    Queries Base.db for documents with ``xbrlFlag = '1'`` and checks
+    which ones are not yet archived in Filings.db.
+    """
+    if not isinstance(getattr(request.state, "user", None), AuthenticatedUser):
+        raise HTTPException(status_code=401, detail="Account authentication is required")
+    try:
+        from src.orchestrator.common.db_config import get_db1
+        from src.orchestrator.common.sqlite import connect_read
+        import os as _os
+    except Exception:
+        return {"eligible": [], "total": 0}
+
+    db1_path = get_db1()
+    if not _os.path.exists(db1_path):
+        return {"eligible": [], "total": 0}
+
+    conn = connect_read(db1_path)
+    try:
+        rows = conn.execute(
+            "SELECT docID, edinetCode, submitDateTime, periodStart, periodEnd, "
+            "formCode, docDescription, filerName, xbrlFlag "
+            "FROM DocumentList "
+            "WHERE xbrlFlag = '1' "
+            "  AND Downloaded IN ('True', 'Checked_Unavailable') "
+            "  AND legalStatus IN ('1', '2') "
+            "ORDER BY submitDateTime DESC "
+            "LIMIT ?",
+            (min(max(limit, 1), 500),),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    eligible = []
+    for row in rows:
+        doc_id = str(row["docID"]).strip()
+        if not doc_id:
+            continue
+        existing = catalog.get_filing(doc_id)
+        if existing is not None and existing["status"] in ("parsed", "archived"):
+            continue
+        eligible.append({
+            "doc_id": doc_id,
+            "edinet_code": row["edinetCode"] or "",
+            "submitter_name": row["filerName"] or "",
+            "submitted_at": row["submitDateTime"] or "",
+            "period_end": row["periodEnd"] or "",
+            "form_code": row["formCode"] or "",
+        })
+
+    return {"eligible": eligible, "total": len(eligible)}
+
+
+@router.post("/xbrl-backfill", status_code=status.HTTP_202_ACCEPTED)
+def trigger_xbrl_backfill(request: Request, limit: int = 50) -> dict[str, Any]:
+    """Download and archive XBRL packages for all eligible documents.
+
+    Queries Base.db for documents with CSV data that are missing XBRL
+    archives, then downloads and indexes each one.  Requires operator
+    or admin permission.
+    """
+    _require_operator(request)
+    try:
+        from src.orchestrator.common.db_config import get_db1
+        from src.orchestrator.common.sqlite import connect_read
+        import os as _os
+    except Exception:
+        return {"downloaded": 0, "skipped": 0, "failed": 0, "total": 0}
+
+    db1_path = get_db1()
+    if not _os.path.exists(db1_path):
+        return {"downloaded": 0, "skipped": 0, "failed": 0, "total": 0}
+
+    conn = connect_read(db1_path)
+    try:
+        rows = conn.execute(
+            "SELECT docID, edinetCode, submitDateTime, periodStart, periodEnd, "
+            "formCode, docDescription, filerName "
+            "FROM DocumentList "
+            "WHERE xbrlFlag = '1' "
+            "  AND Downloaded IN ('True', 'Checked_Unavailable') "
+            "  AND legalStatus IN ('1', '2') "
+            "ORDER BY submitDateTime DESC "
+            "LIMIT ?",
+            (min(max(limit, 1), 200),),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    client = EdinetDownloadClient.from_environment()
+    downloaded = 0
+    skipped = 0
+    failed = 0
+
+    for row in rows:
+        doc_id = str(row["docID"]).strip()
+        if not doc_id:
+            continue
+        existing = catalog.get_filing(doc_id)
+        if existing is not None and existing["status"] in ("parsed", "archived"):
+            skipped += 1
+            continue
+        try:
+            client.acquire_type1(
+                doc_id,
+                catalog,
+                {
+                    "edinet_code": row["edinetCode"] or "",
+                    "submitted_at": row["submitDateTime"] or "",
+                    "period_start": row["periodStart"] or "",
+                    "period_end": row["periodEnd"] or "",
+                    "form_code": row["formCode"] or "",
+                },
+            )
+            downloaded += 1
+        except Exception:
+            failed += 1
+
+    return {
+        "downloaded": downloaded,
+        "skipped": skipped,
+        "failed": failed,
+        "total": len(rows),
+    }
+
+
+# -- original HTM report viewer --
+
+
+@router.get("/{doc_id}/html/{artifact_id}")
+def get_filing_html(
+    doc_id: str,
+    artifact_id: str,
+    translate: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Return sanitized HTML content from an archived filing member.
+
+    Set *translate=true* to return an English-translated version alongside
+    the original Japanese HTML.  Set *force=true* to clear cached
+    translations for this file before re-translating.
+    """
+    if catalog.get_filing(doc_id) is None:
+        raise HTTPException(status_code=404, detail="Filing not found")
+
+    artifacts = catalog.list_artifacts(doc_id)
+    match = next((a for a in artifacts if a["artifact_id"] == artifact_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    member_path = str(match["member_path"])
+    if not member_path.lower().endswith((".htm", ".html")):
+        raise HTTPException(status_code=400, detail="Artifact is not an HTML file")
+
+    artifact = catalog.get_artifact_content(artifact_id)
+    if artifact is None or artifact["content"] is None:
+        raise HTTPException(status_code=404, detail="Artifact content not found in database")
+
+    content = bytes(artifact["content"])
+
+    # Sanitize: remove scripts, event handlers, and external resources
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(content, "html.parser")
+    for tag in soup.find_all(["script", "style", "iframe", "object", "embed", "form", "link"]):
+        tag.decompose()
+    for tag in soup.find_all(True):
+        attrs_to_remove = [k for k in (tag.attrs or {}).keys() if k.startswith("on")]
+        for k in attrs_to_remove:
+            del tag.attrs[k]
+        if tag.name == "img" and tag.get("src", "").startswith(("http:", "https:")):
+            tag["src"] = ""
+    body = soup.body or soup
+
+    # Wrap as a complete HTML document so the iframe renders correctly
+    html_attrs = " ".join(f'{k}="{v}"' for k, v in soup.html.attrs.items()) if soup.html else ""
+    full_html = f"<!DOCTYPE html><html {html_attrs}><head><meta charset=\"utf-8\"></head>{str(body)}</html>"
+
+    result: dict[str, Any] = {
+        "artifact_id": artifact_id,
+        "member_path": member_path,
+        "html": full_html,
+        "title": (soup.title.string if soup.title else member_path.rsplit("/", 1)[-1]),
+    }
+
+    if translate:
+        import hashlib
+        from .translate import translate_batch
+
+        en_soup = BeautifulSoup(str(body), "html.parser")
+
+        # If forcing, clear cache for all text in this file
+        if force:
+            all_texts = {node.strip() for node in en_soup.find_all(string=True)
+                         if node.strip() and len(node.strip()) > 2}
+            if all_texts:
+                hashes = [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in all_texts]
+                placeholders = ",".join("?" for _ in hashes)
+                from src.orchestrator.common.sqlite import connect_write
+                conn = connect_write(catalog.path)
+                conn.execute(
+                    f"DELETE FROM filing_translations WHERE source_hash IN ({placeholders})",
+                    hashes,
+                )
+                conn.commit()
+                conn.close()
+
+        jp_nodes = []
+        for node in en_soup.find_all(string=True):
+            text = node.strip()
+            if text and len(text) > 2 and not text.startswith("<?xml"):
+                from .translate import _needs_translation
+                if _needs_translation(text):
+                    jp_nodes.append((node, text))
+
+        if jp_nodes:
+            unique_texts = list(dict.fromkeys(t for _, t in jp_nodes))
+            # Translate in smaller batches to avoid timeout, using cache
+            batch_size = 50
+            all_translations: dict[str, str] = {}
+            for i in range(0, len(unique_texts), batch_size):
+                batch = unique_texts[i:i + batch_size]
+                all_translations.update(translate_batch(batch, catalog))
+
+            for node, text in jp_nodes:
+                if text in all_translations and all_translations[text] != text:
+                    node.replace_with(all_translations[text])
+
+        en_body = en_soup.body or en_soup
+        result["html_en"] = f"<!DOCTYPE html><html {html_attrs}><head><meta charset=\"utf-8\"></head>{str(en_body)}</html>"
+
+    return result
+
+
+@router.get("/{doc_id}/htm-files")
+def list_htm_files(doc_id: str) -> dict[str, Any]:
+    """List all HTM/HTML files available for a filing, with descriptions."""
+    if catalog.get_filing(doc_id) is None:
+        raise HTTPException(status_code=404, detail="Filing not found")
+
+    artifacts = catalog.list_artifacts(doc_id)
+    htm_files = []
+    for a in artifacts:
+        path = str(a["member_path"])
+        if not path.lower().endswith((".htm", ".html")):
+            continue
+        # Derive a label from the filename
+        name = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        # Parse EDINET naming: 0000000_header_... or 0101010_honbun_...
+        label = name
+        if "_honbun_" in name:
+            section_num = name.split("_honbun_")[0]
+            label = f"Section {section_num}"
+        elif "_header_" in name:
+            label = "Cover Page"
+        htm_files.append({
+            "artifact_id": a["artifact_id"],
+            "member_path": path,
+            "label": label,
+            "filename": name,
+            "size_bytes": a["size_bytes"],
+        })
+
+    return {"files": htm_files}
+
+
+# -- translation --
+
+
+class TranslateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    texts: list[str] = Field(min_length=1, max_length=200)
+    force: bool = False
+
+
+@router.post("/translate")
+def translate_texts(payload: TranslateRequest) -> dict[str, Any]:
+    """Translate a batch of Japanese text strings to English."""
+    from .translate import translate_batch
+
+    translations = translate_batch(payload.texts, catalog, force=payload.force)
+    return {"translations": [{"source": k, "translated": v} for k, v in translations.items()]}
+
+
+@router.get("/{doc_id}/sections-translated")
+def translated_sections(doc_id: str, bodies: bool = False, limit: int = 500) -> dict[str, Any]:
+    """Return filing sections with English translations added.
+
+    Set *bodies=true* to also translate body text (slower — may time out for large filings).
+    Default is titles only for fast loading.
+    """
+    if catalog.get_filing(doc_id) is None:
+        raise HTTPException(status_code=404, detail="Filing not found")
+    from .translate import translate_filing_sections
+
+    rows = catalog.list_sections(doc_id, limit=limit)
+    translated = translate_filing_sections(
+        [_record(r) for r in rows], catalog, translate_bodies=bodies,
+    )
+    return {"sections": translated, "count": len(translated)}
+
+
+@router.get("/{doc_id}/translate-body")
+def translate_section_body(
+    doc_id: str,
+    section_id: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Translate a single section's body text on demand.
+
+    Set *force=true* to bypass the translation cache and re-translate from scratch.
+    """
+    if catalog.get_filing(doc_id) is None:
+        raise HTTPException(status_code=404, detail="Filing not found")
+    from .translate import translate_batch
+
+    row = catalog.get_section(doc_id, section_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Section not found")
+
+    if force:
+        # Clear cache for this specific text
+        import hashlib
+        from src.orchestrator.common.sqlite import connect_write
+
+        body = row["text"] or ""
+        if body:
+            h = hashlib.sha256(body[:3000].encode("utf-8")).hexdigest()
+            conn = connect_write(catalog.path)
+            conn.execute(
+                "DELETE FROM filing_translations WHERE source_hash = ?",
+                (h,),
+            )
+            conn.commit()
+            conn.close()
+        title = row["title"] or ""
+        if title:
+            h = hashlib.sha256(title.encode("utf-8")).hexdigest()
+            conn = connect_write(catalog.path)
+            conn.execute(
+                "DELETE FROM filing_translations WHERE source_hash = ?",
+                (h,),
+            )
+            conn.commit()
+            conn.close()
+
+    from .translate import translate_filing_sections
+
+    translated = translate_filing_sections([_record(row)], catalog, translate_bodies=True)
+    return {"section": translated[0] if translated else {}}
+
+
+@router.get("/{doc_id}/facts-translated")
+def translated_facts(doc_id: str, concept: str | None = None, limit: int = 2000) -> dict[str, Any]:
+    """Return filing facts with English concept labels added."""
+    if catalog.get_filing(doc_id) is None:
+        raise HTTPException(status_code=404, detail="Filing not found")
+    from .translate import translate_facts
+
+    rows = catalog.list_facts(doc_id, concept, limit)
+    facts_list = [_record(r) for r in rows]
+    concept_map = translate_facts(facts_list, catalog)
+    for f in facts_list:
+        c = f.get("concept", "")
+        if c in concept_map:
+            f["concept_en"] = concept_map[c]
+    return {"facts": facts_list, "count": len(facts_list)}
 
 
 # -- provenance and data quality --

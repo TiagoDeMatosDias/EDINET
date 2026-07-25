@@ -10,7 +10,7 @@ from typing import Any
 
 import requests  # type: ignore[import-untyped]
 
-from .archive import DEFAULT_ARCHIVE_POLICY, ArchivePolicy, archive_zip
+from .archive import DEFAULT_ARCHIVE_POLICY, ArchivePolicy
 from .catalog import FilingCatalog
 from .ingest import ingest_archive
 
@@ -100,13 +100,13 @@ class EdinetDownloadClient:
     def acquire_type1(
         self,
         doc_id: str,
-        archive_root: str | Path,
         catalog: FilingCatalog,
         metadata: dict[str, Any] | None = None,
         *,
         policy: ArchivePolicy = DEFAULT_ARCHIVE_POLICY,
     ) -> int:
-        """Download, atomically archive, and parse one document."""
+        """Download, validate, and index one document directly into the catalog."""
         content = self.download_type1(doc_id)
-        target, _, _ = archive_zip(content, doc_id, archive_root, policy)
-        return ingest_archive(target, doc_id, catalog, metadata, policy=policy)
+        from .ingest import ingest_content
+
+        return ingest_content(content, doc_id, catalog, metadata, policy=policy)

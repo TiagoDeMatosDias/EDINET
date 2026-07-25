@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from config import Config
+from src.auth.models import AuthenticatedUser
 from src.orchestrator import validate_input
 from src.orchestrator.orchestrator import (
     InvalidUploadError,
@@ -20,6 +21,13 @@ from .models import JobCreateResponse, PipelineConfig
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
+
+
+def _require_operator(request: Request) -> AuthenticatedUser:
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, AuthenticatedUser) or user.role not in ("admin", "operator"):
+        raise HTTPException(status_code=403, detail="Operator permission required")
+    return user
 
 
 def _prepare_submission(config: PipelineConfig, workspace):
@@ -48,8 +56,9 @@ def _prepare_submission(config: PipelineConfig, workspace):
 
 
 @router.post("/run", response_model=JobCreateResponse, status_code=202)
-def submit_pipeline(config: PipelineConfig) -> JobCreateResponse:
+def submit_pipeline(request: Request, config: PipelineConfig) -> JobCreateResponse:
     """Validate and queue a pipeline without holding the request open."""
+    _require_operator(request)
     manager = runtime.job_manager
     job_id = manager.new_job_id()
     workspace = manager.workspace_for(job_id, create=True)

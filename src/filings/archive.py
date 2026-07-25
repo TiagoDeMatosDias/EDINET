@@ -43,9 +43,11 @@ def _safe_member(name: str) -> str:
     return "/".join(path.parts)
 
 
-def validate_zip(path: str | Path, policy: ArchivePolicy = DEFAULT_ARCHIVE_POLICY) -> list[zipfile.ZipInfo]:
-    """Validate ZIP metadata without extracting any member."""
-    with zipfile.ZipFile(path) as archive:
+def validate_zip_in_memory(content: bytes, policy: ArchivePolicy = DEFAULT_ARCHIVE_POLICY) -> list[zipfile.ZipInfo]:
+    """Validate ZIP metadata from raw bytes (no disk I/O)."""
+    import io
+
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
         infos = archive.infolist()
         if len(infos) > policy.max_members:
             raise UnsafeArchiveError("ZIP contains too many members")
@@ -59,14 +61,18 @@ def validate_zip(path: str | Path, policy: ArchivePolicy = DEFAULT_ARCHIVE_POLIC
             file_mode = (info.external_attr >> 16) & 0o170000
             if file_mode == 0o120000:
                 raise UnsafeArchiveError("ZIP symlinks are not allowed")
-            if info.is_dir() or info.file_size == 0:
-                continue
             if info.file_size > policy.max_member_bytes:
-                raise UnsafeArchiveError("ZIP member exceeds the size limit")
+                raise UnsafeArchiveError(f"ZIP member exceeds size limit: {member_name}")
             total += info.file_size
             if total > policy.max_total_bytes:
-                raise UnsafeArchiveError("ZIP expanded size exceeds the limit")
+                raise UnsafeArchiveError("ZIP total declared size exceeds limit")
         return infos
+
+
+def validate_zip(path: str | Path, policy: ArchivePolicy = DEFAULT_ARCHIVE_POLICY) -> list[zipfile.ZipInfo]:
+    """Validate ZIP metadata without extracting any member (from disk path)."""
+    content = Path(path).read_bytes()
+    return validate_zip_in_memory(content, policy)
 
 
 def archive_zip(

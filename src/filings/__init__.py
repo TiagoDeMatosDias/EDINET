@@ -1,7 +1,7 @@
-"""EDINET type-1 filing archive, catalog, and XBRL inspection services."""
+"""EDINET filing catalog, XBRL parsing, and in-memory validation."""
 
-from .archive import ArchivePolicy, archive_zip
+from .archive import ArchivePolicy, validate_zip_in_memory
 from .catalog import FilingCatalog
 from .xbrl import XbrlFact, XbrlParser
 
-__all__ = ["ArchivePolicy", "FilingCatalog", "XbrlFact", "XbrlParser", "archive_zip"]
+__all__ = ["ArchivePolicy", "FilingCatalog", "XbrlFact", "XbrlParser", "validate_zip_in_memory"]

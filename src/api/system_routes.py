@@ -1,12 +1,16 @@
-"""Discovery, capability, and health endpoints."""
+"""Discovery, capability, and health endpoints.
+
+Pipeline steps and config require operator/admin permission; /health is public.
+"""
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
+from src.auth.models import AuthenticatedUser
 from src.orchestrator import list_available_steps
 from src.version import __version__
 
@@ -23,9 +27,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _require_operator(request: Request) -> AuthenticatedUser:
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, AuthenticatedUser) or user.role not in ("admin", "operator"):
+        raise HTTPException(status_code=403, detail="Operator permission required")
+    return user
+
+
 @router.get("/api/steps", response_model=AvailableStepsResponse)
-def list_steps() -> AvailableStepsResponse:
+def list_steps(request: Request) -> AvailableStepsResponse:
     """Return metadata for all discovered pipeline steps."""
+    _require_operator(request)
     try:
         return AvailableStepsResponse(steps=list_available_steps())
     except Exception as exc:
@@ -37,8 +49,9 @@ def list_steps() -> AvailableStepsResponse:
 
 
 @router.get("/api/config", response_model=ServerConfigResponse)
-def get_server_config() -> ServerConfigResponse:
+def get_server_config(request: Request) -> ServerConfigResponse:
     """Return public limits without exposing host filesystem paths."""
+    _require_operator(request)
     return ServerConfigResponse(
         version=__version__,
         max_upload_bytes=runtime.SETTINGS.max_upload_bytes,
@@ -51,8 +64,9 @@ def get_server_config() -> ServerConfigResponse:
 
 
 @router.get("/api/steps/{step_name}", response_model=StepInfo)
-def get_step(step_name: str) -> StepInfo:
+def get_step(request: Request, step_name: str) -> StepInfo:
     """Return metadata for a named pipeline step."""
+    _require_operator(request)
     try:
         steps = list_available_steps()
     except Exception as exc:

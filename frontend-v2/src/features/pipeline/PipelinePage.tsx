@@ -25,12 +25,16 @@ function isTerminalJob(status?: string) { return status ? TERMINAL_JOB_STATUSES.
 function readSetups(): SavedSetup[] { try { return JSON.parse(localStorage.getItem(SETUPS_KEY) ?? '[]') } catch { return [] } }
 function label(step: PipelineStep) { return step.display_name || step.name.replaceAll('_', ' ').replace(/\b\w/g, char => char.toUpperCase()) }
 
+function configKey(stepName: string, fieldName: string) { return `${stepName}_config.${fieldName}` }
+
 function ConfigField({ field, value, onChange }: { field: PipelineField; value: unknown; onChange: (value: unknown) => void }) {
+  const fieldLabel = field.label || field.name
+  const fieldDesc = field.description
   const inputType = field.type?.toLowerCase() ?? 'text'
-  if (field.choices?.length) return <Field label={field.name} hint={field.description}><select className="select" value={String(value ?? field.default ?? '')} onChange={event => onChange(event.target.value)}>{field.choices.map(choice => <option key={choice}>{choice}</option>)}</select></Field>
-  if (inputType.includes('bool')) return <label className="check"><input type="checkbox" checked={Boolean(value ?? field.default)} onChange={event => onChange(event.target.checked)} />{field.name}</label>
-  if (inputType.includes('int') || inputType.includes('float') || inputType.includes('number')) return <Field label={field.name} hint={field.description}><input className="input" type="number" value={Number(value ?? field.default ?? 0)} onChange={event => onChange(Number(event.target.value))} /></Field>
-  return <Field label={field.name} hint={field.description}><input className="input" value={String(value ?? field.default ?? '')} onChange={event => onChange(event.target.value)} /></Field>
+  if (field.choices?.length) return <Field label={fieldLabel} hint={fieldDesc}><select className="select" value={String(value ?? field.default ?? '')} onChange={event => onChange(event.target.value)}>{field.choices.map(choice => <option key={choice} value={choice}>{choice}</option>)}</select></Field>
+  if (inputType.includes('bool')) return <label className="check"><input type="checkbox" checked={Boolean(value ?? field.default)} onChange={event => onChange(event.target.checked)} />{fieldLabel}</label>
+  if (inputType.includes('int') || inputType.includes('float') || inputType.includes('number')) return <Field label={fieldLabel} hint={fieldDesc}><input className="input" type="number" value={Number(value ?? field.default ?? 0)} onChange={event => onChange(Number(event.target.value))} /></Field>
+  return <Field label={fieldLabel} hint={fieldDesc}><input className="input" value={String(value ?? field.default ?? '')} onChange={event => onChange(event.target.value)} /></Field>
 }
 
 export default function PipelinePage() {
@@ -57,7 +61,22 @@ export default function PipelinePage() {
   const activeStatus = activeJob.data?.status
   const isJobActive = Boolean(recoveredJobId && !isTerminalJob(activeStatus))
   const run = useMutation({
-    mutationFn: () => apiPost<JobCreateResponse>('/api/pipeline/run', { steps: selected.map(step => ({ name: step.name, overwrite: step.overwrite })), config }),
+    mutationFn: () => {
+      // Transform flat "step_config.field" keys into nested per-step configs
+      const nested: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(config)) {
+        const dot = key.indexOf('.')
+        if (dot === -1) { nested[key] = value; continue }
+        const stepKey = key.slice(0, dot)
+        const fieldKey = key.slice(dot + 1)
+        if (!nested[stepKey]) nested[stepKey] = {}
+        ;(nested[stepKey] as Record<string, unknown>)[fieldKey] = value
+      }
+      return apiPost<JobCreateResponse>('/api/pipeline/run', {
+        steps: selected.map(step => ({ name: step.name, overwrite: step.overwrite })),
+        config: nested,
+      })
+    },
     onSuccess: created => { setActiveJobId(created.job_id); void queryClient.invalidateQueries({ queryKey: ['jobs'] }) },
   })
   const cancel = useMutation({
@@ -77,26 +96,48 @@ export default function PipelinePage() {
   }, [recoveredJobId, activeStatus, queryClient])
   const filtered = (steps.data?.steps ?? []).filter(step => `${step.name} ${step.display_name ?? ''} ${step.description ?? ''}`.toLowerCase().includes(search.toLowerCase()))
   const selectedMeta = selected.map(item => ({ item, meta: steps.data?.steps.find(step => step.name === item.name) })).filter(entry => entry.meta)
-  const requiredFields = useMemo(() => { const map = new Map<string, PipelineField>(); for (const entry of selectedMeta) for (const field of entry.meta?.input_fields ?? entry.meta?.parameters ?? []) map.set(field.name, field); return [...map.values()] }, [selectedMeta])
   const move = (index: number, direction: number) => setSelected(items => { const next = [...items]; const target = index + direction; if (target < 0 || target >= next.length) return items; [next[index], next[target]] = [next[target], next[index]]; return next })
   const saveSetup = () => { const next = [...setups.filter(setup => setup.name !== setupName), { name: setupName, steps: selected, config }]; setSetups(next); localStorage.setItem(SETUPS_KEY, JSON.stringify(next)) }
   const loadSetup = (name: string) => { const setup = setups.find(item => item.name === name); if (setup) { setSetupName(setup.name); setSelected(setup.steps); setConfig(setup.config) } }
   const jobColumns = useMemo<ColumnDef<Job>[]>(() => [{ accessorKey: 'status', header: 'Status', cell: info => <span className={`badge ${info.getValue() === 'completed' ? 'badge--success' : info.getValue() === 'failed' ? 'badge--danger' : ''}`}>{String(info.getValue())}</span> }, { accessorKey: 'current_step', header: 'Current step', cell: info => String(info.getValue() ?? '—') }, { accessorKey: 'created_at', header: 'Started', cell: info => info.getValue() ? new Date(String(info.getValue())).toLocaleString() : '—' }, { accessorKey: 'error_message', header: 'Message', cell: info => String(info.getValue() ?? '—') }], [])
 
   return <div className="stack">
-    <PageHeader eyebrow="Data operations" title="Data pipeline" description="Run common updates as a recipe, or assemble dynamic steps and configuration." actions={<div className="button-row">{run.isPending ? <button className="button button--primary" disabled><Play />Queueing?</button> : isJobActive ? <button className="button button--danger" disabled={cancel.isPending || activeStatus === 'cancelling'} onClick={() => cancel.mutate()}><CircleStop />{activeStatus === 'cancelling' ? 'Cancelling?' : 'Cancel run'}</button> : <button className="button button--primary" disabled={!selected.length} onClick={() => run.mutate()}><Play />Run {selected.length} step{selected.length === 1 ? '' : 's'}</button>}</div>} />
+    <PageHeader eyebrow="Data operations" title="Data pipeline" description="Run common updates as a recipe, or assemble dynamic steps and configuration." actions={<div className="button-row">{run.isPending ? <button className="button button--primary" disabled><Play />Queueing…</button> : isJobActive ? <button className="button button--danger" disabled={cancel.isPending || activeStatus === 'cancelling'} onClick={() => cancel.mutate()}><CircleStop />{activeStatus === 'cancelling' ? 'Cancelling…' : 'Cancel run'}</button> : <button className="button button--primary" disabled={!selected.length} onClick={() => run.mutate()}><Play />Run {selected.length} step{selected.length === 1 ? '' : 's'}</button>}</div>} />
     <div className="two-column">
       <Card title="Pipeline sequence" description="Steps execute from top to bottom." actions={<div className="button-row"><select className="select" aria-label="Load saved setup" value="" onChange={event => loadSetup(event.target.value)}><option value="">Load setup</option>{setups.map(setup => <option key={setup.name}>{setup.name}</option>)}</select><input className="input" aria-label="Setup name" value={setupName} onChange={event => setSetupName(event.target.value)} /><button className="button button--secondary" onClick={saveSetup}><Save />Save</button></div>}>
         {!selected.length ? <EmptyState title="No steps selected" description="Choose a prepared recipe or add individual steps from the library." action={<button className="button button--primary" onClick={() => { const preferred = ['download_documents', 'generate_financial_statements', 'generate_ratios', 'update_stock_prices']; const matches = preferred.map(name => steps.data?.steps.find(step => step.name === name)).filter(Boolean) as PipelineStep[]; setSelected(matches.map(step => ({ id: crypto.randomUUID(), name: step.name, overwrite: false }))) }}>Use daily refresh recipe</button>} /> : <div className="pipeline-list">{selected.map((item, index) => { const meta = steps.data?.steps.find(step => step.name === item.name); return <div className="pipeline-step" key={item.id}><span className="step-index">{index + 1}</span><div><strong>{meta ? label(meta) : item.name}</strong><small>{meta?.description}</small></div><label className="check"><input type="checkbox" checked={item.overwrite} onChange={event => setSelected(items => items.map(step => step.id === item.id ? { ...step, overwrite: event.target.checked } : step))} />Overwrite</label><div className="step-actions"><button className="icon-button" aria-label="Move step up" onClick={() => move(index, -1)}><ChevronUp /></button><button className="icon-button" aria-label="Move step down" onClick={() => move(index, 1)}><ChevronDown /></button><button className="icon-button" aria-label="Remove step" onClick={() => setSelected(items => items.filter(step => step.id !== item.id))}><Trash2 /></button></div></div> })}</div>}
       </Card>
       <Card title="Step library" description={`${filtered.length} available operations`}><input className="input" placeholder="Filter steps" value={search} onChange={event => setSearch(event.target.value)} />{steps.isLoading ? <LoadingState label="Loading pipeline steps" /> : steps.isError ? <ErrorState error={steps.error} /> : <div className="step-library">{filtered.map(step => <button key={step.name} disabled={selected.some(item => item.name === step.name)} onClick={() => setSelected(items => [...items, { id: crypto.randomUUID(), name: step.name, overwrite: false }])}><Plus /><span><strong>{label(step)}</strong><small>{step.description || step.category}</small></span></button>)}</div>}</Card>
     </div>
-    {requiredFields.length > 0 && <Card title="Configuration" description="Only fields required by the selected steps are shown."><div className="field-row">{requiredFields.map(field => <ConfigField key={field.name} field={field} value={config[field.name]} onChange={value => setConfig(current => ({ ...current, [field.name]: value }))} />)}</div></Card>}
+    {selectedMeta.length > 0 && (
+      <Card title="Step configuration" description="Each step's parameters are stored under the step name. Hover over a field for details.">
+        {selectedMeta.map(({ item, meta }) => {
+          const fields = meta?.input_fields ?? meta?.parameters ?? []
+          if (!fields.length) return null
+          return (
+            <div key={item.id} className="config-group">
+              <h3 className="config-group-title">{label(meta!)} <small>{meta!.name}</small></h3>
+              <p className="text-muted">{meta!.description}</p>
+              <div className="field-row">
+                {fields.map(field => (
+                  <ConfigField
+                    key={field.name}
+                    field={field}
+                    value={config[configKey(item.name, field.name)]}
+                    onChange={value => setConfig(current => ({ ...current, [configKey(item.name, field.name)]: value }))}
+                  />
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </Card>
+    )}
     {run.isError && <ErrorState error={run.error} retry={() => run.mutate()} />}
     {cancel.isError && <ErrorState error={cancel.error} />}
     {activeJob.isLoading && recoveredJobId && <Card><LoadingState label="Loading pipeline job" /></Card>}
     {activeJob.isError && <ErrorState error={activeJob.error} retry={() => activeJob.refetch()} />}
-    {activeJob.data && <Card title="Latest run" description={activeJob.data.current_step ? 'Current step: ' + activeJob.data.current_step : 'Persisted pipeline job state'} actions={<span className={`badge ${activeJob.data.status === 'completed' ? 'badge--success' : activeJob.data.status === 'failed' || activeJob.data.status === 'interrupted' ? 'badge--danger' : ''}`}>{activeJob.data.status}</span>}><p>Progress: {Math.round(activeJob.data.progress_percent ?? 0)}% ? {activeJob.data.completed_step_count ?? 0}/{activeJob.data.step_count ?? activeJob.data.steps?.length ?? 0} steps complete</p>{activeJob.data.status_message && <p>{activeJob.data.status_message}</p>}{activeJob.data.error_message && <p>{activeJob.data.error_message}</p>}<details className="details"><summary>View step state</summary><pre>{JSON.stringify(activeJob.data.steps ?? [], null, 2)}</pre></details></Card>}
+    {activeJob.data && <Card title="Latest run" description={activeJob.data.current_step ? 'Current step: ' + activeJob.data.current_step : 'Persisted pipeline job state'} actions={<span className={`badge ${activeJob.data.status === 'completed' ? 'badge--success' : activeJob.data.status === 'failed' || activeJob.data.status === 'interrupted' ? 'badge--danger' : ''}`}>{activeJob.data.status}</span>}><p>Progress: {Math.round(activeJob.data.progress_percent ?? 0)}% · {activeJob.data.completed_step_count ?? 0}/{activeJob.data.step_count ?? activeJob.data.steps?.length ?? 0} steps complete</p>{activeJob.data.status_message && <p>{activeJob.data.status_message}</p>}{activeJob.data.error_message && <p>{activeJob.data.error_message}</p>}<details className="details"><summary>View step state</summary><pre>{JSON.stringify(activeJob.data.steps ?? [], null, 2)}</pre></details></Card>}
     {output.isError && <ErrorState error={output.error} />}
     {output.data && <Card title="Run output" description="Bounded, redacted output persisted by the backend."><details className="details"><summary>View run output</summary><pre>{JSON.stringify(output.data.output, null, 2)}</pre></details></Card>}
     <Card title="Recent runs" description="Pipeline job history from the backend.">{jobs.isLoading ? <LoadingState label="Loading pipeline history" /> : jobs.isError ? <ErrorState error={jobs.error} /> : <DataTable data={jobs.data ?? []} columns={jobColumns} emptyText="No pipeline runs yet." dense />}</Card>

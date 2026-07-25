@@ -36,6 +36,7 @@ class FilingCatalog:
                     xbrl_flag TEXT,
                     csv_flag TEXT,
                     archive_path TEXT,
+                    archive_content BLOB,
                     archive_sha256 TEXT,
                     archive_size INTEGER,
                     status TEXT NOT NULL,
@@ -53,6 +54,7 @@ class FilingCatalog:
                     media_type TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
                     sha256 TEXT NOT NULL,
+                    content BLOB,
                     UNIQUE(doc_id, member_path)
                 );
                 CREATE INDEX IF NOT EXISTS idx_artifacts_doc ON artifacts(doc_id);
@@ -129,6 +131,13 @@ class FilingCatalog:
                     row_count INTEGER,
                     refreshed_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS filing_translations (
+                    source_hash TEXT PRIMARY KEY,
+                    source_text TEXT NOT NULL,
+                    translated_text TEXT NOT NULL,
+                    translator_version INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS metric_catalog (
                     metric_id TEXT PRIMARY KEY,
                     display_name TEXT NOT NULL,
@@ -177,6 +186,24 @@ class FilingCatalog:
                 );
                 """
             )
+            trans_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(filing_translations)").fetchall()
+            }
+            if "translator_version" not in trans_columns:
+                conn.execute("ALTER TABLE filing_translations ADD COLUMN translator_version INTEGER NOT NULL DEFAULT 1")
+            artifact_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(artifacts)").fetchall()
+            }
+            if "content" not in artifact_columns:
+                conn.execute("ALTER TABLE artifacts ADD COLUMN content BLOB")
+            filing_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(filings)").fetchall()
+            }
+            if "archive_content" not in filing_columns:
+                conn.execute("ALTER TABLE filings ADD COLUMN archive_content BLOB")
             conn.commit()
         finally:
             conn.close()
@@ -187,11 +214,11 @@ class FilingCatalog:
                 """INSERT INTO filings
                 (doc_id, edinet_code, submitter_name, period_start, period_end,
                  submitted_at, form_code, doc_type_code, xbrl_flag, csv_flag,
-                 archive_path, archive_sha256, archive_size, status, parse_error,
+                 archive_path, archive_content, archive_sha256, archive_size, status, parse_error,
                  created_at, updated_at)
                 VALUES (:doc_id, :edinet_code, :submitter_name, :period_start,
                         :period_end, :submitted_at, :form_code, :doc_type_code,
-                        :xbrl_flag, :csv_flag, :archive_path, :archive_sha256,
+                        :xbrl_flag, :csv_flag, :archive_path, :archive_content, :archive_sha256,
                         :archive_size, :status, :parse_error, :created_at, :updated_at)
                 ON CONFLICT(doc_id) DO UPDATE SET
                   edinet_code=excluded.edinet_code, submitter_name=excluded.submitter_name,
@@ -199,6 +226,7 @@ class FilingCatalog:
                   submitted_at=excluded.submitted_at, form_code=excluded.form_code,
                   doc_type_code=excluded.doc_type_code, xbrl_flag=excluded.xbrl_flag,
                   csv_flag=excluded.csv_flag, archive_path=excluded.archive_path,
+                  archive_content=excluded.archive_content,
                   archive_sha256=excluded.archive_sha256, archive_size=excluded.archive_size,
                   status=excluded.status, parse_error=excluded.parse_error,
                   updated_at=excluded.updated_at""",
@@ -219,7 +247,7 @@ class FilingCatalog:
             for table in ("sections", "xbrl_facts", "xbrl_units", "xbrl_contexts", "artifacts"):
                 conn.execute(f"DELETE FROM {table} WHERE doc_id = ?", (doc_id,))
             conn.executemany(
-                "INSERT INTO artifacts(artifact_id, doc_id, member_path, kind, media_type, size_bytes, sha256) VALUES (:artifact_id, :doc_id, :member_path, :kind, :media_type, :size_bytes, :sha256)",
+                "INSERT INTO artifacts(artifact_id, doc_id, member_path, kind, media_type, size_bytes, sha256, content) VALUES (:artifact_id, :doc_id, :member_path, :kind, :media_type, :size_bytes, :sha256, :content)",
                 artifacts,
             )
             conn.executemany(
@@ -299,7 +327,11 @@ class FilingCatalog:
         )
 
     def list_artifacts(self, doc_id: str) -> list[sqlite3.Row]:
-        return self._all("SELECT * FROM artifacts WHERE doc_id = ? ORDER BY member_path", (doc_id,))
+        return self._all("SELECT artifact_id, doc_id, member_path, kind, media_type, size_bytes, sha256 FROM artifacts WHERE doc_id = ? ORDER BY member_path", (doc_id,))
+
+    def get_artifact_content(self, artifact_id: str) -> sqlite3.Row | None:
+        """Return artifact metadata plus content BLOB."""
+        return self._one("SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,))
 
     def list_facts(self, doc_id: str, concept: str | None = None, limit: int = 500) -> list[sqlite3.Row]:
         if concept:
@@ -468,6 +500,36 @@ class FilingCatalog:
             "parsed_filings": int(parsed[0]["cnt"]) if parsed else 0,
             "filings_with_issues": int(with_issues[0]["cnt"]) if with_issues else 0,
         }
+
+    def lookup_translations(self, texts: list[str], *, version: int = 2) -> dict[str, str]:
+        """Return cached translations for a batch of source texts (only current translator version)."""
+        import hashlib
+
+        if not texts:
+            return {}
+        hashes = [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in texts]
+        placeholders = ",".join("?" for _ in hashes)
+        rows = self._all(
+            f"SELECT source_hash, translated_text FROM filing_translations WHERE source_hash IN ({placeholders}) AND translator_version = ?",
+            [*hashes, version],
+        )
+        return {r["source_hash"]: r["translated_text"] for r in rows}
+
+    def store_translations(self, translations: dict[str, str], *, version: int = 2) -> None:
+        """Persist translated text keyed by source text."""
+        import hashlib
+        from datetime import datetime, timezone
+
+        if not translations:
+            return
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            for source, translated in translations.items():
+                h = hashlib.sha256(source.encode("utf-8")).hexdigest()
+                conn.execute(
+                    "INSERT OR REPLACE INTO filing_translations (source_hash, source_text, translated_text, translator_version, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (h, source, translated, version, now),
+                )
 
     def _one(self, query: str, params: tuple[Any, ...]) -> sqlite3.Row | None:
         conn = connect_write(self.path, busy_timeout_ms=self.busy_timeout_ms)

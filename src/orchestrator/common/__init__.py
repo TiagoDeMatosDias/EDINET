@@ -29,6 +29,8 @@ class StepFieldDefinition:
     field_type: str
     default: Any = ""
     label: str | None = None
+    description: str = ""
+    choices: tuple[str, ...] = ()
     filetypes: tuple[tuple[str, str], ...] = ()
     height: int = 3
     required: bool = False
@@ -36,15 +38,17 @@ class StepFieldDefinition:
 
     @property
     def display_label(self) -> str:
-        return self.label if self.label is not None else self.key
+        return self.label if self.label is not None else self.key.replace("_", " ").title()
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "name": self.key,
             "key": self.key,
-            "field_type": self.field_type,
+            "type": self.field_type,
             "default": copy.deepcopy(self.default),
-            "label": self.label,
-            "display_label": self.display_label,
+            "label": self.display_label,
+            "description": self.description or "",
+            "choices": list(self.choices),
             "filetypes": [list(filetype) for filetype in self.filetypes],
             "height": self.height,
             "required": self.required,

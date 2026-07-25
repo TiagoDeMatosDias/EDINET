@@ -1,13 +1,17 @@
-"""Catalog an immutable EDINET archive and build its XBRL/narrative indexes."""
+"""Catalog an EDINET archive from raw ZIP bytes and build its XBRL/narrative indexes.
+
+All member content is stored as BLOBs in Filings.db — no files are written to disk.
+"""
 
 from __future__ import annotations
 
+import io
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .archive import DEFAULT_ARCHIVE_POLICY, ArchivePolicy, validate_zip
+from .archive import DEFAULT_ARCHIVE_POLICY, ArchivePolicy, validate_zip_in_memory
 from .catalog import FilingCatalog
 from .quality import assess_facts
 from .xbrl import XbrlParser, artifact_kind, parse_narrative, sha256
@@ -23,17 +27,27 @@ def _artifact_id(doc_id: str, member_path: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{doc_id}:artifact:{member_path}"))
 
 
-def ingest_archive(
-    archive_path: str | Path,
+def ingest_content(
+    zip_bytes: bytes,
     doc_id: str,
     catalog: FilingCatalog,
     metadata: dict[str, Any] | None = None,
     *,
     policy: ArchivePolicy = DEFAULT_ARCHIVE_POLICY,
 ) -> int:
-    """Validate, index, and parse one ZIP; return the number of facts indexed."""
-    archive = Path(archive_path).expanduser().resolve(strict=True)
-    infos = validate_zip(archive, policy)
+    """Validate, index, and store one ZIP in the catalog database.
+
+    Args:
+        zip_bytes: Raw ZIP file content (validated in memory, never written to disk).
+        doc_id: EDINET document ID.
+        catalog: FilingCatalog instance for the target database.
+        metadata: Optional dict with edinet_code, submitter_name, etc.
+        policy: Validation policy (size limits, member counts).
+
+    Returns:
+        Number of XBRL facts indexed.
+    """
+    infos = validate_zip_in_memory(zip_bytes, policy)
     metadata = metadata or {}
     now = _now()
     catalog.upsert_filing(
@@ -48,9 +62,10 @@ def ingest_archive(
             "doc_type_code": metadata.get("doc_type_code", "1"),
             "xbrl_flag": metadata.get("xbrl_flag", "1"),
             "csv_flag": metadata.get("csv_flag", "0"),
-            "archive_path": str(archive),
-            "archive_sha256": sha256(archive.read_bytes()),
-            "archive_size": archive.stat().st_size,
+            "archive_path": "",
+            "archive_content": zip_bytes,
+            "archive_sha256": sha256(zip_bytes),
+            "archive_size": len(zip_bytes),
             "status": "parsing",
             "parse_error": None,
             "created_at": metadata.get("created_at", now),
@@ -64,7 +79,7 @@ def ingest_archive(
     sections: list[dict[str, Any]] = []
     parser = XbrlParser()
     try:
-        with zipfile.ZipFile(archive) as zipped:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zipped:
             for info in infos:
                 if info.is_dir():
                     continue
@@ -80,6 +95,7 @@ def ingest_archive(
                         "media_type": media_type,
                         "size_bytes": len(content),
                         "sha256": sha256(content),
+                        "content": content,
                     }
                 )
                 if kind == "xbrl" and len(content) <= 25 * 1024 * 1024:
@@ -111,3 +127,18 @@ def ingest_archive(
         catalog.set_status(doc_id, "error", str(exc)[:500], _now())
         raise
     return len(facts)
+
+
+# Legacy function retained for callers that already have a file on disk
+def ingest_archive(
+    archive_path: str | Path,
+    doc_id: str,
+    catalog: FilingCatalog,
+    metadata: dict[str, Any] | None = None,
+    *,
+    policy: ArchivePolicy = DEFAULT_ARCHIVE_POLICY,
+) -> int:
+    """Read a ZIP from disk and ingest it. Prefer ``ingest_content`` for new code."""
+    archive = Path(archive_path).expanduser().resolve(strict=True)
+    content = archive.read_bytes()
+    return ingest_content(content, doc_id, catalog, metadata, policy=policy)

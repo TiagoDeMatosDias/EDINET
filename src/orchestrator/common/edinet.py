@@ -34,12 +34,11 @@ def _acquire_xbrl(doc: dict, working_folder: str) -> None:
         return
     try:
         from src.filings.acquisition import EdinetDownloadClient
-        from src.filings.runtime import ARCHIVE_ROOT, catalog
+        from src.filings.runtime import catalog
 
         client = EdinetDownloadClient.from_environment()
         client.acquire_type1(
             doc_id,
-            ARCHIVE_ROOT,
             catalog,
             {
                 "edinet_code": doc.get("edinetCode", ""),
