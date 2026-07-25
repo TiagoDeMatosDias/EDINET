@@ -1140,6 +1140,30 @@ def _ensure_company_tags_table(db_path: str) -> None:
         )
 
 
+def populate_user_tags(db_path: str, owner_user_id: str) -> None:
+    """Populate Company_Tags in *db_path* with tags from research.db for one user.
+
+    The table is cleared and repopulated on each call so screening queries
+    always see the current owner's tags.  Pass ``owner_user_id=''`` (or omit)
+    to keep the existing behaviour for unauthenticated compatibility use.
+    """
+    if not owner_user_id:
+        return
+    try:
+        from src.research.runtime import store as _store
+    except Exception:
+        return
+    user_tags = _store.list_all_tags(owner_user_id)
+    if not user_tags:
+        return
+    with transaction(db_path) as conn:
+        conn.execute("DELETE FROM Company_Tags")
+        conn.executemany(
+            "INSERT OR IGNORE INTO Company_Tags (edinetCode, tag) VALUES (?, ?)",
+            [(t["edinet_code"], t["tag"]) for t in user_tags],
+        )
+
+
 def _prepare_screening_database(db_path: str) -> None:
     """Create managed helper objects in one explicit write transaction."""
     with transaction(db_path) as conn:

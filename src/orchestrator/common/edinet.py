@@ -23,6 +23,37 @@ logger = logging.getLogger(__name__)
 EDINET_BASE_URL = "https://api.edinet-fsa.go.jp/api/v2/documents"
 
 
+def _acquire_xbrl(doc: dict, working_folder: str) -> None:
+    """Download and archive a type-1 XBRL package for a document.
+
+    Called from ``downloadDocs`` when ``xbrlFlag == \"1\"``.  The XBRL ZIP
+    is saved into ``data/filings/archive/`` and indexed in ``Filings.db``.
+    """
+    doc_id = str(doc.get("docID", "")).strip()
+    if not doc_id:
+        return
+    try:
+        from src.filings.acquisition import EdinetDownloadClient
+        from src.filings.runtime import ARCHIVE_ROOT, catalog
+
+        client = EdinetDownloadClient.from_environment()
+        client.acquire_type1(
+            doc_id,
+            ARCHIVE_ROOT,
+            catalog,
+            {
+                "edinet_code": doc.get("edinetCode", ""),
+                "submitted_at": doc.get("submitDateTime", ""),
+                "period_start": doc.get("periodStart", ""),
+                "period_end": doc.get("periodEnd", ""),
+                "form_code": doc.get("formCode", ""),
+            },
+        )
+        logger.info("XBRL type-1 package acquired for %s", doc_id)
+    except Exception:
+        logger.debug("XBRL type-1 acquisition skipped for %s", doc_id, exc_info=True)
+
+
 class _HiddenInputValueParser(HTMLParser):
     """Extract a hidden input value from an HTML document."""
 
@@ -320,6 +351,16 @@ class Edinet:
                             self.load_financial_data(financialFiles, output_table, doc, connection)
                             doc_status = self.STATUS_DOWNLOADED
                             logger.info("Document %s processed successfully.", doc_id)
+
+                    # --- Acquire type-1 XBRL package if available ---
+                    xbrl_flag = str(doc.get("xbrlFlag", "")).strip()
+                    if xbrl_flag == "1":
+                        try:
+                            _acquire_xbrl(doc, folder)
+                        except Exception as _xbrl_err:
+                            logger.warning(
+                                "XBRL acquisition skipped for %s: %s", doc_id, _xbrl_err
+                            )
             except Exception as e:
                 doc_status = self.STATUS_CHECKED_ERROR
                 logger.error("Error downloading document %s: %s", doc_id, e)

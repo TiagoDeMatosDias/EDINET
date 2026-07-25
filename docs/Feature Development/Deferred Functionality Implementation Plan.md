@@ -1,10 +1,10 @@
 # Deferred Functionality Implementation Plan
 
-Status: Implemented slices validated; follow-up phases remain
+Status: Active implementation — authentication, research, filings, portfolio scoping, and engine primitives validated; remaining phases in progress
 Created: 2026-07-23
-Revised: 2026-07-23 — added account creation, token authentication, the EDINET type-1 filing archive, XBRL indexing, and the filing viewer
+Revised: 2026-07-25 — completed authentication default-to-accounts, per-user portfolio scoping, database path centralisation, screening per-user storage, comparison/attribution/report-builder modules, and event-driven backtesting engine primitives
 Scope: Account creation and token-authenticated APIs, EDINET filing archives and XBRL viewing, metric provenance, data quality, watchlists, research notes, alerts, point-in-time backtesting, company comparison, portfolio attribution and scenarios, and reproducible research reports.
-Implementation state: Phase 1A authentication, Phase 1B research state, Phase 2A-2C filing archive/XBRL indexing, comparison foundations, execution-cost primitives, tax-lot/scenario primitives, and report-manifest primitives are implemented and validated. Remaining phase work is tracked below.
+Implementation state: **Phase 1A authentication is complete**. Phase 1B research state, Phase 2A-2C filing archive/XBRL indexing, comparison foundations, execution-cost primitives, tax-lot/scenario primitives, and report-manifest primitives are implemented and validated. Remaining phase work is tracked below.
 
 ## Implementation record — 2026-07-23
 
@@ -15,6 +15,83 @@ Implementation state: Phase 1A authentication, Phase 1B research state, Phase 2A
 - Verification: backend unit suite 700 passed/1 skipped in 61.8 seconds; integration suite 108 passed in 12.3 seconds; frontend TypeScript, 25 Vitest tests, lint (warnings only), and production build passed. Targeted Ruff/Mypy, requirements synchronization, documentation links, and diff checks passed. Canonical PyInstaller packaging and the frozen-app smoke test passed in 132.5 seconds under explicit command/smoke caps.
 
 The implementation deliberately keeps compatibility backtesting and global imported Portfolio activity intact. Point-in-time filing selection, tax-lot/scenario previews, and reports are available as explicit authenticated analytical slices; full historical universe/corporate-action migration, scheduled alert workers, XLSX/PDF renderers, and legacy Portfolio owner-claim migration remain documented follow-up work rather than silently being represented as complete.
+
+## Implementation record — 2026-07-25
+
+### Authentication and authorisation hardening
+- Changed default `auth_mode` from `disabled` to `accounts` and `registration_mode` from `closed` to `open`. The app now requires account creation on first launch; the first account becomes administrator.
+- Added `token_version` column to `users` table with auto-migration. Password changes, role changes, and account disablement increment `token_version` and revoke all active sessions.
+- Added `PATCH /api/auth/me`, `POST /api/auth/change-password`, `GET/DELETE /api/auth/sessions`, `GET/DELETE /api/auth/sessions/{id}` endpoints.
+- Added admin router (`/api/admin/auth/*`): user list/detail, role assignment, disable/enable, audit log, invitation creation/revocation, credential reset tokens, auth-settings management.
+- Added `src/auth/permissions.py` with `Permission` enum and `Role → Permission` matrix (admin/operator/member).
+- Added `src/auth/dependencies.py` with FastAPI `current_user`, `require_admin`, `require_operator`, `require_permission` dependency factories.
+- Added `auth_settings` singleton table (registration_mode, default_role, token lifetimes).
+- Added `invitations` and `credential_resets` tables with token-based acceptance/consumption.
+- Frontend: `AuthProvider` with full-screen login/register gate, session-restore via refresh cookie, background refresh loop, auth-disabled persistent warning banner.
+- Frontend: `LoginPage` (`/login` route), `AccountPage` (profile, password, API tokens, sessions), `AdminPage` (user management, audit log).
+- Frontend: `AppShell` auth section — user dropdown with account/admin links, "Auth disabled" badge, sign-in button.
+
+### Research state completion
+- Added `company_research` table (thesis_status, target_value, target_currency, review_on, version) with upsert API.
+- Added `research_note_revisions` table for immutable revision history on note updates.
+- Added `company_tags` table (owner-scoped per-company tags, replacing `Company_Tags` in Standardized.db).
+- Added `saved_screens` and `screening_runs` tables in `research.db`.
+- Note update now uses optimistic concurrency (`version` field); stale edits return 409 with the current version.
+- Added watchlist member reorder endpoint.
+- Added `GET/PATCH /api/research/companies/{code}`, `GET/PUT /api/research/tags/{code}`, `GET/POST/DELETE /api/research/screens`.
+
+### Database path centralisation
+- All database paths moved to `config/database_paths.json` with dedicated keys: `auth_db`, `research_db`, `pipeline_jobs_db`, `filings_db` (in addition to `db1`/`db2`/`db3`).
+- Added `get_auth_db()`, `get_research_db()`, `get_pipeline_jobs_db()`, `get_filings_db()` to `src/orchestrator/common/db_config.py`.
+- All runtime modules (`security.py`, `research/runtime.py`, `api/runtime.py`, `filings/runtime.py`) now resolve paths via `database_paths.json` instead of hardcoding.
+- Database files physically moved from `config/state/` to `data/databases/` alongside existing `Base.db`/`Standardized.db`/`Portfolio.db`.
+
+### Saved screening per-user migration
+- `GET/POST/DELETE /api/screening/saved` endpoints rewritten to use per-user `research.db` storage instead of flat JSON files in `config/state/saved_screenings/`.
+- Backward-compatible: list returns string array of names, load/delete accept name or screen ID.
+- Screening history endpoint now requires authentication.
+
+### Portfolio per-user scoping (major)
+- Added `owner_user_id TEXT NOT NULL DEFAULT ''` column to all 5 Portfolio.db tables (`Transactions`, `Portfolio_Daily`, `Portfolio_Holdings`, `Holdings_History`, `Portfolio_Metrics`) via migration v3.
+- Changed `Transactions.transaction_id` UNIQUE constraint from global to composite `(transaction_id, owner_user_id)` via migration v4 (table recreation).
+- All `insert_entries`, `get_transactions`, `get_unique_symbols`, `get_date_range`, `get_activity_summary`, `delete_by_source` functions accept and filter by `owner_user_id`.
+- `build_portfolio_state` scopes DELETEs/SELECTs/INSERTs to the owner.
+- All `get_*` query functions in `portfolio_state.py` accept and filter by `owner_user_id`.
+- All 9 chart functions in `charts.py` accept and filter by `owner_user_id`.
+- `calculate_metrics` in `performance.py` accepts and propagates `owner_user_id`.
+- Portfolio API layer: every endpoint derives `owner_user_id` from the bearer token via `_account(request)`, never from client input.
+- All inline SQL queries in API dividend/return endpoints scoped with `WHERE owner_user_id = ?`.
+- Legacy data with `owner_user_id = ''` is invisible to authenticated users.
+
+### Filing catalog enhancements
+- Added `parse_runs` table (parser version, status, fact/section/warning counts, error messages).
+- Added `data_watermarks` table (source name/version, max_available_at, row count, refresh timestamp).
+- Added `metric_catalog`, `observations`, `observation_sources`, `observation_dependencies` tables for provenance.
+- Created `src/filings/provenance.py` with `resolve_provenance()` and `provenance_batch()`.
+- Added `POST /api/filings/provenance/resolve`, `/resolve-batch`, `GET /api/filings/data-quality/summary`, `/issues`, `/coverage`.
+- Expanded `quality.py` with additional rules: nil facts, negative values, extreme scale, missing units, filing-level checks.
+- Added `GET /api/filings/{doc_id}/sections/{section_id}`, `/taxonomy`, `/audit-reports`, `/parse-runs`.
+
+### Event-driven backtesting engine primitives (Phase 3 foundations)
+- Created `src/backtesting/market_data.py` — versioned `Market_Prices`, `Corporate_Actions`, `Security_Aliases`, `Security_Listings` tables with query methods.
+- Created `src/backtesting/calendar.py` — `TradingCalendar` with holiday-aware session determination.
+- Created `src/backtesting/universe.py` — `PointInTimeUniverse` for listing/delisting eligibility checks.
+- Created `src/backtesting/signals.py` — `TradingSignal` generation from as-of observations.
+- Created `src/backtesting/execution.py` — order conversion with execution lag, fill simulation with adverse costs.
+- Created `src/backtesting/ledger.py` — `PortfolioLedger` tracking cash, positions, transactions, dividends, splits with NAV and performance.
+
+### Comparison, attribution, and reports modules
+- Created `src/comparison/service.py` — `common_size_income()`, `common_size_balance()`, `growth_rate()`, `growth_matrix()`, `peer_percentile()`, `normalize_companies()`.
+- Created `src/portfolio/attribution.py` — `holding_contribution()`, `currency_attribution()`, `industry_attribution()`, `multi_period_link()`, `contribution_reconciliation()`.
+- Created `src/reports/builder.py` — `resolve_report_data()` resolving company/filing/observation/research data from real databases, `build_report_sections()`.
+- Created `src/research/alerts.py` evaluators — `evaluate_price_crossing()`, `evaluate_metric_change()`, `evaluate_filing_alert()`, `evaluate_all_user_alerts()`.
+
+### Test coverage
+- 12 auth tests (up from 6): password change, profile update, admin endpoints, session management, last-admin protection, role-based access.
+- 5 research tests (up from 1): thesis/target CRUD, note versioning, tag isolation, member reorder.
+- 6 filing tests: archive/indexing, path traversal, duplicate rejection, provider token isolation, quality checks, Inline XBRL normalisation.
+- 3 tax-lot tests, 2 portfolio analytics tests, 2 report tests, 2 as-of tests, 1 XBRL step test.
+- **Total**: 33 focused unit tests (all passing), plus 11 security/integration tests (44 total).
 
 ## 1. Purpose
 

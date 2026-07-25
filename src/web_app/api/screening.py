@@ -350,26 +350,33 @@ def get_available_formulas() -> dict:
 
 
 @router.post("/run")
-def run_screening_endpoint(request: ScreeningRunRequest = Body(...)) -> dict:
+def run_screening_endpoint(
+    http_request: Request,
+    payload: ScreeningRunRequest = Body(...),
+) -> dict:
     """Run a screening query and return results with the generated SQL."""
     import time as _t
     _t0 = _t.monotonic()
     logger.info("screening/run START db=%s criteria=%d cols=%d",
-                request.db_path, len(request.criteria), len(request.columns))
+                payload.db_path, len(payload.criteria), len(payload.columns))
 
     try:
         _t1 = _t.monotonic()
-        resolved = _validate_db_path(request.db_path)
+        resolved = _validate_db_path(payload.db_path)
+        # Populate user-scoped tags before running the screen
+        user = getattr(http_request.state, "user", None)
+        if isinstance(user, AuthenticatedUser):
+            _screening.populate_user_tags(str(resolved), user.user_id)
         logger.info("screening/run db_path validated (%.2fs)", _t.monotonic() - _t1)
 
         _t1 = _t.monotonic()
-        criteria_dicts = _criteria_to_dicts(request.criteria)
-        ranking_dicts = _ranking_rules_to_dicts(request.ranking_rules)
+        criteria_dicts = _criteria_to_dicts(payload.criteria)
+        ranking_dicts = _ranking_rules_to_dicts(payload.ranking_rules)
         logger.info("screening/run criteria/ranking converted (%.2fs)", _t.monotonic() - _t1)
 
-        all_columns = list(request.columns)
+        all_columns = list(payload.columns)
         computed_specs = []
-        for cc in request.computed_columns:
+        for cc in payload.computed_columns:
             computed_specs.append({
                 "name": cc.name,
                 "formula_type": cc.formula_type,
@@ -388,15 +395,15 @@ def run_screening_endpoint(request: ScreeningRunRequest = Body(...)) -> dict:
                     len(available), _t.monotonic() - _t1)
 
         _t1 = _t.monotonic()
-        ranking_columns = ranking_dicts if request.ranking_algorithm != "none" else None
+        ranking_columns = ranking_dicts if payload.ranking_algorithm != "none" else None
         query_columns, col_aliases, _ = _screening._build_query_column_plan(
             all_columns, ranking_columns
         )
         display_sql, display_params = _screening.build_screening_query(
             criteria_dicts,
             query_columns,
-            request.period,
-            screening_date=request.screening_date,
+            payload.period,
+            screening_date=payload.screening_date,
             available_metrics=available,
             column_aliases=col_aliases,
             computed_columns=computed_specs,
@@ -409,11 +416,11 @@ def run_screening_endpoint(request: ScreeningRunRequest = Body(...)) -> dict:
             db_path=resolved,
             criteria=criteria_dicts,
             columns=all_columns,
-            period=request.period,
-            screening_date=request.screening_date,
-            sort_by=request.sort_by,
-            sort_order=request.sort_order,
-            ranking_algorithm=request.ranking_algorithm,
+            period=payload.period,
+            screening_date=payload.screening_date,
+            sort_by=payload.sort_by,
+            sort_order=payload.sort_order,
+            ranking_algorithm=payload.ranking_algorithm,
             ranking_rules=ranking_dicts,
             computed_columns=computed_specs,
             available_metrics=available,

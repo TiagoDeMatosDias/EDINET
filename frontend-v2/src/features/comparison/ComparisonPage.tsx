@@ -1,16 +1,134 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 
-import { apiRequest, queryString } from '../../api/client'
+import { apiPost } from '../../api/client'
 import { EmptyState, LoadingState } from '../../components/Feedback'
 import { PageHeader } from '../../components/Page'
 
-interface CompanyRow { company_code: string; company: Record<string, unknown>; metrics: Record<string, number | null> }
+interface ComparisonCompany {
+  company_code: string
+  company: { company_name?: string; edinet_code?: string; industry?: string }
+  metrics: Record<string, number | null>
+}
+
+const METRIC_LABELS: Record<string, string> = {
+  LatestPrice: 'Price',
+  MarketCap: 'Market cap',
+  PERatio: 'P/E',
+  PriceToBook: 'P/B',
+  ReturnOnEquity: 'ROE',
+  DividendsYield: 'Div yield',
+  OperatingMargin: 'Op margin',
+  NetMargin: 'Net margin',
+  RevenueGrowth: 'Rev growth',
+  TotalAssets: 'Total assets',
+  TotalEquity: 'Total equity',
+}
+
+const DEFAULT_METRICS = ['LatestPrice', 'MarketCap', 'PERatio', 'PriceToBook', 'ReturnOnEquity', 'DividendsYield', 'OperatingMargin', 'NetMargin']
 
 export default function ComparisonPage() {
+  const client = useQueryClient()
   const [input, setInput] = useState('')
-  const [codes, setCodes] = useState<string[]>([])
-  const comparison = useQuery({ queryKey: ['comparison', codes], enabled: codes.length >= 2, queryFn: () => apiRequest<{ companies: CompanyRow[] }>(`/api/security/compare${queryString({ company_codes: codes.join(',') })}`) })
-  const metricKeys = ['LatestPrice', 'MarketCap', 'PERatio', 'PriceToBook', 'ReturnOnEquity', 'DividendsYield']
-  return <div className="stack dense-page"><PageHeader eyebrow="Company research" title="Compare companies" description="Compare the same overview metrics across two to twelve EDINET companies." /><div className="card"><div className="card-header"><div><h2>Company set</h2><p>Enter EDINET codes separated by commas.</p></div><div className="button-row"><input className="input" aria-label="Company codes" value={input} onChange={event => setInput(event.target.value)} placeholder="E00001, E00002" /><button className="button button--primary" onClick={() => setCodes(input.split(',').map(value => value.trim()).filter(Boolean))}>Compare</button></div></div></div>{comparison.isLoading && <LoadingState label="Calculating comparison" />}{comparison.error && <p className="form-error">{comparison.error.message}</p>}{comparison.data && !comparison.data.companies.length && <EmptyState title="No companies found" description="Check the EDINET codes and try again." />}{comparison.data?.companies.length ? <div className="card table-scroll"><table className="data-grid"><thead><tr><th>Metric</th>{comparison.data.companies.map(company => <th key={company.company_code}>{String(company.company.company_name ?? company.company_code)}</th>)}</tr></thead><tbody>{metricKeys.map(metric => <tr key={metric}><th>{metric}</th>{comparison.data!.companies.map(company => <td key={company.company_code}>{company.metrics[metric] == null ? '—' : Number(company.metrics[metric]).toLocaleString(undefined, { maximumFractionDigits: 3 })}</td>)}</tr>)}</tbody></table></div> : null}</div>
+  const [showPercentiles, setShowPercentiles] = useState(false)
+
+  const compare = useMutation({
+    mutationFn: (codes: string[]) =>
+      apiPost<{ companies: ComparisonCompany[]; requested: string[] }>('/api/comparison/snapshot', {
+        company_codes: codes,
+        metrics: DEFAULT_METRICS,
+      }),
+  })
+
+  const run = () => {
+    const codes = input.split(',').map(v => v.trim()).filter(Boolean)
+    if (codes.length >= 2) compare.mutate(codes)
+  }
+
+  const result = compare.data
+  const metrics = result?.companies.length
+    ? Array.from(new Set(result.companies.flatMap(c => Object.keys(c.metrics))))
+        .filter(k => DEFAULT_METRICS.includes(k))
+    : DEFAULT_METRICS
+
+  return (
+    <div className="stack dense-page">
+      <PageHeader
+        eyebrow="Company research"
+        title="Compare companies"
+        description="Compare financial metrics across two to twelve EDINET companies."
+      />
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h2>Company set</h2>
+            <p>Enter EDINET codes separated by commas, then click Compare.</p>
+          </div>
+          <div className="button-row">
+            <input
+              className="input"
+              aria-label="Company codes"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') run() }}
+              placeholder="E00001, E00002"
+            />
+            <button
+              className="button button--primary"
+              disabled={compare.isPending || input.split(',').filter(Boolean).length < 2}
+              onClick={run}
+            >
+              {compare.isPending ? 'Comparing…' : 'Compare'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {compare.isPending && <LoadingState label="Calculating comparison" />}
+      {compare.error && <p className="form-error">{(compare.error as Error).message}</p>}
+      {result && !result.companies.length && (
+        <EmptyState title="No companies found" description="Check the EDINET codes and try again." />
+      )}
+
+      {result && result.companies.length > 0 && (
+        <div className="card table-scroll">
+          <div className="card-header">
+            <h2>Metric matrix</h2>
+            <label className="inline-toggle">
+              <input type="checkbox" checked={showPercentiles} onChange={e => setShowPercentiles(e.target.checked)} />
+              Show percentile ranks
+            </label>
+          </div>
+          <table className="data-grid">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                {result.companies.map(c => (
+                  <th key={c.company_code}>
+                    {String(c.company?.company_name ?? c.company_code)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {metrics.map(metric => (
+                <tr key={metric}>
+                  <th>{METRIC_LABELS[metric] ?? metric}</th>
+                  {result.companies.map(c => (
+                    <td key={c.company_code}>
+                      {c.metrics[metric] == null
+                        ? '—'
+                        : typeof c.metrics[metric] === 'number'
+                          ? Number(c.metrics[metric]).toLocaleString(undefined, { maximumFractionDigits: 3 })
+                          : String(c.metrics[metric])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
 }

@@ -1,56 +1,29 @@
-"""Company tags backed by the Company_Tags database table.
+"""Company tags backed by the per-user research database.
 
-Tags are simple key-value pairs (edinetCode → tag) stored in the screening
-database.  The screening engine auto-discovers the table so users can add
-criteria like ``Company_Tags.tag = 'Watchlist'`` through the normal rules
-builder — no special UI is needed.
+Tags are stored in ``research.db.company_tags``, scoped to each user.
+The screening engine treats ``Company_Tags`` as a synthetic owner-scoped
+source built from the current user's tags at query time.
 
-Tag management (add / remove) lives on the company analysis page.
+Legacy tags from ``Standardized.db.Company_Tags`` are available for admin
+claim via a migration endpoint.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from src.orchestrator.common.db_config import get_db2
-from src.orchestrator.common.sqlite import connect_read, transaction
+from src.auth.models import AuthenticatedUser
+from src.research.runtime import store as _research_store
 
 router = APIRouter(prefix="/api/tags", tags=["tags"])
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
-_CREATE_TABLE_SQL = (
-    "CREATE TABLE IF NOT EXISTS Company_Tags ("
-    "  edinetCode TEXT NOT NULL,"
-    "  tag        TEXT NOT NULL,"
-    "  PRIMARY KEY (edinetCode, tag)"
-    ")"
-)
-
-
-def _database_path() -> Path:
-    """Return the configured screening database path."""
-    path = get_db2()
-    if not path:
-        raise HTTPException(status_code=503, detail="Database not available")
-    return Path(path)
-
-
-def _ensure_table(path: Path) -> None:
-    with transaction(path) as connection:
-        connection.execute(_CREATE_TABLE_SQL)
-
-
-def _clean_tag(tag: str) -> str:
-    cleaned = tag.strip()
-    if not cleaned or len(cleaned) > 80:
-        raise HTTPException(status_code=400, detail="Tag must be 1–80 characters.")
-    return cleaned
+def _require_user(request: Request) -> AuthenticatedUser:
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, AuthenticatedUser):
+        raise HTTPException(status_code=401, detail="Account authentication is required")
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -82,74 +55,100 @@ class TagMutationResponse(BaseModel):
 
 
 @router.get("", response_model=TagListResponse)
-def list_all_tags() -> TagListResponse:
-    """Return every distinct tag with its member count."""
-    path = _database_path()
-    _ensure_table(path)
-    conn = connect_read(path)
-    try:
-        rows = conn.execute(
-            "SELECT tag, COUNT(*) AS cnt"
-            " FROM Company_Tags"
-            " GROUP BY tag"
-            " ORDER BY tag"
-        ).fetchall()
-    finally:
-        conn.close()
-
+def list_all_tags(request: Request) -> TagListResponse:
+    """Return every distinct tag for the authenticated user with member counts."""
+    user = _require_user(request)
+    all_tags = _research_store.list_all_tags(user.user_id)
+    # Aggregate by tag name
+    counts: dict[str, int] = {}
+    for t in all_tags:
+        tag_name = t["tag"]
+        counts[tag_name] = counts.get(tag_name, 0) + 1
     return TagListResponse(
-        tags=[TagSummary(name=row[0], member_count=row[1]) for row in rows]
+        tags=[TagSummary(name=k, member_count=v) for k, v in sorted(counts.items())]
     )
 
 
 @router.get("/{company_code}", response_model=CompanyTagsResponse)
-def get_company_tags(company_code: str) -> CompanyTagsResponse:
-    """Return the tags assigned to a single company."""
-    path = _database_path()
-    _ensure_table(path)
-    conn = connect_read(path)
-    try:
-        rows = conn.execute(
-            "SELECT tag FROM Company_Tags WHERE edinetCode = ? ORDER BY tag",
-            [company_code.strip()],
-        ).fetchall()
-    finally:
-        conn.close()
-
-    return CompanyTagsResponse(tags=[row[0] for row in rows])
+def get_company_tags(request: Request, company_code: str) -> CompanyTagsResponse:
+    """Return the tags assigned to a single company for the authenticated user."""
+    user = _require_user(request)
+    rows = _research_store.list_company_tags(user.user_id, company_code.strip())
+    return CompanyTagsResponse(tags=[r["tag"] for r in rows])
 
 
 @router.post("/{company_code}/{tag}", response_model=TagMutationResponse)
-def add_tag(company_code: str, tag: str) -> TagMutationResponse:
-    """Assign a tag to a company (idempotent)."""
+def add_tag(request: Request, company_code: str, tag: str) -> TagMutationResponse:
+    """Assign a tag to a company for the authenticated user (idempotent)."""
+    user = _require_user(request)
     code = company_code.strip()
     if not code:
         raise HTTPException(status_code=400, detail="company_code is required.")
+    cleaned = tag.strip()
+    if not cleaned or len(cleaned) > 80:
+        raise HTTPException(status_code=400, detail="Tag must be 1–80 characters.")
 
-    cleaned = _clean_tag(tag)
-    with transaction(_database_path()) as connection:
-        connection.execute(_CREATE_TABLE_SQL)
-        connection.execute(
-            "INSERT OR IGNORE INTO Company_Tags (edinetCode, tag) VALUES (?, ?)",
-            [code, cleaned],
-        )
+    existing = _research_store.list_company_tags(user.user_id, code)
+    if not any(t["tag"] == cleaned for t in existing):
+        _research_store.set_company_tags(user.user_id, code, [t["tag"] for t in existing] + [cleaned])
 
     return TagMutationResponse(ok=True, company_code=code, tag=cleaned)
 
 
 @router.delete("/{company_code}/{tag}", response_model=TagMutationResponse)
-def remove_tag(company_code: str, tag: str) -> TagMutationResponse:
-    """Remove a tag from a company."""
+def remove_tag(request: Request, company_code: str, tag: str) -> TagMutationResponse:
+    """Remove a tag from a company for the authenticated user."""
+    user = _require_user(request)
     code = company_code.strip()
     if not code:
         raise HTTPException(status_code=400, detail="company_code is required.")
+    cleaned = tag.strip()
+    if not cleaned or len(cleaned) > 80:
+        raise HTTPException(status_code=400, detail="Tag must be 1–80 characters.")
 
-    cleaned = _clean_tag(tag)
-    with transaction(_database_path()) as connection:
-        connection.execute(_CREATE_TABLE_SQL)
-        connection.execute(
-            "DELETE FROM Company_Tags WHERE edinetCode = ? AND tag = ?",
-            [code, cleaned],
-        )
+    existing = _research_store.list_company_tags(user.user_id, code)
+    remaining = [t["tag"] for t in existing if t["tag"] != cleaned]
+    _research_store.set_company_tags(user.user_id, code, remaining)
 
     return TagMutationResponse(ok=True, company_code=code, tag=cleaned)
+
+
+# ---------------------------------------------------------------------------
+# Legacy migration (admin only)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/migrate-legacy")
+def migrate_legacy_tags(request: Request) -> dict:
+    """Copy tags from Standardized.db.Company_Tags into research.db for the
+    authenticated user.  Only administrators may call this endpoint."""
+    user = _require_user(request)
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Administrator permission required")
+
+    from src.orchestrator.common.db_config import get_db2
+    from src.orchestrator.common.sqlite import connect_read
+
+    try:
+        conn = connect_read(get_db2())
+        rows = conn.execute(
+            "SELECT edinetCode, tag FROM Company_Tags ORDER BY edinetCode, tag"
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not read legacy tags: {e}") from e
+
+    if not rows:
+        return {"migrated": 0, "message": "No legacy tags found in Standardized.db"}
+
+    imported = 0
+    for row in rows:
+        code = row["edinetCode"] or row[0]
+        tag = row["tag"] or row[1]
+        existing = _research_store.list_company_tags(user.user_id, code)
+        existing_tags = [t["tag"] for t in existing]
+        if tag not in existing_tags:
+            _research_store.set_company_tags(user.user_id, code, existing_tags + [tag])
+            imported += 1
+
+    return {"migrated": imported, "message": f"Migrated {imported} legacy tags to your account"}

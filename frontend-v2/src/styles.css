@@ -200,6 +200,26 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .tab--active { color: var(--primary); border-bottom-color: var(--primary); }
 .tab:hover { color: var(--text); }
 .compact { width: auto; min-height: 32px; padding: 4px 8px; font-size: .82rem; }
+/* ---- filing viewer ---- */
+.filing-viewer { display: grid; grid-template-columns: 200px minmax(0, 1fr) 240px; gap: 16px; align-items: start; }
+.filing-outline { max-height: 70vh; overflow-y: auto; }
+.outline-item { width: 100%; display: block; padding: 6px 10px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; text-align: left; font-size: .8rem; }
+.outline-item:hover { background: var(--surface-subtle); }
+.filing-main { min-width: 0; }
+.filing-inspector { position: sticky; top: 80px; }
+.filing-sections article { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.filing-sections article h3 { font-size: .92rem; margin-bottom: 4px; }
+.filing-sections article p { font-size: .84rem; line-height: 1.6; }
+.filing-list { max-height: 400px; overflow-y: auto; }
+.fact-row--selected { background: var(--primary-soft); padding-inline: 10px; }
+.artifact-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+/* ---- research grid ---- */
+.research-grid .research-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.research-note { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.research-note p { font-size: .82rem; color: var(--text); white-space: pre-wrap; }
+.inline-toggle { display: flex; align-items: center; gap: 6px; font-size: .82rem; color: var(--muted); cursor: pointer; }
+.table-scroll { overflow-x: auto; }
+.fixed-table { max-height: 60vh; overflow: auto; }
 
 @media (max-width: 960px) {
   .card-grid { grid-template-columns: 1fr 1fr; }
