@@ -1,6 +1,6 @@
 # Frontend Architecture
 
-Updated: 2026-07-22
+Updated: 2026-07-23
 
 ## Overview
 
@@ -11,7 +11,8 @@ flowchart LR
     Browser["React workspace"] --> Query["TanStack Query"]
     Browser --> Router["React Router"]
     Query --> API["FastAPI /api/* and /health"]
-    API --> Services["Existing screening, security, backtesting, portfolio, and pipeline services"]
+    API --> Services["Screening, security, filings, research, comparison, reports, backtesting, portfolio, and pipeline services"]
+    Browser --> Auth["In-memory access token + HttpOnly refresh cookie"]
     Browser --> Storage["localStorage drafts and saved workspace recipes"]
 ```
 
@@ -25,6 +26,9 @@ flowchart LR
 | `/backtest` (`/backtesting` alias) | Manual, CSV, and rolling-screen backtests |
 | `/portfolio` | Portfolio overview, holdings, transactions, and performance |
 | `/pipeline` | Data-pipeline recipes and advanced step builder |
+| `/filings` | Retained EDINET type-1 filing and XBRL explorer |
+| `/compare` | Bounded multi-company comparison |
+| `/research` | Account-owned watchlists, notes, and in-app alerts |
 | `/security` | Compatibility alias for the React analysis workspace |
 
 All routes target one React SPA. Compatibility means URL aliasing only.
@@ -81,13 +85,15 @@ The layout is desktop-first but has a 390 px mobile treatment:
 - Screening drafts use `shade.screening.draft` in `localStorage` so they can flow into rolling backtests.
 - Pipeline recipes use `shade.pipeline.setups` in `localStorage`.
 - Pipeline execution state is server-owned. Submission returns `202` plus a job ID; TanStack Query polls `/api/jobs/{job_id}`, stops at a terminal state, and retrieves bounded output separately. Reloading restores persisted jobs from the API rather than assuming a held request is still alive.
-- The API clients in `src/api/` are the only shared network layer. `apiStream` parses the existing SSE format for rolling-backtest progress and cancellation.
+- The API clients in `src/api/` are the only shared network layer. `apiStream` parses the existing SSE format for rolling-backtest progress and cancellation. `AuthProvider` gates account mode; access tokens are kept in memory and refresh cookies are never exposed to JavaScript or persisted in browser storage.
 - Existing Python services and API contracts remain authoritative; the frontend does not access databases directly.
 
 ## Feature behavior
 
 - Screening preserves legacy saved definitions and supports full expressions on both sides of a comparison. Rule expressions and derived output fields share metric, literal-value, arithmetic-operator, and parenthesis tokens; validated parentheses provide explicit PEMDAS grouping while legacy numerator/denominator ratios remain editable.
 - Analysis supports company search, overview metrics, price history, multi-metric financial-history charts and dense tables, price refresh, peer-screen handoff, and backtest handoff.
+- Analysis also lists archived company XBRL reports and links to the Filing Explorer. Filings presents sanitized narrative sections, structured facts, and archive metadata without rendering submitted active content.
+- Research, comparison, and authenticated portfolio/report slices use owner-scoped API contracts; the frontend never sends complete result payloads for report generation.
 - Backtesting supports manual portfolios, CSV sets, and point-in-time rolling screens with cadence, durations, weighting, progress, cancellation, saved results, and downloads.
 - Portfolio supports XML imports, rebuilds, currency selection, activity, holdings, transactions, performance, and company-analysis handoff.
 - Pipeline supports recipes, dynamic step discovery, ordering, overwrite flags, generated configuration fields, persisted job history, cooperative cancellation, per-step progress, and safe terminal output.
@@ -98,7 +104,7 @@ Frontend-facing method/path pairs and unique OpenAPI operation IDs are checked b
 
 ## Build and serving
 
-Run `npm ci` and `npm run build` from `frontend-v2/`. Vite writes the entry point to `frontend-v2/dist/index.html` and hashed chunks to `dist/app-assets/`. FastAPI mounts those chunks at `/app-assets`.
+Run `npm ci` and `npm run build` from `frontend-v2/`. The checked-in build and test scripts use Vite/Vitest's runner config loader so verification does not depend on writing temporary bundled config files under `node_modules`. Vite writes the entry point to `frontend-v2/dist/index.html` and hashed chunks to `dist/app-assets/`. FastAPI mounts those chunks at `/app-assets`.
 
 During development, run FastAPI on port 8000 and `npm run dev` from `frontend-v2/`. Vite proxies `/api`, `/health`, and `/favicon.ico` to FastAPI.
 

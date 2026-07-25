@@ -1,7 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-07-22
+Last updated: 2026-07-23
 - Central reference for runtime/test Python modules (`src/`), web app modules (`src/web_app/`), React frontend (`frontend-v2/`), and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
@@ -563,7 +563,31 @@ Responsibility: Unit and integration tests covering core logic, API endpoints, a
 
 ---
 
-Last updated: 2026-07-21
+### [src/auth/](../src/auth/)
+
+Responsibility: dedicated account authentication state. `AuthStore` owns `auth.db`; `AuthService` hashes passwords with Argon2id, issues rotating opaque sessions and personal API tokens, and never reads the EDINET provider token. `src/auth/api.py` exposes registration, login, refresh, logout, identity, and personal-token routes.
+
+### [src/filings/](../src/filings/)
+
+Responsibility: EDINET type-1 acquisition and rebuildable filing indexes. `EdinetDownloadClient` is the only application subsystem that reads `EDINET_API_TOKEN`, solely for outbound EDINET requests. `archive.py` validates and atomically stores ZIPs, `xbrl.py` uses defused XML plus sanitized narrative parsing, and `FilingCatalog` owns `Filings.db` metadata, facts, sections, search, and quality issues.
+
+### [src/research/](../src/research/)
+
+Responsibility: owner-scoped durable watchlists, notes, and in-app alert rules/events in `research.db`. APIs require an account identity and never use rebuildable market-data databases for user-authored state.
+
+### [src/backtesting/asof.py](../src/backtesting/asof.py), [src/portfolio/tax_lots.py](../src/portfolio/tax_lots.py), [src/portfolio/scenarios.py](../src/portfolio/scenarios.py), [src/reports/manifest.py](../src/reports/manifest.py)
+
+Responsibility: deterministic point-in-time observation selection, execution costs, tax-lot matching, scenario shocks, and reproducible report input manifests. These primitives are used by the next vertical integration slices.
+
+### [src/comparison/api.py](../src/comparison/api.py), [src/reports/api.py](../src/reports/api.py)
+
+Responsibility: bounded comparison snapshots/history/peer endpoints and owner-scoped report ZIP generation, manifest retrieval, download, and deletion. Report artifacts are atomically written beneath `data/reports/` and are never addressed by client-supplied filesystem paths.
+
+### Authenticated portfolio analytical previews
+
+`POST /api/portfolio/tax-lots` applies FIFO, average-cost, or specific-lot matching to a submitted preview event stream. `POST /api/portfolio/greeks` aggregates Black-Scholes Greeks with explicit quantity/multiplier/volatility assumptions. `POST /api/portfolio/scenarios/evaluate` applies deterministic equity and FX shocks. All three endpoints require an authenticated account and return assumptions; they do not mutate imported portfolio activity.
+
+Last updated: 2026-07-23
 
 Keep this document aligned with code changes in the same PR or commit.
 

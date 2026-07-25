@@ -1,5 +1,7 @@
 # Running the Application
 
+Deferred services: `/filings` is the XBRL Filing Explorer backed by immutable type-1 archives and `Filings.db`; `/research` stores account-owned watchlists, notes, and in-app alerts in `research.db`; `/compare` exposes bounded company comparisons; authenticated portfolio preview APIs cover tax lots, Greeks, and deterministic scenarios; `/api/reports/runs` creates owner-scoped reproducible ZIP reports. The `download_xbrl` pipeline step is the only new path that reads `EDINET_API_TOKEN`, and it uses it solely as an outbound EDINET provider credential.
+
 ## Supported environments
 
 - Python 3.12 or 3.13; `.venv3` is the canonical local environment.
@@ -31,15 +33,18 @@ Launch the local workstation:
 
 Open `http://127.0.0.1:8000`.
 
-Remote binding requires explicit opt-in, a bearer token of at least 32 characters, and trusted hosts:
+Remote binding requires explicit opt-in, account authentication, HTTPS at the deployment boundary, and trusted hosts:
 
 ```powershell
-$env:EDINET_API_TOKEN = "replace-with-at-least-32-random-characters"
+$env:EDINET_AUTH_MODE = "accounts"
+$env:EDINET_AUTH_DB = "config/state/auth.db"
 $env:EDINET_TRUSTED_HOSTS = "research.example,192.0.2.10"
 .\.venv3\Scripts\python.exe main.py --host 0.0.0.0 --port 8080 --allow-remote --no-reload
 ```
 
-Remote `/api/*` requests require `Authorization: Bearer <token>`. Tokens must not be placed in URLs, logs, or browser storage. `/health` remains minimal and unauthenticated.
+Remote `/api/*` requests require an account-issued `Authorization: Bearer <token>`. Tokens must not be placed in URLs, logs, or browser storage. `/health` remains minimal and unauthenticated. `EDINET_API_TOKEN` is reserved for outbound EDINET downloads and is never used for application authentication.
+
+In account mode the first successful registration becomes the local administrator. Set `EDINET_REGISTRATION_MODE=open` only when additional self-service accounts are intended; the default is closed. Browser refresh tokens are held in an HttpOnly cookie, while access tokens remain in memory. Personal automation tokens can be created under `/api/auth/tokens` and should be revoked when no longer needed.
 
 For frontend development, keep FastAPI running on port 8000 and start Vite in another terminal:
 
@@ -57,6 +62,7 @@ Database inputs are resolved and authorized server-side. Uploads and generated o
 - `EDINET_MAX_UPLOAD_BYTES` defaults to 10 MiB for incoming files.
 - `EDINET_MAX_EXPORT_BYTES` defaults to 25 MiB for ordinary response exports.
 - `EDINET_MAX_BACKTEST_ARTIFACT_BYTES` defaults to 256 MiB for server-generated backtest files. Rolling archives are built directly on disk and partial archives are removed if this limit is reached.
+- `EDINET_MAX_REPORT_ARTIFACT_BYTES` defaults to 128 MiB for reproducible report ZIPs. Reports are written atomically beneath `data/reports/` and partial files are removed on failure.
 
 Values are byte counts and are read at application startup. Increase the backtest artifact limit only when the expected archive and available disk space justify it, then restart the application.
 

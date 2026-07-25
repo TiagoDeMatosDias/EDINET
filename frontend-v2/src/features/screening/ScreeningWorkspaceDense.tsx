@@ -3,7 +3,7 @@ import type { ColumnDef } from '@tanstack/react-table';
 import { ChevronDown, ChevronUp, Download, FlaskConical, Plus, Save, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { apiPost, apiRequest, queryString } from '../../api/client';
+import { apiPost, apiRequest, authenticatedFetch, queryString } from '../../api/client';
 import type { ScreeningResult } from '../../api/types';
 import { DataTable } from '../../components/DataTable';
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback';
@@ -124,7 +124,7 @@ export default function ScreeningWorkspaceDense() {
     const loadSaved = async (name: string) => { setSelectedSaved(name); if (!name)
         return; const data = await apiRequest<SavedScreen>(`/api/screening/saved/${encodeURIComponent(name)}`); setCriteria((data.criteria ?? []).map(normalizeCriterion)); setColumns(data.columns?.length ? data.columns : DEFAULT_COLUMNS); setComputed(data.computed_columns ?? []); setScreeningDate(data.screening_date ?? ''); setRankingAlgorithm(data.ranking_algorithm ?? 'none'); setRankingRules(data.ranking_rules ?? []); };
     const exportResults = async () => { if (!db.data)
-        return; const response = await fetch('/api/screening/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db_path: db.data.db_path, ...payload(), format: 'csv' }) }); if (!response.ok)
+        return; const response = await authenticatedFetch('/api/screening/export', { method: 'POST', body: JSON.stringify({ db_path: db.data.db_path, ...payload(), format: 'csv' }) }); if (!response.ok)
         throw new Error('Export failed'); const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'screening.csv'; link.click(); URL.revokeObjectURL(link.href); };
     const deleteSavedScreen = () => { if (!selectedSaved || !window.confirm(`Delete saved screen "${selectedSaved}"?`))
         return; removeSaved.mutate(); };

@@ -1,0 +1,153 @@
+import { useState } from 'react'
+import { Navigate, useNavigate } from 'react-router-dom'
+
+import { apiRequest, setAccessToken } from '../../api/client'
+import { useAuth, type AuthUser } from './AuthProvider'
+
+export default function LoginPage() {
+  const auth = useAuth()
+  const navigate = useNavigate()
+
+  // If already logged in, redirect home
+  if (auth.user) return <Navigate to="/" replace />
+  // If auth is disabled, no login needed
+  if (auth.status?.mode === 'disabled') return <Navigate to="/" replace />
+
+  return (
+    <LoginForm
+      bootstrapRequired={auth.status?.bootstrap_required ?? false}
+      registrationOpen={auth.status?.registration_open ?? false}
+      onSuccess={() => navigate('/')}
+    />
+  )
+}
+
+function LoginForm({
+  bootstrapRequired,
+  registrationOpen,
+  onSuccess,
+}: {
+  bootstrapRequired: boolean
+  registrationOpen: boolean
+  onSuccess: () => void
+}) {
+  const [mode, setMode] = useState<'login' | 'register'>(bootstrapRequired ? 'register' : 'login')
+  const [loginField, setLoginField] = useState('')
+  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [success, setSuccess] = useState<string | null>(null)
+
+  const canSubmit = busy
+    ? false
+    : mode === 'register'
+      ? username.trim().length >= 3 && password.length >= 15 && password === confirmPassword
+      : loginField.trim().length > 0 && password.length > 0
+
+  const submit = async () => {
+    setError(null)
+    setSuccess(null)
+    setBusy(true)
+    try {
+      if (mode === 'register') {
+        const result = await apiRequest<{ user: AuthUser; bootstrap_admin?: boolean }>('/api/auth/register', {
+          method: 'POST',
+          body: JSON.stringify({ username: username.trim(), email: email.trim() || undefined, password }),
+        })
+        if (result.bootstrap_admin) {
+          setSuccess('Administrator account created. Signing in…')
+        }
+      }
+      const loginResult = await apiRequest<{ access_token: string; user: AuthUser }>('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ login: mode === 'register' ? username.trim() : loginField.trim(), password }),
+      })
+      setAccessToken(loginResult.access_token)
+      onSuccess()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Authentication failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <main className="auth-page">
+      <div className="auth-card card">
+        <span className="eyebrow">Shade research workspace</span>
+        <h1>{mode === 'register' ? 'Create your account' : 'Sign in'}</h1>
+
+        {bootstrapRequired && mode === 'register' && (
+          <div className="callout callout--info">
+            <strong>First-time setup.</strong> The first account becomes the local administrator.
+          </div>
+        )}
+        {!bootstrapRequired && (
+          <p>Sign in to access research tools and your private data.</p>
+        )}
+        {success && <div className="callout callout--success">{success}</div>}
+
+        <form className="auth-form stack" onSubmit={e => { e.preventDefault(); void submit() }}>
+          {mode === 'register' ? (
+            <>
+              <label className="field-label">
+                Username
+                <input className="input" autoComplete="username" value={username}
+                  onChange={e => setUsername(e.target.value)} minLength={3} maxLength={64} required />
+              </label>
+              <label className="field-label">
+                Email <small>(optional)</small>
+                <input className="input" type="email" autoComplete="email" value={email}
+                  onChange={e => setEmail(e.target.value)} />
+              </label>
+            </>
+          ) : (
+            <label className="field-label">
+              Username or email
+              <input className="input" autoComplete="username" value={loginField}
+                onChange={e => setLoginField(e.target.value)} required />
+            </label>
+          )}
+
+          <label className="field-label">
+            Password
+            <input className="input" type="password"
+              autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+              value={password} onChange={e => setPassword(e.target.value)}
+              minLength={mode === 'register' ? 15 : 1} maxLength={128} required />
+            {mode === 'register' && <small>Minimum 15 characters. Use a passphrase or password manager.</small>}
+          </label>
+
+          {mode === 'register' && (
+            <label className="field-label">
+              Confirm password
+              <input className="input" type="password" autoComplete="new-password" value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)} minLength={15} maxLength={128} required />
+            </label>
+          )}
+
+          {error && <p className="form-error">{error}</p>}
+
+          <button className="button button--primary button--full" type="submit" disabled={!canSubmit}>
+            {busy ? 'Please wait…' : mode === 'register' ? 'Create account' : 'Sign in'}
+          </button>
+        </form>
+
+        <div className="auth-footer">
+          {mode === 'register' ? (
+            <button className="text-button" onClick={() => { setMode('login'); setError(null) }}>
+              Already have an account? Sign in
+            </button>
+          ) : registrationOpen ? (
+            <button className="text-button" onClick={() => { setMode('register'); setError(null) }}>
+              Create an account
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </main>
+  )
+}

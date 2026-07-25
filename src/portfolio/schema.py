@@ -42,9 +42,10 @@ logger = logging.getLogger(__name__)
 _DDL_TRANSACTIONS = """
 CREATE TABLE IF NOT EXISTS Transactions (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    transaction_id   TEXT NOT NULL UNIQUE,
+    transaction_id   TEXT NOT NULL,
     trade_id         TEXT,
     account_id       TEXT,
+    owner_user_id    TEXT NOT NULL DEFAULT '',
     activity_type    TEXT NOT NULL,
     asset_category   TEXT,
     symbol           TEXT,
@@ -80,7 +81,7 @@ CREATE TABLE IF NOT EXISTS Transactions (
     notes            TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_trans_txn_id     ON Transactions(transaction_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trans_txn_owner ON Transactions(transaction_id, owner_user_id);
 CREATE INDEX IF NOT EXISTS idx_trans_symbol     ON Transactions(symbol);
 CREATE INDEX IF NOT EXISTS idx_trans_date       ON Transactions(trade_date);
 CREATE INDEX IF NOT EXISTS idx_trans_activity   ON Transactions(activity_type);
@@ -91,6 +92,7 @@ CREATE INDEX IF NOT EXISTS idx_trans_underlying ON Transactions(underlying_symbo
 _DDL_PORTFOLIO_DAILY = """
 CREATE TABLE IF NOT EXISTS Portfolio_Daily (
     date               TEXT PRIMARY KEY,
+    owner_user_id      TEXT NOT NULL DEFAULT '',
     total_value        REAL,
     cash_balance       REAL,
     stock_value        REAL,
@@ -109,6 +111,7 @@ _DDL_HOLDINGS = """
 CREATE TABLE IF NOT EXISTS Portfolio_Holdings (
     symbol          TEXT NOT NULL,
     asset_category  TEXT NOT NULL,
+    owner_user_id   TEXT NOT NULL DEFAULT '',
     quantity        REAL NOT NULL,
     avg_cost        REAL,
     market_price    REAL,
@@ -130,6 +133,7 @@ CREATE TABLE IF NOT EXISTS Holdings_History (
     date            TEXT NOT NULL,
     symbol          TEXT NOT NULL,
     asset_category  TEXT NOT NULL,
+    owner_user_id   TEXT NOT NULL DEFAULT '',
     quantity        REAL NOT NULL,
     market_price    REAL,
     market_value    REAL,
@@ -150,6 +154,7 @@ CREATE INDEX IF NOT EXISTS idx_hh_date ON Holdings_History(date);
 _DDL_METRICS = """
 CREATE TABLE IF NOT EXISTS Portfolio_Metrics (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id       TEXT NOT NULL DEFAULT '',
     computed_at         TEXT DEFAULT (datetime('now')),
     start_date          TEXT NOT NULL,
     end_date            TEXT NOT NULL,
@@ -228,7 +233,95 @@ def _migration_2(conn: sqlite3.Connection) -> None:
     _add_column(conn, "Portfolio_Daily", "cash_ccy_json", "TEXT")
 
 
-_MIGRATIONS = ((1, _migration_1), (2, _migration_2))
+def _migration_3(conn: sqlite3.Connection) -> None:
+    """Add owner_user_id column to all Portfolio tables for per-user scoping."""
+    _add_column(conn, "Transactions", "owner_user_id", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "Portfolio_Daily", "owner_user_id", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "Portfolio_Holdings", "owner_user_id", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "Holdings_History", "owner_user_id", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "Portfolio_Metrics", "owner_user_id", "TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trans_owner ON Transactions(owner_user_id)"
+    )
+
+
+def _migration_4(conn: sqlite3.Connection) -> None:
+    """Make transaction_id unique per-user so multiple users can import the same file.
+
+    Recreates the Transactions table without the global UNIQUE on transaction_id,
+    replacing it with a composite UNIQUE on (transaction_id, owner_user_id).
+    """
+    # Check if the old global unique constraint still exists
+    autoindex_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' "
+        "AND name='sqlite_autoindex_Transactions_1'"
+    ).fetchone()
+    if not autoindex_exists:
+        # Already migrated — just ensure the composite index exists
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_trans_txn_owner "
+            "ON Transactions(transaction_id, owner_user_id)"
+        )
+        return
+
+    # Recreate table without the column-level UNIQUE on transaction_id.
+    # owner_user_id goes at the END to match the ALTER TABLE ADD COLUMN order
+    # so that SELECT * maps correctly.
+    conn.executescript("""
+        CREATE TABLE Transactions_new (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_id   TEXT NOT NULL,
+            trade_id         TEXT,
+            account_id       TEXT,
+            activity_type    TEXT NOT NULL,
+            asset_category   TEXT,
+            symbol           TEXT,
+            description      TEXT,
+            isin             TEXT,
+            conid            TEXT,
+            currency         TEXT NOT NULL,
+            trade_date       TEXT NOT NULL,
+            settle_date      TEXT,
+            quantity         REAL DEFAULT 0,
+            trade_price      REAL,
+            trade_money      REAL,
+            amount           REAL DEFAULT 0,
+            proceeds         REAL,
+            commission       REAL DEFAULT 0,
+            taxes            REAL DEFAULT 0,
+            net_cash         REAL,
+            buy_sell         TEXT,
+            fx_rate_to_base  REAL,
+            strike           REAL,
+            expiry           TEXT,
+            put_call         TEXT,
+            underlying_symbol TEXT,
+            underlying_conid  TEXT,
+            multiplier       REAL DEFAULT 1,
+            action_description TEXT,
+            action_id         TEXT,
+            source_file      TEXT,
+            imported_at      TEXT DEFAULT (datetime('now')),
+            notes            TEXT,
+            owner_user_id    TEXT NOT NULL DEFAULT ''
+        );
+
+        INSERT INTO Transactions_new SELECT * FROM Transactions;
+
+        DROP TABLE Transactions;
+        ALTER TABLE Transactions_new RENAME TO Transactions;
+
+        CREATE UNIQUE INDEX idx_trans_txn_owner ON Transactions(transaction_id, owner_user_id);
+        CREATE INDEX IF NOT EXISTS idx_trans_symbol     ON Transactions(symbol);
+        CREATE INDEX IF NOT EXISTS idx_trans_date       ON Transactions(trade_date);
+        CREATE INDEX IF NOT EXISTS idx_trans_activity   ON Transactions(activity_type);
+        CREATE INDEX IF NOT EXISTS idx_trans_category   ON Transactions(asset_category);
+        CREATE INDEX IF NOT EXISTS idx_trans_underlying ON Transactions(underlying_symbol);
+        CREATE INDEX IF NOT EXISTS idx_trans_owner      ON Transactions(owner_user_id);
+    """)
+
+
+_MIGRATIONS = ((1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4))
 
 
 def _needs_material_migration(path: Path) -> bool:
@@ -254,6 +347,16 @@ def _needs_material_migration(path: Path) -> bool:
         }
         if existing.intersection(required_tables) and not required_tables <= existing:
             return True
+        # v4: check if old global UNIQUE constraint still exists
+        try:
+            has_old_unique = bool(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' "
+                "AND name='sqlite_autoindex_Transactions_1'"
+            ).fetchone())
+            if has_old_unique:
+                return True
+        except sqlite3.OperationalError:
+            pass
         required_columns = {
             "Portfolio_Daily": "cash_ccy_json",
             "Portfolio_Holdings": "market_value_native",

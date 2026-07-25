@@ -10,6 +10,17 @@ export class ApiError extends Error {
   }
 }
 
+let accessToken: string | null = null
+let refreshPromise: Promise<boolean> | null = null
+
+export function setAccessToken(token: string | null) {
+  accessToken = token
+}
+
+export function getAccessToken() {
+  return accessToken
+}
+
 function errorMessage(payload: unknown, fallback: string) {
   if (typeof payload === 'object' && payload && 'detail' in payload) {
     const detail = (payload as { detail?: unknown }).detail
@@ -18,14 +29,56 @@ function errorMessage(payload: unknown, fallback: string) {
   return fallback
 }
 
-export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+async function fetchWithAuth(path: string, init?: RequestInit, includeBearer = true) {
   const headers = new Headers(init?.headers)
   if (init?.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
-  const response = await fetch(path, { ...init, headers })
+  if (includeBearer && accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+  return fetch(path, { ...init, headers, credentials: 'include' })
+}
+
+async function performRefresh() {
+  const response = await fetchWithAuth('/api/auth/refresh', { method: 'POST' }, false)
+  if (!response.ok) {
+    accessToken = null
+    return false
+  }
+  const payload = await response.json() as { access_token?: string }
+  if (!payload.access_token) {
+    accessToken = null
+    return false
+  }
+  accessToken = payload.access_token
+  return true
+}
+
+function tryRefresh() {
+  if (!refreshPromise) {
+    refreshPromise = performRefresh().finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
+}
+
+export async function authenticatedFetch(path: string, init?: RequestInit) {
+  let response = await fetchWithAuth(path, init)
+  if (response.status === 401 && path.startsWith('/api/') && !path.startsWith('/api/auth/refresh') && await tryRefresh()) {
+    response = await fetchWithAuth(path, init)
+  }
+  return response
+}
+
+async function requestOnce<T>(path: string, init?: RequestInit): Promise<{ response: Response; payload: T }> {
+  const response = await authenticatedFetch(path, init)
   const contentType = response.headers.get('content-type') ?? ''
   const payload = contentType.includes('application/json') ? await response.json() : await response.text()
-  if (!response.ok) throw new ApiError(errorMessage(payload, response.statusText), response.status, payload)
-  return payload as T
+  return { response, payload: payload as T }
+}
+
+export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const result = await requestOnce<T>(path, init)
+  if (!result.response.ok) throw new ApiError(errorMessage(result.payload, result.response.statusText), result.response.status, result.payload)
+  return result.payload
 }
 
 export function apiPost<T>(path: string, body: unknown, signal?: AbortSignal) {

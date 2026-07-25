@@ -80,6 +80,7 @@ def build_portfolio_state(
     start_date: str | None = None,
     end_date: str | None = None,
     base_currency: str = "EUR",
+    owner_user_id: str = "",
 ) -> dict:
     """Rebuild portfolio state from scratch.
 
@@ -105,14 +106,15 @@ def build_portfolio_state(
 
     try:
         conn3.execute("BEGIN IMMEDIATE")
-        # 0. Clear previous rebuild state so stale entries don't persist
-        conn3.execute("DELETE FROM Holdings_History")
-        conn3.execute("DELETE FROM Portfolio_Daily")
-        conn3.execute("DELETE FROM Portfolio_Holdings")
+        # 0. Clear previous rebuild state for this owner only
+        conn3.execute("DELETE FROM Holdings_History WHERE owner_user_id = ?", (owner_user_id,))
+        conn3.execute("DELETE FROM Portfolio_Daily WHERE owner_user_id = ?", (owner_user_id,))
+        conn3.execute("DELETE FROM Portfolio_Holdings WHERE owner_user_id = ?", (owner_user_id,))
 
-        # 1. Load transactions sorted by date
+        # 1. Load transactions sorted by date, scoped to owner
         rows = conn3.execute(
-            "SELECT * FROM Transactions ORDER BY trade_date, id"
+            "SELECT * FROM Transactions WHERE owner_user_id = ? ORDER BY trade_date, id",
+            (owner_user_id,),
         ).fetchall()
         transactions = [dict(r) for r in rows]
 
@@ -228,11 +230,11 @@ def build_portfolio_state(
             cash_ccy_json = _json.dumps(cash_by_currency) if cash_by_currency else "{}"
             conn3.execute(
                 """INSERT OR REPLACE INTO Portfolio_Daily
-                   (date, total_value, cash_balance, stock_value, option_value,
+                   (date, owner_user_id, total_value, cash_balance, stock_value, option_value,
                     daily_return, cumulative_return, dividend_income, net_inflow,
                     cash_ccy_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (date_str, total_value, cash_balance, stock_value_base,
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (date_str, owner_user_id, total_value, cash_balance, stock_value_base,
                  option_value_base, daily_return,
                  cumulative_return - 1, daily_dividend, daily_inflow,
                  cash_ccy_json),
@@ -247,11 +249,11 @@ def build_portfolio_state(
                     mv_base = mv_native * cur_rate if mv_native is not None else None
                     conn3.execute(
                         """INSERT OR REPLACE INTO Holdings_History
-                           (date, symbol, asset_category, quantity, market_price,
+                           (date, symbol, asset_category, owner_user_id, quantity, market_price,
                             market_value, market_value_native, currency, fx_rate,
                             is_option, strike, expiry, put_call, underlying)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (date_str, h["symbol"], h["asset_category"],
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (date_str, h["symbol"], h["asset_category"], owner_user_id,
                          h["quantity"], h.get("market_price"),
                          mv_base, mv_native, h["currency"],
                          cur_rate,
@@ -282,11 +284,11 @@ def build_portfolio_state(
             mv_base = mv_native * cur_rate if mv_native is not None else None
             conn3.execute(
                 """INSERT OR REPLACE INTO Portfolio_Holdings
-                   (symbol, asset_category, quantity, avg_cost, market_price,
+                   (symbol, asset_category, owner_user_id, quantity, avg_cost, market_price,
                     market_value, market_value_native, currency, fx_rate,
                     is_option, strike, expiry, put_call, underlying)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (h["symbol"], h["asset_category"], h["quantity"],
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (h["symbol"], h["asset_category"], owner_user_id, h["quantity"],
                  h.get("avg_cost"), h.get("market_price"),
                  mv_base, mv_native, h["currency"],
                  cur_rate,
@@ -504,12 +506,13 @@ def get_daily_values(
     db3_path: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    owner_user_id: str = "",
 ) -> list[dict]:
     """Return daily portfolio value series."""
     db3_path = db3_path or get_db3()
     conn = connect_read(db3_path)
-    where = []
-    params = []
+    where = ["owner_user_id = ?"]
+    params = [owner_user_id]
     if start_date:
         where.append("date >= ?")
         params.append(start_date)
@@ -525,30 +528,27 @@ def get_daily_values(
     return [dict(r) for r in rows]
 
 
-def get_current_holdings(db3_path: str | None = None) -> list[dict]:
-    """Return current holdings snapshot with cash balance.
-
-    Returns stock/option holdings plus a synthetic "CASH" row representing
-    the current cash balance (which can be negative for margin accounts).
-    Expired options are excluded.
-    """
+def get_current_holdings(db3_path: str | None = None, owner_user_id: str = "") -> list[dict]:
+    """Return current holdings snapshot with cash balance."""
     db3_path = db3_path or get_db3()
     conn = connect_read(db3_path)
     today = Date.today().isoformat()
 
     rows = conn.execute(
         """SELECT * FROM Portfolio_Holdings
-           WHERE (is_option = 0)
-              OR (is_option = 1 AND (expiry IS NULL OR expiry >= ?))
+           WHERE owner_user_id = ?
+             AND ((is_option = 0)
+              OR (is_option = 1 AND (expiry IS NULL OR expiry >= ?)))
            ORDER BY COALESCE(market_value, 0) DESC""",
-        (today,),
+        (owner_user_id, today),
     ).fetchall()
 
     result = [dict(r) for r in rows]
 
     # Add per-currency cash balances from Portfolio_Daily (latest row)
     cash_row = conn.execute(
-        "SELECT cash_balance, cash_ccy_json, total_value FROM Portfolio_Daily ORDER BY date DESC LIMIT 1"
+        "SELECT cash_balance, cash_ccy_json, total_value FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date DESC LIMIT 1",
+        (owner_user_id,),
     ).fetchone()
     conn.close()
 
@@ -596,44 +596,41 @@ def get_current_holdings(db3_path: str | None = None) -> list[dict]:
 def get_holdings_at_date(
     db3_path: str | None = None,
     date: str | None = None,
+    owner_user_id: str = "",
 ) -> list[dict]:
     """Return holdings snapshot at a specific date."""
     db3_path = db3_path or get_db3()
     create_tables(db3_path)
     conn = connect_read(db3_path)
-    # Find most recent Holdings_History entry before or on date
     rows = conn.execute("""
         SELECT h.* FROM Holdings_History h
         INNER JOIN (
             SELECT symbol, asset_category, MAX(date) AS max_date
             FROM Holdings_History
-            WHERE date <= ?
+            WHERE date <= ? AND owner_user_id = ?
             GROUP BY symbol, asset_category
         ) latest ON h.symbol = latest.symbol
                   AND h.asset_category = latest.asset_category
                   AND h.date = latest.max_date
-        WHERE h.quantity != 0
-    """, (date,)).fetchall()
+        WHERE h.quantity != 0 AND h.owner_user_id = ?
+    """, (date, owner_user_id, owner_user_id)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def get_closed_positions(db3_path: str | None = None) -> list[dict]:
-    """Return positions that were fully closed (sold/expired) and are no
-    longer in the current portfolio.
-
-    Computes realized P&L from buy/sell trades for each symbol that appears
-    in ``Transactions`` but not in ``Portfolio_Holdings``.
-    """
+def get_closed_positions(db3_path: str | None = None, owner_user_id: str = "") -> list[dict]:
+    """Return positions that were fully closed (sold/expired) for one user."""
     db3_path = db3_path or get_db3()
     create_tables(db3_path)
     conn = connect_read(db3_path)
     try:
         cur_syms = {r["symbol"] for r in conn.execute(
-            "SELECT DISTINCT symbol FROM Portfolio_Holdings"
+            "SELECT DISTINCT symbol FROM Portfolio_Holdings WHERE owner_user_id = ?",
+            (owner_user_id,),
         ).fetchall()}
         closed_syms = [r["symbol"] for r in conn.execute(
-            "SELECT DISTINCT symbol, asset_category FROM Transactions WHERE activity_type = 'TRADE'"
+            "SELECT DISTINCT symbol, asset_category FROM Transactions WHERE activity_type = 'TRADE' AND owner_user_id = ?",
+            (owner_user_id,),
         ).fetchall() if r["symbol"] not in cur_syms and r["asset_category"] != 'CASH']
 
         if not closed_syms:
@@ -655,8 +652,9 @@ def get_closed_positions(db3_path: str | None = None) -> list[dict]:
             FROM Transactions
             WHERE symbol IN ({placeholders})
               AND activity_type = 'TRADE'
+              AND owner_user_id = ?
             GROUP BY symbol, asset_category
-        """, closed_syms).fetchall()
+        """, [*closed_syms, owner_user_id]).fetchall()
 
         result = []
         for row in rows:
@@ -898,6 +896,7 @@ def get_holding_performance(
     db3_path: str | None = None,
     db2_path: str | None = None,
     display_currency: str = "EUR",
+    owner_user_id: str = "",
 ) -> dict | None:
     """Compute performance metrics for a single holding.
 
@@ -914,8 +913,8 @@ def get_holding_performance(
     conn = connect_read(db3_path)
 
     txns = conn.execute(
-        "SELECT * FROM Transactions WHERE symbol = ? AND activity_type = 'TRADE' ORDER BY trade_date",
-        (symbol,),
+        "SELECT * FROM Transactions WHERE symbol = ? AND activity_type = 'TRADE' AND owner_user_id = ? ORDER BY trade_date",
+        (symbol, owner_user_id),
     ).fetchall()
     if not txns:
         conn.close()
@@ -934,7 +933,7 @@ def get_holding_performance(
 
     # Use Portfolio_Holdings for current market values
     holding = conn.execute(
-        "SELECT * FROM Portfolio_Holdings WHERE symbol = ?", (symbol,),
+        "SELECT * FROM Portfolio_Holdings WHERE symbol = ? AND owner_user_id = ?", (symbol, owner_user_id),
     ).fetchone()
 
     avg_cost = holding["avg_cost"] if holding and holding["avg_cost"] else 0
@@ -996,8 +995,8 @@ def get_holding_performance(
 
     # ── Returns from Holdings_History ──
     hist = conn.execute(
-        "SELECT date, market_value, market_value_native FROM Holdings_History WHERE symbol = ? ORDER BY date",
-        (symbol,),
+        "SELECT date, market_value, market_value_native FROM Holdings_History WHERE symbol = ? AND owner_user_id = ? ORDER BY date",
+        (symbol, owner_user_id),
     ).fetchall()
 
     name_row = conn.execute(
@@ -1108,6 +1107,7 @@ def get_all_holdings_performance(
     db3_path: str | None = None,
     db2_path: str | None = None,
     display_currency: str = "EUR",
+    owner_user_id: str = "",
 ) -> list[dict]:
     """Batch version: compute performance for ALL current holdings in one pass.
 
@@ -1123,7 +1123,7 @@ def get_all_holdings_performance(
     db3_path = db3_path or get_db3()
     db2_path = db2_path or get_db2()
 
-    holdings = get_current_holdings(db3_path)
+    holdings = get_current_holdings(db3_path, owner_user_id=owner_user_id)
     result: list[dict] = []
 
     conn = connect_read(db3_path)
@@ -1165,8 +1165,8 @@ def get_all_holdings_performance(
         placeholders = ",".join("?" for _ in symbols)
         txns_by_sym: dict[str, list] = defaultdict(list)
         txns_rows = conn.execute(
-            f"SELECT * FROM Transactions WHERE symbol IN ({placeholders}) AND activity_type = 'TRADE' ORDER BY trade_date",
-            symbols,
+            f"SELECT * FROM Transactions WHERE symbol IN ({placeholders}) AND activity_type = 'TRADE' AND owner_user_id = ? ORDER BY trade_date",
+            [*symbols, owner_user_id],
         ).fetchall()
         for r in txns_rows:
             txns_by_sym[r["symbol"]].append(dict(r))
@@ -1174,8 +1174,8 @@ def get_all_holdings_performance(
         # ── 3. Batch-fetch dividend transactions ──
         div_by_sym: dict[str, list] = defaultdict(list)
         div_rows = conn.execute(
-            f"SELECT symbol, activity_type, amount, fx_rate_to_base, trade_date FROM Transactions WHERE symbol IN ({placeholders}) AND activity_type IN ('DIVIDEND','PIL_DIVIDEND','WITHHOLDING_TAX')",
-            symbols,
+            f"SELECT symbol, activity_type, amount, fx_rate_to_base, trade_date FROM Transactions WHERE symbol IN ({placeholders}) AND activity_type IN ('DIVIDEND','PIL_DIVIDEND','WITHHOLDING_TAX') AND owner_user_id = ?",
+            [*symbols, owner_user_id],
         ).fetchall()
         for r in div_rows:
             div_by_sym[r["symbol"]].append(dict(r))
@@ -1183,8 +1183,8 @@ def get_all_holdings_performance(
         # ── 4. Batch-fetch names (descriptions) ──
         names: dict[str, str | None] = {}
         name_rows = conn.execute(
-            f"SELECT symbol, description FROM Transactions WHERE symbol IN ({placeholders}) AND activity_type='TRADE' AND description IS NOT NULL AND description!='' ORDER BY trade_date DESC",
-            symbols,
+            f"SELECT symbol, description FROM Transactions WHERE symbol IN ({placeholders}) AND activity_type='TRADE' AND description IS NOT NULL AND description!='' AND owner_user_id = ? ORDER BY trade_date DESC",
+            [*symbols, owner_user_id],
         ).fetchall()
         for r in name_rows:
             if r["symbol"] not in names:
@@ -1193,8 +1193,8 @@ def get_all_holdings_performance(
         # ── 5. Batch-fetch holdings history ──
         hist_by_sym: dict[str, list] = defaultdict(list)
         hist_rows = conn.execute(
-            f"SELECT symbol, date, market_value, market_value_native FROM Holdings_History WHERE symbol IN ({placeholders}) ORDER BY symbol, date",
-            symbols,
+            f"SELECT symbol, date, market_value, market_value_native FROM Holdings_History WHERE symbol IN ({placeholders}) AND owner_user_id = ? ORDER BY symbol, date",
+            [*symbols, owner_user_id],
         ).fetchall()
         for r in hist_rows:
             hist_by_sym[r["symbol"]].append(dict(r))
@@ -1202,8 +1202,8 @@ def get_all_holdings_performance(
         # ── 6. Batch-fetch current holdings ──
         cur_holdings: dict[str, dict] = {}
         cur_rows = conn.execute(
-            f"SELECT * FROM Portfolio_Holdings WHERE symbol IN ({placeholders})",
-            symbols,
+            f"SELECT * FROM Portfolio_Holdings WHERE symbol IN ({placeholders}) AND owner_user_id = ?",
+            [*symbols, owner_user_id],
         ).fetchall()
         for r in cur_rows:
             cur_holdings[r["symbol"]] = dict(r)

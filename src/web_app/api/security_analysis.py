@@ -264,6 +264,28 @@ def get_formulas() -> dict:
     ]}
 
 
+@router.get("/compare")
+def compare_securities(company_codes: str = Query(..., description="Comma-separated EDINET company codes")) -> dict:
+    """Return a comparable metric matrix using the same overview contracts."""
+    codes = [item.strip() for item in company_codes.split(",") if item.strip()]
+    if not 2 <= len(codes) <= 12:
+        raise HTTPException(status_code=400, detail="Provide between 2 and 12 company codes")
+    rows = []
+    for code in dict.fromkeys(codes):
+        try:
+            overview = get_overview(company_code=code)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                continue
+            raise
+        rows.append({
+            "company_code": code,
+            "company": overview.get("company", {}),
+            "metrics": overview.get("metrics", {}),
+        })
+    return {"companies": rows, "requested": codes}
+
+
 # ---------------------------------------------------------------------------
 # Price history
 # ---------------------------------------------------------------------------

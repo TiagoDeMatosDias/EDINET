@@ -78,8 +78,8 @@ def _parse_args() -> argparse.Namespace:
         "--allow-remote",
         action="store_true",
         help=(
-            "Allow a non-loopback bind. Requires EDINET_API_TOKEN and "
-            "EDINET_TRUSTED_HOSTS."
+            "Allow a non-loopback bind. Requires EDINET_AUTH_MODE=accounts, "
+            "EDINET_TRUSTED_HOSTS, and an HTTPS deployment."
         ),
     )
     parser.add_argument(

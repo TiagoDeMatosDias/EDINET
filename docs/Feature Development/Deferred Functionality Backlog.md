@@ -1,6 +1,6 @@
 # Deferred Functionality Backlog
 
-Status: Planning
+Status: Implemented slices validated; follow-up phases remain
 Recorded: 2026-07-22
 Planning trigger: Revisit after the Project Hardening Plan reaches final acceptance.
 Implementation plan: [Deferred Functionality Implementation Plan.md](Deferred%20Functionality%20Implementation%20Plan.md)

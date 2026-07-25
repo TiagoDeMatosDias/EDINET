@@ -5,7 +5,6 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
-import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -22,9 +21,30 @@ _DATABASE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 _DEFAULT_MAX_EXPORT_BYTES = 25 * 1024 * 1024
 _DEFAULT_MAX_BACKTEST_ARTIFACT_BYTES = 256 * 1024 * 1024
+_DEFAULT_MAX_REPORT_ARTIFACT_BYTES = 128 * 1024 * 1024
 _REQUEST_ENVELOPE_OVERHEAD_BYTES = 1024 * 1024
 _DEFAULT_JOB_WORKSPACE_ROOT = (
     Path(__file__).resolve().parents[2] / "config" / "state" / "jobs"
+)
+_DEFAULT_AUTH_DB_PATH: Path | None = None
+
+
+def _default_auth_db_path() -> Path:
+    global _DEFAULT_AUTH_DB_PATH
+    if _DEFAULT_AUTH_DB_PATH is None:
+        from src.orchestrator.common.db_config import get_auth_db
+
+        _DEFAULT_AUTH_DB_PATH = Path(get_auth_db())
+    return _DEFAULT_AUTH_DB_PATH
+_PUBLIC_AUTH_PATHS = frozenset(
+    {
+        "/api/auth/status",
+        "/api/auth/register",
+        "/api/auth/login",
+        "/api/auth/refresh",
+        "/api/auth/accept-invitation",
+        "/api/auth/reset-password",
+    }
 )
 
 
@@ -68,11 +88,17 @@ class AppSettings:
     host: str = "127.0.0.1"
     port: int = 8000
     allow_remote: bool = False
+    auth_mode: str = "accounts"
+    registration_mode: str = "open"
+    auth_db_path: Path = Path("data/databases/auth.db")
+    application_token: str | None = None
+    # Deprecated compatibility field; never populated from a provider token.
     api_token: str | None = None
     allowed_data_roots: tuple[Path, ...] = ()
     max_upload_bytes: int = _DEFAULT_MAX_UPLOAD_BYTES
     max_export_bytes: int = _DEFAULT_MAX_EXPORT_BYTES
     max_backtest_artifact_bytes: int = _DEFAULT_MAX_BACKTEST_ARTIFACT_BYTES
+    max_report_artifact_bytes: int = _DEFAULT_MAX_REPORT_ARTIFACT_BYTES
     sqlite_busy_timeout_ms: int = 30_000
     job_retention_hours: int = 24
     job_workspace_root: Path = _DEFAULT_JOB_WORKSPACE_ROOT
@@ -84,7 +110,7 @@ class AppSettings:
 
     @property
     def authentication_required(self) -> bool:
-        return self.remote
+        return self.auth_mode == "accounts"
 
     def validate(self) -> "AppSettings":
         if not 1 <= self.port <= 65_535:
@@ -93,9 +119,10 @@ class AppSettings:
             self.max_upload_bytes < 1
             or self.max_export_bytes < 1
             or self.max_backtest_artifact_bytes < 1
+            or self.max_report_artifact_bytes < 1
         ):
             raise SecurityConfigurationError(
-                "Upload, export, and backtest artifact limits must be positive"
+                "Upload, export, backtest, and report artifact limits must be positive"
             )
         if self.sqlite_busy_timeout_ms < 1:
             raise SecurityConfigurationError(
@@ -105,13 +132,21 @@ class AppSettings:
             raise SecurityConfigurationError(
                 "EDINET_JOB_RETENTION_HOURS must be positive"
             )
+        if self.auth_mode not in {"disabled", "accounts"}:
+            raise SecurityConfigurationError(
+                "EDINET_AUTH_MODE must be disabled or accounts"
+            )
+        if self.registration_mode not in {"open", "closed"}:
+            raise SecurityConfigurationError(
+                "EDINET_REGISTRATION_MODE must be open or closed"
+            )
         if self.remote and not self.allow_remote:
             raise SecurityConfigurationError(
                 "Non-loopback binding requires EDINET_ALLOW_REMOTE=true"
             )
-        if self.remote and (self.api_token is None or len(self.api_token) < 32):
+        if self.remote and self.auth_mode != "accounts":
             raise SecurityConfigurationError(
-                "Non-loopback binding requires EDINET_API_TOKEN with at least 32 characters"
+                "Non-loopback binding requires EDINET_AUTH_MODE=accounts"
             )
         if self.remote and not self.trusted_hosts:
             raise SecurityConfigurationError(
@@ -151,7 +186,14 @@ class AppSettings:
                 if allow_remote is not None
                 else _env_flag("EDINET_ALLOW_REMOTE")
             ),
-            api_token=os.getenv("EDINET_API_TOKEN") or None,
+            auth_mode=(os.getenv("EDINET_AUTH_MODE") or "accounts").strip().casefold(),
+            registration_mode=(
+                os.getenv("EDINET_REGISTRATION_MODE") or "open"
+            ).strip().casefold(),
+            auth_db_path=Path(
+                os.getenv("EDINET_AUTH_DB") or str(_default_auth_db_path())
+            ).expanduser(),
+            application_token=os.getenv("EDINET_APP_TOKEN") or None,
             allowed_data_roots=roots,
             max_upload_bytes=int(
                 os.getenv(
@@ -169,6 +211,12 @@ class AppSettings:
                 os.getenv(
                     "EDINET_MAX_BACKTEST_ARTIFACT_BYTES",
                     str(_DEFAULT_MAX_BACKTEST_ARTIFACT_BYTES),
+                )
+            ),
+            max_report_artifact_bytes=int(
+                os.getenv(
+                    "EDINET_MAX_REPORT_ARTIFACT_BYTES",
+                    str(_DEFAULT_MAX_REPORT_ARTIFACT_BYTES),
                 )
             ),
             sqlite_busy_timeout_ms=int(
@@ -290,6 +338,16 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
         return
     app.state.security_installed = True
     app.state.settings = settings
+    from src.auth.service import AuthService
+    from src.auth.storage import AuthStore
+
+    app.state.auth_service = AuthService(
+        AuthStore(
+            settings.auth_db_path,
+            busy_timeout_ms=settings.sqlite_busy_timeout_ms,
+        ),
+        registration_mode=settings.registration_mode,
+    )
     if settings.remote:
         app.add_middleware(
             TrustedHostMiddleware,
@@ -324,16 +382,14 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
         if (
             settings.authentication_required
             and request.url.path.startswith("/api/")
+            and request.url.path not in _PUBLIC_AUTH_PATHS
         ):
             authorization = request.headers.get("Authorization", "")
             scheme, _, supplied = authorization.partition(" ")
-            expected = settings.api_token or ""
-            authenticated = (
-                scheme.casefold() == "bearer"
-                and bool(supplied)
-                and secrets.compare_digest(supplied, expected)
-            )
-            if not authenticated:
+            user = None
+            if scheme.casefold() == "bearer" and supplied:
+                user = request.app.state.auth_service.authenticate(supplied)
+            if user is None:
                 return JSONResponse(
                     status_code=401,
                     content={
@@ -346,6 +402,7 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
                         "X-Correlation-ID": correlation_id,
                     },
                 )
+            request.state.user = user
 
         response = await call_next(request)
         response.headers["X-Correlation-ID"] = correlation_id

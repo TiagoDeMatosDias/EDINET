@@ -177,6 +177,9 @@ class BacktestRunRequest(BaseModel):
     base_currency: str = Field(default="", description="Target currency for returns (e.g. EUR, USD). Empty = native.")
     initial_capital: float = 0.0
     risk_free_rate: float = 0.0
+    commission_bps: float = Field(default=0.0, ge=0, le=500)
+    slippage_bps: float = Field(default=0.0, ge=0, le=500)
+    spread_bps: float = Field(default=0.0, ge=0, le=500)
 
 
 class CSVBacktestRequest(BaseModel):
@@ -334,6 +337,9 @@ async def run_backtest(request: BacktestRunRequest = Body(...)) -> dict:
                     db3_path=db3,
                     initial_capital=request.initial_capital,
                     risk_free_rate=_resolve_risk_free_rate(request.risk_free_rate, base_currency),
+                    commission_bps=request.commission_bps,
+                    slippage_bps=request.slippage_bps,
+                    spread_bps=request.spread_bps,
                 ),
                 timeout=120,
             )

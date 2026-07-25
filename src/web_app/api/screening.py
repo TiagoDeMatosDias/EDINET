@@ -8,18 +8,20 @@ from __future__ import annotations
 
 import io
 import logging
-from tempfile import TemporaryDirectory
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src import screening as _screening
 from src import security_analysis as _security
+from src.auth.models import AuthenticatedUser
 from src.orchestrator.common.db_config import get_db2
+from src.research.runtime import store as _research_store
 from src.screening.persistence import normalize_screening_date
 from src.web_app.security import (
     AppSettings,
@@ -440,37 +442,55 @@ def run_screening_endpoint(request: ScreeningRunRequest = Body(...)) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _require_user(request: Request) -> AuthenticatedUser:
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, AuthenticatedUser):
+        raise HTTPException(status_code=401, detail="Account authentication is required")
+    return user
+
+
 @router.get("/saved")
-def list_saved() -> dict:
-    """List saved screening configurations."""
+def list_saved(request: Request) -> dict:
+    """List saved screening configurations for the authenticated user."""
+    user = _require_user(request)
     try:
-        names = _screening.list_saved_screenings(_screening_save_dir())
-        return {"screenings": names}
+        screens = _research_store.list_saved_screens(user.user_id)
+        return {"screenings": [s["name"] for s in screens]}
     except Exception as e:
         logger.error("Failed to list saved screenings: %s", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/saved/{name}")
-def load_saved(name: str) -> dict:
-    """Load a saved screening configuration."""
+@router.get("/saved/{identifier}")
+def load_saved(request: Request, identifier: str) -> dict:
+    """Load a saved screening configuration by name or screen ID."""
+    user = _require_user(request)
+    screens = _research_store.list_saved_screens(user.user_id)
+    match = next(
+        (s for s in screens if s["screen_id"] == identifier or s["name"] == identifier),
+        None,
+    )
+    if match is None:
+        raise HTTPException(status_code=404, detail="Screening not found")
     try:
-        return _screening.load_screening_criteria(name, _screening_save_dir())
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Screening '{name}' not found")
+        import json
+        definition = json.loads(match["definition_json"])
+        return definition
     except Exception as e:
-        logger.error("Failed to load screening '%s': %s", name, str(e))
+        logger.error("Failed to load screening '%s': %s", identifier, str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/save")
-def save_screening(request: ScreeningSaveRequest = Body(...)) -> dict:
-    """Save a screening configuration."""
+def save_screening(http_request: Request, payload: ScreeningSaveRequest = Body(...)) -> dict:
+    """Save a screening configuration for the authenticated user."""
+    user = _require_user(http_request)
     try:
-        criteria_dicts = _criteria_to_dicts(request.criteria)
-        ranking_dicts = _ranking_rules_to_dicts(request.ranking_rules)
+        import json
+        criteria_dicts = _criteria_to_dicts(payload.criteria)
+        ranking_dicts = _ranking_rules_to_dicts(payload.ranking_rules)
         computed_specs = []
-        for cc in request.computed_columns:
+        for cc in payload.computed_columns:
             computed_specs.append({
                 "name": cc.name,
                 "formula_type": cc.formula_type,
@@ -481,42 +501,53 @@ def save_screening(request: ScreeningSaveRequest = Body(...)) -> dict:
                 "denominator_column": cc.denominator_column,
                 "formula": cc.formula,
             })
-        path = _screening.save_screening_criteria(
-            name=request.name,
-            criteria=criteria_dicts,
-            columns=request.columns,
-            period=request.period,
-            save_dir=_screening_save_dir(),
-            ranking_algorithm=request.ranking_algorithm,
-            ranking_rules=ranking_dicts,
-            computed_columns=computed_specs,
-            screening_date=request.screening_date,
+        definition = {
+            "name": payload.name,
+            "criteria": criteria_dicts,
+            "columns": payload.columns,
+            "period": payload.period,
+            "ranking_algorithm": payload.ranking_algorithm,
+            "ranking_rules": ranking_dicts,
+            "computed_columns": computed_specs,
+            "screening_date": payload.screening_date,
+        }
+        screen = _research_store.create_saved_screen(
+            user.user_id,
+            payload.name,
+            json.dumps(definition, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
         )
-        return {"saved": True, "path": str(path)}
+        return {"saved": True, "screen_id": screen["screen_id"]}
     except Exception as e:
+        if "UNIQUE" in str(e).upper():
+            raise HTTPException(status_code=409, detail="A screening with this name already exists") from e
         logger.error("Failed to save screening: %s", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/saved/{name}")
-def delete_saved(name: str) -> dict:
-    """Delete a saved screening configuration."""
-    try:
-        _screening.delete_screening_criteria(name, _screening_save_dir())
-        return {"deleted": True}
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Screening '{name}' not found")
-    except Exception as e:
-        logger.error("Failed to delete screening '%s': %s", name, str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+@router.delete("/saved/{identifier}")
+def delete_saved(request: Request, identifier: str) -> dict:
+    """Delete a saved screening configuration by name or screen ID."""
+    user = _require_user(request)
+    screens = _research_store.list_saved_screens(user.user_id)
+    match = next(
+        (s for s in screens if s["screen_id"] == identifier or s["name"] == identifier),
+        None,
+    )
+    if match is None:
+        raise HTTPException(status_code=404, detail="Screening not found")
+    if not _research_store.delete_saved_screen(user.user_id, match["screen_id"]):
+        raise HTTPException(status_code=404, detail="Screening not found")
+    return {"deleted": True}
 
 
 @router.get("/history")
 def get_history(
+    request: Request,
     limit: int = Query(50, ge=1, le=500, description="Max entries to return"),
     offset: int = Query(0, ge=0, description="Number of entries to skip"),
 ) -> dict:
     """Return screening run history with pagination (most recent first)."""
+    _require_user(request)
     try:
         entries = _screening.load_screening_history(_screening_history_path())
         total = len(entries)

@@ -46,6 +46,7 @@ def get_server_config() -> ServerConfigResponse:
         max_backtest_artifact_bytes=(
             runtime.SETTINGS.max_backtest_artifact_bytes
         ),
+        max_report_artifact_bytes=runtime.SETTINGS.max_report_artifact_bytes,
     )
 
 

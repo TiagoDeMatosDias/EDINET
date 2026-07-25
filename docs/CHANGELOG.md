@@ -11,9 +11,10 @@ All notable changes to this project will be documented in this file.
 - Pipeline failure stops later steps and reports `failed`; timing, terminal progress, current step, cancellation, and restart state now reflect actual execution.
 - Portfolio imports assign `source_file` only to newly imported rows, and schema upgrades use explicit idempotent migrations with a pre-migration backup.
 - Legacy timestamp-only backtest result IDs remain readable while new IDs include a collision-resistant suffix.
+- Legacy EDINET metadata/document download logs no longer print provider-key URLs; provider credentials remain confined to outbound requests.
 
 ### Security
-- Loopback is the default. Remote binding requires `--allow-remote`, a strong bearer token, and `EDINET_TRUSTED_HOSTS`.
+- Loopback is the default. Remote binding requires `--allow-remote`, account mode with an independently issued application bearer token, and `EDINET_TRUSTED_HOSTS`; `EDINET_API_TOKEN` remains provider-only.
 - Added correlation IDs, one safe HTTP error envelope, request/upload/export limits, and redaction of job output and secrets.
 - Database, pipeline input, upload, backtest result, and export paths are resolved against configured roots; API responses use stable database IDs instead of private absolute paths.
 - Portfolio XML and embedded pipeline uploads are size-bounded, strictly decoded/validated, and owned by deterministic cleanup workspaces.
@@ -22,6 +23,7 @@ All notable changes to this project will be documented in this file.
 - Pipeline submissions return `202` and run through a persistent single-worker job manager with per-step state, cooperative cancellation, bounded output, retention, and interrupted-job recovery.
 - Added a shared SQLite connection/transaction policy, WAL initialization for managed databases, bounded lock errors, read-only query connections, and explicit Portfolio/job migrations.
 - React Pipeline polling now survives page reloads and exposes truthful cancellation and terminal output.
+- Frontend streaming, screening exports, and ordinary API calls share bearer-token attachment and one-cookie refresh/retry behavior; npm test/build scripts use the runner config loader to avoid restricted `.vite-temp` writes.
 - Added `pyproject.toml`, one application version source, synchronized compatibility requirements, bounded verification scripts, OpenAPI/route contracts, CI jobs, and a packaged Windows smoke test.
 - The canonical local interpreter is `.venv3`; obsolete `.venv` and `.venv2` environments were removed.
 
@@ -139,3 +141,10 @@ All notable changes to this project will be documented in this file.
 - Application follows MVC pattern with orchestrator managing step execution
 - Configuration-driven design allows flexible step ordering and feature toggling
 - Comprehensive test suite for core modules
+## 2026-07-23 — Deferred functionality implementation
+
+- Added dedicated account authentication with Argon2id password hashes, rotating opaque sessions, personal API tokens, account middleware, and login/bootstrap UI. `EDINET_API_TOKEN` is provider-only and is never used as an application credential.
+- Added EDINET type-1 archive acquisition, bounded ZIP validation, `Filings.db` catalog/indexing, defused XBRL parsing, narrative sanitization, quality issues, filing APIs, and Filing Explorer UI.
+- Added owner-scoped research state, in-app alerts, company comparison, point-in-time/execution-cost primitives, tax-lot/scenario primitives, and deterministic report manifests.
+- Added `/research`, `/compare`, authenticated portfolio tax-lot/Greeks/scenario previews, and owner-scoped reproducible report ZIP runs with canonical manifests and bounded atomic artifacts.
+- Added refresh-token family invalidation on reuse/logout, persistent login throttling, safe report HTML escaping, and reload recovery through the HttpOnly refresh cookie.

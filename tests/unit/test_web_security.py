@@ -25,7 +25,7 @@ def test_loopback_hosts_do_not_require_remote_opt_in():
     assert is_loopback_host("localhost")
     assert not is_loopback_host("0.0.0.0")
     assert not is_loopback_host("192.168.1.10")
-    assert AppSettings().validate().authentication_required is False
+    assert AppSettings().validate().authentication_required is True
 
 
 def test_backtest_artifact_limit_is_independent(monkeypatch):
@@ -39,27 +39,27 @@ def test_backtest_artifact_limit_is_independent(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("allow_remote", "token"),
+    ("allow_remote", "auth_mode"),
     [
-        (False, None),
-        (True, None),
-        (True, "too-short"),
+        (False, "disabled"),
+        (True, "disabled"),
     ],
 )
-def test_remote_settings_fail_closed(allow_remote, token):
+def test_remote_settings_fail_closed(allow_remote, auth_mode):
     with pytest.raises(SecurityConfigurationError):
         AppSettings(
             host="0.0.0.0",
             allow_remote=allow_remote,
-            api_token=token,
+            auth_mode=auth_mode,
         ).validate()
 
 
-def test_remote_api_requires_valid_bearer_and_hides_500_details():
+def test_remote_api_requires_valid_bearer_and_hides_500_details(tmp_path):
     settings = AppSettings(
         host="0.0.0.0",
         allow_remote=True,
-        api_token="a" * 32,
+        auth_mode="accounts",
+        auth_db_path=tmp_path / "auth.db",
         trusted_hosts=("testserver",),
     ).validate()
     app = FastAPI()
@@ -82,6 +82,15 @@ def test_remote_api_requires_valid_bearer_and_hides_500_details():
     install_security(app, settings)
     client = TestClient(app, raise_server_exceptions=False)
 
+    user = app.state.auth_service.register(
+        "security-test",
+        "correct horse battery staple",
+    )
+    result = app.state.auth_service.login(
+        user.username,
+        "correct horse battery staple",
+    )
+
     assert client.get("/health").status_code == 200
     assert client.get("/api/private").status_code == 401
     assert client.get(
@@ -89,7 +98,7 @@ def test_remote_api_requires_valid_bearer_and_hides_500_details():
         headers={"Authorization": "Bearer wrong"},
     ).status_code == 401
 
-    headers = {"Authorization": f"Bearer {settings.api_token}"}
+    headers = {"Authorization": f"Bearer {result.tokens.access_token}"}
     allowed = client.get("/api/private", headers=headers)
     assert allowed.status_code == 200
     assert allowed.headers["X-Correlation-ID"]
@@ -108,7 +117,7 @@ def test_remote_settings_require_explicit_trusted_hosts():
         AppSettings(
             host="0.0.0.0",
             allow_remote=True,
-            api_token="a" * 32,
+            auth_mode="accounts",
         ).validate()
 
 
@@ -116,7 +125,7 @@ def test_remote_trusted_host_is_enforced():
     settings = AppSettings(
         host="0.0.0.0",
         allow_remote=True,
-        api_token="a" * 32,
+        auth_mode="accounts",
         trusted_hosts=("allowed.example",),
     )
     app = FastAPI()

@@ -31,6 +31,7 @@ def insert_entries(
     db_path: str | None = None,
     entries: list[dict] | None = None,
     source_file: str = "",
+    owner_user_id: str = "",
 ) -> dict:
     """Insert parsed entries with deduplication on transactionID.
 
@@ -67,8 +68,8 @@ def insert_entries(
         if txn_ids:
             placeholders = ",".join("?" for _ in txn_ids)
             rows = conn.execute(
-                f"SELECT transaction_id FROM Transactions WHERE transaction_id IN ({placeholders})",
-                txn_ids,
+                f"SELECT transaction_id FROM Transactions WHERE transaction_id IN ({placeholders}) AND owner_user_id = ?",
+                [*txn_ids, owner_user_id],
             ).fetchall()
             existing_ids = {r[0] for r in rows}
 
@@ -76,7 +77,7 @@ def insert_entries(
         known_symbols = _get_known_symbols(conn)
 
         # Build INSERT statement
-        insert_columns = [*_ENTRY_COLS, "source_file"]
+        insert_columns = [*_ENTRY_COLS, "source_file", "owner_user_id"]
         cols_str = ", ".join(insert_columns)
         placeholders_str = ", ".join("?" for _ in insert_columns)
         sql = f"INSERT OR IGNORE INTO Transactions ({cols_str}) VALUES ({placeholders_str})"
@@ -92,7 +93,7 @@ def insert_entries(
                 continue
 
             # Build tuple
-            values = (*tuple(e.get(col) for col in _ENTRY_COLS), source_file or None)
+            values = (*tuple(e.get(col) for col in _ENTRY_COLS), source_file or None, owner_user_id)
             try:
                 cursor = conn.execute(sql, values)
                 if cursor.rowcount != 1:
@@ -130,6 +131,7 @@ def get_transactions(
     limit: int = 1000,
     offset: int = 0,
     slim: bool = True,
+    owner_user_id: str = "",
 ) -> list[dict]:
     """Query transactions with optional filters.
 
@@ -144,8 +146,8 @@ def get_transactions(
     create_tables(db_path)  # idempotent
     conn = connect_read(db_path)
 
-    where = []
-    params: list = []
+    where = ["owner_user_id = ?"]
+    params: list = [owner_user_id]
 
     if symbol:
         where.append("symbol = ?")
@@ -173,7 +175,7 @@ def get_transactions(
     return [dict(r) for r in rows]
 
 
-def get_unique_symbols(db_path: str | None = None) -> list[dict]:
+def get_unique_symbols(db_path: str | None = None, owner_user_id: str = "") -> list[dict]:
     """Return distinct symbols with asset categories from Transactions."""
     db_path = db_path or get_db3()
     create_tables(db_path)
@@ -181,15 +183,15 @@ def get_unique_symbols(db_path: str | None = None) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT DISTINCT symbol, asset_category FROM Transactions "
-            "WHERE symbol IS NOT NULL AND symbol != '' "
-            "ORDER BY symbol"
+            "WHERE symbol IS NOT NULL AND symbol != '' AND owner_user_id = ? "
+            "ORDER BY symbol", (owner_user_id,)
         ).fetchall()
     finally:
         conn.close()
     return [dict(r) for r in rows]
 
 
-def get_date_range(db_path: str | None = None) -> dict:
+def get_date_range(db_path: str | None = None, owner_user_id: str = "") -> dict:
     """Return min and max trade_date from Transactions."""
     db_path = db_path or get_db3()
     create_tables(db_path)
@@ -197,14 +199,15 @@ def get_date_range(db_path: str | None = None) -> dict:
     try:
         row = conn.execute(
             "SELECT MIN(trade_date) AS min_date, "
-            "MAX(trade_date) AS max_date FROM Transactions"
+            "MAX(trade_date) AS max_date FROM Transactions WHERE owner_user_id = ?",
+            (owner_user_id,),
         ).fetchone()
     finally:
         conn.close()
     return {"min_date": row[0], "max_date": row[1]}
 
 
-def get_activity_summary(db_path: str | None = None) -> dict:
+def get_activity_summary(db_path: str | None = None, owner_user_id: str = "") -> dict:
     """Return counts by activity_type."""
     db_path = db_path or get_db3()
     create_tables(db_path)
@@ -212,21 +215,22 @@ def get_activity_summary(db_path: str | None = None) -> dict:
     try:
         rows = conn.execute(
             "SELECT activity_type, COUNT(*) AS cnt "
-            "FROM Transactions GROUP BY activity_type"
+            "FROM Transactions WHERE owner_user_id = ? GROUP BY activity_type",
+            (owner_user_id,),
         ).fetchall()
     finally:
         conn.close()
     return {r["activity_type"]: r["cnt"] for r in rows}
 
 
-def delete_by_source(db_path: str | None = None, source_file: str = "") -> int:
+def delete_by_source(db_path: str | None = None, source_file: str = "", owner_user_id: str = "") -> int:
     """Delete all transactions from a given source file. Returns deleted count."""
     db_path = db_path or get_db3()
     create_tables(db_path)
     with transaction(db_path) as conn:
         cursor = conn.execute(
-            "DELETE FROM Transactions WHERE source_file = ?",
-            (source_file,),
+            "DELETE FROM Transactions WHERE source_file = ? AND owner_user_id = ?",
+            (source_file, owner_user_id),
         )
         return cursor.rowcount
 

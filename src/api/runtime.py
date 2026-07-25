@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.orchestrator.common.db_config import get_pipeline_jobs_db
 from src.pipeline_jobs import JobStore, PipelineJobManager
 from src.web_app.security import AppSettings
 
@@ -14,7 +15,7 @@ PIPELINE_INPUT_ROOTS = (
     PROJECT_ROOT / "assets",
     *SETTINGS.allowed_data_roots,
 )
-JOB_DB_PATH = PROJECT_ROOT / "config" / "state" / "pipeline_jobs.db"
+JOB_DB_PATH = Path(get_pipeline_jobs_db())
 
 job_store = JobStore(
     JOB_DB_PATH,

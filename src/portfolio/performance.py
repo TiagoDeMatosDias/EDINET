@@ -368,6 +368,7 @@ def calculate_metrics(
     risk_free_rate: float | None = None,
     benchmark_ticker: str | None = None,
     base_currency: str = "EUR",
+    owner_user_id: str = "",
 ) -> dict:
     """Compute comprehensive performance metrics for the portfolio.
 
@@ -384,7 +385,7 @@ def calculate_metrics(
     db3_path = db3_path or get_db3()
     db2_path = db2_path or get_db2()
 
-    daily = get_daily_values(db3_path, start_date, end_date)
+    daily = get_daily_values(db3_path, start_date, end_date, owner_user_id=owner_user_id)
     if not daily:
         return {
             "start_date": start_date or "", "end_date": end_date or "",

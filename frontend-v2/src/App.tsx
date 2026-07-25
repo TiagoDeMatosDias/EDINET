@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 
 import { AppShell } from './components/AppShell'
 import { LoadingState } from './components/Feedback'
+import { AuthProvider } from './features/auth/AuthProvider'
 
 const OverviewPage = lazy(() => import('./features/overview/OverviewPage'))
 const ScreeningPage = lazy(() => import('./features/screening/ScreeningPage'))
@@ -10,22 +11,36 @@ const AnalysisPage = lazy(() => import('./features/analysis/AnalysisPage'))
 const BacktestingPage = lazy(() => import('./features/backtesting/BacktestingPage'))
 const PortfolioPage = lazy(() => import('./features/portfolio/PortfolioPage'))
 const PipelinePage = lazy(() => import('./features/pipeline/PipelinePage'))
+const FilingsPage = lazy(() => import('./features/filings/FilingsPage'))
+const ComparisonPage = lazy(() => import('./features/comparison/ComparisonPage'))
+const ResearchPage = lazy(() => import('./features/research/ResearchPage'))
+const LoginPage = lazy(() => import('./features/auth/LoginPage'))
+const AccountPage = lazy(() => import('./features/auth/AccountPage'))
+const AdminPage = lazy(() => import('./features/auth/AdminPage'))
 
 export function App() {
   return (
-    <AppShell>
-      <Suspense fallback={<LoadingState label="Loading workspace" />}>
-        <Routes>
+    <AuthProvider>
+      <AppShell>
+        <Suspense fallback={<LoadingState label="Loading workspace" />}>
+          <Routes>
           <Route path="/" element={<OverviewPage />} />
           <Route path="/screen" element={<ScreeningPage />} />
           <Route path="/analyze" element={<AnalysisPage />} />
           <Route path="/analyze/:companyCode" element={<AnalysisPage />} />
           <Route path="/backtest" element={<BacktestingPage />} />
           <Route path="/portfolio" element={<PortfolioPage />} />
-          <Route path="/pipeline" element={<PipelinePage />} />
-          <Route path="*" element={<Navigate replace to="/" />} />
-        </Routes>
-      </Suspense>
-    </AppShell>
+            <Route path="/pipeline" element={<PipelinePage />} />
+            <Route path="/filings" element={<FilingsPage />} />
+            <Route path="/compare" element={<ComparisonPage />} />
+            <Route path="/research" element={<ResearchPage />} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/account" element={<AccountPage />} />
+            <Route path="/admin" element={<AdminPage />} />
+            <Route path="*" element={<Navigate replace to="/" />} />
+          </Routes>
+        </Suspense>
+      </AppShell>
+    </AuthProvider>
   )
 }

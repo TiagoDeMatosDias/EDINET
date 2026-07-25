@@ -10,7 +10,7 @@ from src.web_app.security import SecurityConfigurationError
 
 
 def test_launcher_rejects_remote_bind_without_opt_in(monkeypatch):
-    monkeypatch.delenv("EDINET_API_TOKEN", raising=False)
+    monkeypatch.delenv("EDINET_AUTH_MODE", raising=False)
     monkeypatch.delenv("EDINET_TRUSTED_HOSTS", raising=False)
     with pytest.raises(SecurityConfigurationError, match="ALLOW_REMOTE"):
         launcher._run_web(host="0.0.0.0", allow_remote=False)
@@ -18,7 +18,7 @@ def test_launcher_rejects_remote_bind_without_opt_in(monkeypatch):
 
 def test_launcher_propagates_validated_remote_settings(monkeypatch):
     captured = {}
-    monkeypatch.setenv("EDINET_API_TOKEN", "a" * 32)
+    monkeypatch.setenv("EDINET_AUTH_MODE", "accounts")
     monkeypatch.setenv("EDINET_TRUSTED_HOSTS", "research.example")
     monkeypatch.setattr(
         uvicorn,

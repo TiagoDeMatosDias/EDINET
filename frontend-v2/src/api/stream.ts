@@ -1,4 +1,4 @@
-import { ApiError } from './client'
+import { ApiError, authenticatedFetch } from './client'
 
 export type StreamMessage = Record<string, unknown> & { type?: string; message?: string }
 
@@ -18,9 +18,8 @@ export async function apiStream(
   onMessage: (message: StreamMessage) => void,
   signal?: AbortSignal,
 ) {
-  const response = await fetch(path, {
+  const response = await authenticatedFetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal,
   })
@@ -49,4 +48,3 @@ export async function apiStream(
   }
   return result
 }
-

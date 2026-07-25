@@ -149,7 +149,7 @@ class Edinet:
                 )
             date_str = current_date.strftime("%Y-%m-%d")
             url = f"{self.baseURL}.json?date={date_str}&type=2&Subscription-Key={self.key}"
-            logger.debug("URL: %s", url)
+            logger.debug("Fetching filing metadata for %s", date_str)
             try:
                 response = requests.get(url, timeout=self.REQUEST_TIMEOUT_SECONDS)
                 if response.status_code == 200:
@@ -212,7 +212,7 @@ class Edinet:
             fileLocation = self.defaultLocation
         
         fullURL = h.generateURL(docID, self.baseURL, self.key, docTypeCode)
-        logger.info(f"Downloading document {docID} from {fullURL}...")
+        logger.info("Downloading document %s", docID)
         # Send a GET request to download the file
         try:
             response = requests.get(fullURL, timeout=self.REQUEST_TIMEOUT_SECONDS)

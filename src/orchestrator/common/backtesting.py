@@ -21,7 +21,6 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -1217,6 +1216,9 @@ def build_daily_portfolio_tracker(
     initial_capital: float = 1_000_000.0,
     base_currency: str = "",
     risk_free_rate: float = 0.0,
+    commission_bps: float = 0.0,
+    slippage_bps: float = 0.0,
+    spread_bps: float = 0.0,
 ) -> dict:
     """Build a **daily** portfolio time series - the single source of truth.
 
@@ -1283,15 +1285,28 @@ def build_daily_portfolio_tracker(
     tickers_in_data = [t for t in tickers if t in price_matrix.columns]
     price_matrix = price_matrix[tickers_in_data]
 
+    if min(commission_bps, slippage_bps, spread_bps) < 0:
+        raise ValueError("Execution-cost rates must not be negative")
+    from src.backtesting.asof import ExecutionCostModel
+
+    cost_model = ExecutionCostModel(
+        commission_bps=commission_bps,
+        slippage_bps=slippage_bps,
+        spread_bps=spread_bps,
+    )
+
     # --- 3. Compute shares for each ticker (buy-and-hold) -------------
     initial_prices: dict[str, float] = {}
     shares: dict[str, float] = {}
+    entry_commission = 0.0
     for t in tickers_in_data:
         p0 = float(price_matrix[t].iloc[0])
         if pd.isna(p0) or p0 <= 0:
             continue
-        initial_prices[t] = p0
-        shares[t] = (active[t] * initial_capital) / p0
+        fill_price = cost_model.fill_price(p0, "buy")
+        initial_prices[t] = fill_price
+        shares[t] = (active[t] * initial_capital) / fill_price
+        entry_commission += cost_model.commission(shares[t] * fill_price)
 
     # --- 4. Daily market value per ticker -----------------------------
     daily_mktval: dict[str, pd.Series] = {}
@@ -1299,7 +1314,7 @@ def build_daily_portfolio_tracker(
         daily_mktval[t] = price_matrix[t] * s
 
     # --- 5. Cash balance (accumulated dividends) ----------------------
-    cash_series = pd.Series(0.0, index=price_matrix.index)
+    cash_series = pd.Series(-entry_commission, index=price_matrix.index)
     dividend_events = pd.Series(0.0, index=price_matrix.index)
     # Per-ticker daily dividend cash (for visibility / debugging)
     per_ticker_div_cash: dict[str, pd.Series] = {
@@ -1994,8 +2009,8 @@ def generate_backtest_charts(
     try:
         import matplotlib
         matplotlib.use("Agg")  # non-interactive backend
-        import matplotlib.pyplot as plt
         import matplotlib.dates as mdates
+        import matplotlib.pyplot as plt
     except ImportError:
         logger.warning(
             "matplotlib is not installed â€” skipping chart generation. "

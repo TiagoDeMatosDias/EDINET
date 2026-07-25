@@ -1,10 +1,20 @@
 # Deferred Functionality Implementation Plan
 
-Status: Proposed for operator approval
+Status: Implemented slices validated; follow-up phases remain
 Created: 2026-07-23
 Revised: 2026-07-23 — added account creation, token authentication, the EDINET type-1 filing archive, XBRL indexing, and the filing viewer
 Scope: Account creation and token-authenticated APIs, EDINET filing archives and XBRL viewing, metric provenance, data quality, watchlists, research notes, alerts, point-in-time backtesting, company comparison, portfolio attribution and scenarios, and reproducible research reports.
-Implementation state: Planning only; this document does not implement product functionality.
+Implementation state: Phase 1A authentication, Phase 1B research state, Phase 2A-2C filing archive/XBRL indexing, comparison foundations, execution-cost primitives, tax-lot/scenario primitives, and report-manifest primitives are implemented and validated. Remaining phase work is tracked below.
+
+## Implementation record — 2026-07-23
+
+- Added `config/state/auth.db` ownership for Argon2id password hashes, account roles/status, opaque access/refresh sessions, personal API-token hashes, rotation/revocation, audit events, and explicit registration mode. Web authentication no longer reads `EDINET_API_TOKEN`; account credentials are generated independently.
+- Added bounded type-1 EDINET acquisition in `src/filings/`, immutable archive storage under `data/filings/archive/`, rebuildable `Filings.db` catalog/search indexes, defused XML fact/context/unit parsing, sanitized narrative sections, quality issues, and filing APIs plus a Filing Explorer route.
+- Added owner-scoped `research.db` watchlists, notes, and in-app alert rules/events; point-in-time selection and execution-cost primitives; company comparison API/page; tax-lot/scenario primitives; and deterministic report manifests.
+- Added bounded `/api/comparison/*` peer/snapshot/history routes, Research CRUD/template/recipe APIs, authenticated portfolio tax-lot/Greeks/scenario previews, and owner-scoped canonical report ZIP generation with manifest/download/delete endpoints.
+- Verification: backend unit suite 700 passed/1 skipped in 61.8 seconds; integration suite 108 passed in 12.3 seconds; frontend TypeScript, 25 Vitest tests, lint (warnings only), and production build passed. Targeted Ruff/Mypy, requirements synchronization, documentation links, and diff checks passed. Canonical PyInstaller packaging and the frozen-app smoke test passed in 132.5 seconds under explicit command/smoke caps.
+
+The implementation deliberately keeps compatibility backtesting and global imported Portfolio activity intact. Point-in-time filing selection, tax-lot/scenario previews, and reports are available as explicit authenticated analytical slices; full historical universe/corporate-action migration, scheduled alert workers, XLSX/PDF renderers, and legacy Portfolio owner-claim migration remain documented follow-up work rather than silently being represented as complete.
 
 ## 1. Purpose
 

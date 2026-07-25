@@ -108,6 +108,7 @@ class ServerConfigResponse(BaseModel):
     max_upload_bytes: int
     max_export_bytes: int
     max_backtest_artifact_bytes: int
+    max_report_artifact_bytes: int
 
 
 class JobOutputResponse(BaseModel):

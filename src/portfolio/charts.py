@@ -54,6 +54,7 @@ def get_holdings_by_value(
     db3_path: str,
     db2_path: str,
     display_currency: str = "EUR",
+    owner_user_id: str = "",
 ) -> dict:
     """Current portfolio holdings aggregated by symbol, valued in *display_currency*.
 
@@ -64,9 +65,10 @@ def get_holdings_by_value(
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT symbol, market_value_native, currency "
-        "FROM Portfolio_Holdings WHERE quantity > 0 "
+        "FROM Portfolio_Holdings WHERE owner_user_id = ? AND quantity > 0 "
         "AND asset_category NOT IN ('CASH', 'OPT') "
-        "ORDER BY market_value_native DESC"
+        "ORDER BY market_value_native DESC",
+        (owner_user_id,),
     ).fetchall()
     conn.close()
 
@@ -106,6 +108,8 @@ def get_holdings_by_currency(
     db3_path: str,
     db2_path: str,
     display_currency: str = "EUR",
+
+    owner_user_id: str = "",
 ) -> dict:
     """Current holdings grouped by native currency, all values in *display_currency*.
 
@@ -115,7 +119,8 @@ def get_holdings_by_currency(
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT market_value_native, currency FROM Portfolio_Holdings "
-        "WHERE quantity > 0 AND asset_category NOT IN ('CASH', 'OPT')"
+        "WHERE owner_user_id = ? AND quantity > 0 AND asset_category NOT IN ('CASH', 'OPT')",
+        (owner_user_id,),
     ).fetchall()
     conn.close()
 
@@ -144,11 +149,12 @@ def get_holdings_by_currency(
 # Chart 3: Portfolio value over time and flow-adjusted risk series
 # ---------------------------------------------------------------------------
 
-def _load_portfolio_daily(db3_path: str) -> list[sqlite3.Row]:
+def _load_portfolio_daily(db3_path: str, owner_user_id: str = "") -> list[sqlite3.Row]:
     conn = connect_read(db3_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT date, total_value, net_inflow FROM Portfolio_Daily ORDER BY date"
+        "SELECT date, total_value, net_inflow FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date",
+        (owner_user_id,),
     ).fetchall()
     conn.close()
     return rows
@@ -229,6 +235,7 @@ def get_portfolio_value_history(
     db3_path: str,
     db2_path: str,
     display_currency: str = "EUR",
+    owner_user_id: str = "",
 ) -> dict:
     """Return daily holdings and flow-adjusted portfolio risk series.
 
@@ -241,18 +248,20 @@ def get_portfolio_value_history(
     hh_rows = conn.execute(
         "SELECT date, symbol, market_value_native, currency "
         "FROM Holdings_History "
-        "WHERE is_option = 0 AND symbol NOT LIKE 'CASH%' "
+        "WHERE owner_user_id = ? AND is_option = 0 AND symbol NOT LIKE 'CASH%' "
         "AND market_value_native IS NOT NULL "
-        "ORDER BY date, symbol"
+        "ORDER BY date, symbol",
+        (owner_user_id,),
     ).fetchall()
     cur_held = {
         row["symbol"] for row in conn.execute(
-            "SELECT symbol FROM Portfolio_Holdings WHERE quantity > 0 "
-            "AND asset_category != 'CASH'"
+            "SELECT symbol FROM Portfolio_Holdings WHERE owner_user_id = ? AND quantity > 0 "
+            "AND asset_category != 'CASH'",
+            (owner_user_id,),
         ).fetchall()
     }
     conn.close()
-    daily_rows = _load_portfolio_daily(db3_path)
+    daily_rows = _load_portfolio_daily(db3_path, owner_user_id)
 
     if not hh_rows and not daily_rows:
         return {
@@ -361,6 +370,7 @@ def get_dividends_by_company(
     db2_path: str,
     display_currency: str = "EUR",
     period: str = "monthly",
+    owner_user_id: str = "",
 ) -> dict:
     """Net dividends grouped by company, in *display_currency*.
 
@@ -372,9 +382,10 @@ def get_dividends_by_company(
     rows = conn.execute(
         "SELECT symbol, trade_date, activity_type, amount, currency "
         "FROM Transactions "
-        "WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
+        "WHERE owner_user_id = ? AND activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
         "AND symbol NOT LIKE 'CASH%' "
-        "ORDER BY trade_date"
+        "ORDER BY trade_date",
+        (owner_user_id,),
     ).fetchall()
     conn.close()
 
@@ -426,6 +437,7 @@ def get_dividends_by_currency(
     db2_path: str,
     display_currency: str = "EUR",
     period: str = "monthly",
+    owner_user_id: str = "",
 ) -> dict:
     """Net dividends grouped by payment currency, in *display_currency*.
 
@@ -437,9 +449,10 @@ def get_dividends_by_currency(
     rows = conn.execute(
         "SELECT trade_date, activity_type, amount, currency "
         "FROM Transactions "
-        "WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
+        "WHERE owner_user_id = ? AND activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
         "AND symbol NOT LIKE 'CASH%' "
-        "ORDER BY trade_date"
+        "ORDER BY trade_date",
+        (owner_user_id,),
     ).fetchall()
     conn.close()
 
@@ -488,6 +501,8 @@ def get_dividends_heatmap(
     db3_path: str,
     db2_path: str,
     display_currency: str = "EUR",
+
+    owner_user_id: str = "",
 ) -> dict:
     """Net dividends aggregated by (year, month), in *display_currency*.
 
@@ -499,9 +514,10 @@ def get_dividends_heatmap(
     rows = conn.execute(
         "SELECT trade_date, activity_type, amount, currency "
         "FROM Transactions "
-        "WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
+        "WHERE owner_user_id = ? AND activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
         "AND symbol NOT LIKE 'CASH%' "
-        "ORDER BY trade_date"
+        "ORDER BY trade_date",
+        (owner_user_id,),
     ).fetchall()
     conn.close()
 
@@ -552,6 +568,8 @@ def get_returns_heatmap(
     db3_path: str,
     db2_path: str,
     display_currency: str = "EUR",
+
+    owner_user_id: str = "",
 ) -> dict:
     """Monthly portfolio returns as a percentage, computed with Modified Dietz
     to adjust for cash flows, in *display_currency*.
@@ -567,7 +585,8 @@ def get_returns_heatmap(
     # value to display_currency at each month-end date.
     daily_rows = conn.execute(
         "SELECT date, total_value, cash_balance, net_inflow, dividend_income "
-        "FROM Portfolio_Daily ORDER BY date"
+        "FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date",
+        (owner_user_id,),
     ).fetchall()
 
     conn.close()
@@ -670,6 +689,8 @@ def get_deposits_heatmap(
     db3_path: str,
     db2_path: str,
     display_currency: str = "EUR",
+
+    owner_user_id: str = "",
 ) -> dict:
     """Net deposits/withdrawals aggregated by (year, month), in *display_currency*.
 
@@ -678,7 +699,8 @@ def get_deposits_heatmap(
     conn = connect_read(db3_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT date, net_inflow FROM Portfolio_Daily ORDER BY date"
+        "SELECT date, net_inflow FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date",
+        (owner_user_id,),
     ).fetchall()
     conn.close()
 
@@ -749,6 +771,7 @@ def get_return_vs_cost(
     db3_path: str,
     db2_path: str,
     display_currency: str = "EUR",
+    owner_user_id: str = "",
 ) -> list[dict]:
     """Return scatter-plot data: cost basis vs annualized return per holding.
 
@@ -763,7 +786,7 @@ def get_return_vs_cost(
     result: list[dict] = []
 
     # --- Open holdings ---
-    open_holdings = get_all_holdings_performance(db3_path, db2_path, dc)
+    open_holdings = get_all_holdings_performance(db3_path, db2_path, dc, owner_user_id=owner_user_id)
     for h in open_holdings:
         perf = h.get("performance")
         if not perf:
@@ -780,7 +803,7 @@ def get_return_vs_cost(
         })
 
     # --- Closed holdings (non-option) ---
-    closed = get_closed_positions(db3_path)
+    closed = get_closed_positions(db3_path, owner_user_id=owner_user_id)
     for cp in closed:
         if cp.get("asset_category") == "OPT":
             continue

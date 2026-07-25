@@ -87,6 +87,30 @@ def get_db3() -> str:
     return _resolve(cfg.get("db3", "data/databases/Portfolio.db"))
 
 
+def get_auth_db() -> str:
+    """Return the absolute path to the non-rebuildable authentication database."""
+    cfg = _load_config()
+    return _resolve(cfg.get("auth_db", "data/databases/auth.db"))
+
+
+def get_research_db() -> str:
+    """Return the absolute path to the owner-scoped research-state database."""
+    cfg = _load_config()
+    return _resolve(cfg.get("research_db", "data/databases/research.db"))
+
+
+def get_pipeline_jobs_db() -> str:
+    """Return the absolute path to the durable pipeline-jobs database."""
+    cfg = _load_config()
+    return _resolve(cfg.get("pipeline_jobs_db", "data/databases/pipeline_jobs.db"))
+
+
+def get_filings_db() -> str:
+    """Return the absolute path to the rebuildable filing catalog database."""
+    cfg = _load_config()
+    return _resolve(cfg.get("filings_db", "data/databases/Filings.db"))
+
+
 def resolve_db_path(db_value: str | None) -> str | None:
     """Resolve a user-provided database identifier into a filesystem path.
 

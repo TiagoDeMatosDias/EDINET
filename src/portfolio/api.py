@@ -8,38 +8,56 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, UploadFile, File, Query, HTTPException
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from pydantic import BaseModel, ConfigDict, Field
 
-from src.portfolio.models import (
-    UploadResponse, TransactionEntry, HoldingItem, PerformanceResponse,
-    DateRangeResponse, ActivitySummaryResponse, RebuildResponse,
+from src.auth.models import AuthenticatedUser
+from src.orchestrator.common.db_config import get_db2, get_db3
+from src.orchestrator.common.sqlite import connect_read
+from src.portfolio.currency import (
+    convert_series,
+    get_available_display_currencies,
+    get_fx_series,
+    get_rate_at_date,
 )
 from src.portfolio.ibkr_parser import (
     InvalidPortfolioXML,
     normalize_entries,
     parse_ibkr_xml,
 )
-from src.portfolio.transactions import (
-    insert_entries, get_transactions, get_unique_symbols, get_date_range,
-    get_activity_summary, delete_by_source,
+from src.portfolio.models import (
+    ActivitySummaryResponse,
+    DateRangeResponse,
+    PerformanceResponse,
+    RebuildResponse,
+    UploadResponse,
 )
-from src.portfolio.price_fetcher import ensure_prices_for_tickers, _build_currency_map
-from src.portfolio.portfolio_state import (
-    build_portfolio_state, get_daily_values, get_current_holdings,
-    get_holdings_at_date, get_holding_performance, get_closed_positions,
-    get_all_holdings_performance,
-)
+from src.portfolio.option_pricing import option_greeks
 from src.portfolio.performance import calculate_metrics, get_risk_free_rate
-from src.portfolio.currency import (
-    get_fx_series, convert_series, get_rate_at_date,
-    get_available_display_currencies, convert_native_to_display,
-    get_rate_at_date_any,
+from src.portfolio.portfolio_state import (
+    build_portfolio_state,
+    get_all_holdings_performance,
+    get_closed_positions,
+    get_current_holdings,
+    get_daily_values,
+    get_holding_performance,
+    get_holdings_at_date,
 )
-from src.orchestrator.common.db_config import get_db2, get_db3
-from src.orchestrator.common.sqlite import connect_read
+from src.portfolio.price_fetcher import _build_currency_map, ensure_prices_for_tickers
+from src.portfolio.scenarios import ScenarioShock, apply_scenario
+from src.portfolio.tax_lots import LotLedger, TaxLot
+from src.portfolio.transactions import (
+    delete_by_source,
+    get_activity_summary,
+    get_date_range,
+    get_transactions,
+    get_unique_symbols,
+    insert_entries,
+)
 from src.web_app.security import AppSettings
 
 logger = logging.getLogger(__name__)
@@ -48,6 +66,60 @@ router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
 _UPLOAD_CHUNK_BYTES = 64 * 1024
 _MAX_XML_UPLOAD_BYTES = AppSettings.from_env().max_upload_bytes
+
+
+class TaxLotEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: str = Field(pattern=r"^(buy|sell)$")
+    ticker: str = Field(min_length=1, max_length=30)
+    date: date
+    shares: float = Field(gt=0)
+    price: float = Field(ge=0)
+    lot_ids: list[str] | None = None
+
+
+class TaxLotRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    method: str = Field(default="fifo", pattern=r"^(fifo|average|specific)$")
+    events: list[TaxLotEvent] = Field(min_length=1, max_length=10_000)
+
+
+class ScenarioRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    holdings: dict[str, float]
+    prices: dict[str, float]
+    currencies: dict[str, str] = Field(default_factory=dict)
+    price_shocks: dict[str, float] = Field(default_factory=dict)
+    fx_shocks: dict[str, float] = Field(default_factory=dict)
+
+
+class GreeksPosition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    option_type: str = Field(pattern=r"^(call|put)$")
+    spot: float = Field(gt=0)
+    strike: float = Field(gt=0)
+    years: float = Field(ge=0)
+    rate: float
+    volatility: float = Field(gt=0, le=10)
+    quantity: float
+    multiplier: float = Field(default=1, gt=0)
+
+
+class GreeksRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    positions: list[GreeksPosition] = Field(min_length=1, max_length=500)
+
+
+def _account(request: Request) -> AuthenticatedUser:
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, AuthenticatedUser):
+        raise HTTPException(status_code=401, detail="Account authentication is required")
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -73,9 +145,10 @@ async def _read_limited_upload(file: UploadFile, limit: int) -> bytes:
 
 
 @router.post("/upload", response_model=UploadResponse)
-async def upload_xml(file: UploadFile = File(...)):
+async def upload_xml(request: Request, file: Annotated[UploadFile, File()]):
     """Upload an IBKR FlexQuery XML file.  Parses, fetches missing ticker
     prices, and inserts all entries into the Transactions table."""
+    user = _account(request)
     source = _safe_upload_name(file.filename)
     if not source or not source.casefold().endswith(".xml"):
         raise HTTPException(400, "Only .xml files are accepted")
@@ -87,9 +160,9 @@ async def upload_xml(file: UploadFile = File(...)):
 
     try:
         xml_data = parse_ibkr_xml(raw)
-    except InvalidPortfolioXML:
+    except InvalidPortfolioXML as exc:
         logger.warning("Rejected invalid IBKR XML upload", exc_info=True)
-        raise HTTPException(400, "Invalid IBKR XML document")
+        raise HTTPException(400, "Invalid IBKR XML document") from exc
 
     entries = normalize_entries(xml_data)
     if not entries:
@@ -106,9 +179,9 @@ async def upload_xml(file: UploadFile = File(...)):
         ensure_prices_for_tickers, db2_path, ticker_map
     )
 
-    # Insert
+    # Insert with owner scoping
     result = await asyncio.to_thread(
-        insert_entries, db3_path, entries, source
+        insert_entries, db3_path, entries, source, owner_user_id=user.user_id
     )
 
     return UploadResponse(
@@ -128,6 +201,7 @@ async def upload_xml(file: UploadFile = File(...)):
 
 @router.get("/transactions")
 async def transactions_list(
+    request: Request,
     symbol: Optional[str] = Query(None),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
@@ -136,38 +210,43 @@ async def transactions_list(
     offset: int = Query(0, ge=0),
 ):
     """List transactions with optional filters."""
+    user = _account(request)
     return await asyncio.to_thread(
         get_transactions, get_db3(),
         symbol=symbol, start_date=start_date,
         end_date=end_date, activity_type=activity_type,
-        limit=limit, offset=offset,
+        limit=limit, offset=offset, owner_user_id=user.user_id,
     )
 
 
 @router.get("/symbols")
-async def list_symbols():
+async def list_symbols(request: Request):
     """Return distinct symbols with asset categories."""
-    return await asyncio.to_thread(get_unique_symbols, get_db3())
+    user = _account(request)
+    return await asyncio.to_thread(get_unique_symbols, get_db3(), owner_user_id=user.user_id)
 
 
 @router.get("/date-range", response_model=DateRangeResponse)
-async def transactions_date_range():
+async def transactions_date_range(request: Request):
     """Return min and max trade_date."""
-    result = await asyncio.to_thread(get_date_range, get_db3())
+    user = _account(request)
+    result = await asyncio.to_thread(get_date_range, get_db3(), owner_user_id=user.user_id)
     return DateRangeResponse(**result)
 
 
 @router.delete("/transactions/{source_file}")
-async def delete_transactions(source_file: str):
+async def delete_transactions(request: Request, source_file: str):
     """Delete all transactions from a given source file."""
-    deleted = await asyncio.to_thread(delete_by_source, get_db3(), source_file)
+    user = _account(request)
+    deleted = await asyncio.to_thread(delete_by_source, get_db3(), source_file, owner_user_id=user.user_id)
     return {"deleted": deleted}
 
 
 @router.get("/activity-summary", response_model=ActivitySummaryResponse)
-async def activity_summary():
+async def activity_summary(request: Request):
     """Return counts by activity_type."""
-    result = await asyncio.to_thread(get_activity_summary, get_db3())
+    user = _account(request)
+    result = await asyncio.to_thread(get_activity_summary, get_db3(), owner_user_id=user.user_id)
     return ActivitySummaryResponse(by_activity=result)
 
 
@@ -176,13 +255,15 @@ async def activity_summary():
 # ---------------------------------------------------------------------------
 
 @router.get("/holdings")
-async def holdings():
+async def holdings(request: Request):
     """Current portfolio holdings with market values."""
-    return await asyncio.to_thread(get_current_holdings, get_db3())
+    user = _account(request)
+    return await asyncio.to_thread(get_current_holdings, get_db3(), owner_user_id=user.user_id)
 
 
 @router.get("/holdings/closed")
 async def holdings_closed(
+    request: Request,
     base_currency: str = Query("EUR"),
 ):
     """Positions that were fully closed and are no longer held.
@@ -190,7 +271,8 @@ async def holdings_closed(
     Monetary values are converted from each position's native currency to
     *base_currency* using FX rates at the last trade date.
     """
-    result = await asyncio.to_thread(get_closed_positions, get_db3())
+    user = _account(request)
+    result = await asyncio.to_thread(get_closed_positions, get_db3(), owner_user_id=user.user_id)
     if result:
         from src.portfolio.currency import get_rate_at_date_any
         for r in result:
@@ -210,13 +292,15 @@ async def holdings_closed(
 
 @router.get("/holdings/history")
 async def holdings_history(
+    request: Request,
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     base_currency: str = Query("EUR"),
 ):
     """Daily portfolio value series, converted to *base_currency*."""
+    user = _account(request)
     result = await asyncio.to_thread(
-        get_daily_values, get_db3(), start_date, end_date
+        get_daily_values, get_db3(), start_date, end_date, owner_user_id=user.user_id
     )
     if base_currency != "EUR" and result:
         fx = get_fx_series("EUR", base_currency, get_db2())
@@ -234,6 +318,7 @@ async def holdings_history(
 
 @router.get("/holdings/history/constituents")
 async def holdings_constituents(
+    request: Request,
     base_currency: str = Query("EUR"),
 ):
     """Daily market value per holding (for stacked breakdown chart).
@@ -247,23 +332,26 @@ async def holdings_constituents(
 
     All values are converted to *base_currency*.
     """
+    user = _account(request)
     from collections import defaultdict
     db3_path = get_db3()
     conn = connect_read(db3_path)
     rows = conn.execute(
         """SELECT date, symbol, market_value
            FROM Holdings_History
-           WHERE is_option = 0
+           WHERE owner_user_id = ? AND is_option = 0
              AND symbol NOT LIKE 'CASH%'
              AND market_value IS NOT NULL
-           ORDER BY date, symbol"""
+           ORDER BY date, symbol""",
+        (user.user_id,),
     ).fetchall()
 
     # Also get currently-held symbols so we know which are closed
     cur_held = set()
     ch_rows = conn.execute(
-        "SELECT symbol FROM Portfolio_Holdings WHERE quantity > 0"
-        " AND asset_category != 'CASH'"
+        "SELECT symbol FROM Portfolio_Holdings WHERE owner_user_id = ? AND quantity > 0"
+        " AND asset_category != 'CASH'",
+        (user.user_id,),
     ).fetchall()
     cur_held = {r["symbol"] for r in ch_rows}
     conn.close()
@@ -315,6 +403,7 @@ async def holdings_constituents(
 
 @router.get("/dividends/history")
 async def dividends_history(
+    request: Request,
     period: str = Query("monthly", description="Aggregation: monthly, quarterly, or yearly"),
     base_currency: str = Query("EUR"),
 ):
@@ -323,12 +412,13 @@ async def dividends_history(
     Reads ``dividend_income`` from ``Portfolio_Daily`` and buckets by
     month, quarter, or year.  Returns ``[{period, gross, tax, net}, ...]``.
     """
+    user = _account(request)
     db3_path = get_db3()
     conn = connect_read(db3_path)
 
     # Read daily dividend income
     rows = conn.execute(
-        "SELECT date, dividend_income FROM Portfolio_Daily ORDER BY date"
+        "SELECT date, dividend_income FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date"
     ).fetchall()
     conn.close()
 
@@ -339,8 +429,9 @@ async def dividends_history(
     conn2 = connect_read(db3_path)
     txn_rows = conn2.execute(
         "SELECT trade_date, activity_type, amount, fx_rate_to_base FROM Transactions "
-        "WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
-        "ORDER BY trade_date"
+        "WHERE owner_user_id = ? AND activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
+        "ORDER BY trade_date",
+        (user.user_id,),
     ).fetchall()
     conn2.close()
 
@@ -380,7 +471,7 @@ async def dividends_history(
         buckets[key]["tax"] += tax
         buckets[key]["net"] += net
 
-    result = []
+    result: list[dict[str, Any]] = []
     for k in sorted(buckets.keys()):
         b = buckets[k]
         result.append({
@@ -412,28 +503,31 @@ async def dividends_history(
 
 
 @router.get("/holdings/at/{date}")
-async def holdings_at_date(date: str):
+async def holdings_at_date(request: Request, date: str):
     """Holdings snapshot at a specific date."""
-    return await asyncio.to_thread(get_holdings_at_date, get_db3(), date)
+    user = _account(request)
+    return await asyncio.to_thread(get_holdings_at_date, get_db3(), date, owner_user_id=user.user_id)
 
 
 @router.get("/holdings/{symbol}/performance")
-async def holding_performance(symbol: str):
+async def holding_performance(request: Request, symbol: str):
     """Performance metrics for a single holding."""
-    result = await asyncio.to_thread(get_holding_performance, symbol, get_db3())
+    user = _account(request)
+    result = await asyncio.to_thread(get_holding_performance, symbol, get_db3(), owner_user_id=user.user_id)
     if result is None:
         raise HTTPException(404, f"No data found for symbol {symbol}")
     return result
 
 
 @router.get("/holdings/{symbol}/history")
-async def holding_history(symbol: str):
+async def holding_history(request: Request, symbol: str):
     """Daily market value and price history for a single holding."""
+    user = _account(request)
     db3_path = get_db3()
     conn = connect_read(db3_path)
     rows = conn.execute(
         "SELECT date, market_price, market_value, market_value_native "
-        "FROM Holdings_History WHERE symbol = ? ORDER BY date",
+        "FROM Holdings_History WHERE owner_user_id = ? AND symbol = ? ORDER BY date",
         (symbol,),
     ).fetchall()
     conn.close()
@@ -454,6 +548,7 @@ async def display_currencies():
 
 @router.get("/holdings/performance")
 async def holdings_with_performance(
+    request: Request,
     display_currency: str = Query("EUR"),
     include_closed: bool = Query(False),
 ):
@@ -462,15 +557,16 @@ async def holdings_with_performance(
     When *include_closed* is True, closed positions are included with
     ``is_open = False`` so the frontend can filter by open/closed status.
     """
+    user = _account(request)
     result = await asyncio.to_thread(
-        get_all_holdings_performance, get_db3(), get_db2(), display_currency,
+        get_all_holdings_performance, get_db3(), get_db2(), display_currency, owner_user_id=user.user_id,
     )
     # Mark all current holdings as open
     for r in result:
         r["is_open"] = True
 
     if include_closed:
-        closed = await asyncio.to_thread(get_closed_positions, get_db3())
+        closed = await asyncio.to_thread(get_closed_positions, get_db3(), owner_user_id=user.user_id)
         from src.portfolio.currency import get_rate_at_date_any
         from src.portfolio.portfolio_state import _compute_holding_periods
         # Batch-fetch holdings history for closed symbols to compute holding periods
@@ -480,7 +576,7 @@ async def holdings_with_performance(
             _c = connect_read(get_db3())
             _ph = ",".join("?" for _ in closed_syms)
             _hr = _c.execute(
-                f"SELECT symbol, date FROM Holdings_History WHERE symbol IN ({_ph}) ORDER BY symbol, date",
+                f"SELECT symbol, date FROM Holdings_History WHERE owner_user_id = ? AND symbol IN ({_ph}) ORDER BY symbol, date",
                 closed_syms,
             ).fetchall()
             _c.close()
@@ -586,103 +682,121 @@ async def charts_display_currencies():
 
 @router.get("/charts/holdings-by-value")
 async def charts_holdings_by_value(
+    request: Request,
     display_currency: str = Query("EUR"),
 ):
     """Pie chart data: holdings by value in *display_currency*."""
+    user = _account(request)
     from src.portfolio.charts import get_holdings_by_value
     return await asyncio.to_thread(
-        get_holdings_by_value, get_db3(), get_db2(), display_currency,
-    )
+        get_holdings_by_value, get_db3(), get_db2(), display_currency, owner_user_id=user.user_id,
+            )
 
 
 @router.get("/charts/holdings-by-currency")
 async def charts_holdings_by_currency(
+    request: Request,
     display_currency: str = Query("EUR"),
 ):
     """Pie chart data: holdings by native currency in *display_currency*."""
+    user = _account(request)
     from src.portfolio.charts import get_holdings_by_currency
     return await asyncio.to_thread(
-        get_holdings_by_currency, get_db3(), get_db2(), display_currency,
-    )
+        get_holdings_by_currency, get_db3(), get_db2(), display_currency, owner_user_id=user.user_id,
+            )
 
 
 @router.get("/charts/portfolio-value-history")
 async def charts_portfolio_value_history(
+    request: Request,
     display_currency: str = Query("EUR"),
 ):
     """Stacked line chart data: daily portfolio value per holding."""
+    user = _account(request)
     from src.portfolio.charts import get_portfolio_value_history
     return await asyncio.to_thread(
-        get_portfolio_value_history, get_db3(), get_db2(), display_currency,
-    )
+        get_portfolio_value_history, get_db3(), get_db2(), display_currency, owner_user_id=user.user_id,
+            )
 
 
 @router.get("/charts/dividends-by-company")
 async def charts_dividends_by_company(
+    request: Request,
     display_currency: str = Query("EUR"),
     period: str = Query("monthly"),
 ):
     """Stacked bar chart data: dividends by company.  *period* = monthly|quarterly|yearly."""
+    user = _account(request)
     from src.portfolio.charts import get_dividends_by_company
     return await asyncio.to_thread(
-        get_dividends_by_company, get_db3(), get_db2(), display_currency, period,
+        get_dividends_by_company, get_db3(), get_db2(), display_currency, period, owner_user_id=user.user_id,
     )
 
 
 @router.get("/charts/dividends-by-currency")
 async def charts_dividends_by_currency(
+    request: Request,
     display_currency: str = Query("EUR"),
     period: str = Query("monthly"),
 ):
     """Stacked bar chart data: dividends by currency.  *period* = monthly|quarterly|yearly."""
+    user = _account(request)
     from src.portfolio.charts import get_dividends_by_currency
     return await asyncio.to_thread(
-        get_dividends_by_currency, get_db3(), get_db2(), display_currency, period,
+        get_dividends_by_currency, get_db3(), get_db2(), display_currency, period, owner_user_id=user.user_id,
     )
 
 
 @router.get("/charts/dividends-heatmap")
 async def charts_dividends_heatmap(
+    request: Request,
     display_currency: str = Query("EUR"),
 ):
     """Heatmap data: dividends by (year, month)."""
+    user = _account(request)
     from src.portfolio.charts import get_dividends_heatmap
     return await asyncio.to_thread(
-        get_dividends_heatmap, get_db3(), get_db2(), display_currency,
-    )
+        get_dividends_heatmap, get_db3(), get_db2(), display_currency, owner_user_id=user.user_id,
+            )
 
 
 @router.get("/charts/returns-heatmap")
 async def charts_returns_heatmap(
+    request: Request,
     display_currency: str = Query("EUR"),
 ):
     """Heatmap data: monthly portfolio returns percentage."""
+    user = _account(request)
     from src.portfolio.charts import get_returns_heatmap
     return await asyncio.to_thread(
-        get_returns_heatmap, get_db3(), get_db2(), display_currency,
-    )
+        get_returns_heatmap, get_db3(), get_db2(), display_currency, owner_user_id=user.user_id,
+            )
 
 
 @router.get("/charts/deposits-heatmap")
 async def charts_deposits_heatmap(
+    request: Request,
     display_currency: str = Query("EUR"),
 ):
     """Heatmap data: net deposits/withdrawals by (year, month)."""
+    user = _account(request)
     from src.portfolio.charts import get_deposits_heatmap
     return await asyncio.to_thread(
-        get_deposits_heatmap, get_db3(), get_db2(), display_currency,
-    )
+        get_deposits_heatmap, get_db3(), get_db2(), display_currency, owner_user_id=user.user_id,
+            )
 
 
 @router.get("/charts/return-vs-cost")
 async def charts_return_vs_cost(
+    request: Request,
     display_currency: str = Query("EUR"),
 ):
     """Scatter plot data: cost basis vs annualized return per holding."""
+    user = _account(request)
     from src.portfolio.charts import get_return_vs_cost
     return await asyncio.to_thread(
-        get_return_vs_cost, get_db3(), get_db2(), display_currency,
-    )
+        get_return_vs_cost, get_db3(), get_db2(), display_currency, owner_user_id=user.user_id,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -692,12 +806,14 @@ async def charts_return_vs_cost(
 
 @router.post("/rebuild", response_model=RebuildResponse)
 async def rebuild_state(
+    request: Request,
     base_currency: str = Query("EUR"),
 ):
     """Rebuild portfolio state from scratch."""
+    user = _account(request)
     result = await asyncio.to_thread(
         build_portfolio_state, get_db3(), get_db2(),
-        base_currency=base_currency,
+        base_currency=base_currency, owner_user_id=user.user_id,
     )
     return RebuildResponse(
         message="Portfolio state rebuilt successfully",
@@ -712,6 +828,7 @@ async def rebuild_state(
 
 @router.get("/performance", response_model=PerformanceResponse)
 async def portfolio_performance(
+    request: Request,
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     benchmark_ticker: Optional[str] = Query(None),
@@ -719,10 +836,11 @@ async def portfolio_performance(
     base_currency: str = Query("EUR"),
 ):
     """Compute portfolio performance metrics."""
+    user = _account(request)
     result = await asyncio.to_thread(
         calculate_metrics,
         get_db3(), get_db2(), start_date, end_date,
-        risk_free_rate, benchmark_ticker, base_currency,
+        risk_free_rate, benchmark_ticker, base_currency, owner_user_id=user.user_id,
     )
     return PerformanceResponse(**result)
 
@@ -741,24 +859,25 @@ async def detect_risk_free_rate(base_currency: str = Query("EUR")):
 # ---------------------------------------------------------------------------
 
 @router.post("/backtest/compare")
-async def backtest_compare(request: dict):
+async def backtest_compare(http_request: Request, payload: dict):
     """Compare portfolio performance against a model portfolio.
 
     Expects JSON body with: ``model_ticker``, optional ``start_date``,
     ``end_date``, ``risk_free_rate``, ``base_currency``.
     """
-    model_ticker = request.get("model_ticker")
+    _account(http_request)
+    model_ticker = payload.get("model_ticker")
     if not model_ticker:
         raise HTTPException(400, "model_ticker is required")
 
     result = await asyncio.to_thread(
         calculate_metrics,
         get_db3(), get_db2(),
-        start_date=request.get("start_date"),
-        end_date=request.get("end_date"),
-        risk_free_rate=request.get("risk_free_rate"),
+        start_date=payload.get("start_date"),
+        end_date=payload.get("end_date"),
+        risk_free_rate=payload.get("risk_free_rate"),
         benchmark_ticker=model_ticker,
-        base_currency=request.get("base_currency", "EUR"),
+        base_currency=payload.get("base_currency", "EUR"),
     )
     return result
 
@@ -769,9 +888,11 @@ async def backtest_compare(request: dict):
 
 @router.get("/dividends/yoy")
 async def dividends_yoy(
+    request: Request,
     base_currency: str = Query("EUR"),
 ):
     """Yearly dividend totals with YoY growth for the dividend growth chart."""
+    user = _account(request)
     from collections import defaultdict
 
     db3_path = get_db3()
@@ -779,19 +900,15 @@ async def dividends_yoy(
 
     # Aggregate dividend_income from Portfolio_Daily by year
     rows = conn.execute(
-        "SELECT date, dividend_income, cash_ccy_json FROM Portfolio_Daily ORDER BY date"
+        "SELECT date, dividend_income, cash_ccy_json FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date"
     ).fetchall()
     conn.close()
 
     # First pass: collect raw yearly dividends and per-currency cash for FX
-    import json
     yearly: dict[int, float] = defaultdict(float)
-    latest_ccy_json = "{}"
     for r in rows:
         year = int(r["date"][:4])
         yearly[year] += r["dividend_income"] or 0
-        if r["cash_ccy_json"]:
-            latest_ccy_json = r["cash_ccy_json"]
 
     years = sorted(yearly.keys())
     dividends = [round(yearly[y], 2) for y in years]
@@ -824,7 +941,7 @@ async def dividends_yoy(
 
 
 @router.get("/dividends/yoy/per-company")
-async def dividends_per_company_yoy():
+async def dividends_per_company_yoy(request: Request):
     """Dividend per share per company per year with YoY growth.
 
     Computes shares owned at each dividend date from trade transactions
@@ -832,6 +949,7 @@ async def dividends_per_company_yoy():
     non-Japanese positions).  DPS = net dividend / shares at that date,
     then aggregated per company per year.
     """
+    user = _account(request)
     from collections import defaultdict
 
     db3_path = get_db3()
@@ -841,11 +959,12 @@ async def dividends_per_company_yoy():
     trade_rows = conn.execute("""
         SELECT symbol, trade_date, buy_sell, quantity
         FROM Transactions
-        WHERE activity_type = 'TRADE'
+        WHERE owner_user_id = ?
+          AND activity_type = 'TRADE'
           AND symbol NOT LIKE 'CASH%'
           AND buy_sell IN ('BUY', 'SELL', 'BUY (Ca.)')
         ORDER BY symbol, trade_date, id
-    """).fetchall()
+    """, (user.user_id,)).fetchall()
 
     # Build sorted list of (date, cumulative_shares) per symbol
     shares_ts: dict[str, list[tuple[str, float]]] = defaultdict(list)
@@ -865,10 +984,11 @@ async def dividends_per_company_yoy():
     div_rows = conn.execute("""
         SELECT symbol, trade_date, activity_type, amount, currency
         FROM Transactions
-        WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')
+        WHERE owner_user_id = ?
+          AND activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')
           AND symbol NOT LIKE 'CASH%'
         ORDER BY symbol, trade_date
-    """).fetchall()
+    """, (user.user_id,)).fetchall()
 
     if not div_rows:
         conn.close()
@@ -935,9 +1055,9 @@ async def dividends_per_company_yoy():
         SELECT symbol, CAST(substr(date, 1, 4) AS INTEGER) AS year,
                AVG(market_value) AS avg_mv
         FROM Holdings_History
-        WHERE market_value IS NOT NULL AND symbol NOT LIKE 'CASH%' AND is_option = 0
+        WHERE owner_user_id = ? AND market_value IS NOT NULL AND symbol NOT LIKE 'CASH%' AND is_option = 0
         GROUP BY symbol, year
-    """).fetchall()
+    """, (user.user_id,)).fetchall()
     mv_map: dict[str, dict[int, float]] = {}
     for r in mv_rows:
         mv_map.setdefault(r["symbol"], {})[r["year"]] = r["avg_mv"]
@@ -976,7 +1096,10 @@ async def dividends_per_company_yoy():
             "currency": currency_by_sym.get(sym, "EUR"),
             "dps": dps_arr,
             "yoy_growth": growth_arr,
-            "avg_market_value_eur": [round(sym_mv.get(y), 2) if sym_mv.get(y) else None for y in years],
+            "avg_market_value_eur": [
+                round(sym_mv[y], 2) if sym_mv.get(y) is not None else None
+                for y in years
+            ],
         }
 
     # ── 5. Compute portfolio weighted-average YoY growth ──
@@ -1013,7 +1136,7 @@ async def dividends_per_company_yoy():
 
 
 @router.get("/returns/by-company")
-async def returns_by_company():
+async def returns_by_company(request: Request):
     """Yearly total return per company with decomposition into capital
     gain and dividend return.
 
@@ -1028,6 +1151,7 @@ async def returns_by_company():
     All computed in EUR (market_value / quantity = EUR-per-share).
     Positions with zero quantity at start/end of year are skipped.
     """
+    user = _account(request)
     from collections import defaultdict
 
     db3_path = get_db3()
@@ -1037,7 +1161,7 @@ async def returns_by_company():
     hh_rows = conn.execute("""
         SELECT symbol, date, market_value, quantity
         FROM Holdings_History
-        WHERE symbol NOT LIKE 'CASH%'
+        WHERE owner_user_id = ? AND symbol NOT LIKE 'CASH%'
           AND is_option = 0
           AND market_value IS NOT NULL
           AND quantity > 0
@@ -1060,10 +1184,11 @@ async def returns_by_company():
                      ELSE 0 END
             ) AS tax_eur
         FROM Transactions
-        WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')
+        WHERE owner_user_id = ?
+          AND activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')
           AND symbol NOT LIKE 'CASH%'
         GROUP BY symbol, year
-    """).fetchall()
+    """, (user.user_id,)).fetchall()
 
     conn.close()
 
@@ -1166,7 +1291,7 @@ async def returns_by_company():
 
 
 @router.get("/returns/money-weighted")
-async def returns_money_weighted():
+async def returns_money_weighted(request: Request):
     """Money-weighted return per company per year using Modified Dietz.
 
     Accounts for intra-year cash flows (buys add capital, sells remove
@@ -1181,6 +1306,7 @@ async def returns_money_weighted():
     longer exists).  This prevents the denominator from collapsing to
     near-zero values that produce spurious extreme returns.
     """
+    user = _account(request)
     from collections import defaultdict
     from datetime import date as D
 
@@ -1192,7 +1318,7 @@ async def returns_money_weighted():
     hh_rows = conn.execute("""
         SELECT symbol, date, market_value, market_value_native, quantity
         FROM Holdings_History
-        WHERE symbol NOT LIKE 'CASH%'
+        WHERE owner_user_id = ? AND symbol NOT LIKE 'CASH%'
           AND is_option = 0
           AND market_value_native IS NOT NULL
         ORDER BY symbol, date
@@ -1204,11 +1330,12 @@ async def returns_money_weighted():
         SELECT symbol, trade_date, buy_sell,
                trade_money AS amount_native
         FROM Transactions
-        WHERE activity_type = 'TRADE'
+        WHERE owner_user_id = ?
+          AND activity_type = 'TRADE'
           AND buy_sell IN ('BUY', 'SELL', 'BUY (Ca.)')
           AND symbol NOT LIKE 'CASH%'
         ORDER BY symbol, trade_date
-    """).fetchall()
+    """, (user.user_id,)).fetchall()
 
     conn.close()
 
@@ -1233,7 +1360,7 @@ async def returns_money_weighted():
     all_years: set[int] = set()
     for r in hh_rows:
         all_years.add(int(r["date"][:4]))
-    for sym, ym in sym_trades.items():
+    for _sym, ym in sym_trades.items():
         all_years.update(ym.keys())
     years = sorted(all_years)
     if not years:
@@ -1389,6 +1516,7 @@ async def returns_money_weighted():
 
 @router.get("/returns/contribution")
 async def returns_contribution(
+    request: Request,
     base_currency: str = Query("EUR"),
 ):
     """Contribution of each company to the portfolio's total return per year.
@@ -1401,6 +1529,7 @@ async def returns_contribution(
 
     Monetary values are converted to *base_currency*.
     """
+    user = _account(request)
     from collections import defaultdict
 
     db3_path = get_db3()
@@ -1410,7 +1539,7 @@ async def returns_contribution(
     hh_rows = conn.execute("""
         SELECT symbol, date, market_value
         FROM Holdings_History
-        WHERE symbol NOT LIKE 'CASH%'
+        WHERE owner_user_id = ? AND symbol NOT LIKE 'CASH%'
           AND is_option = 0
           AND market_value IS NOT NULL
         ORDER BY symbol, date
@@ -1418,7 +1547,8 @@ async def returns_contribution(
 
     # Portfolio daily totals for denominator
     pf_rows = conn.execute(
-        "SELECT date, total_value FROM Portfolio_Daily ORDER BY date"
+        "SELECT date, total_value FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date",
+        (user.user_id,),
     ).fetchall()
 
     # Trade transactions per symbol per year.
@@ -1434,11 +1564,12 @@ async def returns_contribution(
                         THEN COALESCE(proceeds, ABS(trade_money)) * COALESCE(fx_rate_to_base, 1)
                         ELSE 0 END) AS total_sold_eur
         FROM Transactions
-        WHERE activity_type = 'TRADE'
+        WHERE owner_user_id = ?
+          AND activity_type = 'TRADE'
           AND buy_sell IN ('BUY', 'SELL')
           AND symbol NOT LIKE 'CASH%'
         GROUP BY symbol, year
-    """).fetchall()
+    """, (user.user_id,)).fetchall()
 
     # Dividend income per symbol per year (net EUR)
     div_rows = conn.execute("""
@@ -1455,10 +1586,11 @@ async def returns_contribution(
                         ELSE 0 END
                ) AS tax_eur
         FROM Transactions
-        WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')
+        WHERE owner_user_id = ?
+          AND activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')
           AND symbol NOT LIKE 'CASH%'
         GROUP BY symbol, year
-    """).fetchall()
+    """, (user.user_id,)).fetchall()
 
     conn.close()
 
@@ -1558,6 +1690,76 @@ async def returns_contribution(
                         pf_arr[i] = round(pf_arr[i] * rate, 2)
 
     return {"years": years, "companies": result, "portfolio_start": pf_arr}
+
+
+# ---------------------------------------------------------------------------
+# Owner-scoped analytical previews
+# ---------------------------------------------------------------------------
+
+@router.post("/tax-lots")
+async def tax_lot_preview(request: Request, payload: TaxLotRequest) -> dict:
+    """Preview realized lots without mutating imported portfolio activity."""
+    _account(request)
+    ledger = LotLedger(payload.method)
+    realized = []
+    for event in sorted(payload.events, key=lambda item: (item.date, item.ticker, item.action)):
+        if event.action == "buy":
+            ledger.buy(TaxLot(
+                lot_id=f"{event.ticker}:{event.date}:{len(ledger.open_lots(event.ticker))}",
+                ticker=event.ticker,
+                acquired_on=event.date,
+                shares=event.shares,
+                cost_per_share=event.price,
+            ))
+        else:
+            realized.extend(ledger.sell(event.ticker, event.shares, event.price, lot_ids=event.lot_ids))
+    tickers = {event.ticker for event in payload.events}
+    open_lots = [lot.__dict__ for ticker in tickers for lot in ledger.open_lots(ticker)]
+    return {"method": payload.method, "open_lots": open_lots, "realized": [item.__dict__ for item in realized]}
+
+
+@router.post("/scenarios/evaluate")
+async def evaluate_scenario(request: Request, payload: ScenarioRequest) -> dict:
+    """Evaluate deterministic equity/FX shocks without recommending trades."""
+    _account(request)
+    shocked = apply_scenario(
+        payload.holdings,
+        payload.prices,
+        payload.currencies,
+        ScenarioShock(payload.price_shocks, payload.fx_shocks),
+    )
+    baseline = {ticker: payload.holdings[ticker] * payload.prices[ticker] for ticker in payload.holdings}
+    return {
+        "baseline": baseline,
+        "shocked": shocked,
+        "impact": {ticker: shocked[ticker] - baseline[ticker] for ticker in shocked},
+        "total_baseline": sum(baseline.values()),
+        "total_shocked": sum(shocked.values()),
+        "assumptions": {"price_shocks": payload.price_shocks, "fx_shocks": payload.fx_shocks},
+    }
+
+
+@router.post("/greeks")
+async def portfolio_greeks(request: Request, payload: GreeksRequest) -> dict:
+    """Aggregate Black-Scholes Greeks with explicit position assumptions."""
+    _account(request)
+    totals = {key: 0.0 for key in ("delta", "gamma", "theta", "vega", "rho")}
+    positions = []
+    for position in payload.positions:
+        values = option_greeks(
+            position.option_type,
+            position.spot,
+            position.strike,
+            position.years,
+            position.rate,
+            position.volatility,
+        )
+        scale = position.quantity * position.multiplier
+        scaled = {key: value * scale for key, value in values.items()}
+        positions.append({"input": position.model_dump(), "greeks": scaled})
+        for key, value in scaled.items():
+            totals[key] += value
+    return {"totals": totals, "positions": positions}
 
 
 # ---------------------------------------------------------------------------

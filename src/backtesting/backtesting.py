@@ -22,7 +22,6 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from src.orchestrator.common.sqlite import connect_read
 from src.orchestrator.common.backtesting import (
     _BACKTEST_DURATIONS,
     _sql_ident,
@@ -37,6 +36,7 @@ from src.orchestrator.common.backtesting import (
     get_portfolio_prices,
     resolve_portfolio_allocations,
 )
+from src.orchestrator.common.sqlite import connect_read
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +199,9 @@ def run_backtest_web(
     db3_path: str = "",
     initial_capital: float = 0.0,
     risk_free_rate: float = 0.0,
+    commission_bps: float = 0.0,
+    slippage_bps: float = 0.0,
+    spread_bps: float = 0.0,
     prices_table: str = "Stock_Prices",
     ratios_table: str = "ShareMetrics",
     company_table: str = "CompanyInfo",
@@ -337,6 +340,9 @@ def run_backtest_web(
         initial_capital=effective_initial_capital,
         base_currency=base_currency or "",
         risk_free_rate=risk_free_rate,
+        commission_bps=commission_bps,
+        slippage_bps=slippage_bps,
+        spread_bps=spread_bps,
     )
     per_company_per_year = tracker["per_company_per_year"]
     daily_df = tracker["daily"]
@@ -1254,8 +1260,8 @@ def _build_portfolios(
             shares_col = shares_outstanding_col
             if not shares_col:
                 from src.screening.screening import (
-                    _resolve_matching_column,
                     SHARES_OUTSTANDING_CANDIDATES,
+                    _resolve_matching_column,
                 )
                 shares_col = _resolve_matching_column(
                     list(screen_df.columns), SHARES_OUTSTANDING_CANDIDATES,
@@ -1274,8 +1280,8 @@ def _build_portfolios(
 
             # Resolve ticker column
             from src.screening.screening import (
-                _resolve_matching_column,
                 COMPANYINFO_TICKER_CANDIDATES,
+                _resolve_matching_column,
             )
             resolved_ticker_col = _resolve_matching_column(
                 list(screen_df.columns), COMPANYINFO_TICKER_CANDIDATES,
@@ -1607,16 +1613,14 @@ def run_screening_backtest_rolling(
 
     Returns a ``RollingBacktestResult`` dict.
     """
-    import queue
-    import threading
 
     from dateutil.relativedelta import relativedelta
 
     from src.screening import run_screening as _run_screening
     from src.screening.screening import (
-        _resolve_matching_column,
         COMPANYINFO_TICKER_CANDIDATES,
         SHARES_OUTSTANDING_CANDIDATES,
+        _resolve_matching_column,
         get_available_metrics,
     )
 
