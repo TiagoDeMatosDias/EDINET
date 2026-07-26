@@ -77,7 +77,7 @@ def _backfill_ids(step_cfg: dict) -> list[str]:
         if not doc_id:
             continue
         existing = catalog.get_filing(doc_id)
-        if existing is not None and existing["status"] in ("parsed", "archived"):
+        if existing is not None and existing["status"] in ("parsed", "archived", "error"):
             continue
         ids.append(doc_id)
 
@@ -159,9 +159,9 @@ def run_download_xbrl(config, overwrite=False, context=None):
 
         if not overwrite:
             existing = catalog.get_filing(doc_id)
-            if existing is not None and existing["status"] in ("parsed", "archived"):
+            if existing is not None and existing["status"] in ("parsed", "archived", "error"):
                 skipped += 1
-                logger.debug("XBRL for %s already archived, skipping", doc_id)
+                logger.debug("XBRL for %s already in catalog (status=%s), skipping", doc_id, existing["status"])
                 continue
 
         meta = doc_metadata.get(doc_id, {"xbrl_flag": "1"})

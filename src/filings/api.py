@@ -230,7 +230,7 @@ def list_xbrl_eligible(
         if not doc_id:
             continue
         existing = catalog.get_filing(doc_id)
-        if existing is not None and existing["status"] in ("parsed", "archived"):
+        if existing is not None and existing["status"] in ("parsed", "archived", "error"):
             continue
         eligible.append({
             "doc_id": doc_id,
@@ -300,7 +300,7 @@ def trigger_xbrl_backfill(
         if not doc_id:
             continue
         existing = catalog.get_filing(doc_id)
-        if existing is not None and existing["status"] in ("parsed", "archived"):
+        if existing is not None and existing["status"] in ("parsed", "archived", "error"):
             skipped += 1
             continue
         try:
