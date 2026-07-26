@@ -70,7 +70,7 @@ export interface PipelineStep {
 }
 
 export interface SecuritySearchResult {
-  company_code: string
+  company_code: string | null
   ticker: string
   company_name: string
   industry?: string

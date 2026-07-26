@@ -18,7 +18,7 @@ class RegisterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     username: str = Field(min_length=3, max_length=64)
-    password: str = Field(min_length=15, max_length=128)
+    password: str = Field(min_length=1, max_length=128)
     email: str | None = Field(default=None, max_length=254)
 
 
@@ -53,6 +53,7 @@ class AuthStatusResponse(BaseModel):
     mode: str
     registration_open: bool
     bootstrap_required: bool
+    password_min_length: int
 
 
 class ApiTokenRequest(BaseModel):
@@ -115,6 +116,7 @@ def auth_status(request: Request) -> AuthStatusResponse:
         mode=settings.auth_mode,
         registration_open=service.registration_mode == "open",
         bootstrap_required=service.bootstrap_required,
+        password_min_length=service.password_min_length,
     )
 
 
@@ -238,7 +240,7 @@ class ChangePasswordRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     current_password: str = Field(min_length=1, max_length=128)
-    new_password: str = Field(min_length=15, max_length=128)
+    new_password: str = Field(min_length=1, max_length=128)
 
 
 class SessionResponse(BaseModel):
@@ -428,14 +430,14 @@ class AcceptInvitationRequest(BaseModel):
 
     invitation_token: str = Field(min_length=1, max_length=256)
     username: str = Field(min_length=3, max_length=64)
-    password: str = Field(min_length=15, max_length=128)
+    password: str = Field(min_length=1, max_length=128)
 
 
 class ResetPasswordRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reset_token: str = Field(min_length=1, max_length=256)
-    new_password: str = Field(min_length=15, max_length=128)
+    new_password: str = Field(min_length=1, max_length=128)
 
 
 class AuthSettingsRequest(BaseModel):
@@ -443,6 +445,7 @@ class AuthSettingsRequest(BaseModel):
 
     registration_mode: str | None = Field(default=None, pattern=r"^(open|closed|invite)$")
     default_role: str | None = Field(default=None, pattern=r"^(admin|operator|member)$")
+    password_min_length: int | None = Field(default=None, ge=15, le=128)
     access_token_seconds: int | None = None
 
 
@@ -517,6 +520,7 @@ def admin_update_settings(request: Request, payload: AuthSettingsRequest) -> dic
             requested_by=user.user_id,
             registration_mode=payload.registration_mode,
             default_role=payload.default_role,
+            password_min_length=payload.password_min_length,
             access_token_seconds=payload.access_token_seconds,
         )
     except AuthError as exc:

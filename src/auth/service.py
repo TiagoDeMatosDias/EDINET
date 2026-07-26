@@ -19,6 +19,8 @@ _USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{2,63}$")
 _ACCESS_TTL = timedelta(minutes=15)
 _REFRESH_TTL = timedelta(days=30)
 _API_TOKEN_PREFIX = "ed_pat_"
+DEFAULT_PASSWORD_MIN_LENGTH = 15
+MAX_PASSWORD_LENGTH = 128
 
 
 class AuthError(ValueError):
@@ -55,10 +57,10 @@ def _normalize_email(value: str | None) -> str | None:
     return email
 
 
-def _validate_password(value: str) -> None:
-    if not isinstance(value, str) or not 15 <= len(value) <= 128:
+def _validate_password(value: str, minimum: int = DEFAULT_PASSWORD_MIN_LENGTH) -> None:
+    if not isinstance(value, str) or not minimum <= len(value) <= MAX_PASSWORD_LENGTH:
         raise AuthError(
-            "Password must be between 15 and 128 characters.",
+            f"Password must be between {minimum} and {MAX_PASSWORD_LENGTH} characters.",
             code="invalid_password",
         )
 
@@ -100,6 +102,14 @@ class AuthService:
     def bootstrap_required(self) -> bool:
         return self.store.count_users() == 0
 
+    @property
+    def password_min_length(self) -> int:
+        value = self.store.get_auth_settings().get("password_min_length", DEFAULT_PASSWORD_MIN_LENGTH)
+        try:
+            return max(DEFAULT_PASSWORD_MIN_LENGTH, min(MAX_PASSWORD_LENGTH, int(value)))
+        except (TypeError, ValueError):
+            return DEFAULT_PASSWORD_MIN_LENGTH
+
     def register(
         self,
         username: str,
@@ -110,7 +120,7 @@ class AuthService:
     ) -> AuthenticatedUser:
         normalized_username = _normalize_username(username)
         normalized_email = _normalize_email(email)
-        _validate_password(password)
+        _validate_password(password, self.password_min_length)
         first_user = self.bootstrap_required
         if not first_user and self.registration_mode == "closed":
             raise AuthError("Registration is closed", code="registration_closed", status_code=403)
@@ -297,7 +307,7 @@ class AuthService:
         if not verify_password(row["password_hash"], current_password):
             self.store.audit("password_change_failed", user_id)
             raise AuthError("Current password is incorrect", code="invalid_password", status_code=401)
-        _validate_password(new_password)
+        _validate_password(new_password, self.password_min_length)
         now = utc_now()
         self.store.change_user_password(user_id, hash_password(new_password), now)
         self.store.audit("password_changed", user_id)
@@ -405,7 +415,7 @@ class AuthService:
         if invitation is None:
             raise AuthError("Invitation is invalid or expired", code="invalid_invitation", status_code=410)
         normalized_username = _normalize_username(username)
-        _validate_password(password)
+        _validate_password(password, self.password_min_length)
         user = AuthenticatedUser(
             user_id=str(uuid.uuid4()),
             username=normalized_username,
@@ -454,7 +464,7 @@ class AuthService:
         row = self.store.consume_credential_reset(token_digest(reset_token), now)
         if row is None:
             raise AuthError("Reset token is invalid or expired", code="invalid_reset", status_code=410)
-        _validate_password(new_password)
+        _validate_password(new_password, self.password_min_length)
         self.store.change_user_password(row["user_id"], hash_password(new_password), now)
         self.store.audit("password_reset", row["user_id"], detail="via credential reset")
 
@@ -466,10 +476,18 @@ class AuthService:
 
     def update_auth_settings(self, *, requested_by: str, **kwargs: Any) -> dict[str, object]:
         self._require_admin(requested_by)
-        allowed = {"registration_mode", "default_role", "access_token_seconds", "refresh_idle_seconds", "refresh_absolute_seconds"}
+        allowed = {"registration_mode", "default_role", "password_min_length", "access_token_seconds", "refresh_idle_seconds", "refresh_absolute_seconds"}
         filtered = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         if "registration_mode" in filtered and filtered["registration_mode"] not in {"open", "closed", "invite"}:
             raise AuthError("registration_mode must be open, closed, or invite", code="invalid_setting")
+        if "password_min_length" in filtered:
+            try:
+                password_minimum = int(filtered["password_min_length"])
+            except (TypeError, ValueError) as exc:
+                raise AuthError("password_min_length must be an integer", code="invalid_setting") from exc
+            if not DEFAULT_PASSWORD_MIN_LENGTH <= password_minimum <= MAX_PASSWORD_LENGTH:
+                raise AuthError(f"password_min_length must be between {DEFAULT_PASSWORD_MIN_LENGTH} and {MAX_PASSWORD_LENGTH}", code="invalid_setting")
+            filtered["password_min_length"] = password_minimum
         self.store.update_auth_settings(**filtered, updated_by=requested_by)
         self.store.audit("auth_settings_updated", requested_by)
         return self.store.get_auth_settings()

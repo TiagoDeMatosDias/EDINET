@@ -107,9 +107,16 @@ def get_overview(
         db = _resolve_db()
         result = _security.get_security_overview(db, company_code=code, ticker=tkr)
         try:
-            result["metrics"] = _compute_metrics(db, code or tkr,
-                                                  result.get("market", {}),
-                                                  result.get("company", {}))
+            # Keep the Analyze overview and comparison snapshot on the same
+            # populated-record contract.  The latest filing row can be
+            # structurally present but empty while an earlier filing has the
+            # usable statements and ratios.
+            from src.comparison.api import _enrich_overview
+            from src.comparison.service import flatten_overview
+
+            resolved_code = code or str(result.get("company", {}).get("company_code") or tkr)
+            result = _enrich_overview(db, resolved_code, result)
+            result["metrics"] = flatten_overview(result)
         except Exception as exc:
             logger.warning("Metrics computation failed for %s: %s", code or tkr, exc)
             result["metrics"] = {k: None for k in (

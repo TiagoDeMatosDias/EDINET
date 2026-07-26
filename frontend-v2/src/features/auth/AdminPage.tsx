@@ -26,7 +26,13 @@ interface AuditEvent {
   detail: string | null
 }
 
-type AdminTab = 'users' | 'audit'
+interface AuthSettings {
+  registration_mode?: string
+  default_role?: string
+  password_min_length: number
+}
+
+type AdminTab = 'users' | 'audit' | 'settings'
 
 export default function AdminPage() {
   const [tab, setTab] = useState<AdminTab>('users')
@@ -42,14 +48,37 @@ export default function AdminPage() {
         <div className="tabs-bar">
           <button className={tab === 'users' ? 'tab tab--active' : 'tab'} onClick={() => setTab('users')}>Users</button>
           <button className={tab === 'audit' ? 'tab tab--active' : 'tab'} onClick={() => setTab('audit')}>Audit log</button>
+          <button className={tab === 'settings' ? 'tab tab--active' : 'tab'} onClick={() => setTab('settings')}>Settings</button>
         </div>
         <div className="card-body">
           {tab === 'users' && <UsersSection />}
           {tab === 'audit' && <AuditSection />}
+          {tab === 'settings' && <SettingsSection />}
         </div>
       </div>
     </div>
   )
+}
+
+function SettingsSection() {
+  const client = useQueryClient()
+  const [draftMinimum, setDraftMinimum] = useState<number | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const settings = useQuery({
+    queryKey: ['admin-auth-settings'],
+    queryFn: () => apiRequest<AuthSettings>('/api/admin/auth/settings'),
+  })
+  const minimum = draftMinimum ?? settings.data?.password_min_length ?? 15
+  const update = useMutation({
+    mutationFn: () => apiRequest<AuthSettings>('/api/admin/auth/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ password_min_length: minimum }),
+    }),
+    onSuccess: result => { setDraftMinimum(result.password_min_length); setMessage('Password policy updated.'); setError(null); void client.invalidateQueries({ queryKey: ['admin-auth-settings'] }) },
+    onError: (err: Error) => { setError(err.message); setMessage(null) },
+  })
+  return <div className="stack"><h3>Security settings</h3><p className="text-muted">Choose the minimum password length for new accounts, invitations, resets, and password changes. The secure lower bound is 15 characters.</p>{settings.isLoading && <LoadingState label="Loading settings" />}{message && <p className="form-success">{message}</p>}{error && <p className="form-error">{error}</p>}<label className="field-label">Minimum password length<input className="input" type="number" min={15} max={128} value={minimum} onChange={event => setDraftMinimum(Number(event.target.value))} /></label><button className="button button--primary" disabled={update.isPending || minimum < 15 || minimum > 128} onClick={() => update.mutate()}>Save password policy</button></div>
 }
 
 function UsersSection() {

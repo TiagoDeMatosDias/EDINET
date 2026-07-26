@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.auth.api import admin_router, router as auth_router
+from src.auth.api import admin_router
+from src.auth.api import router as auth_router
 from src.auth.passwords import hash_password, verify_password
 from src.web_app.security import AppSettings, install_security
 
@@ -205,6 +206,26 @@ def test_admin_can_list_users_and_disable(tmp_path):
     )
     assert disabled.status_code == 200
     assert disabled.json()["status"] == "disabled"
+
+
+def test_admin_can_configure_password_minimum(tmp_path):
+    app = _app(tmp_path)
+    client = TestClient(app)
+    password = "correct horse battery staple"
+    client.post("/api/auth/register", json={"username": "policy-admin", "password": password})
+    access = client.post("/api/auth/login", json={"login": "policy-admin", "password": password}).json()["access_token"]
+    headers = {"Authorization": f"Bearer {access}"}
+
+    assert client.get("/api/auth/status").json()["password_min_length"] == 15
+    updated = client.patch("/api/admin/auth/settings", headers=headers, json={"password_min_length": 20})
+    assert updated.status_code == 200
+    assert updated.json()["password_min_length"] == 20
+    assert client.get("/api/auth/status").json()["password_min_length"] == 20
+
+    short = client.post("/api/auth/register", json={"username": "short-policy", "password": "a" * 19})
+    assert short.status_code == 400
+    accepted = client.post("/api/auth/register", json={"username": "long-policy", "password": "a" * 20})
+    assert accepted.status_code == 201
 
 
 def test_member_cannot_access_admin_endpoints(tmp_path):

@@ -61,6 +61,15 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .global-search-results button:hover, .global-search-results button:focus { background: var(--primary-soft); outline: 0; }
 .global-search-results small, .global-search-status { color: var(--muted); font-size: .7rem; }
 .global-search-status { display: block; padding: 10px 11px; }
+.company-picker { position: relative; min-width: min(340px, 100%); }
+.company-picker-input { display: flex; align-items: center; gap: 7px; }
+.company-picker-input .input { min-width: 0; flex: 1; }
+.company-picker-results { position: absolute; top: calc(100% + 6px); right: 0; left: 0; z-index: 35; max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); box-shadow: 0 12px 28px rgb(16 24 40 / 16%); }
+.company-picker-results button { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 9px 11px; border: 0; border-bottom: 1px solid var(--border); color: var(--text); background: transparent; cursor: pointer; text-align: left; }
+.company-picker-results button:hover, .company-picker-results button:focus { background: var(--primary-soft); outline: 0; }
+.company-picker-results button:disabled { opacity: .55; cursor: not-allowed; }
+.company-picker-results small, .company-picker-status { color: var(--muted); font-size: .72rem; }
+.company-picker-status { display: block; padding: 10px 11px; }
 .health { display: flex; align-items: center; gap: 7px; color: var(--success); font-size: .84rem; font-weight: 600; white-space: nowrap; }
 .health--error { color: var(--danger); }
 .health svg { width: 16px; height: 16px; }
@@ -159,6 +168,23 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .research-row small, .research-note small { color: var(--muted); }
 .research-note { display: block; }
 .research-note p { white-space: pre-wrap; }
+.tag-collection { display: flex; flex-wrap: wrap; gap: 8px; }
+.tag-collection-item { display: flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); cursor: pointer; }
+.tag-collection-item:hover, .tag-collection-item.active { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
+.tag-collection-item small { color: var(--muted); }
+.tag-members { padding-top: 8px; border-top: 1px solid var(--border); }
+.tag-members .card-header { padding: 12px 0; border-bottom: 0; }
+.tag-members h3 { margin: 0; font-size: .95rem; }
+.comparison-company-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }
+.comparison-company-chip { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-subtle); }
+.comparison-company-chip > span, .comparison-matrix th small, .comparison-matrix td small { display: block; }
+.comparison-company-chip small, .comparison-matrix th small, .comparison-matrix td small { color: var(--muted); font-size: .72rem; font-weight: 400; }
+.comparison-actions { padding-top: 4px; }
+.comparison-matrix th, .comparison-matrix td { min-width: 145px; }
+.comparison-matrix thead th:not(:first-child), .comparison-matrix td { text-align: right; }
+.comparison-matrix .comparison-group th { color: var(--primary); background: var(--primary-soft); font-size: .76rem; letter-spacing: .06em; text-transform: uppercase; }
+.comparison-matrix td small { margin-top: 4px; }
+.comparison-best { color: var(--success); font-weight: 700; background: var(--success-soft); }
 .mobile-nav, .mobile-only, .backdrop { display: none; }
 
 /* ---- auth banner, status, and dropdown ---- */
@@ -305,6 +331,7 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
   .brand .mobile-only { margin-left: auto; color: white; }
   .topbar { min-height: 58px; padding: 8px 14px; }
   .global-search-wrap { width: auto; flex: 1; }
+  .company-picker { min-width: 240px; width: 100%; }
   .global-search kbd, .health span { display: none; }
   #main-content { padding: 24px 15px 86px; }
   .page-header { flex-direction: column; gap: 16px; }

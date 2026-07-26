@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from src.research.storage import ResearchStore
 
 
@@ -44,6 +46,34 @@ def test_company_tags_are_owner_scoped(tmp_path):
     store.set_company_tags("user-a", "E00001", ["growth", "dividend"])
     assert len(store.list_company_tags("user-a", "E00001")) == 2
     assert len(store.list_company_tags("user-b", "E00001")) == 0
+
+
+def test_tag_definitions_support_empty_tags_and_legacy_watchlist_migration(tmp_path):
+    store = ResearchStore(tmp_path / "research.db")
+    watchlist = store.create_watchlist("user-a", "Legacy watchlist")
+    store.add_watchlist_item("user-a", watchlist["watchlist_id"], "E00001", "Example Co")
+    store.initialize()
+
+    assert store.get_tag("user-a", "Legacy watchlist") is not None
+    assert [row["edinet_code"] for row in store.list_tag_companies("user-a", "Legacy watchlist")] == ["E00001"]
+    store.create_tag("user-a", "Empty")
+    assert store.list_tag_companies("user-a", "Empty") == []
+    assert store.rename_tag("user-a", "Empty", "Renamed")
+    assert store.delete_tag("user-a", "Renamed")
+
+
+def test_existing_company_tag_memberships_are_promoted_to_definitions(tmp_path):
+    database = tmp_path / "research.db"
+    store = ResearchStore(database)
+    store.set_company_tags("user-a", "E00001", ["Legacy tag"])
+    with sqlite3.connect(database) as conn:
+        conn.execute("DELETE FROM tag_definitions WHERE user_id = ? AND tag = ?", ("user-a", "Legacy tag"))
+        conn.commit()
+
+    reloaded = ResearchStore(database)
+
+    assert reloaded.get_tag("user-a", "Legacy tag") is not None
+    assert [row["edinet_code"] for row in reloaded.list_tag_companies("user-a", "Legacy tag")] == ["E00001"]
 
 
 def test_watchlist_member_reorder(tmp_path):

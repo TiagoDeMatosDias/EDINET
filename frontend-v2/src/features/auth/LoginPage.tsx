@@ -17,6 +17,7 @@ export default function LoginPage() {
     <LoginForm
       bootstrapRequired={auth.status?.bootstrap_required ?? false}
       registrationOpen={auth.status?.registration_open ?? false}
+      passwordMinimum={auth.status?.password_min_length ?? 15}
       onSuccess={() => navigate('/')}
     />
   )
@@ -25,10 +26,12 @@ export default function LoginPage() {
 function LoginForm({
   bootstrapRequired,
   registrationOpen,
+  passwordMinimum,
   onSuccess,
 }: {
   bootstrapRequired: boolean
   registrationOpen: boolean
+  passwordMinimum: number
   onSuccess: () => void
 }) {
   const [mode, setMode] = useState<'login' | 'register'>(bootstrapRequired ? 'register' : 'login')
@@ -44,7 +47,7 @@ function LoginForm({
   const canSubmit = busy
     ? false
     : mode === 'register'
-      ? username.trim().length >= 3 && password.length >= 15 && password === confirmPassword
+      ? username.trim().length >= 3 && password.length >= passwordMinimum && password === confirmPassword
       : loginField.trim().length > 0 && password.length > 0
 
   const submit = async () => {
@@ -117,15 +120,15 @@ function LoginForm({
             <input className="input" type="password"
               autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
               value={password} onChange={e => setPassword(e.target.value)}
-              minLength={mode === 'register' ? 15 : 1} maxLength={128} required />
-            {mode === 'register' && <small>Minimum 15 characters. Use a passphrase or password manager.</small>}
+              minLength={mode === 'register' ? passwordMinimum : 1} maxLength={128} required />
+            {mode === 'register' && <small>Minimum {passwordMinimum} characters. Use a passphrase or password manager.</small>}
           </label>
 
           {mode === 'register' && (
             <label className="field-label">
               Confirm password
               <input className="input" type="password" autoComplete="new-password" value={confirmPassword}
-                onChange={e => setConfirmPassword(e.target.value)} minLength={15} maxLength={128} required />
+                onChange={e => setConfirmPassword(e.target.value)} minLength={passwordMinimum} maxLength={128} required />
             </label>
           )}
 

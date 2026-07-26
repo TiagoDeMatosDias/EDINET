@@ -135,6 +135,12 @@ class ResearchStore:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY(user_id, edinet_code, tag)
                 );
+                CREATE TABLE IF NOT EXISTS tag_definitions (
+                    user_id TEXT NOT NULL,
+                    tag TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, tag)
+                );
                 CREATE TABLE IF NOT EXISTS saved_screens (
                     screen_id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -172,6 +178,38 @@ class ResearchStore:
             }
             if "version" not in note_columns:
                 conn.execute("ALTER TABLE research_notes ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+            legacy_lists = conn.execute(
+                "SELECT watchlist_id, user_id, name, created_at FROM watchlists"
+            ).fetchall()
+            for watchlist in legacy_lists:
+                tag = str(watchlist["name"]).strip()
+                if not tag:
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO tag_definitions(user_id, tag, created_at) VALUES (?, ?, ?)",
+                    (watchlist["user_id"], tag, watchlist["created_at"]),
+                )
+                items = conn.execute(
+                    "SELECT edinet_code, added_at FROM watchlist_items WHERE watchlist_id = ?",
+                    (watchlist["watchlist_id"],),
+                ).fetchall()
+                for item in items:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO company_tags(user_id, edinet_code, tag, created_at) VALUES (?, ?, ?, ?)",
+                        (watchlist["user_id"], item["edinet_code"], tag, item["added_at"]),
+                    )
+            # Older versions could write company_tags without creating a
+            # matching tag definition. Promote those memberships so the tag
+            # list and member endpoints agree after an application restart.
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO tag_definitions(user_id, tag, created_at)
+                SELECT user_id, tag, MIN(created_at)
+                FROM company_tags
+                WHERE TRIM(tag) <> ''
+                GROUP BY user_id, tag
+                """
+            )
             conn.commit()
         finally:
             conn.close()
@@ -534,14 +572,83 @@ class ResearchStore:
 
     # -- company tags --
 
+    def create_tag(self, user_id: str, tag: str) -> dict[str, Any]:
+        cleaned = tag.strip()
+        now = _timestamp()
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            conn.execute(
+                "INSERT INTO tag_definitions(user_id, tag, created_at) VALUES (?, ?, ?)",
+                (user_id, cleaned, now),
+            )
+        return {"user_id": user_id, "tag": cleaned, "created_at": now}
+
+    def rename_tag(self, user_id: str, old_tag: str, new_tag: str) -> bool:
+        old = old_tag.strip()
+        new = new_tag.strip()
+        if old == new:
+            return bool(self.get_tag(user_id, old))
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM tag_definitions WHERE user_id = ? AND tag = ?",
+                (user_id, old),
+            ).fetchone()
+            if existing is None:
+                return False
+            conflict = conn.execute(
+                "SELECT 1 FROM tag_definitions WHERE user_id = ? AND tag = ?",
+                (user_id, new),
+            ).fetchone()
+            if conflict is not None:
+                raise ValueError("A tag with that name already exists")
+            conn.execute(
+                "UPDATE tag_definitions SET tag = ? WHERE user_id = ? AND tag = ?",
+                (new, user_id, old),
+            )
+            conn.execute(
+                "UPDATE company_tags SET tag = ? WHERE user_id = ? AND tag = ?",
+                (new, user_id, old),
+            )
+            return True
+
+    def get_tag(self, user_id: str, tag: str) -> dict[str, Any] | None:
+        conn = self._connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM tag_definitions WHERE user_id = ? AND tag = ?",
+                (user_id, tag.strip()),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def delete_tag(self, user_id: str, tag: str) -> bool:
+        cleaned = tag.strip()
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            definition = conn.execute(
+                "SELECT 1 FROM tag_definitions WHERE user_id = ? AND tag = ?",
+                (user_id, cleaned),
+            ).fetchone()
+            memberships = conn.execute(
+                "SELECT 1 FROM company_tags WHERE user_id = ? AND tag = ? LIMIT 1",
+                (user_id, cleaned),
+            ).fetchone()
+            conn.execute("DELETE FROM company_tags WHERE user_id = ? AND tag = ?", (user_id, cleaned))
+            conn.execute("DELETE FROM tag_definitions WHERE user_id = ? AND tag = ?", (user_id, cleaned))
+            return definition is not None or memberships is not None
+
     def set_company_tags(self, user_id: str, edinet_code: str, tags: list[str]) -> list[dict[str, Any]]:
         now = _timestamp()
+        cleaned_tags = list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
         with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
             conn.execute(
                 "DELETE FROM company_tags WHERE user_id = ? AND edinet_code = ?",
                 (user_id, edinet_code),
             )
-            for tag in tags:
+            for tag in cleaned_tags:
+                conn.execute(
+                    "INSERT OR IGNORE INTO tag_definitions(user_id, tag, created_at) VALUES (?, ?, ?)",
+                    (user_id, tag, now),
+                )
                 conn.execute(
                     "INSERT INTO company_tags(user_id, edinet_code, tag, created_at) VALUES (?, ?, ?, ?)",
                     (user_id, edinet_code, tag.strip(), now),
@@ -561,14 +668,33 @@ class ResearchStore:
         finally:
             conn.close()
 
+    def list_tag_companies(self, user_id: str, tag: str) -> list[dict[str, Any]]:
+        conn = self._connection()
+        try:
+            rows = conn.execute(
+                "SELECT edinet_code, tag, created_at FROM company_tags "
+                "WHERE user_id = ? AND tag = ? ORDER BY created_at, edinet_code",
+                (user_id, tag.strip()),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
     def list_all_tags(self, user_id: str) -> list[dict[str, Any]]:
         conn = self._connection()
         try:
             return [
                 dict(row)
                 for row in conn.execute(
-                    "SELECT * FROM company_tags WHERE user_id = ? ORDER BY tag",
-                    (user_id,),
+                    """SELECT user_id, tag, created_at FROM tag_definitions WHERE user_id = ?
+                       UNION ALL
+                       SELECT c.user_id, c.tag, c.created_at FROM company_tags c
+                       WHERE c.user_id = ? AND NOT EXISTS (
+                         SELECT 1 FROM tag_definitions d
+                         WHERE d.user_id = c.user_id AND d.tag = c.tag
+                       )
+                       ORDER BY tag, created_at""",
+                    (user_id, user_id),
                 ).fetchall()
             ]
         finally:

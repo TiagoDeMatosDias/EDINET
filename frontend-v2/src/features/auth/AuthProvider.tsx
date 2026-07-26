@@ -15,6 +15,7 @@ export interface AuthStatus {
   mode: 'disabled' | 'accounts'
   registration_open: boolean
   bootstrap_required: boolean
+  password_min_length: number
 }
 
 export interface AuthContextValue {
@@ -32,7 +33,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus | null>(null)
   const [user, setUser] = useState<AuthUser | null>(null)
   const [loading, setLoading] = useState(true)
-  const refreshTimer = useRef<ReturnType<typeof setTimeout>>()
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const refreshLoopRef = useRef<() => Promise<void>>(async () => undefined)
 
   const refreshLoop = useCallback(async () => {
     try {
@@ -46,14 +48,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(me)
       }
       // Refresh every 10 minutes
-      refreshTimer.current = setTimeout(() => { void refreshLoop() }, 600_000)
+      refreshTimer.current = setTimeout(() => { void refreshLoopRef.current() }, 600_000)
     } catch {
       setAccessToken(null)
       setUser(null)
       // Retry in 30 seconds
-      refreshTimer.current = setTimeout(() => { void refreshLoop() }, 30_000)
+      refreshTimer.current = setTimeout(() => { void refreshLoopRef.current() }, 30_000)
     }
   }, [])
+
+  useEffect(() => {
+    refreshLoopRef.current = refreshLoop
+  }, [refreshLoop])
 
   useEffect(() => {
     let cancelled = false
@@ -80,7 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => {
         if (!cancelled) {
-          setStatus({ mode: 'disabled', registration_open: false, bootstrap_required: false })
+          setStatus({ mode: 'disabled', registration_open: false, bootstrap_required: false, password_min_length: 15 })
           setLoading(false)
         }
       })
@@ -178,11 +184,12 @@ function AuthGate({ status, onLogin }: { status: AuthStatus; onLogin: (user: Aut
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const passwordMinimum = status.password_min_length ?? 15
 
   const canSubmit = busy
     ? false
     : mode === 'register'
-      ? username.trim().length >= 3 && password.length >= 15 && password === confirmPassword
+      ? username.trim().length >= 3 && password.length >= passwordMinimum && password === confirmPassword
       : loginField.trim().length > 0 && password.length > 0
 
   const submit = async () => {
@@ -294,12 +301,12 @@ function AuthGate({ status, onLogin }: { status: AuthStatus; onLogin: (user: Aut
               autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
               value={password}
               onChange={e => setPassword(e.target.value)}
-              minLength={mode === 'register' ? 15 : 1}
+              minLength={mode === 'register' ? passwordMinimum : 1}
               maxLength={128}
               required
             />
             {mode === 'register' && (
-              <small>Minimum 15 characters. Use a passphrase or password manager.</small>
+              <small>Minimum {passwordMinimum} characters. Use a passphrase or password manager.</small>
             )}
           </label>
 
@@ -313,7 +320,7 @@ function AuthGate({ status, onLogin }: { status: AuthStatus; onLogin: (user: Aut
                 autoComplete="new-password"
                 value={confirmPassword}
                 onChange={e => setConfirmPassword(e.target.value)}
-                minLength={15}
+                minLength={passwordMinimum}
                 maxLength={128}
                 required
               />

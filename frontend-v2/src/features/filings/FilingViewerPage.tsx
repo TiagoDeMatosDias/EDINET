@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Code, Download, FileText, Globe, ShieldAlert, Table2, Tags } from 'lucide-react'
+import { ArrowLeft, Download, FileText, Globe, ShieldAlert, Table2, Tags } from 'lucide-react'
 
 import { apiRequest, queryString } from '../../api/client'
 import { EmptyState, LoadingState } from '../../components/Feedback'
@@ -134,6 +134,7 @@ function matchConcept(concept: string, patterns: string[]): boolean {
 }
 
 // Also try conceptDisplay-based matching for common Japanese-labeled concepts
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function conceptLabelToEnglish(label: string): string | null {
   const m: Record<string, string> = {
     'Net Sales Summary Of Business Results': 'NetSales',
@@ -175,7 +176,6 @@ function buildStatementTable(facts: Fact[], stmtDef: StmtDefinition): StmtRow[] 
     rows.push({ kind: 'section', label: section.label, indent: false, cells: new Map() })
 
     // Find matching facts
-    let matchedCount = 0
     for (const [concept, factList] of factMap) {
       if (usedConcepts.has(concept)) continue
       if (section.concepts.length === 0) continue // Skip empty-concept sections (pure headers)
@@ -189,7 +189,6 @@ function buildStatementTable(facts: Fact[], stmtDef: StmtDefinition): StmtRow[] 
           row.cells.set(period, { period, value: f.numeric_value ?? null, fact: f })
         }
         rows.push(row)
-        matchedCount++
       }
     }
   }
@@ -276,6 +275,8 @@ export default function FilingViewerPage() {
     if (sideBySide && sections.data?.sections) {
       for (const s of sections.data.sections) {
         if (!s.text_en && s.text && s.text.length > 0) {
+          // Translation is an explicit user-triggered side-by-side action.
+          // eslint-disable-next-line react-hooks/set-state-in-effect
           void fetchBodyTranslation(s.section_id)
         }
       }

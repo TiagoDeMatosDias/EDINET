@@ -14,6 +14,13 @@ import { filterPriceHistory, PRICE_RANGE_OPTIONS, type PriceHistoryRow, type Pri
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Legend, Tooltip)
 const PRICE_COLOR = '#146ef5'
+const SNAPSHOT_GROUPS: Array<{ title: string; metrics: Array<[string, string]> }> = [
+  { title: 'Market', metrics: [['LatestPrice', 'Price'], ['MarketCap', 'Market cap']] },
+  { title: 'Valuation', metrics: [['PERatio', 'P/E'], ['PriceToBook', 'P/B'], ['PriceToSales', 'P/S'], ['EnterpriseValueToSales', 'EV/Sales'], ['DividendsYield', 'Dividend yield'], ['PayoutRatio', 'Payout ratio']] },
+  { title: 'Quality', metrics: [['ReturnOnEquity', 'Return on equity'], ['ReturnOnAssets', 'Return on assets'], ['DebtToEquity', 'Debt/equity'], ['CurrentRatio', 'Current ratio'], ['GrossMargin', 'Gross margin'], ['OperatingMargin', 'Operating margin'], ['NetMargin', 'Net margin']] },
+  { title: 'Income', metrics: [['Revenue', 'Revenue'], ['OperatingIncome', 'Operating income'], ['NetIncome', 'Net income']] },
+  { title: 'Balance sheet', metrics: [['TotalAssets', 'Total assets'], ['TotalEquity', "Shareholders' equity"], ['SharesOutstanding', 'Shares outstanding']] },
+]
 
 interface FilingSummary {
   doc_id: string
@@ -32,8 +39,8 @@ function compactNumber(value: number) {
 function formatOverview(key: string, value: number | null | undefined) {
   if (value == null || Number.isNaN(value)) return '—'
   if (key === 'LatestPrice') return `¥${value.toLocaleString()}`
-  if (key === 'MarketCap') return `¥${compactNumber(value)}`
-  if (['DividendsYield', 'PayoutRatio', 'ReturnOnAssets', 'ReturnOnEquity', 'NetMargin', 'OperatingMargin'].includes(key)) return `${(value * 100).toFixed(1)}%`
+  if (['MarketCap', 'Revenue', 'OperatingIncome', 'NetIncome', 'TotalAssets', 'TotalEquity'].includes(key)) return `¥${compactNumber(value)}`
+  if (['DividendsYield', 'PayoutRatio', 'ReturnOnAssets', 'ReturnOnEquity', 'GrossMargin', 'NetMargin', 'OperatingMargin'].includes(key)) return `${(value * 100).toFixed(1)}%`
   return value.toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
 
@@ -67,31 +74,50 @@ function FilingSummaryCard({ companyCode }: { companyCode: string }) {
   return <Card title="XBRL filings" description="Retained EDINET type-1 reports for this company.">{filings.isLoading && <LoadingState label="Loading filings" />}{filings.data?.filings.slice(0, 8).map(filing => <Link className="filing-row" key={filing.doc_id} to={`/filings?doc=${encodeURIComponent(filing.doc_id)}&company=${encodeURIComponent(companyCode)}`}><span><strong>{filing.period_end || 'Period unavailable'}</strong><small>{filing.doc_id}</small></span><span><small>{filing.submitted_at || 'Submission unavailable'} · {filing.status}</small></span></Link>)}{filings.data && !filings.data.filings.length && <EmptyState title="No archived XBRL reports" description="Type-1 filing packages will appear after acquisition." />}<Link className="button button--ghost" to={`/filings?company=${encodeURIComponent(companyCode)}`}>Open Filing Explorer</Link></Card>
 }
 
+function SnapshotMetrics({ metrics }: { metrics: Record<string, number | null> }) {
+  return <div className="company-snapshot-groups">{SNAPSHOT_GROUPS.map(group => <section className="company-snapshot-group" key={group.title}><h3>{group.title}</h3><dl className="company-snapshot-metrics">{group.metrics.map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{formatOverview(key, metrics[key])}</dd></div>)}</dl></section>)}</div>
+}
+
 export default function AnalysisWorkspaceUnified() {
-  const { companyCode } = useParams()
+  const { companyCode: routeCompanyCode } = useParams()
   const [params] = useSearchParams()
   const queryClient = useQueryClient()
-  const overview = useQuery({ queryKey: ['security-overview', companyCode], enabled: Boolean(companyCode), queryFn: () => apiRequest<SecurityOverview>(`/api/security/overview${queryString({ company_code: companyCode })}`) })
-  const history = useQuery({ queryKey: ['security-history', companyCode], enabled: Boolean(companyCode), queryFn: () => apiRequest<SecurityHistory>(`/api/security/history${queryString({ company_code: companyCode, periods: 16 })}`), retry: false })
+  const companyCode = routeCompanyCode ?? ''
+  const tickerParam = params.get('ticker') ?? ''
+  const lookup = companyCode || tickerParam
+  const lookupKey = companyCode || `ticker:${tickerParam}`
+  const overview = useQuery({
+    queryKey: ['security-overview', lookupKey],
+    enabled: Boolean(lookup),
+    queryFn: () => apiRequest<SecurityOverview>(`/api/security/overview${queryString({ company_code: companyCode || undefined, ticker: companyCode ? undefined : tickerParam })}`),
+  })
   const company = overview.data?.company ?? {}
   const metrics = overview.data?.metrics ?? {}
-  const name = String(company.company_name ?? companyCode ?? 'Company')
+  const canonicalCode = String(company.edinet_code ?? company.company_code ?? companyCode ?? '')
+  const name = String(company.company_name ?? lookup ?? 'Company')
   const ticker = String(company.ticker ?? '')
-  const updatePrice = useMutation({ mutationFn: () => apiPost('/api/security/update-price', { ticker }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-overview', companyCode] }) })
+  const history = useQuery({
+    queryKey: ['security-history', canonicalCode],
+    enabled: Boolean(canonicalCode),
+    queryFn: () => apiRequest<SecurityHistory>(`/api/security/history${queryString({ company_code: canonicalCode, periods: 16 })}`),
+    retry: false,
+  })
+  const metricPeriod = String(overview.data?.metadata?.comparison_metric_period_end ?? overview.data?.metadata?.last_financial_period_end ?? '')
+  const updatePrice = useMutation({ mutationFn: () => apiPost('/api/security/update-price', { ticker }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-overview', lookupKey] }) })
   const [newTag, setNewTag] = useState('')
-  const tags = useQuery({ queryKey: ['company-tags', companyCode], enabled: Boolean(companyCode), queryFn: () => apiRequest<{ tags: string[] }>(`/api/tags/${encodeURIComponent(companyCode!)}`) })
-  const addTag = useMutation({ mutationFn: (tag: string) => apiRequest(`/api/tags/${encodeURIComponent(companyCode!)}/${encodeURIComponent(tag)}`, { method: 'POST' }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['company-tags', companyCode] }) })
-  const removeTag = useMutation({ mutationFn: (tag: string) => apiRequest(`/api/tags/${encodeURIComponent(companyCode!)}/${encodeURIComponent(tag)}`, { method: 'DELETE' }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['company-tags', companyCode] }) })
-  const watch = useMutation({ mutationFn: async () => {
-    const existing = await apiRequest<{ watchlists: Array<{ watchlist_id: string }> }>('/api/research/watchlists')
-    const list = existing.watchlists[0] ?? await apiRequest<{ watchlist_id: string }>('/api/research/watchlists', { method: 'POST', body: JSON.stringify({ name: 'My watchlist' }) })
-    await apiRequest(`/api/research/watchlists/${list.watchlist_id}/items`, { method: 'POST', body: JSON.stringify({ edinet_code: companyCode, company_name: name }) })
-  } })
+  const tags = useQuery({ queryKey: ['company-tags', canonicalCode], enabled: Boolean(canonicalCode), queryFn: () => apiRequest<{ tags: string[] }>(`/api/tags/${encodeURIComponent(canonicalCode)}`) })
+  const addTag = useMutation({ mutationFn: (tag: string) => apiRequest(`/api/tags/${encodeURIComponent(canonicalCode)}/${encodeURIComponent(tag)}`, { method: 'POST' }), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['company-tags', canonicalCode] }); void queryClient.invalidateQueries({ queryKey: ['research-tags'] }) } })
+  const removeTag = useMutation({ mutationFn: (tag: string) => apiRequest(`/api/tags/${encodeURIComponent(canonicalCode)}/${encodeURIComponent(tag)}`, { method: 'DELETE' }), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['company-tags', canonicalCode] }); void queryClient.invalidateQueries({ queryKey: ['research-tags'] }) } })
+  const isFavorite = tags.data?.tags.includes('Favorite') ?? false
+  const favorite = useMutation({
+    mutationFn: () => apiRequest(`/api/tags/${encodeURIComponent(canonicalCode)}/Favorite`, { method: isFavorite ? 'DELETE' : 'POST' }),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['company-tags', canonicalCode] }); void queryClient.invalidateQueries({ queryKey: ['research-tags'] }) },
+  })
 
-  if (!companyCode) return <div className="stack dense-page analysis-empty-page"><PageHeader eyebrow="Company research" title="Analyze a company" description="Use the company search above to open price, statements, ratios, and trends." /><EmptyState title="Search for a company above" description="Enter a name, ticker, EDINET code, or industry and choose a result." /></div>
+  if (!lookup) return <div className="stack dense-page analysis-empty-page"><PageHeader eyebrow="Company research" title="Analyze a company" description="Use the company search above to open price, statements, ratios, and trends." /><EmptyState title="Search for a company above" description="Enter a name, ticker, EDINET code, or industry and choose a result." /></div>
   if (overview.isLoading) return <LoadingState label="Loading company analysis" />
   if (overview.isError) return <ErrorState error={overview.error} retry={() => overview.refetch()} />
   const metricKeys = [['LatestPrice', 'Price'], ['MarketCap', 'Market cap'], ['PERatio', 'P/E'], ['PriceToBook', 'P/B'], ['PriceToSales', 'P/S'], ['ReturnOnEquity', 'ROE'], ['ReturnOnAssets', 'ROA'], ['DividendsYield', 'Dividend'], ['CurrentRatio', 'Current ratio'], ['DebtToEquity', 'Debt/equity'], ['OperatingMargin', 'Operating margin'], ['PayoutRatio', 'Payout']]
   const yahooSymbol = yahooFinanceSymbol(ticker)
-  return <div className="stack dense-page analysis-workspace"><PageHeader eyebrow="Company analysis" title={name} description={[ticker, companyCode, company.industry, company.market].filter(Boolean).join(' · ')} actions={<div className="button-row">{params.get('from') === 'screen' && <Link className="button button--ghost" to="/screen"><ArrowLeft />Screen</Link>}{yahooSymbol && <a className="button button--secondary" href={`https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`} target="_blank" rel="noreferrer"><ExternalLink />Yahoo Finance</a>}<button className="button button--secondary" disabled={watch.isPending} onClick={() => watch.mutate()}><Star />{watch.isPending ? 'Saving…' : 'Watch'}</button><Link className="button button--primary" to={`/backtest?symbol=${ticker}`}><BarChart3 />Backtest</Link></div>} /><div className="metric-strip analysis-metric-strip">{metricKeys.map(([key, label]) => <Metric key={key} label={label} value={formatOverview(key, metrics[key])} detail={key === 'LatestPrice' ? <button className="text-button" onClick={() => updatePrice.mutate()}><RefreshCw />Refresh</button> : undefined} />)}</div><div className="analysis-top-grid"><Card title="Price history"><PriceChart ticker={ticker} /></Card><Card title="Company snapshot"><dl className="company-facts"><div><dt>Industry</dt><dd>{String(company.industry ?? '—')}</dd></div><div><dt>Market</dt><dd>{String(company.market ?? '—')}</dd></div><div><dt>Code</dt><dd>{companyCode}</dd></div><div><dt>Ticker</dt><dd>{ticker || '—'}</dd></div></dl><div className="company-tags"><div className="tag-list">{(tags.data?.tags ?? []).map(tag => <span className="tag" key={tag}>{tag}<button className="icon-button" onClick={() => removeTag.mutate(tag)} aria-label={`Remove tag ${tag}`}><X /></button></span>)}</div><div className="tag-add"><input className="input" placeholder="Add tag…" value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newTag.trim()) { addTag.mutate(newTag.trim()); setNewTag('') } }} /><button className="button button--ghost" disabled={!newTag.trim()} onClick={() => { addTag.mutate(newTag.trim()); setNewTag('') }} aria-label="Add tag"><Plus /></button></div></div><p className="company-description company-description--compact">{String(company.description_summary ?? company.description ?? 'No business description available.')}</p></Card></div><Card className="analysis-history-card" title="Financial history" description="Select metrics in the table to chart them alongside the underlying values."><FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} /></Card><FilingSummaryCard companyCode={companyCode} /></div>
+  return <div className="stack dense-page analysis-workspace"><PageHeader eyebrow="Company analysis" title={name} description={[ticker, canonicalCode, company.industry, company.market].filter(Boolean).join(' · ')} actions={<div className="button-row">{params.get('from') === 'screen' && <Link className="button button--ghost" to="/screen"><ArrowLeft />Screen</Link>}{yahooSymbol && <a className="button button--secondary" href={`https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`} target="_blank" rel="noreferrer"><ExternalLink />Yahoo Finance</a>}{canonicalCode && <button className="button button--secondary" disabled={favorite.isPending} onClick={() => favorite.mutate()} aria-pressed={isFavorite}><Star />{favorite.isPending ? 'Saving…' : isFavorite ? 'Favorited' : 'Favorite'}</button>}<Link className="button button--primary" to={`/backtest?symbol=${ticker}`}><BarChart3 />Backtest</Link></div>} /><div className="metric-strip analysis-metric-strip">{metricKeys.map(([key, label]) => <Metric key={key} label={label} value={formatOverview(key, metrics[key])} detail={key === 'LatestPrice' ? <button className="text-button" onClick={() => updatePrice.mutate()}><RefreshCw />Refresh</button> : undefined} />)}</div><div className="analysis-top-grid"><Card title="Price history"><PriceChart ticker={ticker} /></Card><Card title="Company snapshot"><dl className="company-facts"><div><dt>Industry</dt><dd>{String(company.industry ?? '—')}</dd></div><div><dt>Market</dt><dd>{String(company.market ?? '—')}</dd></div><div><dt>Code</dt><dd>{canonicalCode || '—'}</dd></div><div><dt>Ticker</dt><dd>{ticker || '—'}</dd></div></dl>{metricPeriod && <p className="company-snapshot-period">Financial metrics: {metricPeriod}</p>}<SnapshotMetrics metrics={metrics} /><div className="company-tags"><div className="tag-list">{(tags.data?.tags ?? []).map(tag => <span className="tag" key={tag}>{tag}<button className="icon-button" onClick={() => removeTag.mutate(tag)} aria-label={`Remove tag ${tag}`}><X /></button></span>)}</div><div className="tag-add"><input className="input" placeholder="Add tag…" value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newTag.trim()) { addTag.mutate(newTag.trim()); setNewTag('') } }} /><button className="button button--ghost" disabled={!newTag.trim() || !canonicalCode} onClick={() => { addTag.mutate(newTag.trim()); setNewTag('') }} aria-label="Add tag"><Plus /></button></div></div><p className="company-description company-description--compact">{String(company.description_summary ?? company.description ?? 'No business description available.')}</p></Card></div><Card className="analysis-history-card" title="Financial history" description="Select metrics in the table to chart them alongside the underlying values."><FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} /></Card>{canonicalCode && <FilingSummaryCard companyCode={canonicalCode} />}</div>
 }

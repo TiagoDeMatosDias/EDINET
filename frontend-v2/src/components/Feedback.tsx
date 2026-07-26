@@ -5,7 +5,7 @@ export function LoadingState({ label = 'Loading' }: { label?: string }) {
   return <div className="state-panel" role="status"><LoaderCircle className="spin" aria-hidden="true" /><span>{label}</span></div>
 }
 
-export function EmptyState({ title, description, action }: { title: string; description: string; action?: ReactNode }) {
+export function EmptyState({ title, description, action }: { title: string; description?: string; action?: ReactNode }) {
   return <div className="state-panel"><Inbox aria-hidden="true" /><strong>{title}</strong><span className="muted">{description}</span>{action}</div>
 }
 

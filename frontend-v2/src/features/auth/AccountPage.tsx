@@ -37,7 +37,6 @@ const TABS: { key: AccountTab; label: string }[] = [
 
 export default function AccountPage() {
   const { user } = useAuth()
-  const client = useQueryClient()
   const [tab, setTab] = useState<AccountTab>('profile')
 
   return (
@@ -120,6 +119,8 @@ function ProfileSection() {
 }
 
 function PasswordSection() {
+  const { status } = useAuth()
+  const passwordMinimum = status?.password_min_length ?? 15
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [message, setMessage] = useState<string | null>(null)
@@ -152,14 +153,14 @@ function PasswordSection() {
         <input className="input" type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} />
       </label>
       <label className="field-label">
-        New password (minimum 15 characters)
-        <input className="input" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
+        New password (minimum {passwordMinimum} characters)
+        <input className="input" type="password" minLength={passwordMinimum} value={newPassword} onChange={e => setNewPassword(e.target.value)} />
       </label>
       {message && <div className="callout callout--success">{message}</div>}
       {error && <div className="callout callout--warning">{error}</div>}
       <button
         className="button button--primary"
-        disabled={change.isPending || !currentPassword || newPassword.length < 15}
+        disabled={change.isPending || !currentPassword || newPassword.length < passwordMinimum}
         onClick={() => change.mutate()}
       >
         {change.isPending ? 'Changing password…' : 'Change password'}

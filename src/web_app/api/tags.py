@@ -11,7 +11,7 @@ claim via a migration endpoint.
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.auth.models import AuthenticatedUser
 from src.research.runtime import store as _research_store
@@ -43,6 +43,24 @@ class CompanyTagsResponse(BaseModel):
     tags: list[str]
 
 
+class TagCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class TagRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class TagDefinitionResponse(BaseModel):
+    ok: bool
+    name: str
+
+
+class TagMembersResponse(BaseModel):
+    tag: str
+    companies: list[str]
+
+
 class TagMutationResponse(BaseModel):
     ok: bool
     company_code: str
@@ -59,14 +77,66 @@ def list_all_tags(request: Request) -> TagListResponse:
     """Return every distinct tag for the authenticated user with member counts."""
     user = _require_user(request)
     all_tags = _research_store.list_all_tags(user.user_id)
-    # Aggregate by tag name
-    counts: dict[str, int] = {}
-    for t in all_tags:
-        tag_name = t["tag"]
-        counts[tag_name] = counts.get(tag_name, 0) + 1
+    tag_names = sorted({str(item["tag"]) for item in all_tags})
     return TagListResponse(
-        tags=[TagSummary(name=k, member_count=v) for k, v in sorted(counts.items())]
+        tags=[
+            TagSummary(name=name, member_count=len(_research_store.list_tag_companies(user.user_id, name)))
+            for name in tag_names
+        ]
     )
+
+
+@router.post("", response_model=TagDefinitionResponse)
+def create_tag(request: Request, payload: TagCreateRequest) -> TagDefinitionResponse:
+    user = _require_user(request)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Tag name is required")
+    try:
+        _research_store.create_tag(user.user_id, name)
+    except Exception as exc:
+        if "UNIQUE" in str(exc).upper():
+            raise HTTPException(status_code=409, detail="A tag with that name already exists") from exc
+        raise
+    return TagDefinitionResponse(ok=True, name=name)
+
+
+@router.patch("/{tag_name}", response_model=TagDefinitionResponse)
+def rename_tag(request: Request, tag_name: str, payload: TagRenameRequest) -> TagDefinitionResponse:
+    user = _require_user(request)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Tag name is required")
+    try:
+        changed = _research_store.rename_tag(user.user_id, tag_name, name)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not changed:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    return TagDefinitionResponse(ok=True, name=name)
+
+
+@router.delete("/{tag_name}", response_model=TagDefinitionResponse)
+def delete_tag(request: Request, tag_name: str) -> TagDefinitionResponse:
+    user = _require_user(request)
+    if not _research_store.delete_tag(user.user_id, tag_name):
+        raise HTTPException(status_code=404, detail="Tag not found")
+    return TagDefinitionResponse(ok=True, name=tag_name.strip())
+
+
+@router.get("/{tag_name}/companies", response_model=TagMembersResponse)
+def list_tag_companies(request: Request, tag_name: str) -> TagMembersResponse:
+    user = _require_user(request)
+    cleaned = tag_name.strip()
+    known_tags = {
+        str(item["tag"]).strip()
+        for item in _research_store.list_all_tags(user.user_id)
+        if str(item.get("tag", "")).strip()
+    }
+    if cleaned not in known_tags:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    rows = _research_store.list_tag_companies(user.user_id, cleaned)
+    return TagMembersResponse(tag=cleaned, companies=[row["edinet_code"] for row in rows])
 
 
 @router.get("/{company_code}", response_model=CompanyTagsResponse)

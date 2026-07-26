@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 
 import { apiRequest } from '../../api/client'
+import type { SecuritySearchResult } from '../../api/types'
+import { CompanyPicker } from '../../components/CompanyPicker'
 import { EmptyState, LoadingState } from '../../components/Feedback'
 import { PageHeader } from '../../components/Page'
 
@@ -15,18 +17,23 @@ interface Filing {
 export default function FilingsPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
-  const [companyCode, setCompanyCode] = useState(searchParams.get('company') ?? '')
-  const [searchedCode, setSearchedCode] = useState(searchParams.get('company') ?? '')
+  const initialCode = searchParams.get('company') ?? ''
+  const [selected, setSelected] = useState<SecuritySearchResult | null>(
+    initialCode ? { company_code: initialCode, ticker: '', company_name: initialCode } : null,
+  )
+  const [searchedCode, setSearchedCode] = useState(initialCode)
 
   const filings = useQuery({
     queryKey: ['filings', searchedCode || 'recent'],
-    queryFn: () => {
-      if (searchedCode.trim()) {
-        return apiRequest<{ filings: Filing[] }>(`/api/filings/company/${encodeURIComponent(searchedCode.trim())}`)
-      }
-      return apiRequest<{ filings: Filing[] }>(`/api/filings?limit=100`)
-    },
+    queryFn: () => searchedCode.trim()
+      ? apiRequest<{ filings: Filing[] }>(`/api/filings/company/${encodeURIComponent(searchedCode.trim())}`)
+      : apiRequest<{ filings: Filing[] }>('/api/filings?limit=100'),
   })
+
+  const chooseCompany = (company: SecuritySearchResult | null) => {
+    setSelected(company)
+    setSearchedCode(company?.company_code ?? '')
+  }
 
   return (
     <div className="stack dense-page">
@@ -35,19 +42,12 @@ export default function FilingsPage() {
         <div className="card-header">
           <div>
             <h2>Find filings</h2>
-            <p>Enter an EDINET code to filter, or leave empty to see all recent filings.</p>
+            <p>Search by company name, ticker, EDINET code, industry, or market.</p>
           </div>
           <div className="button-row">
-            <input
-              className="input"
-              aria-label="EDINET code"
-              placeholder="E00000"
-              value={companyCode}
-              onChange={e => setCompanyCode(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') { setSearchedCode(companyCode.trim()); void filings.refetch() } }}
-            />
-            <button className="button button--primary" onClick={() => { setSearchedCode(companyCode.trim()); void filings.refetch() }}>
-              {companyCode.trim() ? 'Search' : 'Show all'}
+            <CompanyPicker selected={selected} onSelect={chooseCompany} label="Company" />
+            <button className="button button--secondary" onClick={() => { setSelected(null); setSearchedCode('') }}>
+              Show all
             </button>
           </div>
         </div>
