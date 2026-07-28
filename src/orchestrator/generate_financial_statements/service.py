@@ -3,7 +3,7 @@ import os
 import re
 import sqlite3
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 
 import pandas as pd
 
@@ -15,6 +15,10 @@ _DB_HELPER = OrchestratorProcessorBase()
 
 
 _SOURCE_TABLE_NAME = "financialData_full"
+_FILINGS_TABLE_NAME = "filings"
+_FILINGS_FACT_TABLE_NAME = "xbrl_facts"
+_SOURCE_MODE_CSV = "csv"
+_SOURCE_MODE_FILINGS = "filings"
 _FINANCIAL_STATEMENTS_COLUMNS = [
     ("docID", "TEXT PRIMARY KEY"),
     ("Company_Code", "TEXT"),
@@ -252,6 +256,31 @@ def _fetch_pending_doc_ids(helper, conn, source_schema, source_table):
     return [str(row[0]) for row in rows]
 
 
+def _fetch_pending_filings_doc_ids(helper, conn, source_schema):
+    """Return parsed filings with numeric facts not yet in the target."""
+    filings_ref = _source_table_ref(helper, source_schema, _FILINGS_TABLE_NAME)
+    facts_ref = _source_table_ref(helper, source_schema, _FILINGS_FACT_TABLE_NAME)
+    rows = conn.execute(
+        f"""
+        SELECT CAST(f.doc_id AS TEXT) AS docID
+        FROM {filings_ref} f
+        LEFT JOIN {helper._sql_ident('FinancialStatements')} fs
+            ON CAST(f.doc_id AS TEXT) = fs.{helper._sql_ident('docID')}
+        WHERE f.status = 'parsed'
+          AND fs.{helper._sql_ident('docID')} IS NULL
+          AND EXISTS (
+              SELECT 1
+              FROM {facts_ref} x
+              WHERE x.doc_id = f.doc_id
+                AND x.numeric_value IS NOT NULL
+                AND x.is_nil = 0
+          )
+        ORDER BY COALESCE(CAST(f.submitted_at AS TEXT), ''), CAST(f.doc_id AS TEXT)
+        """
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 def _load_metadata_batch(helper, conn, source_schema, source_table, doc_ids):
     if not doc_ids:
         return pd.DataFrame(
@@ -287,6 +316,54 @@ def _load_metadata_batch(helper, conn, source_schema, source_table, doc_ids):
         WHERE s.{helper._sql_ident(doc_col)} IN ({placeholders})
         GROUP BY CAST(s.{helper._sql_ident(doc_col)} AS TEXT)
         ORDER BY CAST(s.{helper._sql_ident(doc_col)} AS TEXT)
+        """,
+        conn,
+        params=list(doc_ids),
+    )
+
+
+def _load_filings_metadata_batch(helper, conn, source_schema, doc_ids):
+    """Load statement metadata from the normalized filing catalog."""
+    if not doc_ids:
+        return pd.DataFrame(
+            columns=[
+                "docID",
+                "Company_Code",
+                "docTypeCode",
+                "Currency",
+                "Data_Source",
+                "submitDateTime",
+                "periodStart",
+                "periodEnd",
+            ]
+        )
+
+    filings_ref = _source_table_ref(helper, source_schema, _FILINGS_TABLE_NAME)
+    units_ref = _source_table_ref(helper, source_schema, "xbrl_units")
+    placeholders = ", ".join("?" for _ in doc_ids)
+
+    return pd.read_sql_query(
+        f"""
+        SELECT
+            CAST(f.doc_id AS TEXT) AS docID,
+            CAST(f.edinet_code AS TEXT) AS Company_Code,
+            CAST(COALESCE(NULLIF(f.form_code, ''), f.doc_type_code) AS TEXT) AS docTypeCode,
+            MAX(
+                CASE
+                    WHEN lower(CAST(u.measure AS TEXT)) LIKE 'iso4217:%'
+                    THEN substr(CAST(u.measure AS TEXT), 9)
+                END
+            ) AS Currency,
+            'Edinet' AS Data_Source,
+            CAST(f.submitted_at AS TEXT) AS submitDateTime,
+            CAST(f.period_start AS TEXT) AS periodStart,
+            CAST(f.period_end AS TEXT) AS periodEnd
+        FROM {filings_ref} f
+        LEFT JOIN {units_ref} u ON u.doc_id = f.doc_id
+        WHERE f.doc_id IN ({placeholders})
+        GROUP BY f.doc_id, f.edinet_code, f.doc_type_code, f.form_code,
+                 f.submitted_at, f.period_start, f.period_end
+        ORDER BY CAST(f.doc_id AS TEXT)
         """,
         conn,
         params=list(doc_ids),
@@ -414,7 +491,7 @@ def _resolve_column_names(groups_by_family, hierarchy):
     under 62 different parents). For these, prepend the parent label.
     Falls back to using the concept_qname local name if hierarchy data is unavailable.
     """
-    for family, groups in groups_by_family.items():
+    for _family, groups in groups_by_family.items():
         label_counts = Counter(g["display_label"].lower() for g in groups.values())
         for group in groups.values():
             label = group["display_label"]
@@ -582,6 +659,89 @@ def _load_fact_batch(helper, conn, source_schema, source_table, doc_ids, concept
     return filtered.groupby(["docID", "context_id", "concept_qname"], as_index=False)["value"].sum()
 
 
+def _filings_concept_candidates(concept_qnames):
+    """Index taxonomy QNames by their local concept name."""
+    candidates = defaultdict(list)
+    for concept_qname in concept_qnames or []:
+        normalized = str(concept_qname or "").strip()
+        if not normalized:
+            continue
+        local_name = normalized.split(":", 1)[-1]
+        if normalized not in candidates[local_name]:
+            candidates[local_name].append(normalized)
+    return candidates
+
+
+def _resolve_filings_concept(row, candidates):
+    """Map a compact fact's local name/namespace back to a taxonomy QName."""
+    local_name = str(row.get("raw_concept") or "")
+    options = candidates.get(local_name, [])
+    if len(options) <= 1:
+        return options[0] if options else None
+
+    namespace_uri = str(row.get("namespace_uri") or "").rstrip("/")
+    namespace_tail = namespace_uri.rsplit("/", 1)[-1]
+    matching = [
+        option
+        for option in options
+        if option.split(":", 1)[0] == namespace_tail
+        or option.split(":", 1)[0] in namespace_uri
+    ]
+    return matching[0] if len(matching) == 1 else None
+
+
+def _load_filings_fact_batch(helper, conn, source_schema, doc_ids, concept_qnames=None):
+    """Load numeric XBRL facts using the same shape as CSV facts."""
+    if not doc_ids:
+        return pd.DataFrame(columns=["docID", "context_id", "concept_qname", "value"])
+
+    facts_ref = _source_table_ref(helper, source_schema, _FILINGS_FACT_TABLE_NAME)
+    doc_placeholders = ", ".join("?" for _ in doc_ids)
+    context_placeholders = ", ".join("?" for _ in _ALLOWED_CONTEXT_IDS)
+    candidates = _filings_concept_candidates(concept_qnames)
+    local_names = sorted(candidates)
+    concept_filter_sql = ""
+    params: list[object] = [*doc_ids, *_ALLOWED_CONTEXT_IDS]
+    if local_names:
+        concept_placeholders = ", ".join("?" for _ in local_names)
+        concept_filter_sql = f"\n          AND f.concept IN ({concept_placeholders})"
+        params.extend(local_names)
+
+    df = pd.read_sql_query(
+        f"""
+        SELECT
+            CAST(f.doc_id AS TEXT) AS docID,
+            CAST(f.context_id AS TEXT) AS context_id,
+            CAST(f.concept AS TEXT) AS raw_concept,
+            CAST(f.namespace_uri AS TEXT) AS namespace_uri,
+            CAST(f.numeric_value AS REAL) AS value
+        FROM {facts_ref} f
+        WHERE f.doc_id IN ({doc_placeholders})
+          AND f.context_id IN ({context_placeholders})
+          AND f.numeric_value IS NOT NULL
+          AND f.is_nil = 0
+          {concept_filter_sql}
+        """,
+        conn,
+        params=params,
+    )
+    if df.empty:
+        return pd.DataFrame(columns=["docID", "context_id", "concept_qname", "value"])
+
+    df["concept_qname"] = df.apply(
+        lambda row: _resolve_filings_concept(row, candidates),
+        axis=1,
+    )
+    filtered = df.loc[
+        df["concept_qname"].notna(),
+        ["docID", "context_id", "concept_qname", "value"],
+    ]
+    if filtered.empty:
+        return filtered
+
+    return filtered.groupby(["docID", "context_id", "concept_qname"], as_index=False)["value"].sum()
+
+
 def _build_statement_batch_frames(metadata_batch_df, facts_batch_df, mapping_df):
     doc_id_frame = metadata_batch_df[["docID"]].drop_duplicates().reset_index(drop=True)
 
@@ -609,7 +769,11 @@ def _build_statement_batch_frames(metadata_batch_df, facts_batch_df, mapping_df)
                         (statement_family, context_id),
                         _CONTEXT_PRIORITY_FALLBACK,
                     )
-                    for statement_family, context_id in zip(merged["statement_family"], merged["context_id"])
+                    for statement_family, context_id in zip(
+                        merged["statement_family"],
+                        merged["context_id"],
+                        strict=True,
+                    )
                 ]
                 merged = merged.loc[merged["context_priority"] < _CONTEXT_PRIORITY_FALLBACK]
             if not merged.empty:
@@ -672,8 +836,9 @@ def generate_financial_statements(
     overwrite=False,
     helper=None,
     context=None,
+    source_mode=_SOURCE_MODE_CSV,
 ):
-    """Generate taxonomy-backed financial statement tables from raw EDINET rows."""
+    """Generate taxonomy-backed financial statement tables from EDINET data."""
     helper = helper or _DB_HELPER
     source_db = source_database
     target_db = target_database
@@ -681,6 +846,11 @@ def generate_financial_statements(
         raise ValueError("source_database is required for generate_financial_statements.")
     if not target_db:
         raise ValueError("target_database is required for generate_financial_statements.")
+    normalized_source_mode = str(source_mode or _SOURCE_MODE_CSV).strip().casefold()
+    if normalized_source_mode not in {_SOURCE_MODE_CSV, _SOURCE_MODE_FILINGS}:
+        raise ValueError(
+            "source_mode must be either 'csv' or 'filings' for generate_financial_statements."
+        )
     try:
         granularity = max(int(granularity_level), 0)
     except (TypeError, ValueError) as exc:
@@ -699,14 +869,19 @@ def generate_financial_statements(
             conn.execute("ATTACH DATABASE ? AS src", (source_db,))
             source_schema = "src"
 
-        source_actual = _resolve_source_table(helper, conn, source_schema, _SOURCE_TABLE_NAME)
+        source_actual = None
+        if normalized_source_mode == _SOURCE_MODE_CSV:
+            source_actual = _resolve_source_table(helper, conn, source_schema, _SOURCE_TABLE_NAME)
         taxonomy_actual = helper._resolve_table_name_in_schema(conn, "main", "Taxonomy")
         if not taxonomy_actual:
             raise ValueError("Target_Database must contain a Taxonomy table before generating financial statements.")
 
         _ensure_financial_statement_tables(helper, conn, overwrite=overwrite)
         release_catalog = _load_release_catalog(conn, helper._sql_ident(taxonomy_actual))
-        pending_doc_ids = _fetch_pending_doc_ids(helper, conn, source_schema, source_actual)
+        if normalized_source_mode == _SOURCE_MODE_FILINGS:
+            pending_doc_ids = _fetch_pending_filings_doc_ids(helper, conn, source_schema)
+        else:
+            pending_doc_ids = _fetch_pending_doc_ids(helper, conn, source_schema, source_actual)
         total_documents = len(pending_doc_ids)
         taxonomy_cache = {}
         processed_documents = 0
@@ -727,13 +902,21 @@ def generate_financial_statements(
                     )
                 else:
                     context.checkpoint()
-            metadata_batch_df = _load_metadata_batch(
-                helper,
-                conn,
-                source_schema,
-                source_actual,
-                doc_batch,
-            )
+            if normalized_source_mode == _SOURCE_MODE_FILINGS:
+                metadata_batch_df = _load_filings_metadata_batch(
+                    helper,
+                    conn,
+                    source_schema,
+                    doc_batch,
+                )
+            else:
+                metadata_batch_df = _load_metadata_batch(
+                    helper,
+                    conn,
+                    source_schema,
+                    source_actual,
+                    doc_batch,
+                )
             if metadata_batch_df.empty:
                 continue
 
@@ -788,14 +971,23 @@ def generate_financial_statements(
             )
             combined_concepts = combined_mapping_df["concept_qname"].drop_duplicates().tolist()
 
-            facts_batch_df = _load_fact_batch(
-                helper,
-                conn,
-                source_schema,
-                source_actual,
-                metadata_batch_df["docID"].tolist(),
-                concept_qnames=combined_concepts,
-            )
+            if normalized_source_mode == _SOURCE_MODE_FILINGS:
+                facts_batch_df = _load_filings_fact_batch(
+                    helper,
+                    conn,
+                    source_schema,
+                    metadata_batch_df["docID"].tolist(),
+                    concept_qnames=combined_concepts,
+                )
+            else:
+                facts_batch_df = _load_fact_batch(
+                    helper,
+                    conn,
+                    source_schema,
+                    source_actual,
+                    metadata_batch_df["docID"].tolist(),
+                    concept_qnames=combined_concepts,
+                )
 
             for release_id, release_metadata_df in metadata_batch_df.groupby("release_id", sort=False):
                 release_mapping_df = combined_mapping_df.loc[

@@ -12,9 +12,10 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from src.orchestrator.common.database_bootstrap import ensure_application_databases
+from src.version import __version__
 from src.web_app.api import router_app
 from src.web_app.security import AppSettings, install_security
-from src.version import __version__
 
 BASE_DIR = Path(__file__).resolve().parent
 BRAND_ASSETS_DIR = BASE_DIR.parent.parent / "assets"
@@ -29,6 +30,7 @@ app.description = "Bloomberg-style web frontend for EDINET research workflows."
 app.version = __version__
 SETTINGS = AppSettings.from_env()
 install_security(app, SETTINGS)
+ensure_application_databases(settings=SETTINGS)
 
 
 if FRONTEND_V2_DIST.exists():

@@ -3,18 +3,36 @@
 from __future__ import annotations
 
 import sqlite3
+import zipfile
 from pathlib import Path
 from typing import Any, Iterable
 
-from src.orchestrator.common.sqlite import connect_write, transaction
+from src.orchestrator.common.sqlite import connect_write, table_exists, transaction
+
+from .archive import DEFAULT_ARCHIVE_POLICY, extract_zip_member
+from .xbrl import parse_narrative
+
+_FILING_METADATA_COLUMNS = (
+    "doc_id, edinet_code, submitter_name, period_start, period_end, "
+    "submitted_at, form_code, doc_type_code, xbrl_flag, csv_flag, "
+    "archive_path, archive_sha256, archive_size, status, parse_error, "
+    "created_at, updated_at"
+)
 
 
 class FilingCatalog:
-    """Persist filing metadata separately from the immutable archive."""
+    """Persist filing metadata and compressed archives with rebuildable indexes."""
 
-    def __init__(self, path: str | Path, *, busy_timeout_ms: int = 30_000) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        busy_timeout_ms: int = 30_000,
+        include_narrative_index: bool = False,
+    ) -> None:
         self.path = Path(path).expanduser()
         self.busy_timeout_ms = busy_timeout_ms
+        self.include_narrative_index = include_narrative_index
         self.initialize()
 
     def initialize(self) -> None:
@@ -84,20 +102,10 @@ class FilingCatalog:
                     value_text TEXT,
                     numeric_value REAL,
                     decimals TEXT,
-                    is_nil INTEGER NOT NULL DEFAULT 0,
-                    UNIQUE(doc_id, artifact_id, concept, context_id, unit_id, value_text)
+                    is_nil INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_facts_doc_concept
                     ON xbrl_facts(doc_id, concept);
-                CREATE TABLE IF NOT EXISTS sections (
-                    section_id TEXT PRIMARY KEY,
-                    doc_id TEXT NOT NULL REFERENCES filings(doc_id) ON DELETE CASCADE,
-                    artifact_id TEXT,
-                    ordinal INTEGER NOT NULL,
-                    title TEXT,
-                    text TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_sections_doc ON sections(doc_id, ordinal);
                 CREATE TABLE IF NOT EXISTS quality_issues (
                     issue_id TEXT PRIMARY KEY,
                     doc_id TEXT NOT NULL REFERENCES filings(doc_id) ON DELETE CASCADE,
@@ -108,9 +116,6 @@ class FilingCatalog:
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_quality_doc ON quality_issues(doc_id, severity);
-                CREATE VIRTUAL TABLE IF NOT EXISTS section_search USING fts5(
-                    section_id UNINDEXED, doc_id UNINDEXED, title, text
-                );
                 CREATE TABLE IF NOT EXISTS parse_runs (
                     parse_run_id TEXT PRIMARY KEY,
                     doc_id TEXT NOT NULL REFERENCES filings(doc_id) ON DELETE CASCADE,
@@ -186,6 +191,23 @@ class FilingCatalog:
                 );
                 """
             )
+            if self.include_narrative_index:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS sections (
+                        section_id TEXT PRIMARY KEY,
+                        doc_id TEXT NOT NULL REFERENCES filings(doc_id) ON DELETE CASCADE,
+                        artifact_id TEXT,
+                        ordinal INTEGER NOT NULL,
+                        title TEXT,
+                        text TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_sections_doc ON sections(doc_id, ordinal);
+                    CREATE VIRTUAL TABLE IF NOT EXISTS section_search USING fts5(
+                        section_id UNINDEXED, doc_id UNINDEXED, title, text
+                    );
+                    """
+                )
             trans_columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(filing_translations)").fetchall()
@@ -240,14 +262,28 @@ class FilingCatalog:
         contexts: Iterable[dict[str, Any]],
         units: Iterable[dict[str, Any]],
         facts: Iterable[dict[str, Any]],
-        sections: Iterable[dict[str, Any]],
+        _sections: Iterable[dict[str, Any]],
     ) -> None:
         with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
-            conn.execute("DELETE FROM section_search WHERE doc_id = ?", (doc_id,))
-            for table in ("sections", "xbrl_facts", "xbrl_units", "xbrl_contexts", "artifacts"):
+            numeric_facts = [
+                fact
+                for fact in facts
+                if fact.get("numeric_value") is not None and not fact.get("is_nil")
+            ]
+            if table_exists(conn, "section_search"):
+                conn.execute("DELETE FROM section_search WHERE doc_id = ?", (doc_id,))
+            if table_exists(conn, "sections"):
+                conn.execute("DELETE FROM sections WHERE doc_id = ?", (doc_id,))
+            for table in ("xbrl_facts", "xbrl_units", "xbrl_contexts", "artifacts"):
                 conn.execute(f"DELETE FROM {table} WHERE doc_id = ?", (doc_id,))
             conn.executemany(
-                "INSERT INTO artifacts(artifact_id, doc_id, member_path, kind, media_type, size_bytes, sha256, content) VALUES (:artifact_id, :doc_id, :member_path, :kind, :media_type, :size_bytes, :sha256, :content)",
+                """INSERT INTO artifacts(
+                    artifact_id, doc_id, member_path, kind, media_type,
+                    size_bytes, sha256, content
+                ) VALUES (
+                    :artifact_id, :doc_id, :member_path, :kind, :media_type,
+                    :size_bytes, :sha256, NULL
+                )""",
                 artifacts,
             )
             conn.executemany(
@@ -265,16 +301,11 @@ class FilingCatalog:
                 VALUES (:fact_id, :doc_id, :artifact_id, :concept, :namespace_uri,
                         :context_id, :unit_id, :value_text, :numeric_value,
                         :decimals, :is_nil)""",
-                facts,
+                numeric_facts,
             )
-            conn.executemany(
-                "INSERT INTO sections(section_id, doc_id, artifact_id, ordinal, title, text) VALUES (:section_id, :doc_id, :artifact_id, :ordinal, :title, :text)",
-                sections,
-            )
-            conn.executemany(
-                "INSERT INTO section_search(section_id, doc_id, title, text) VALUES (:section_id, :doc_id, :title, :text)",
-                sections,
-            )
+            # Narrative sections are intentionally not persisted.  The
+            # immutable ZIP is the canonical source and catalog.list_sections
+            # reconstructs sections on demand when the viewer requests them.
 
     def replace_quality_issues(self, doc_id: str, issues: list[dict[str, Any]]) -> None:
         with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
@@ -300,11 +331,25 @@ class FilingCatalog:
             )
 
     def get_filing(self, doc_id: str) -> sqlite3.Row | None:
-        return self._one("SELECT * FROM filings WHERE doc_id = ?", (doc_id,))
+        return self._one(
+            f"SELECT {_FILING_METADATA_COLUMNS} FROM filings WHERE doc_id = ?",
+            (doc_id,),
+        )
+
+    def get_archive_content(self, doc_id: str) -> bytes | None:
+        """Return the retained compressed ZIP for one filing, if available."""
+        row = self._one(
+            "SELECT archive_content FROM filings WHERE doc_id = ?",
+            (doc_id,),
+        )
+        if row is None or row["archive_content"] is None:
+            return None
+        return bytes(row["archive_content"])
 
     def list_company(self, edinet_code: str, limit: int = 100, offset: int = 0) -> list[sqlite3.Row]:
         return self._all(
-            "SELECT * FROM filings WHERE edinet_code = ? ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
+            f"SELECT {_FILING_METADATA_COLUMNS} FROM filings "
+            "WHERE edinet_code = ? ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
             (edinet_code, max(1, min(limit, 500)), max(0, offset)),
         )
 
@@ -312,11 +357,13 @@ class FilingCatalog:
         cap = max(1, min(limit, 500))
         if company_code:
             return self._all(
-                "SELECT * FROM filings WHERE edinet_code = ? ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
+                f"SELECT {_FILING_METADATA_COLUMNS} FROM filings "
+                "WHERE edinet_code = ? ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
                 (company_code, cap, max(0, offset)),
             )
         return self._all(
-            "SELECT * FROM filings ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
+            f"SELECT {_FILING_METADATA_COLUMNS} FROM filings "
+            "ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
             (cap, max(0, offset)),
         )
 
@@ -326,43 +373,204 @@ class FilingCatalog:
             (),
         )
 
+    def coverage_summary(self) -> dict[str, int]:
+        """Return compact filing and company counts for the Filing Explorer landing page."""
+        row = self._one(
+            """
+            SELECT
+                COUNT(DISTINCT doc_id) AS unique_filings,
+                COUNT(DISTINCT NULLIF(TRIM(COALESCE(edinet_code, '')), '')) AS unique_companies,
+                COUNT(DISTINCT NULLIF(TRIM(COALESCE(archive_sha256, '')), '')) AS unique_archives,
+                SUM(CASE WHEN status = 'parsed' THEN 1 ELSE 0 END) AS parsed_filings,
+                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_filings,
+                (SELECT COUNT(DISTINCT doc_id) FROM quality_issues) AS filings_with_issues
+            FROM filings
+            """,
+            (),
+        )
+        if row is None:
+            return {
+                "unique_filings": 0,
+                "unique_companies": 0,
+                "unique_archives": 0,
+                "parsed_filings": 0,
+                "error_filings": 0,
+                "filings_with_issues": 0,
+            }
+        return {
+            key: int(row[key] or 0)
+            for key in (
+                "unique_filings",
+                "unique_companies",
+                "unique_archives",
+                "parsed_filings",
+                "error_filings",
+                "filings_with_issues",
+            )
+        }
+
     def list_artifacts(self, doc_id: str) -> list[sqlite3.Row]:
         return self._all("SELECT artifact_id, doc_id, member_path, kind, media_type, size_bytes, sha256 FROM artifacts WHERE doc_id = ? ORDER BY member_path", (doc_id,))
 
-    def get_artifact_content(self, artifact_id: str) -> sqlite3.Row | None:
-        """Return artifact metadata plus content BLOB."""
-        return self._one("SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,))
+    def get_artifact_content(self, artifact_id: str) -> dict[str, Any] | None:
+        """Return artifact metadata plus on-demand extracted member content."""
+        row = self._one(
+            """SELECT a.*, f.archive_content AS _archive_content
+               FROM artifacts a
+               JOIN filings f ON f.doc_id = a.doc_id
+              WHERE a.artifact_id = ?""",
+            (artifact_id,),
+        )
+        if row is None:
+            return None
+        result = dict(row)
+        archive_content = result.pop("_archive_content", None)
+        if result.get("content") is None and archive_content is not None:
+            result["content"] = extract_zip_member(
+                bytes(archive_content),
+                str(result["member_path"]),
+                DEFAULT_ARCHIVE_POLICY,
+            )
+        return result
+
+    def artifact_content_summary(self) -> dict[str, int]:
+        """Return counts and logical bytes for retained extracted members."""
+        row = self._one(
+            """SELECT COUNT(*) AS artifact_count,
+                      SUM(CASE WHEN content IS NOT NULL THEN 1 ELSE 0 END)
+                          AS content_count,
+                      COALESCE(SUM(length(content)), 0) AS content_bytes,
+                      SUM(CASE WHEN content IS NOT NULL
+                                    AND EXISTS (
+                                        SELECT 1 FROM filings f
+                                         WHERE f.doc_id = artifacts.doc_id
+                                           AND f.archive_content IS NOT NULL
+                                    ) THEN 1 ELSE 0 END) AS safely_clearable_count
+                 FROM artifacts""",
+            (),
+        )
+        return {
+            key: int(row[key] or 0)
+            for key in (
+                "artifact_count",
+                "content_count",
+                "content_bytes",
+                "safely_clearable_count",
+            )
+        }
+
+    def clear_artifact_content(self) -> int:
+        """Remove extracted members only when their compressed archive remains."""
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            cursor = conn.execute(
+                """UPDATE artifacts
+                      SET content = NULL
+                    WHERE content IS NOT NULL
+                      AND EXISTS (
+                            SELECT 1 FROM filings f
+                             WHERE f.doc_id = artifacts.doc_id
+                               AND f.archive_content IS NOT NULL
+                      )"""
+            )
+            return int(cursor.rowcount)
 
     def list_facts(self, doc_id: str, concept: str | None = None, limit: int = 500) -> list[sqlite3.Row]:
         if concept:
             return self._all(
-                "SELECT * FROM xbrl_facts WHERE doc_id = ? AND concept LIKE ? ORDER BY concept LIMIT ?",
+                "SELECT * FROM xbrl_facts WHERE doc_id = ? AND numeric_value IS NOT NULL "
+                "AND is_nil = 0 AND concept LIKE ? ORDER BY concept LIMIT ?",
                 (doc_id, concept, max(1, min(limit, 5000))),
             )
         return self._all(
-            "SELECT * FROM xbrl_facts WHERE doc_id = ? ORDER BY concept LIMIT ?",
+            "SELECT * FROM xbrl_facts WHERE doc_id = ? AND numeric_value IS NOT NULL "
+            "AND is_nil = 0 ORDER BY concept LIMIT ?",
             (doc_id, max(1, min(limit, 5000))),
         )
 
-    def list_sections(self, doc_id: str, query: str | None = None, limit: int = 200) -> list[sqlite3.Row]:
+    def _on_demand_sections(
+        self,
+        doc_id: str,
+        query: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Parse narrative members from the retained ZIP only when requested."""
+        archive_content = self.get_archive_content(doc_id)
+        if archive_content is None:
+            return []
+        try:
+            artifacts = self._all(
+                """SELECT artifact_id, member_path
+                     FROM artifacts
+                    WHERE doc_id = ? AND kind = 'narrative'
+                    ORDER BY member_path""",
+                (doc_id,),
+            )
+        except sqlite3.OperationalError:
+            artifacts = []
+
+        cap = max(1, min(limit, 10_000))
+        needle = query.strip().casefold() if query and query.strip() else ""
+        sections: list[dict[str, Any]] = []
+        for artifact in artifacts:
+            try:
+                content = extract_zip_member(
+                    archive_content,
+                    str(artifact["member_path"]),
+                    DEFAULT_ARCHIVE_POLICY,
+                )
+            except (OSError, ValueError, LookupError, zipfile.BadZipFile):
+                continue
+            for section in parse_narrative(
+                content,
+                doc_id,
+                str(artifact["artifact_id"]),
+            ):
+                if needle and needle not in (
+                    f"{section.get('title', '')}\n{section.get('text', '')}".casefold()
+                ):
+                    continue
+                sections.append(section)
+                if len(sections) >= cap:
+                    return sections
+        return sections
+
+    def list_sections(self, doc_id: str, query: str | None = None, limit: int = 200) -> list[Any]:
         cap = max(1, min(limit, 1000))
         normalized_query = query.strip() if query else ""
-        if normalized_query:
-            fts_phrase = '"' + normalized_query.replace('"', '""') + '"'
-            return self._all(
-                """SELECT s.* FROM section_search f JOIN sections s ON s.section_id = f.section_id
-                   WHERE f.doc_id = ? AND section_search MATCH ? ORDER BY s.ordinal LIMIT ?""",
-                (doc_id, fts_phrase, cap),
-            )
-        return self._all(
-            "SELECT * FROM sections WHERE doc_id = ? ORDER BY ordinal LIMIT ?",
-            (doc_id, cap),
-        )
+        try:
+            if normalized_query:
+                fts_phrase = '"' + normalized_query.replace('"', '""') + '"'
+                stored = self._all(
+                    """SELECT s.* FROM section_search f JOIN sections s ON s.section_id = f.section_id
+                       WHERE f.doc_id = ? AND section_search MATCH ? ORDER BY s.ordinal LIMIT ?""",
+                    (doc_id, fts_phrase, cap),
+                )
+            else:
+                stored = self._all(
+                    "SELECT * FROM sections WHERE doc_id = ? ORDER BY ordinal LIMIT ?",
+                    (doc_id, cap),
+                )
+        except sqlite3.OperationalError:
+            stored = []
+        return stored or self._on_demand_sections(doc_id, normalized_query, cap)
 
-    def get_section(self, doc_id: str, section_id: str) -> sqlite3.Row | None:
-        return self._one(
-            "SELECT * FROM sections WHERE doc_id = ? AND section_id = ?",
-            (doc_id, section_id),
+    def get_section(self, doc_id: str, section_id: str) -> Any | None:
+        try:
+            stored = self._one(
+                "SELECT * FROM sections WHERE doc_id = ? AND section_id = ?",
+                (doc_id, section_id),
+            )
+        except sqlite3.OperationalError:
+            stored = None
+        if stored is not None:
+            return stored
+        return next(
+            (
+                section
+                for section in self._on_demand_sections(doc_id, limit=10_000)
+                if section["section_id"] == section_id
+            ),
+            None,
         )
 
     def list_taxonomy(self, doc_id: str) -> list[sqlite3.Row]:
@@ -383,8 +591,8 @@ class FilingCatalog:
         error_message: str | None = None,
         parse_run_id: str | None = None,
     ) -> str:
-        from uuid import uuid4
         from datetime import datetime, timezone
+        from uuid import uuid4
 
         run_id = parse_run_id or str(uuid4())
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")

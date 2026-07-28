@@ -237,6 +237,7 @@ export default function FilingViewerPage() {
   const [htmError, setHtmError] = useState('')
   const [conceptFilter, setConceptFilter] = useState('')
   const [sideBySide, setSideBySide] = useState(true)
+  const showEnglishPane = showEn && Boolean(htmContentEn)
 
   const detail = useQuery({
     queryKey: ['filing', docId],
@@ -424,11 +425,11 @@ export default function FilingViewerPage() {
                   <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <h2>{htmFiles.data?.files.find(f => f.artifact_id === selectedHtm)?.label || 'Report'}</h2>
                     <button
-                      className={showEn ? 'button button--primary button--small' : 'button button--secondary button--small'}
+                      className={showEnglishPane ? 'button button--primary button--small' : 'button button--secondary button--small'}
                       disabled={translatingHtm || (!htmContentEn && showEn)}
                       onClick={() => toggleTranslation()}
                     >
-                      {translatingHtm ? 'Translating with Argos…' : showEn ? 'Show 日本語' : htmContentEn ? 'Show English' : 'Translate to English'}
+                      {translatingHtm ? 'Translating with Argos…' : showEnglishPane ? 'Hide English' : htmContentEn ? 'Show English alongside' : 'Translate to English'}
                     </button>
                     <button
                       className="button button--small button--ghost"
@@ -452,18 +453,34 @@ export default function FilingViewerPage() {
                     </button>
                     {htmError && <small style={{ color: 'var(--danger)', marginLeft: 8 }}>{htmError}</small>}
                   </div>
-                  <div className="card-body" style={{ padding: 0, position: 'relative' }}>
+                  <div className="card-body filing-report-body" style={{ padding: 0, position: 'relative' }}>
                     {translatingHtm && (
                       <div style={{ position: 'absolute', top: 8, right: 12, zIndex: 1, padding: '4px 10px', borderRadius: 6, background: 'var(--primary-soft)', color: 'var(--primary)', fontSize: '.78rem', fontWeight: 600 }}>
                         Translating with Argos…
                       </div>
                     )}
-                    <iframe
-                      srcDoc={showEn && htmContentEn ? htmContentEn : htmContent}
-                      sandbox="allow-same-origin"
-                      style={{ width: '100%', height: '75vh', border: '0', background: '#fff' }}
-                      title="EDINET report"
-                    />
+                    <div className={showEnglishPane ? 'filing-report-grid filing-report-grid--dual' : 'filing-report-grid'}>
+                      <div className="filing-report-pane">
+                        <span className="panel-label">Japanese original</span>
+                        <iframe
+                          className="filing-report-frame"
+                          srcDoc={htmContent}
+                          sandbox="allow-same-origin"
+                          title="EDINET report Japanese original"
+                        />
+                      </div>
+                      {showEnglishPane && (
+                        <div className="filing-report-pane">
+                          <span className="panel-label">English translation</span>
+                          <iframe
+                            className="filing-report-frame"
+                            srcDoc={htmContentEn}
+                            sandbox="allow-same-origin"
+                            title="EDINET report English translation"
+                          />
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}

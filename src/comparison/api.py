@@ -12,8 +12,10 @@ from src.comparison.service import (
     DEFAULT_METRICS,
     METRIC_DEFINITIONS,
     extract_latest_statement_metrics,
+    extract_latest_table_metrics,
     normalize_companies,
 )
+from src.orchestrator.common.sqlite import connect_read, quote_identifier
 from src.security_analysis import get_security_overview, get_security_peers, get_security_statements
 
 router = APIRouter(prefix="/api/comparison", tags=["comparison"])
@@ -24,6 +26,8 @@ _ANALYSIS_STATEMENT_SOURCES = {
     "balance": "BalanceSheet",
     "shares": "ShareMetrics",
 }
+_METRIC_METADATA_COLUMNS = {"docid", "company_code", "edinetcode", "periodend"}
+_METRIC_SKIP_TABLES = {"companyinfo", "financialstatements", "stock_prices", "documentlist", "sqlite_sequence"}
 
 
 def _resolve_db() -> str:
@@ -50,9 +54,60 @@ def _codes(values: list[str]) -> list[str]:
     return normalized
 
 
-def _selected_metrics(values: list[str]) -> list[str]:
-    selected = list(dict.fromkeys(metric for metric in values if metric in METRIC_DEFINITIONS))
+def _metric_catalog(db: str) -> dict[str, list[str]]:
+    """Return statement tables and columns that can be joined to filings."""
+    catalog: dict[str, list[str]] = {}
+    conn = connect_read(db)
+    try:
+        table_rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        ).fetchall()
+        for table_row in table_rows:
+            table_name = str(table_row[0])
+            if table_name.casefold() in _METRIC_SKIP_TABLES:
+                continue
+            columns = [
+                str(row[1])
+                for row in conn.execute(
+                    f"PRAGMA table_info({quote_identifier(table_name)})"
+                ).fetchall()
+            ]
+            lowered = {column.casefold() for column in columns}
+            has_company_key = "company_code" in lowered or "edinetcode" in lowered
+            if "docid" not in lowered and not (has_company_key and "periodend" in lowered):
+                continue
+            metric_columns = [
+                column for column in columns if column.casefold() not in _METRIC_METADATA_COLUMNS
+            ]
+            if metric_columns:
+                catalog[table_name] = metric_columns
+    finally:
+        conn.close()
+    return catalog
+
+
+def _selected_metrics(values: list[str], catalog: dict[str, list[str]] | None = None) -> list[str]:
+    selected: list[str] = []
+    for metric in values:
+        if metric in METRIC_DEFINITIONS:
+            selected.append(metric)
+            continue
+        table, separator, column = metric.partition(".")
+        if separator and catalog and column in catalog.get(table, []):
+            selected.append(metric)
+    selected = list(dict.fromkeys(selected))
     return selected or DEFAULT_METRICS.copy()
+
+
+def _metric_definition(metric: str) -> dict[str, str]:
+    definition = METRIC_DEFINITIONS.get(metric)
+    if definition:
+        return definition
+    table, separator, column = metric.partition(".")
+    return {
+        "label": column if separator else metric,
+        "group": table if separator else "Other",
+    }
 
 
 def _overview(db: str, code: str) -> dict[str, Any] | None:
@@ -136,8 +191,24 @@ def _enrich_overview(db: str, code: str, overview: dict[str, Any]) -> dict[str, 
     return enriched
 
 
+def _custom_metric_values(
+    db: str,
+    code: str,
+    metric_refs: list[str],
+) -> tuple[dict[str, float | None], str | None]:
+    if not metric_refs:
+        return {}, None
+    tables = list(dict.fromkeys(metric_ref.split(".", 1)[0] for metric_ref in metric_refs))
+    sources = {table: table for table in tables}
+    history = get_security_statements(db, code, periods=8, statement_sources=sources)
+    return extract_latest_table_metrics(history, metric_refs)
+
+
 def _snapshot_rows(db: str, codes: list[str], metrics: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
     overviews: dict[str, dict[str, Any]] = {}
+    custom_values: dict[str, dict[str, float | None]] = {}
+    custom_periods: dict[str, str] = {}
+    custom_refs = [metric for metric in metrics if metric not in METRIC_DEFINITIONS]
     missing: list[str] = []
     for code in codes:
         result = _overview(db, code)
@@ -145,7 +216,11 @@ def _snapshot_rows(db: str, codes: list[str], metrics: list[str]) -> tuple[list[
             missing.append(code)
         else:
             overviews[code] = _enrich_overview(db, code, result)
-    normalized = normalize_companies(list(overviews), overviews, metrics)
+            values, period = _custom_metric_values(db, code, custom_refs)
+            custom_values[code] = values
+            if period:
+                custom_periods[code] = period
+    normalized = normalize_companies(list(overviews), overviews, metrics, metric_values=custom_values)
     rows = []
     for code, result in overviews.items():
         row = normalized[code]
@@ -154,12 +229,26 @@ def _snapshot_rows(db: str, codes: list[str], metrics: list[str]) -> tuple[list[
             "company_code": code,
             "company": result.get("company", {}),
             "market": result.get("market", {}),
-            "period_end": metadata.get("comparison_metric_period_end") or metadata.get("last_financial_period_end"),
+            "period_end": (
+                metadata.get("comparison_metric_period_end")
+                or custom_periods.get(code)
+                or metadata.get("last_financial_period_end")
+            ),
             "price_date": metadata.get("last_price_date"),
             "data_quality_flags": metadata.get("data_quality_flags", []),
         })
         rows.append(row)
     return rows, missing
+
+
+@router.get("/metrics")
+def metrics() -> dict[str, Any]:
+    """Return statement tables and columns available to the comparison picker."""
+    try:
+        return {"tables": _metric_catalog(_resolve_db())}
+    except Exception as exc:
+        _LOGGER.error("Could not load comparison metric catalog: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/peers/{company_code}")
@@ -176,14 +265,15 @@ def peers(company_code: str, limit: int = Query(default=10, ge=1, le=50)) -> dic
 @router.post("/snapshot")
 def snapshot(payload: ComparisonRequest) -> dict[str, Any]:
     codes = _codes(payload.company_codes)
-    metrics = _selected_metrics(payload.metrics)
-    rows, missing = _snapshot_rows(_resolve_db(), codes, metrics)
+    db = _resolve_db()
+    metrics = _selected_metrics(payload.metrics, _metric_catalog(db))
+    rows, missing = _snapshot_rows(db, codes, metrics)
     return {
         "companies": rows,
         "requested": codes,
         "missing": missing,
         "metrics": metrics,
-        "metric_definitions": {metric: METRIC_DEFINITIONS[metric] for metric in metrics},
+        "metric_definitions": {metric: _metric_definition(metric) for metric in metrics},
     }
 
 

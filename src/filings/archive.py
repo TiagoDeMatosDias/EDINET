@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import re
 import tempfile
@@ -25,6 +26,10 @@ class UnsafeArchiveError(ValueError):
     """Raised when a submitted archive exceeds safe extraction boundaries."""
 
 
+class ArchiveMemberNotFoundError(LookupError):
+    """Raised when a requested member is not present in a validated ZIP."""
+
+
 def _safe_member(name: str) -> str:
     normalized = name.replace("\\", "/")
     raw_parts = normalized.split("/")
@@ -45,8 +50,6 @@ def _safe_member(name: str) -> str:
 
 def validate_zip_in_memory(content: bytes, policy: ArchivePolicy = DEFAULT_ARCHIVE_POLICY) -> list[zipfile.ZipInfo]:
     """Validate ZIP metadata from raw bytes (no disk I/O)."""
-    import io
-
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
         infos = archive.infolist()
         if len(infos) > policy.max_members:
@@ -67,6 +70,36 @@ def validate_zip_in_memory(content: bytes, policy: ArchivePolicy = DEFAULT_ARCHI
             if total > policy.max_total_bytes:
                 raise UnsafeArchiveError("ZIP total declared size exceeds limit")
         return infos
+
+
+def extract_zip_member(
+    content: bytes,
+    member_path: str,
+    policy: ArchivePolicy = DEFAULT_ARCHIVE_POLICY,
+) -> bytes:
+    """Extract one validated member from an in-memory ZIP archive.
+
+    The archive is validated before decompression so the same member, path,
+    size, duplicate-entry, and symlink limits used during ingestion also apply
+    to on-demand reads.
+    """
+    requested = _safe_member(member_path)
+    infos = validate_zip_in_memory(content, policy)
+    target = next(
+        (
+            info
+            for info in infos
+            if not info.is_dir() and _safe_member(info.filename) == requested
+        ),
+        None,
+    )
+    if target is None:
+        raise ArchiveMemberNotFoundError(member_path)
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        extracted = archive.read(target)
+    if len(extracted) != target.file_size:
+        raise UnsafeArchiveError("Extracted ZIP member size does not match its declaration")
+    return extracted
 
 
 def validate_zip(path: str | Path, policy: ArchivePolicy = DEFAULT_ARCHIVE_POLICY) -> list[zipfile.ZipInfo]:

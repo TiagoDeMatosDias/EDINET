@@ -73,7 +73,14 @@ def _number(value: str | None) -> float | None:
 class XbrlParser:
     """Parse a single XBRL instance into bounded relational values."""
 
-    def parse(self, content: bytes, doc_id: str, artifact_id: str) -> ParsedXbrl:
+    def parse(
+        self,
+        content: bytes,
+        doc_id: str,
+        artifact_id: str,
+        *,
+        numeric_only: bool = False,
+    ) -> ParsedXbrl:
         root = ElementTree.fromstring(content)
         elements = list(root.iter())
         contexts = [self._context(element, doc_id) for element in elements if _local(element.tag) == _CONTEXT_SUFFIX]
@@ -85,24 +92,37 @@ class XbrlParser:
             if local in _FACT_SKIP or local.startswith("footnote") or (not inline and not element.attrib.get("contextRef")):
                 continue
             context_id = element.attrib.get("contextRef")
-            value = _text(element)
             concept = element.attrib.get("name", local).rsplit(":", 1)[-1]
-            numeric_value = _number(value)
-            if inline and numeric_value is not None:
+            # XBRL numeric facts are identified by their numeric element/type,
+            # not by whether arbitrary text happens to be parseable as a
+            # number.  This distinction is important when the compact index
+            # retains analytical facts but leaves narrative facts in the ZIP.
+            numeric_fact = local == "nonFraction" or (not inline and bool(element.attrib.get("unitRef")))
+            if numeric_only and not numeric_fact:
+                continue
+            value = _text(element)
+            is_nil = 1 if element.attrib.get("{http://www.w3.org/2001/XMLSchema-instance}nil") == "true" else 0
+            numeric_value = _number(value) if numeric_fact and not is_nil else None
+            if inline and numeric_fact and numeric_value is not None:
                 numeric_value *= 10 ** int(element.attrib.get("scale", "0"))
                 if element.attrib.get("sign") == "-":
                     numeric_value *= -1
+            unit_id = element.attrib.get("unitRef")
+            decimals = element.attrib.get("decimals")
             facts.append(
                 XbrlFact(
+                    # Keep the existing content-derived identifier stable so
+                    # quality/provenance rows remain compatible across the
+                    # compact-index migration.
                     fact_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{doc_id}:{artifact_id}:{concept}:{context_id}:{value}")),
                     concept=concept,
                     namespace_uri=_namespace(element.tag),
                     context_id=context_id,
-                    unit_id=element.attrib.get("unitRef"),
+                    unit_id=unit_id,
                     value_text=value,
                     numeric_value=numeric_value,
-                    decimals=element.attrib.get("decimals"),
-                    is_nil=1 if element.attrib.get("{http://www.w3.org/2001/XMLSchema-instance}nil") == "true" else 0,
+                    decimals=decimals,
+                    is_nil=is_nil,
                 )
             )
         return ParsedXbrl(contexts, units, facts)

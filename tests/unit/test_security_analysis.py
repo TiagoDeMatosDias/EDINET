@@ -385,6 +385,47 @@ def test_search_securities_uses_submitter_name_fallback(security_db):
     assert results[0]["company_name"] == "Delta Seeds KK"
 
 
+def test_search_securities_works_with_company_info_only(tmp_path):
+    db_path = str(tmp_path / "company_only.db")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "CREATE TABLE CompanyInfo (Company_Code TEXT, Company_Name TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO CompanyInfo VALUES (?, ?)",
+            ("E90001", "Partial Holdings"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    results = search_securities(db_path, "partial")
+
+    assert results
+    assert results[0]["company_code"] == "E90001"
+    assert results[0]["company_name"] == "Partial Holdings"
+    assert results[0]["ticker"] == ""
+
+
+def test_search_securities_works_with_ticker_table_only(tmp_path):
+    db_path = str(tmp_path / "prices_only.db")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("CREATE TABLE Stock_Prices (Ticker TEXT)")
+        conn.execute("INSERT INTO Stock_Prices VALUES (?)", ("7203",))
+        conn.commit()
+    finally:
+        conn.close()
+
+    results = search_securities(db_path, "7203")
+
+    assert results
+    assert results[0]["company_code"] is None
+    assert results[0]["ticker"] == "7203"
+    assert results[0]["company_name"] == "7203"
+
+
 def test_ensure_security_analysis_indexes_creates_expected_indexes(security_db):
     result = ensure_security_analysis_indexes(security_db)
     assert result["ok"] is True

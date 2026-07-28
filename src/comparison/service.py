@@ -119,6 +119,27 @@ def extract_latest_statement_metrics(history: dict[str, Any]) -> tuple[dict[str,
     return metrics, max(metric_periods) if metric_periods else None
 
 
+def extract_latest_table_metrics(
+    history: dict[str, Any],
+    metric_refs: list[str],
+) -> tuple[dict[str, float | None], str | None]:
+    """Extract latest populated values for arbitrary ``Table.Column`` refs."""
+    periods = [str(period) for period in history.get("periods", [])]
+    values: dict[str, float | None] = {}
+    metric_periods: list[str] = []
+    for metric_ref in metric_refs:
+        table, separator, column = metric_ref.partition(".")
+        if not separator or not table or not column:
+            values[metric_ref] = None
+            continue
+        rows = _statement_rows(history, (table,))
+        value, period = _latest_statement_value(rows, periods, (column,))
+        values[metric_ref] = value
+        if period:
+            metric_periods.append(period)
+    return values, max(metric_periods) if metric_periods else None
+
+
 def flatten_overview(overview: dict[str, Any]) -> dict[str, float | None]:
     """Map the nested analysis response to the comparison metric vocabulary."""
     analysis = overview.get("metrics") or {}
@@ -232,11 +253,23 @@ def normalize_companies(
     company_codes: list[str],
     overviews: dict[str, dict[str, Any]],
     metrics: list[str] | None = None,
+    metric_values: dict[str, dict[str, float | None]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Produce metric, common-size, and peer-rank data for each company."""
-    selected = [metric for metric in (metrics or DEFAULT_METRICS) if metric in METRIC_DEFINITIONS]
+    selected = [
+        metric
+        for metric in (metrics or DEFAULT_METRICS)
+        if metric in METRIC_DEFINITIONS or "." in metric
+    ]
     metrics_map = {
-        code: {key: flatten_overview(overviews.get(code, {})).get(key) for key in selected}
+        code: {
+            key: (
+                flatten_overview(overviews.get(code, {})).get(key)
+                if key in METRIC_DEFINITIONS
+                else (metric_values or {}).get(code, {}).get(key)
+            )
+            for key in selected
+        }
         for code in company_codes
     }
     result: dict[str, dict[str, Any]] = {}

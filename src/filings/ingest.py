@@ -1,11 +1,16 @@
-"""Catalog an EDINET archive from raw ZIP bytes and build its XBRL/narrative indexes.
+"""Catalog an EDINET archive and build its compact XBRL index.
 
-All member content is stored as BLOBs in Filings.db — no files are written to disk.
+The compressed provider ZIP is retained in ``Filings.db``. Extracted member
+bytes are used transiently for parsing and are not duplicated in the catalog.
+Only numeric/analytical XBRL facts are persisted; narrative members are
+extracted from the retained ZIP on demand.
 """
 
 from __future__ import annotations
 
 import io
+import os
+import sqlite3
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +19,7 @@ from typing import Any
 from .archive import DEFAULT_ARCHIVE_POLICY, ArchivePolicy, validate_zip_in_memory
 from .catalog import FilingCatalog
 from .quality import assess_facts
-from .xbrl import XbrlParser, artifact_kind, parse_narrative, sha256
+from .xbrl import XbrlParser, artifact_kind, sha256
 
 
 def _now() -> str:
@@ -54,10 +59,9 @@ def ingest_content(
         try:
             from src.orchestrator.common.db_config import get_db1
             from src.orchestrator.common.sqlite import connect_read
-            import os as _os
 
             db1 = get_db1()
-            if _os.path.exists(db1):
+            if os.path.exists(db1):
                 conn = connect_read(db1)
                 row = conn.execute(
                     "SELECT edinetCode, filerName, submitDateTime, periodStart, periodEnd, formCode "
@@ -72,7 +76,7 @@ def ingest_content(
                     metadata.setdefault("period_end", row["periodEnd"] or "")
                     metadata.setdefault("form_code", row["formCode"] or "")
                 conn.close()
-        except Exception:
+        except (OSError, sqlite3.Error, ValueError):
             pass
     now = _now()
     catalog.upsert_filing(
@@ -101,7 +105,6 @@ def ingest_content(
     contexts: list[dict[str, Any]] = []
     units: list[dict[str, Any]] = []
     facts: list[dict[str, Any]] = []
-    sections: list[dict[str, Any]] = []
     parser = XbrlParser()
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zipped:
@@ -120,11 +123,10 @@ def ingest_content(
                         "media_type": media_type,
                         "size_bytes": len(content),
                         "sha256": sha256(content),
-                        "content": content,
                     }
                 )
                 if kind == "xbrl" and len(content) <= 25 * 1024 * 1024:
-                    parsed = parser.parse(content, doc_id, artifact_id)
+                    parsed = parser.parse(content, doc_id, artifact_id, numeric_only=True)
                     contexts.extend(parsed.contexts)
                     units.extend(parsed.units)
                     facts.extend(
@@ -142,10 +144,9 @@ def ingest_content(
                             "is_nil": fact.is_nil,
                         }
                         for fact in parsed.facts
+                        if fact.numeric_value is not None and not fact.is_nil
                     )
-                elif kind == "narrative" and len(content) <= 25 * 1024 * 1024:
-                    sections.extend(parse_narrative(content, doc_id, artifact_id))
-        catalog.replace_parsed_content(doc_id, artifacts, contexts, units, facts, sections)
+        catalog.replace_parsed_content(doc_id, artifacts, contexts, units, facts, [])
         catalog.replace_quality_issues(doc_id, assess_facts(doc_id, facts))
         catalog.set_status(doc_id, "parsed", None, _now())
     except Exception as exc:

@@ -14,6 +14,34 @@ interface Filing {
   form_code?: string | null
 }
 
+interface FilingCoverageSummary {
+  unique_filings: number
+  unique_companies: number
+  unique_archives: number
+  parsed_filings: number
+  error_filings: number
+  filings_with_issues: number
+}
+
+interface FilingCoverageResponse {
+  summary: FilingCoverageSummary
+}
+
+function FilingStat({ label, value }: { label: string; value: number }) {
+  return <div className="filing-stat"><span>{label}</span><strong>{value.toLocaleString()}</strong></div>
+}
+
+function FilingStats({ summary }: { summary: FilingCoverageSummary }) {
+  return (
+    <div className="filing-stats-grid">
+      <FilingStat label="Unique filings" value={summary.unique_filings} />
+      <FilingStat label="Companies with filings" value={summary.unique_companies} />
+      <FilingStat label="Parsed filings" value={summary.parsed_filings} />
+      <FilingStat label="Unique archive packages" value={summary.unique_archives} />
+    </div>
+  )
+}
+
 export default function FilingsPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -22,12 +50,19 @@ export default function FilingsPage() {
     initialCode ? { company_code: initialCode, ticker: '', company_name: initialCode } : null,
   )
   const [searchedCode, setSearchedCode] = useState(initialCode)
+  const hasSearch = Boolean(searchedCode.trim())
+
+  const coverage = useQuery({
+    queryKey: ['filing-coverage'],
+    queryFn: () => apiRequest<FilingCoverageResponse>('/api/filings/coverage'),
+  })
 
   const filings = useQuery({
-    queryKey: ['filings', searchedCode || 'recent'],
+    queryKey: ['filings', searchedCode.trim()],
+    enabled: hasSearch,
     queryFn: () => searchedCode.trim()
       ? apiRequest<{ filings: Filing[] }>(`/api/filings/company/${encodeURIComponent(searchedCode.trim())}`)
-      : apiRequest<{ filings: Filing[] }>('/api/filings?limit=100'),
+      : Promise.resolve({ filings: [] }),
   })
 
   const chooseCompany = (company: SecuritySearchResult | null) => {
@@ -44,38 +79,42 @@ export default function FilingsPage() {
             <h2>Find filings</h2>
             <p>Search by company name, ticker, EDINET code, industry, or market.</p>
           </div>
-          <div className="button-row">
-            <CompanyPicker selected={selected} onSelect={chooseCompany} label="Company" />
-            <button className="button button--secondary" onClick={() => { setSelected(null); setSearchedCode('') }}>
-              Show all
-            </button>
-          </div>
+          <CompanyPicker selected={selected} onSelect={chooseCompany} label="Find filings" />
         </div>
-        <div className="card-body">
-          {filings.isLoading && <LoadingState label="Loading filings" />}
-          {filings.error && <p className="form-error">{(filings.error as Error).message}</p>}
-          {filings.data && !filings.data.filings.length && (
-            <EmptyState title="No filings found" description={searchedCode ? `No archived filings for ${searchedCode}.` : 'No filings archived yet. Download XBRL packages first.'} />
-          )}
-          <div className="filing-list">
-            {filings.data?.filings.map(f => (
-              <button
-                key={f.doc_id}
-                className="filing-row"
-                onClick={() => navigate(`/filings/${encodeURIComponent(f.doc_id)}`)}
-              >
-                <span>
-                  <strong>{f.submitter_name || f.edinet_code || 'Unknown'}</strong>
-                  <small>{f.doc_id} · {f.form_code || 'XBRL'} · {f.status}</small>
-                </span>
-                <span style={{ textAlign: 'right' }}>
-                  <strong>{f.period_end || '—'}</strong>
-                  <small>{f.submitted_at ? new Date(f.submitted_at).toLocaleDateString() : 'Unknown date'}</small>
-                </span>
-              </button>
-            ))}
+        {!hasSearch ? (
+          <div className="card-body filing-overview">
+            <p className="muted">Choose a company to browse its retained filings.</p>
+            {coverage.isLoading && <LoadingState label="Loading filing statistics" />}
+            {coverage.error && <p className="form-error">{(coverage.error as Error).message}</p>}
+            {coverage.data && <FilingStats summary={coverage.data.summary} />}
           </div>
-        </div>
+        ) : (
+          <div className="card-body">
+            {filings.isLoading && <LoadingState label="Loading filings" />}
+            {filings.error && <p className="form-error">{(filings.error as Error).message}</p>}
+            {filings.data && !filings.data.filings.length && (
+              <EmptyState title="No filings found" description={`No archived filings for ${searchedCode}.`} />
+            )}
+            <div className="filing-list">
+              {filings.data?.filings.map(f => (
+                <button
+                  key={f.doc_id}
+                  className="filing-row"
+                  onClick={() => navigate(`/filings/${encodeURIComponent(f.doc_id)}`)}
+                >
+                  <span>
+                    <strong>{f.submitter_name || f.edinet_code || 'Unknown'}</strong>
+                    <small>{f.doc_id} · {f.form_code || 'XBRL'} · {f.status}</small>
+                  </span>
+                  <span style={{ textAlign: 'right' }}>
+                    <strong>{f.period_end || '—'}</strong>
+                    <small>{f.submitted_at ? new Date(f.submitted_at).toLocaleDateString() : 'Unknown date'}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

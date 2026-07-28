@@ -9,6 +9,8 @@ Deferred services: `/filings` is the XBRL Filing Explorer backed by immutable ty
 - Windows is the packaged target. Linux is supported for source development and CI.
 - Base, Standardized, and Portfolio databases are selected through `config/database_paths.json`; additional roots require `EDINET_ALLOWED_DATA_ROOTS`.
 
+When the web server starts, it creates any missing configured database parents and files. Base and Standardized are created as empty pipeline-owned SQLite databases, Portfolio receives its versioned schema, and auth, research, pipeline-jobs, and filings receive their managed schemas and migrations.
+
 Create the environment and install declared extras:
 
 ```powershell
@@ -65,6 +67,35 @@ Database inputs are resolved and authorized server-side. Uploads and generated o
 - `EDINET_MAX_REPORT_ARTIFACT_BYTES` defaults to 128 MiB for reproducible report ZIPs. Reports are written atomically beneath `data/reports/` and partial files are removed on failure.
 
 Values are byte counts and are read at application startup. Increase the backtest artifact limit only when the expected archive and available disk space justify it, then restart the application.
+
+### Filing archive storage
+
+`Filings.db` retains each provider ZIP as a compressed `archive_content` BLOB. Extracted member bytes are not written for new ingests; the Filing Explorer extracts the requested member from the ZIP in memory when it is viewed. New catalogs retain numeric/analytical XBRL facts, contexts, units, and artifact metadata; narrative sections are reconstructed from the archive on demand instead of being materialized in the core database.
+
+Existing databases created before this storage mode may still contain extracted `artifacts.content` BLOBs. Review the dry-run summary, then compact an existing database only after confirming that every archive is retained:
+
+```powershell
+\.venv3\Scripts\python.exe scripts/compact_filings_db.py
+\.venv3\Scripts\python.exe scripts/compact_filings_db.py --apply
+```
+
+The compaction command refuses to clear an extracted member when its filing has no retained archive. It also requires substantial free disk space for SQLite `VACUUM`; use `--no-vacuum` only when clearing the BLOBs now and reclaiming space later is intentional.
+
+To reclaim a large WAL left by a bulk cleanup, stop the application and workers first, inspect it, then checkpoint it through SQLite:
+
+```powershell
+\.venv3\Scripts\python.exe scripts/checkpoint_filings_db.py
+\.venv3\Scripts\python.exe scripts/checkpoint_filings_db.py --apply
+```
+
+To rebuild an existing catalog with the compact numeric-only schema, use a new output path on a volume with sufficient free space. The source database is read-only and is never overwritten:
+
+```powershell
+\.venv3\Scripts\python.exe scripts/rebuild_filings_db.py --source data/databases/Filings.db --output D:\data\Filings.compact.db
+\.venv3\Scripts\python.exe scripts/rebuild_filings_db.py --source data/databases/Filings.db --output D:\data\Filings.compact.db --apply
+```
+
+The rebuild omits nonnumeric/nil facts, materialized sections, and the FTS copy of narrative text while retaining the compressed ZIPs. Verify the output before switching `EDINET_FILINGS_DB` to it.
 
 ## Configuration Format
 
@@ -135,6 +166,27 @@ Downloads filings for documents already in the document list that match the filt
 - `secCode` — filter by security code; leave blank for all.
 - `Downloaded` — `"False"` to skip already-downloaded documents.
 - `Target_Database` — database containing the document list table and destination financial data table.
+
+---
+
+### `download_xbrl`
+Downloads and indexes EDINET type-1 XBRL packages into `Filings.db`.
+
+```json
+"download_xbrl_config": {
+  "mode": "all",
+  "provider_token": "",
+  "max_documents": 100,
+  "doc_type_code": "120"
+}
+```
+
+- `mode` — `explicit` downloads the IDs in `document_ids`; `backfill` discovers a bounded batch of eligible CSV-downloaded documents; `all` queries every eligible `DocumentList` row with `xbrlFlag = "1"` and `legalStatus` in `("1", "2")` that is not marked as XBRL-downloaded.
+- `document_ids` — comma-separated EDINET document IDs used only in `explicit` mode.
+- `max_documents` — applies only to `backfill`; `all` processes the complete matching queue without a document-count cap.
+- `doc_type_code` — applies to both `backfill` and `all`; `120` is annual, `130` semi-annual, `140` quarterly, and an empty value includes all types.
+- `provider_token` — optional override for `API_KEY` or `EDINET_API_TOKEN`.
+- `all` adds `DocumentList.XbrlDownloaded` when needed and records `True`, `Checked_Unavailable`, or `Checked_Error` per document. It does not modify the legacy CSV `DocumentList.Downloaded` marker, and failed documents remain eligible for a later retry.
 
 ---
 
@@ -239,14 +291,13 @@ Supports `overwrite` — when enabled, the output tables are dropped and fully r
 
 ```json
 "generate_financial_statements_config": {
-  "Source_Database": "C:/path/to/base.db",
-  "Target_Database": "C:/path/to/standardized.db",
+  "Source_Mode": "csv",
   "Granularity_level": 3
 }
 ```
 
-- `Source_Database` — database containing the raw EDINET financial data.
-- The source table is fixed to `financialData_full`.
+- `Source_Mode` — `csv` (default) reads the legacy `Base.db`/`financialData_full` table; `filings` reads normalized numeric XBRL facts from `Filings.db`.
+- When `Source_Mode` is `filings`, the database is taken from `EDINET_FILINGS_DB` or `config/database_paths.json` (`filings_db`).
 - `Target_Database` — database where `FinancialStatements` and the wide taxonomy-backed `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, and `ShareMetrics` tables are written.
 - `Granularity_level` — maximum taxonomy level to materialize into the statement tables. `ShareMetrics` concepts are stored at level `0` so they are always included.
 

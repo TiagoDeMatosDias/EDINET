@@ -107,6 +107,8 @@ Architecture:
 - **`src/orchestrator/common/__init__.py`**: shared `StepDefinition` type plus discovery helpers that scan immediate child step packages under `src/orchestrator`.
 - **`src/orchestrator/common/validation.py`**: pipeline validation and step config normalization.
 - **Discovered step packages**: each step lives in its own package such as `src/orchestrator/generate_financial_statements/` and exports `STEP_DEFINITION` only.
+- `download_xbrl` supports explicit IDs, bounded Base.db backfill, and an `all` mode that queues every eligible XBRL document using the dedicated `DocumentList.XbrlDownloaded` marker while preserving the legacy CSV `Downloaded` marker.
+- `generate_financial_statements` accepts `Source_Mode="csv"` (legacy `Base.db`) or `Source_Mode="filings"` (normalized numeric XBRL facts from `Filings.db`); both modes write the same standardized statement tables to DB2.
 - **`STEP_HANDLERS`**: generated registry mapping step names and aliases to discovered handlers.
 
 - `def run(config=None, steps=None, on_step_start=None, on_step_done=None, on_step_error=None, cancel_event=None) -> None`
@@ -245,6 +247,12 @@ Responsibility: portfolio construction, price/dividend ingestion, return calcula
 Responsibility: Configuration-driven database path resolution.
 
 - `def get_db2() -> str` - Return the default DB2 path from `config/database_paths.json`, falling back to the `DB2_PATH` env var.
+
+### [src/orchestrator/common/database_bootstrap.py](../src/orchestrator/common/database_bootstrap.py)
+
+Responsibility: Startup creation and schema initialization for all configured application databases.
+
+- `def ensure_application_databases(settings: Any | None = None, db1_path: str | Path | None = None, db2_path: str | Path | None = None, db3_path: str | Path | None = None, auth_db_path: str | Path | None = None, research_db_path: str | Path | None = None, jobs_db_path: str | Path | None = None, filings_db_path: str | Path | None = None, busy_timeout_ms: int | None = None) -> dict[str, Path]` - Create Base and Standardized as empty pipeline-owned SQLite files, apply the Portfolio schema, and run the idempotent initializers for auth, research, pipeline jobs, and filings. Called from the web server assembly after security settings are installed.
 
 ### [src/orchestrator/common/ratios.py](../src/orchestrator/common/ratios.py)
 
@@ -531,6 +539,7 @@ Responsibility: Unit and integration tests covering core logic, API endpoints, a
 - **[test_backtesting.py](../tests/unit/test_backtesting.py)** - tests backtest data retrieval, calculations, report and chart generation, and end-to-end `run_backtest` flows.
 - **[test_backtesting_api.py](../tests/unit/test_backtesting_api.py)** - Backtesting API endpoint tests.
 - **[test_backtesting_chart_response.py](../tests/unit/test_backtesting_chart_response.py)** - Chart response format tests.
+- **[test_database_bootstrap.py](../tests/unit/test_database_bootstrap.py)** - Verifies clean-startup creation and schema initialization for all configured databases.
 - **[test_backtesting_web.py](../tests/unit/test_backtesting_web.py)** - Web backtesting interface tests.
 - **[test_edinet_api.py](../tests/unit/test_edinet_api.py)** - tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
 - **[test_frontend_v2_server.py](../tests/unit/test_frontend_v2_server.py)** - Tests for the React SPA serving and API integration.
@@ -569,7 +578,7 @@ Responsibility: dedicated account authentication state. `AuthStore` owns `auth.d
 
 ### [src/filings/](../src/filings/)
 
-Responsibility: EDINET type-1 acquisition and rebuildable filing indexes. `EdinetDownloadClient` is the only application subsystem that reads `EDINET_API_TOKEN`, solely for outbound EDINET requests. `archive.py` validates and atomically stores ZIPs, `xbrl.py` uses defused XML plus sanitized narrative parsing, and `FilingCatalog` owns `Filings.db` metadata, facts, sections, search, and quality issues.
+Responsibility: EDINET type-1 acquisition and rebuildable filing indexes. `EdinetDownloadClient` is the only application subsystem that reads `EDINET_API_TOKEN`, solely for outbound EDINET requests. `archive.py` validates ZIPs and extracts requested members on demand, `xbrl.py` uses defused XML plus sanitized narrative parsing, and `FilingCatalog` owns `Filings.db` metadata, compressed archives, compact numeric facts, contexts/units, on-demand narrative reconstruction, and quality issues. `rebuild_filings_db.py` creates a new catalog without materialized narrative text or the wide raw-fact uniqueness index. The Filing Explorer coverage endpoint provides unique filing/company/archive counts for the empty-state dashboard, and the report viewer keeps Japanese and translated HTML panes side by side.
 
 ### [src/research/](../src/research/)
 
@@ -581,7 +590,7 @@ Responsibility: deterministic point-in-time observation selection, execution cos
 
 ### [src/comparison/api.py](../src/comparison/api.py), [src/reports/api.py](../src/reports/api.py)
 
-Responsibility: bounded comparison snapshots/history/peer endpoints and owner-scoped report ZIP generation, manifest retrieval, download, and deletion. Report artifacts are atomically written beneath `data/reports/` and are never addressed by client-supplied filesystem paths.
+Responsibility: bounded comparison snapshots/history/peer endpoints and owner-scoped report ZIP generation, manifest retrieval, download, and deletion. Comparison exposes a validated table/column catalog and accepts `Table.Column` metric references for arbitrary statement-column comparisons. Report artifacts are atomically written beneath `data/reports/` and are never addressed by client-supplied filesystem paths.
 
 ### Authenticated portfolio analytical previews
 

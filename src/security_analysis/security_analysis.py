@@ -167,6 +167,23 @@ class SecuritySchema:
 
 
 @dataclass(frozen=True)
+class SecuritySearchSchema:
+    """Best-effort schema for company search."""
+
+    company_table: str | None
+    prices_table: str | None
+    company_code_col: str | None
+    company_ticker_col: str | None
+    company_name_col: str | None
+    company_name_fallback_col: str | None
+    company_industry_col: str | None
+    company_market_col: str | None
+    price_ticker_col: str | None
+    price_date_col: str | None
+    price_value_col: str | None
+
+
+@dataclass(frozen=True)
 class StatementMetricSpec:
     """Descriptor for a single metric sourced into statement history."""
 
@@ -420,6 +437,77 @@ def resolve_schema(db_path: str) -> SecuritySchema:
             doclist_docid_col=_resolve_column(document_list_cols, ["docID", "DocID"], required=False),
             doclist_submit_dt_col=_resolve_column(
                 document_list_cols, ["submitDateTime", "SubmitDateTime"], required=False
+            ),
+        )
+    finally:
+        conn.close()
+
+
+def _resolve_search_name_cols(
+    columns: list[str],
+) -> tuple[str | None, str | None]:
+    """Resolve whichever company-name columns are available."""
+    primary = _resolve_column(
+        columns,
+        ["Company_Name", "CompanyName", "company_name"],
+        required=False,
+    )
+    fallback = _resolve_column(
+        columns,
+        ["Submitter Name", "Submitter_Name", "SubmitterName", "FilerName", "Name"],
+        required=False,
+    )
+    if primary and fallback and primary.lower() == fallback.lower():
+        fallback = None
+    if primary or fallback:
+        return primary or fallback, fallback if primary else None
+    return None, None
+
+
+def _resolve_search_schema(db_path: str) -> SecuritySearchSchema:
+    """Resolve only the tables and columns needed by company search.
+
+    Unlike the full security-analysis schema, this intentionally treats every
+    table and column as optional so a partially-built database can still
+    provide company or ticker results.
+    """
+    normalised_path = _normalise_db_path(db_path)
+    conn = _connect(normalised_path)
+    try:
+        table_map = _list_table_map(conn)
+        company_table = _resolve_table_name(
+            table_map, ["CompanyInfo", "companyInfo"], required=False
+        )
+        prices_table = _resolve_table_name(
+            table_map, ["Stock_Prices", "stock_prices"], required=False
+        )
+
+        company_cols = _get_columns(conn, company_table) if company_table else []
+        name_col, fallback_name_col = _resolve_search_name_cols(company_cols)
+        price_cols = _get_columns(conn, prices_table) if prices_table else []
+        return SecuritySearchSchema(
+            company_table=company_table,
+            prices_table=prices_table,
+            company_code_col=_resolve_column(
+                company_cols, ["Company_Code", "EdinetCode", "edinetCode"],
+                required=False,
+            ),
+            company_ticker_col=_resolve_column(
+                company_cols, ["Company_Ticker", "Ticker", "ticker"],
+                required=False,
+            ),
+            company_name_col=name_col,
+            company_name_fallback_col=fallback_name_col,
+            company_industry_col=_pick_company_industry_col(company_cols),
+            company_market_col=_pick_company_market_col(company_cols),
+            price_ticker_col=_resolve_column(
+                price_cols, ["Ticker", "ticker"], required=False
+            ),
+            price_date_col=_resolve_column(
+                price_cols, ["Date", "date"], required=False
+            ),
+            price_value_col=_resolve_column(
+                price_cols, ["Price", "price"], required=False
             ),
         )
     finally:
@@ -1141,6 +1229,68 @@ def _load_company_frame(conn: sqlite3.Connection, schema: SecuritySchema) -> pd.
     return pd.read_sql_query(sql, conn)
 
 
+def _empty_search_company_frame() -> pd.DataFrame:
+    """Return an empty company frame with the search result columns."""
+    return pd.DataFrame(
+        columns=["company_code", "ticker", "company_name", "industry", "market"]
+    )
+
+
+def _load_search_company_frame(
+    conn: sqlite3.Connection,
+    schema: SecuritySearchSchema,
+) -> pd.DataFrame:
+    """Load available company fields without requiring the full schema."""
+    if not schema.company_table:
+        return _empty_search_company_frame()
+
+    def column_or_null(column: str | None, alias: str) -> str:
+        if column:
+            return f"c.{_quote_ident(column)} AS {_quote_ident(alias)}"
+        return f"NULL AS {_quote_ident(alias)}"
+
+    name_parts: list[str] = []
+    for column in (schema.company_name_col, schema.company_name_fallback_col):
+        if column:
+            name_parts.append(
+                "NULLIF(TRIM(CAST(c."
+                f"{_quote_ident(column)} AS TEXT)), '')"
+            )
+    if len(name_parts) > 1:
+        name_expression = f"COALESCE({', '.join(name_parts)})"
+    else:
+        name_expression = name_parts[0] if name_parts else "NULL"
+    select_parts = [
+        column_or_null(schema.company_code_col, "company_code"),
+        column_or_null(schema.company_ticker_col, "ticker"),
+        f"{name_expression} AS {_quote_ident('company_name')}",
+        column_or_null(schema.company_industry_col, "industry"),
+        column_or_null(schema.company_market_col, "market"),
+    ]
+    sql = (
+        f"SELECT {', '.join(select_parts)} "
+        f"FROM {_quote_ident(schema.company_table)} c"
+    )
+    try:
+        return pd.read_sql_query(sql, conn)
+    except (sqlite3.Error, pd.errors.DatabaseError) as exc:
+        logger.warning("Company search could not read %s: %s", schema.company_table, exc)
+        return _empty_search_company_frame()
+
+
+@lru_cache(maxsize=8)
+def _get_cached_search_company_frame(
+    db_path: str,
+    schema: SecuritySearchSchema,
+) -> pd.DataFrame:
+    """Cache the best-effort company snapshot for repeated search keystrokes."""
+    conn = _connect(db_path)
+    try:
+        return _load_search_company_frame(conn, schema)
+    finally:
+        conn.close()
+
+
 @lru_cache(maxsize=4)
 def _get_cached_company_frame(db_path: str) -> pd.DataFrame:
     """Cache the normalised company snapshot per database path."""
@@ -1629,10 +1779,84 @@ def _normalize_ticker_for_query(ticker: str) -> list[str]:
     return variants
 
 
-def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[str, Any]]:
-    """Search companies by name, ticker, EDINET code, or industry.
+def _load_search_latest_price(
+    conn: sqlite3.Connection,
+    schema: SecuritySearchSchema,
+    ticker: str,
+) -> tuple[float | None, str | None]:
+    """Load a latest price when the optional price columns are available."""
+    if not (
+        schema.prices_table
+        and schema.price_ticker_col
+        and schema.price_date_col
+        and schema.price_value_col
+    ):
+        return None, None
+    try:
+        row = conn.execute(
+            f"SELECT {_quote_ident(schema.price_date_col)} AS latest_price_date, "
+            f"{_quote_ident(schema.price_value_col)} AS latest_price "
+            f"FROM {_quote_ident(schema.prices_table)} "
+            f"WHERE {_quote_ident(schema.price_ticker_col)} = ? "
+            f"ORDER BY {_quote_ident(schema.price_date_col)} DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        logger.warning("Price search could not read %s: %s", schema.prices_table, exc)
+        return None, None
+    if row is None:
+        return None, None
+    return _safe_float(row[1]), _safe_date_str(row[0])
 
-    Also searches the Stock_Prices table for tickers not found in CompanyInfo.
+
+def _load_search_price_matches(
+    conn: sqlite3.Connection,
+    schema: SecuritySearchSchema,
+    tokens: list[str],
+    seen_tickers: set[str],
+) -> list[dict[str, Any]]:
+    """Return ticker-only matches from an available price table."""
+    if not schema.prices_table or not schema.price_ticker_col:
+        return []
+    try:
+        rows = conn.execute(
+            f"SELECT DISTINCT {_quote_ident(schema.price_ticker_col)} "
+            f"FROM {_quote_ident(schema.prices_table)}"
+        ).fetchall()
+    except sqlite3.Error as exc:
+        logger.warning("Ticker search could not read %s: %s", schema.prices_table, exc)
+        return []
+
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        ticker = _safe_str(row[0])
+        if not ticker or not any(token in ticker.lower() for token in tokens):
+            continue
+        variants = _normalize_ticker_for_query(ticker)
+        if any(variant.lower() in seen_tickers for variant in variants):
+            continue
+        latest_price, latest_price_date = _load_search_latest_price(
+            conn, schema, ticker
+        )
+        matches.append({
+            "company_code": None,
+            "ticker": ticker,
+            "company_name": ticker,
+            "industry": None,
+            "market": None,
+            "latest_price": latest_price,
+            "latest_price_date": latest_price_date,
+        })
+        seen_tickers.update(variant.lower() for variant in variants)
+    return matches
+
+
+def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[str, Any]]:
+    """Search available company and ticker records on a best-effort basis.
+
+    CompanyInfo and Stock_Prices are optional for this operation.  Other
+    security-analysis tables are deliberately not required, so a partially
+    built database still returns whatever matches it can provide.
 
     Args:
         db_path (str): Path to the SQLite database.
@@ -1646,7 +1870,14 @@ def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[st
     if not tokens:
         return []
 
-    company_df = _get_cached_company_frame(db_path)
+    normalised_path = _normalise_db_path(db_path)
+    try:
+        search_schema = _resolve_search_schema(normalised_path)
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("Company search could not inspect %s: %s", normalised_path, exc)
+        return []
+
+    company_df = _get_cached_search_company_frame(normalised_path, search_schema)
     scored: list[tuple[int, dict[str, Any]]] = []
     seen_tickers: set[str] = set()
     for record in company_df.to_dict(orient="records"):
@@ -1669,49 +1900,13 @@ def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[st
             "latest_price_date": None,
         }))
 
-    # Also search Stock_Prices for ticker matches not already covered by CompanyInfo
-    schema = resolve_schema(db_path)
-    conn = _connect(db_path)
+    # Search the optional price table for ticker matches not covered by CompanyInfo.
+    conn = _connect(normalised_path)
     try:
-        # Build ticker search: match any ticker containing the query as substring
-        price_tickers_df = pd.read_sql_query(
-            f"SELECT DISTINCT Ticker FROM {_quote_ident(schema.prices_table)}",
-            conn,
-        )
-        for _, row in price_tickers_df.iterrows():
-            pticker = _safe_str(row.get("Ticker"))
-            if not pticker:
-                continue
-            # Skip if the ticker or its db2-normalized form already has a CompanyInfo record
-            pt_lower = pticker.lower()
-            variants = _normalize_ticker_for_query(pticker)
-            already_seen = any(v.lower() in seen_tickers for v in variants)
-            if already_seen:
-                continue
-            # Check if the ticker matches any token (case-insensitive substring)
-            if not any(token in pt_lower for token in tokens):
-                continue
-            # Get latest price for this ticker
-            lpr = pd.read_sql_query(
-                f"SELECT [Date], Price FROM {_quote_ident(schema.prices_table)} "
-                f"WHERE Ticker = ? ORDER BY [Date] DESC LIMIT 1",
-                conn,
-                params=[pticker],
-            )
-            latest_price = None
-            latest_price_date = None
-            if not lpr.empty:
-                latest_price = _safe_float(lpr.iloc[0]["Price"])
-                latest_price_date = _safe_date_str(lpr.iloc[0]["Date"])
-            scored.append((1, {  # score=1 for direct ticker match
-                "company_code": None,
-                "ticker": pticker,
-                "company_name": pticker,
-                "industry": None,
-                "market": None,
-                "latest_price": latest_price,
-                "latest_price_date": latest_price_date,
-            }))
+        for record in _load_search_price_matches(
+            conn, search_schema, tokens, seen_tickers
+        ):
+            scored.append((1, record))
     finally:
         conn.close()
 

@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.auth.models import AuthenticatedUser
 
 from .acquisition import EdinetAcquisitionError, EdinetDownloadClient
+from .archive import ArchiveMemberNotFoundError, UnsafeArchiveError
 from .runtime import catalog
 
 router = APIRouter(prefix="/api/filings", tags=["filings"])
@@ -61,7 +62,10 @@ def list_filings(company_code: str | None = None, limit: int = 100, offset: int 
 
 @router.get("/coverage")
 def filing_coverage() -> dict[str, Any]:
-    return {"coverage": [_record(row) for row in catalog.coverage()]}
+    return {
+        "summary": catalog.coverage_summary(),
+        "coverage": [_record(row) for row in catalog.coverage()],
+    }
 
 
 @router.get("/{doc_id}")
@@ -147,10 +151,9 @@ def list_parse_runs(doc_id: str) -> dict[str, Any]:
 def download_artifact(request: Request, doc_id: str) -> Response:
     if not isinstance(getattr(request.state, "user", None), AuthenticatedUser):
         raise HTTPException(status_code=401, detail="Account authentication is required")
-    filing = catalog.get_filing(doc_id)
-    if filing is None:
+    if catalog.get_filing(doc_id) is None:
         raise HTTPException(status_code=404, detail="Filing not found")
-    content = filing["archive_content"]
+    content = catalog.get_archive_content(doc_id)
     if not content:
         raise HTTPException(status_code=404, detail="Filing content not available")
     return Response(
@@ -355,9 +358,14 @@ def get_filing_html(
     if not member_path.lower().endswith((".htm", ".html")):
         raise HTTPException(status_code=400, detail="Artifact is not an HTML file")
 
-    artifact = catalog.get_artifact_content(artifact_id)
+    try:
+        artifact = catalog.get_artifact_content(artifact_id)
+    except ArchiveMemberNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Artifact missing from filing archive") from exc
+    except UnsafeArchiveError as exc:
+        raise HTTPException(status_code=409, detail="Filing archive failed validation") from exc
     if artifact is None or artifact["content"] is None:
-        raise HTTPException(status_code=404, detail="Artifact content not found in database")
+        raise HTTPException(status_code=404, detail="Artifact content not found in filing archive")
 
     content = bytes(artifact["content"])
 
