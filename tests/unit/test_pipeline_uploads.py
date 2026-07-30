@@ -9,13 +9,26 @@ from pathlib import Path
 import pytest
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
+from src.orchestrator.import_stock_prices_csv.import_stock_prices_csv import (
+    STEP_DEFINITION as STOCK_PRICE_STEP_DEFINITION,
+)
 from src.orchestrator.orchestrator import (
-    constrain_pipeline_paths,
-    InvalidUploadError,
     STEP_DEFINITIONS,
+    InvalidUploadError,
     UploadTooLargeError,
+    constrain_pipeline_paths,
     resolve_file_uploads,
 )
+
+
+def test_stock_price_csv_upload_limit_is_500_mib():
+    csv_field = next(
+        field
+        for field in STOCK_PRICE_STEP_DEFINITION.input_fields
+        if field.key == "csv_file"
+    )
+
+    assert csv_field.max_bytes == 500 * 1024 * 1024
 
 
 @pytest.fixture

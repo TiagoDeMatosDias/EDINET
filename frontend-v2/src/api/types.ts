@@ -61,6 +61,7 @@ export interface PipelineField {
 
 export interface PipelineStep {
   name: string
+  config_key?: string
   display_name?: string
   canonical_name?: string
   description?: string

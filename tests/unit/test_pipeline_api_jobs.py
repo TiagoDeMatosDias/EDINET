@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import threading
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+import src.api.job_routes as job_routes
 import src.api.pipeline_routes as pipeline_routes
 import src.api.router as pipeline_api
 import src.api.runtime as api_runtime
@@ -18,6 +21,8 @@ def _install_manager(monkeypatch, tmp_path, executor):
         JobStore(tmp_path / "api-jobs.db"),
         step_executor=executor,
     )
+    monkeypatch.setattr(pipeline_routes, "_require_operator", lambda _request: None)
+    monkeypatch.setattr(job_routes, "_require_operator", lambda _request: None)
     monkeypatch.setattr(api_runtime, "job_manager", manager)
     monkeypatch.setattr(
         pipeline_routes,
@@ -176,6 +181,52 @@ def test_oversized_embedded_upload_returns_413_without_workspace(
             )
         assert response.status_code == 413
         assert not captured["workspace"].exists()
+    finally:
+        manager.shutdown(wait=True)
+
+
+def test_multipart_upload_is_streamed_into_job_workspace(monkeypatch, tmp_path):
+    captured = {}
+
+    def execute(_name, config, *, overwrite=False):
+        captured["config"] = config
+        captured["overwrite"] = overwrite
+        return None
+
+    manager = _install_manager(monkeypatch, tmp_path, execute)
+    try:
+        payload = {
+            "steps": [{"name": "import_stock_prices_csv"}],
+            "config": {
+                "import_stock_prices_csv_config": {
+                    "csv_file": {
+                        "__pipeline_upload__": "import_stock_prices_csv_config.csv_file",
+                    },
+                    "date_column": "Date",
+                    "price_column": "Price",
+                    "default_currency": "JPY",
+                },
+            },
+        }
+        with TestClient(pipeline_api.app) as client:
+            response = client.post(
+                "/api/pipeline/run",
+                data={"config": json.dumps(payload)},
+                files={
+                    "upload:import_stock_prices_csv_config.csv_file": (
+                        "prices.csv",
+                        b"Date,Price\n2025-01-01,100\n",
+                        "text/csv",
+                    ),
+                },
+            )
+
+        assert response.status_code == 202
+        created = response.json()
+        assert manager.wait_for_terminal(created["job_id"], timeout=2)["status"] == "completed"
+        csv_path = captured["config"]["import_stock_prices_csv_config"]["csv_file"]
+        assert csv_path.endswith("-prices.csv")
+        assert Path(csv_path).read_bytes() == b"Date,Price\n2025-01-01,100\n"
     finally:
         manager.shutdown(wait=True)
 

@@ -208,3 +208,32 @@ def test_declared_request_body_over_limit_is_rejected(monkeypatch):
     assert response.status_code == 413
     assert response.json()["code"] == "request_too_large"
     assert response.headers["X-Correlation-ID"]
+
+
+def test_pipeline_request_uses_large_upload_envelope(monkeypatch):
+    monkeypatch.setattr(
+        security_module,
+        "_REQUEST_ENVELOPE_OVERHEAD_BYTES",
+        0,
+    )
+    app = FastAPI()
+
+    @app.post("/api/pipeline/run")
+    async def echo():
+        return {"accepted": True}
+
+    install_security(
+        app,
+        AppSettings(
+            auth_mode="disabled",
+            max_upload_bytes=4,
+            max_export_bytes=4,
+        ),
+    )
+    response = TestClient(app).post(
+        "/api/pipeline/run",
+        content=b"12345",
+        headers={"Content-Type": "application/octet-stream"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True}

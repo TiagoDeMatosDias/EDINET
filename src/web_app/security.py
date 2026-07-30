@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _DATABASE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+_DEFAULT_MAX_PIPELINE_UPLOAD_BYTES = 500 * 1024 * 1024
 _DEFAULT_MAX_EXPORT_BYTES = 25 * 1024 * 1024
 _DEFAULT_MAX_BACKTEST_ARTIFACT_BYTES = 256 * 1024 * 1024
 _DEFAULT_MAX_REPORT_ARTIFACT_BYTES = 128 * 1024 * 1024
@@ -362,6 +363,12 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
             max(settings.max_upload_bytes, settings.max_export_bytes)
             + _REQUEST_ENVELOPE_OVERHEAD_BYTES
         )
+        if request.url.path == "/api/pipeline/run":
+            max_request_bytes = max(
+                max_request_bytes,
+                _DEFAULT_MAX_PIPELINE_UPLOAD_BYTES
+                + _REQUEST_ENVELOPE_OVERHEAD_BYTES,
+            )
         content_length = request.headers.get("Content-Length")
         if content_length:
             try:

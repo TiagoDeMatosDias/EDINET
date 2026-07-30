@@ -8,6 +8,7 @@ from src.orchestrator.common.db_config import get_db2
 from src.utilities import stock_prices
 
 logger = logging.getLogger(__name__)
+_MAX_CSV_UPLOAD_BYTES = 500 * 1024 * 1024
 
 
 def import_stock_prices_csv(
@@ -199,6 +200,7 @@ STEP_DEFINITION = StepDefinition(
             description="Choose the stock-price CSV file from your computer.",
             filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
             required=True,
+            max_bytes=_MAX_CSV_UPLOAD_BYTES,
         ),
         StepFieldDefinition("default_ticker", "str"),
         StepFieldDefinition("default_currency", "str", default="JPY"),

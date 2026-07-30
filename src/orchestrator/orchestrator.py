@@ -4,18 +4,21 @@ import hashlib
 import inspect
 import json
 import logging
-from pathlib import Path
 import re
-from tempfile import TemporaryDirectory
 import threading
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Callable
 from uuid import uuid4
 
 from config import Config
 
-from .common import build_step_registry
-from .common import StepDefinition
-from .common.validation import apply_step_config_defaults, normalize_pipeline_steps, validate_pipeline_input
+from .common import StepDefinition, build_step_registry
+from .common.validation import (
+    apply_step_config_defaults,
+    normalize_pipeline_steps,
+    validate_pipeline_input,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,7 @@ STEP_DEFINITIONS: dict[str, StepDefinition] = {}
 DISCOVERED_STEP_MODULES: tuple[str, ...] = ()
 
 _DEFAULT_UPLOAD_LIMIT = 10 * 1024 * 1024
+_UPLOAD_CHUNK_SIZE = 1024 * 1024
 _MANUAL_UPLOAD_ROOT = (
     Path(__file__).resolve().parents[2]
     / "config"
@@ -250,6 +254,105 @@ def resolve_file_uploads(
                     )
         if modified:
             resolved[config_key] = step_cfg
+    if manifest:
+        (workspace_path / "upload_manifest.json").write_text(
+            json.dumps(manifest, indent=2),
+            encoding="utf-8",
+        )
+    return resolved
+
+
+async def resolve_streamed_file_uploads(
+    config: dict[str, Any],
+    enabled_steps: list[dict[str, Any]],
+    uploads: dict[str, Any],
+    *,
+    workspace: str | Path,
+    max_bytes: int = _DEFAULT_UPLOAD_LIMIT,
+) -> dict[str, Any]:
+    """Persist multipart uploads directly to the owned job workspace."""
+    if max_bytes < 1:
+        raise ValueError("max_bytes must be positive")
+
+    workspace_path = Path(workspace).resolve(strict=False)
+    uploads_dir = workspace_path / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    resolved = dict(config)
+    manifest: list[dict[str, Any]] = []
+    consumed: set[str] = set()
+
+    definitions = {
+        definition.resolved_config_key: definition
+        for step_info in enabled_steps
+        if (definition := STEP_DEFINITIONS.get(str(step_info["name"]))) is not None
+    }
+    for config_key, definition in definitions.items():
+        step_cfg = dict(resolved.get(config_key, {}))
+        modified = False
+        for field in definition.input_fields:
+            if field.field_type != "file":
+                continue
+            value = step_cfg.get(field.key)
+            upload_key = (
+                value.get("__pipeline_upload__")
+                if isinstance(value, dict)
+                else None
+            )
+            if not isinstance(upload_key, str) or not upload_key:
+                continue
+            upload = uploads.get(upload_key)
+            if upload is None:
+                raise InvalidUploadError(
+                    f"Multipart upload is missing for {config_key}.{field.key}"
+                )
+
+            limit = field.max_bytes or max_bytes
+            display_name = _safe_upload_name(getattr(upload, "filename", None))
+            stored_name = f"{uuid4().hex}-{display_name}"
+            upload_path = uploads_dir / stored_name
+            digest = hashlib.sha256()
+            total = 0
+            try:
+                with upload_path.open("wb") as target:
+                    while True:
+                        chunk = await upload.read(_UPLOAD_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > limit:
+                            raise UploadTooLargeError(
+                                "Embedded file exceeds the configured size limit"
+                            )
+                        digest.update(chunk)
+                        target.write(chunk)
+            except Exception:
+                upload_path.unlink(missing_ok=True)
+                raise
+
+            step_cfg[field.key] = str(upload_path)
+            modified = True
+            consumed.add(upload_key)
+            manifest.append({
+                "step": definition.name,
+                "field": field.key,
+                "display_name": display_name,
+                "stored_name": stored_name,
+                "size_bytes": total,
+                "sha256": digest.hexdigest(),
+            })
+            logger.info(
+                "Resolved multipart upload '%s' for step '%s' (%d bytes, sha256=%s)",
+                display_name,
+                definition.name,
+                total,
+                digest.hexdigest()[:12],
+            )
+        if modified:
+            resolved[config_key] = step_cfg
+
+    unexpected = set(uploads) - consumed
+    if unexpected:
+        raise InvalidUploadError("Multipart upload does not match a file field")
     if manifest:
         (workspace_path / "upload_manifest.json").write_text(
             json.dumps(manifest, indent=2),

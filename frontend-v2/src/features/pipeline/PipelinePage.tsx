@@ -18,17 +18,49 @@ import { Card, Field, PageHeader } from '../../components/Page'
 type SelectedStep = { id: string; name: string; overwrite: boolean }
 type SavedSetup = { name: string; steps: SelectedStep[]; config: Record<string, unknown> }
 const SETUPS_KEY = 'shade.pipeline.setups'
+const MAX_SAVED_SETUP_CHARS = 1_000_000
 const TERMINAL_JOB_STATUSES = new Set(['cancelled', 'completed', 'failed', 'interrupted'])
+const DEFAULT_UPLOAD_BYTES = 10 * 1024 * 1024
 function isTerminalJob(status?: string) { return status ? TERMINAL_JOB_STATUSES.has(status) : false }
 
 
-function readSetups(): SavedSetup[] { try { return JSON.parse(localStorage.getItem(SETUPS_KEY) ?? '[]') } catch { return [] } }
+function isBrowserFile(value: unknown): value is File {
+  return typeof File !== 'undefined' && value instanceof File
+}
+
+function isEmbeddedFile(value: unknown) {
+  return typeof value === 'object' && value !== null && 'filename' in value && 'content' in value && typeof value.filename === 'string' && typeof value.content === 'string'
+}
+
+function stripFileUploads(config: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(config).filter(([, value]) => !isBrowserFile(value) && !isEmbeddedFile(value)))
+}
+
+function readSetups(): SavedSetup[] {
+  try {
+    const raw = localStorage.getItem(SETUPS_KEY) ?? ''
+    if (raw.length > MAX_SAVED_SETUP_CHARS) {
+      localStorage.removeItem(SETUPS_KEY)
+      return []
+    }
+    const parsed = JSON.parse(raw || '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(item => item && typeof item === 'object').map(item => ({
+      ...(item as SavedSetup),
+      config: stripFileUploads((item as SavedSetup).config ?? {}),
+    }))
+  } catch {
+    try { localStorage.removeItem(SETUPS_KEY) } catch { /* ignore storage cleanup failures */ }
+    return []
+  }
+}
 function label(step: PipelineStep) { return step.display_name || step.name.replaceAll('_', ' ').replace(/\b\w/g, char => char.toUpperCase()) }
 
 function configKey(stepName: string, fieldName: string) { return `${stepName}_config.${fieldName}` }
 
 function fileNameFromValue(value: unknown) {
   if (typeof value === 'string') return value.split(/[\\/]/).pop() ?? value
+  if (isBrowserFile(value)) return value.name
   if (typeof value === 'object' && value !== null && 'filename' in value && typeof value.filename === 'string') return value.filename
   return ''
 }
@@ -42,20 +74,11 @@ function fileAccept(field: PipelineField) {
   return patterns.length ? patterns.join(',') : undefined
 }
 
-async function encodeFile(file: File) {
-  const bytes = new Uint8Array(await file.arrayBuffer())
-  let binary = ''
-  const chunkSize = 0x8000
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
-  }
-  return { filename: file.name, content: btoa(binary) }
-}
-
-export function ConfigField({ field, value, onChange }: { field: PipelineField; value: unknown; onChange: (value: unknown) => void }) {
+export function ConfigField({ field, value, onChange, maxUploadBytes }: { field: PipelineField; value: unknown; onChange: (value: unknown) => void; maxUploadBytes?: number }) {
   const fieldLabel = field.label || field.name
   const fieldDesc = field.description
   const inputType = field.type?.toLowerCase() ?? 'text'
+  const maxBytes = field.max_bytes ?? maxUploadBytes ?? DEFAULT_UPLOAD_BYTES
   const [fileError, setFileError] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   if (field.choices?.length) return <Field label={fieldLabel} hint={fieldDesc}><select className="select" value={String(value ?? field.default ?? '')} onChange={event => onChange(event.target.value)}>{field.choices.map(choice => <option key={choice} value={choice}>{choice}</option>)}</select></Field>
@@ -63,16 +86,16 @@ export function ConfigField({ field, value, onChange }: { field: PipelineField; 
   if (inputType.includes('int') || inputType.includes('float') || inputType.includes('number')) return <Field label={fieldLabel} hint={fieldDesc}><input className="input" type="number" value={Number(value ?? field.default ?? 0)} onChange={event => onChange(Number(event.target.value))} /></Field>
   if (inputType.includes('file')) {
     const selectedFileName = fileNameFromValue(value)
-    const handleFile = async (file?: File) => {
+    const handleFile = (file?: File) => {
       if (!file) return
       setFileError('')
-      if (field.max_bytes && file.size > field.max_bytes) {
-        setFileError(`File is too large. Maximum size is ${Math.round(field.max_bytes / (1024 * 1024))} MiB.`)
+      if (maxBytes > 0 && file.size > maxBytes) {
+        setFileError(`File is too large. Maximum size is ${Math.round(maxBytes / (1024 * 1024))} MiB.`)
         if (fileInputRef.current) fileInputRef.current.value = ''
         return
       }
       try {
-        onChange(await encodeFile(file))
+        onChange(file)
       } catch {
         setFileError('The selected file could not be read.')
         if (fileInputRef.current) fileInputRef.current.value = ''
@@ -96,6 +119,11 @@ export default function PipelinePage() {
   const queryClient = useQueryClient()
   const [activeJobId, setActiveJobId] = useState<string>()
   const steps = useQuery({ queryKey: ['pipeline-steps'], queryFn: () => apiRequest<{ steps: PipelineStep[] }>('/api/steps') })
+  const serverConfig = useQuery({
+    queryKey: ['server-config'],
+    queryFn: () => apiRequest<{ max_upload_bytes: number }>('/api/config'),
+    retry: false,
+  })
   const jobs = useQuery({
     queryKey: ['jobs'],
     queryFn: () => apiRequest<Job[]>('/api/jobs?limit=20'),
@@ -114,18 +142,35 @@ export default function PipelinePage() {
     mutationFn: () => {
       // Transform flat "step_config.field" keys into nested per-step configs
       const nested: Record<string, unknown> = {}
+      const files: Array<{ key: string; file: File }> = []
+      const selectedConfigKeys = new Set(selected.map(step => {
+        const meta = steps.data?.steps.find(item => item.name === step.name)
+        return meta?.config_key ?? `${step.name}_config`
+      }))
       for (const [key, value] of Object.entries(config)) {
         const dot = key.indexOf('.')
         if (dot === -1) { nested[key] = value; continue }
         const stepKey = key.slice(0, dot)
+        if (!selectedConfigKeys.has(stepKey)) continue
         const fieldKey = key.slice(dot + 1)
         if (!nested[stepKey]) nested[stepKey] = {}
-        ;(nested[stepKey] as Record<string, unknown>)[fieldKey] = value
+        if (isBrowserFile(value)) {
+          const uploadKey = `${stepKey}.${fieldKey}`
+          files.push({ key: uploadKey, file: value })
+          ;(nested[stepKey] as Record<string, unknown>)[fieldKey] = { __pipeline_upload__: uploadKey }
+        } else {
+          ;(nested[stepKey] as Record<string, unknown>)[fieldKey] = value
+        }
       }
-      return apiPost<JobCreateResponse>('/api/pipeline/run', {
+      const payload = {
         steps: selected.map(step => ({ name: step.name, overwrite: step.overwrite })),
         config: nested,
-      })
+      }
+      if (!files.length) return apiPost<JobCreateResponse>('/api/pipeline/run', payload)
+      const form = new FormData()
+      form.set('config', JSON.stringify(payload))
+      for (const upload of files) form.append(`upload:${upload.key}`, upload.file, upload.file.name)
+      return apiRequest<JobCreateResponse>('/api/pipeline/run', { method: 'POST', body: form })
     },
     onSuccess: created => { setActiveJobId(created.job_id); void queryClient.invalidateQueries({ queryKey: ['jobs'] }) },
   })
@@ -147,7 +192,7 @@ export default function PipelinePage() {
   const filtered = (steps.data?.steps ?? []).filter(step => `${step.name} ${step.display_name ?? ''} ${step.description ?? ''}`.toLowerCase().includes(search.toLowerCase()))
   const selectedMeta = selected.map(item => ({ item, meta: steps.data?.steps.find(step => step.name === item.name) })).filter(entry => entry.meta)
   const move = (index: number, direction: number) => setSelected(items => { const next = [...items]; const target = index + direction; if (target < 0 || target >= next.length) return items; [next[index], next[target]] = [next[target], next[index]]; return next })
-  const saveSetup = () => { const next = [...setups.filter(setup => setup.name !== setupName), { name: setupName, steps: selected, config }]; setSetups(next); localStorage.setItem(SETUPS_KEY, JSON.stringify(next)) }
+  const saveSetup = () => { const next = [...setups.filter(setup => setup.name !== setupName), { name: setupName, steps: selected, config: stripFileUploads(config) }]; setSetups(next); localStorage.setItem(SETUPS_KEY, JSON.stringify(next)) }
   const loadSetup = (name: string) => { const setup = setups.find(item => item.name === name); if (setup) { setSetupName(setup.name); setSelected(setup.steps); setConfig(setup.config) } }
   const jobColumns = useMemo<ColumnDef<Job>[]>(() => [{ accessorKey: 'status', header: 'Status', cell: info => <span className={`badge ${info.getValue() === 'completed' ? 'badge--success' : info.getValue() === 'failed' ? 'badge--danger' : ''}`}>{String(info.getValue())}</span> }, { accessorKey: 'current_step', header: 'Current step', cell: info => String(info.getValue() ?? '—') }, { accessorKey: 'created_at', header: 'Started', cell: info => info.getValue() ? new Date(String(info.getValue())).toLocaleString() : '—' }, { accessorKey: 'error_message', header: 'Message', cell: info => String(info.getValue() ?? '—') }], [])
 
@@ -174,6 +219,7 @@ export default function PipelinePage() {
                     key={field.name}
                     field={field}
                     value={config[configKey(item.name, field.name)]}
+                    maxUploadBytes={serverConfig.data?.max_upload_bytes}
                     onChange={value => setConfig(current => ({ ...current, [configKey(item.name, field.name)]: value }))}
                   />
                 ))}
