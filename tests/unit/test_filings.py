@@ -212,6 +212,51 @@ def test_provider_token_is_only_constructed_for_acquisition(monkeypatch):
     assert client.provider_token == "provider-secret"
 
 
+def test_type1_download_reuses_thread_session(monkeypatch):
+    import src.filings.acquisition as acquisition
+
+    sessions = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"Content-Length": "2"}
+
+        def __init__(self):
+            self.closed = False
+
+        def iter_content(self, *, chunk_size):
+            assert chunk_size == 1024 * 1024
+            yield b"PK"
+
+        def close(self):
+            self.closed = True
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+            self.closed = False
+            sessions.append(self)
+
+        def get(self, url, *, params, timeout, stream):
+            self.calls.append((url, params, timeout, stream))
+            return FakeResponse()
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(acquisition.requests, "Session", FakeSession)
+    client = EdinetDownloadClient("provider-secret", base_url="https://example.test")
+
+    assert client.download_type1("S100ONE") == b"PK"
+    assert client.download_type1("S100TWO") == b"PK"
+    client.close()
+
+    assert len(sessions) == 1
+    assert len(sessions[0].calls) == 2
+    assert all(call[3] is True for call in sessions[0].calls)
+    assert sessions[0].closed is True
+
+
 def test_quality_checks_are_explainable():
     issues = assess_facts(
         "S1",

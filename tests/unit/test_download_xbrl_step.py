@@ -65,9 +65,12 @@ def test_all_mode_adds_status_column_and_selects_eligible_documents(tmp_path, mo
     conn = connect_write(base_path)
     try:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(DocumentList)").fetchall()}
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list(DocumentList)").fetchall()}
     finally:
         conn.close()
     assert "XbrlDownloaded" in columns
+    assert "idx_document_list_docid" in indexes
+    assert "idx_document_list_xbrl_queue" in indexes
 
     conn = connect_write(base_path)
     try:
@@ -94,18 +97,24 @@ def test_all_mode_updates_base_statuses_and_retries_failures(tmp_path, monkeypat
                 return {"status": "parsed"}
             return None
 
-    calls = []
+    download_calls = []
+    ingest_calls = []
 
     class FakeClient:
         def __init__(self, token):
             assert token == "token"
 
-        def acquire_type1(self, document_id, catalog, metadata):
-            calls.append((document_id, metadata))
+        def download_type1(self, document_id):
+            download_calls.append(document_id)
             if document_id == "C":
                 raise EdinetAcquisitionError("not available")
             if document_id == "D":
                 raise RuntimeError("temporary failure")
+            return b"PK-B"
+
+        def ingest_type1(self, document_id, content, catalog, metadata):
+            assert content == b"PK-B"
+            ingest_calls.append((document_id, metadata))
 
     monkeypatch.setattr(acquisition, "EdinetDownloadClient", FakeClient)
     monkeypatch.setattr(runtime, "catalog", FakeCatalog())
@@ -127,8 +136,9 @@ def test_all_mode_updates_base_statuses_and_retries_failures(tmp_path, monkeypat
         "skipped": 1,
         "failed": 2,
     }
-    assert [document_id for document_id, _ in calls] == ["B", "C", "D"]
-    assert calls[0][1]["edinet_code"] == "E00002"
+    assert set(download_calls) == {"B", "C", "D"}
+    assert [document_id for document_id, _ in ingest_calls] == ["B"]
+    assert ingest_calls[0][1]["edinet_code"] == "E00002"
     assert _status_rows(base_path) == {
         "A": "True",
         "B": "True",
@@ -137,3 +147,58 @@ def test_all_mode_updates_base_statuses_and_retries_failures(tmp_path, monkeypat
         "E": "False",
         "F": "False",
     }
+
+
+def test_xbrl_download_workers_are_capped_at_five():
+    import threading
+
+    active = 0
+    maximum = 0
+    lock = threading.Lock()
+    all_started = threading.Event()
+
+    class FakeClient:
+        def download_type1(self, document_id):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+                if active == 5:
+                    all_started.set()
+            assert all_started.wait(timeout=2)
+            with lock:
+                active -= 1
+            return document_id.encode()
+
+    document_ids = [str(index) for index in range(10)]
+    results = list(download_step._iter_download_results(FakeClient(), document_ids, {}))
+
+    assert len(results) == len(document_ids)
+    assert maximum == 5
+
+
+def test_xbrl_statuses_are_committed_in_batches():
+    class FakeConnection:
+        def __init__(self):
+            self.executemany_calls = []
+            self.commit_count = 0
+
+        def executemany(self, statement, parameters):
+            self.executemany_calls.append((statement, list(parameters)))
+
+        def commit(self):
+            self.commit_count += 1
+
+    connection = FakeConnection()
+    pending = []
+    for index in range(download_step._STATUS_BATCH_SIZE):
+        download_step._queue_xbrl_status(connection, pending, str(index), "True")
+
+    assert len(connection.executemany_calls) == 1
+    assert connection.commit_count == 1
+    assert pending == []
+
+    download_step._queue_xbrl_status(connection, pending, "last", "Checked_Error")
+    download_step._flush_xbrl_statuses(connection, pending)
+    assert len(connection.executemany_calls) == 2
+    assert connection.commit_count == 2

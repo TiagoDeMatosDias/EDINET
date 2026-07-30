@@ -12,11 +12,16 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from typing import Any
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
 
 logger = logging.getLogger(__name__)
 _MAX_DOCUMENTS_PER_RUN = 100
+_MAX_DOWNLOAD_WORKERS = 10
+_STATUS_BATCH_SIZE = 100
 
 
 def _document_ids(step_cfg: dict) -> list[str]:
@@ -86,6 +91,79 @@ def _backfill_ids(step_cfg: dict) -> list[str]:
     return ids
 
 
+def _create_document_list_indexes(
+    connection,
+    table_name: str,
+    *,
+    include_xbrl_queue: bool = False,
+) -> None:
+    """Create the lookup indexes used by XBRL document selection."""
+    from src.orchestrator.common.sqlite import quote_identifier
+
+    quoted_table = quote_identifier(table_name)
+    columns = {
+        str(row[1]).casefold(): str(row[1])
+        for row in connection.execute(
+            f"PRAGMA table_info({quoted_table})"
+        ).fetchall()
+    }
+    doc_id = columns.get("docid")
+    if doc_id:
+        connection.execute(
+            f"CREATE INDEX IF NOT EXISTS "
+            f"{quote_identifier('idx_document_list_docid')} "
+            f"ON {quoted_table} ({quote_identifier(doc_id)})"
+        )
+
+    queue_columns = (
+        "xbrlflag",
+        "legalstatus",
+        "doctypecode",
+        "xbrldownloaded",
+        "submitdatetime",
+        "docid",
+    )
+    if include_xbrl_queue and all(column in columns for column in queue_columns):
+        connection.execute(
+            f"CREATE INDEX IF NOT EXISTS "
+            f"{quote_identifier('idx_document_list_xbrl_queue')} "
+            f"ON {quoted_table} ("
+            f"{quote_identifier(columns['xbrlflag'])}, "
+            f"{quote_identifier(columns['legalstatus'])}, "
+            f"{quote_identifier(columns['doctypecode'])}, "
+            f"{quote_identifier(columns['submitdatetime'])} DESC, "
+            f"{quote_identifier(columns['docid'])}) "
+            f"WHERE COALESCE({quote_identifier(columns['xbrldownloaded'])}, 'False') <> 'True'"
+        )
+
+
+def _ensure_document_list_indexes() -> None:
+    """Ensure the document lookup index exists for non-all XBRL modes."""
+    try:
+        from src.orchestrator.common.db_config import get_db1
+        from src.orchestrator.common.sqlite import connect_write
+    except Exception:
+        return
+
+    db1_path = get_db1()
+    if not os.path.exists(db1_path):
+        return
+
+    conn = connect_write(db1_path)
+    try:
+        table_row = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND lower(name) = lower(?) LIMIT 1",
+            ("DocumentList",),
+        ).fetchone()
+        if table_row is None:
+            return
+        _create_document_list_indexes(conn, str(table_row[0]))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _ensure_xbrl_status_column():
     """Return a writable Base.db connection with the XBRL status column ready.
 
@@ -125,7 +203,13 @@ def _ensure_xbrl_status_column():
                 f"ALTER TABLE {quoted_table} "
                 'ADD COLUMN "XbrlDownloaded" TEXT NOT NULL DEFAULT \'False\''
             )
-            conn.commit()
+
+        _create_document_list_indexes(
+            conn,
+            table_name,
+            include_xbrl_queue=True,
+        )
+        conn.commit()
 
         return conn
     except Exception:
@@ -163,15 +247,84 @@ def _all_ids(step_cfg: dict | None = None) -> list[str]:
     return [str(row[0]).strip() for row in rows if str(row[0]).strip()]
 
 
-def _set_xbrl_status(connection, document_id: str, status: str) -> None:
-    """Persist one all-mode XBRL outcome in Base.db."""
+def _flush_xbrl_statuses(connection, pending: list[tuple[str, str]]) -> None:
+    """Persist a batch of all-mode XBRL outcomes in Base.db."""
     if connection is None:
         return
-    connection.execute(
+    if not pending:
+        return
+    connection.executemany(
         'UPDATE "DocumentList" SET "XbrlDownloaded" = ? WHERE "docID" = ?',
-        (status, document_id),
+        [(status, document_id) for document_id, status in pending],
     )
     connection.commit()
+    pending.clear()
+
+
+def _queue_xbrl_status(
+    connection,
+    pending: list[tuple[str, str]],
+    document_id: str,
+    status: str,
+) -> None:
+    """Queue an all-mode status and commit only at the batch boundary."""
+    if connection is None:
+        return
+    pending.append((document_id, status))
+    if len(pending) >= _STATUS_BATCH_SIZE:
+        _flush_xbrl_statuses(connection, pending)
+
+
+def _set_xbrl_status(connection, document_id: str, status: str) -> None:
+    """Persist one all-mode XBRL outcome in Base.db."""
+    _flush_xbrl_statuses(connection, [(document_id, status)])
+
+
+def _iter_download_results(
+    client,
+    document_ids: list[str],
+    metadata: dict[str, dict],
+) -> Iterator[tuple[str, dict[str, Any], bytes | None, Exception | None]]:
+    """Download with at most five in-flight requests and yield results as ready.
+
+    The caller remains responsible for catalog ingestion, so SQLite writes stay
+    on the main thread while the worker threads only perform HTTP requests.
+    """
+    if not document_ids:
+        return
+
+    document_iterator = iter(document_ids)
+    with ThreadPoolExecutor(
+        max_workers=_MAX_DOWNLOAD_WORKERS,
+        thread_name_prefix="xbrl-download",
+    ) as executor:
+        pending = {}
+
+        def submit_next() -> bool:
+            try:
+                document_id = next(document_iterator)
+            except StopIteration:
+                return False
+            future = executor.submit(client.download_type1, document_id)
+            pending[future] = (
+                document_id,
+                metadata.get(document_id, {"xbrl_flag": "1"}),
+            )
+            return True
+
+        for _ in range(_MAX_DOWNLOAD_WORKERS):
+            if not submit_next():
+                break
+
+        while pending:
+            completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                document_id, meta = pending.pop(future)
+                try:
+                    yield document_id, meta, future.result(), None
+                except Exception as exc:
+                    yield document_id, meta, None, exc
+                submit_next()
 
 
 def _load_base_metadata(document_ids: list[str]) -> dict[str, dict]:
@@ -224,12 +377,115 @@ def _load_base_metadata(document_ids: list[str]) -> dict[str, dict]:
     return metadata
 
 
+def _prepare_download_ids(
+    document_ids: list[str],
+    catalog,
+    *,
+    overwrite: bool,
+    mode: str,
+    status_connection,
+    pending_statuses: list[tuple[str, str]],
+    context,
+) -> tuple[list[str], int, int]:
+    """Filter catalogued filings before starting concurrent HTTP work."""
+    download_ids: list[str] = []
+    skipped = 0
+    processed = 0
+    total = len(document_ids)
+    for doc_id in document_ids:
+        if not overwrite:
+            existing = catalog.get_filing(doc_id)
+            if existing is not None and existing["status"] in ("parsed", "archived", "error"):
+                if mode == "all" and existing["status"] in ("parsed", "archived"):
+                    _queue_xbrl_status(status_connection, pending_statuses, doc_id, "True")
+                skipped += 1
+                processed += 1
+                if context is not None:
+                    context.report_progress(
+                        processed,
+                        total,
+                        f"Skipping existing XBRL filing {doc_id}",
+                    )
+                logger.debug(
+                    "XBRL for %s already in catalog (status=%s), skipping",
+                    doc_id,
+                    existing["status"],
+                )
+                continue
+        download_ids.append(doc_id)
+    return download_ids, skipped, processed
+
+
+def _process_download_results(
+    client,
+    download_ids: list[str],
+    doc_metadata: dict[str, dict],
+    catalog,
+    *,
+    mode: str,
+    status_connection,
+    pending_statuses: list[tuple[str, str]],
+    context,
+    processed: int,
+    total: int,
+) -> tuple[int, int, int]:
+    """Ingest completed downloads on the main thread and report outcomes."""
+    from src.filings.acquisition import EdinetAcquisitionError
+
+    downloaded = 0
+    failed = 0
+    for doc_id, meta, content, download_error in _iter_download_results(
+        client,
+        download_ids,
+        doc_metadata,
+    ):
+        if download_error is not None:
+            failed += 1
+            if mode == "all":
+                status = (
+                    "Checked_Unavailable"
+                    if isinstance(download_error, EdinetAcquisitionError)
+                    else "Checked_Error"
+                )
+                _queue_xbrl_status(status_connection, pending_statuses, doc_id, status)
+            logger.warning("XBRL download failed for %s: %s", doc_id, download_error)
+        else:
+            assert content is not None
+            try:
+                client.ingest_type1(doc_id, content, catalog, meta)
+                downloaded += 1
+                if mode == "all":
+                    _queue_xbrl_status(status_connection, pending_statuses, doc_id, "True")
+            except Exception as exc:
+                failed += 1
+                if mode == "all":
+                    status = (
+                        "Checked_Unavailable"
+                        if isinstance(exc, EdinetAcquisitionError)
+                        else "Checked_Error"
+                    )
+                    _queue_xbrl_status(status_connection, pending_statuses, doc_id, status)
+                logger.warning("XBRL download failed for %s: %s", doc_id, exc)
+
+        processed += 1
+        if context is not None:
+            context.report_progress(
+                processed,
+                total,
+                f"Processed XBRL filing {doc_id}",
+            )
+    return downloaded, failed, processed
+
+
 def run_download_xbrl(config, overwrite=False, context=None):
     """Download configured document IDs with bounded progress and storage."""
-    from src.filings.acquisition import EdinetAcquisitionError, EdinetDownloadClient
+    from src.filings.acquisition import EdinetDownloadClient
     from src.filings.runtime import catalog
     step_cfg = config.get("download_xbrl_config", {})
     mode = str(step_cfg.get("mode", "explicit")).strip().lower()
+
+    if mode != "all":
+        _ensure_document_list_indexes()
 
     if mode == "backfill":
         document_ids = _backfill_ids(step_cfg)
@@ -278,36 +534,40 @@ def run_download_xbrl(config, overwrite=False, context=None):
     failed = 0
 
     doc_metadata = _load_base_metadata(document_ids)
-    status_connection = _ensure_xbrl_status_column() if mode == "all" else None
+    status_connection = None
+    pending_statuses: list[tuple[str, str]] = []
     try:
-        for index, doc_id in enumerate(document_ids):
-            if context is not None:
-                context.report_progress(index, len(document_ids), f"Downloading XBRL filing {doc_id}")
+        if mode == "all":
+            status_connection = _ensure_xbrl_status_column()
 
-            if not overwrite:
-                existing = catalog.get_filing(doc_id)
-                if existing is not None and existing["status"] in ("parsed", "archived", "error"):
-                    if mode == "all" and existing["status"] in ("parsed", "archived"):
-                        _set_xbrl_status(status_connection, doc_id, "True")
-                    skipped += 1
-                    logger.debug("XBRL for %s already in catalog (status=%s), skipping", doc_id, existing["status"])
-                    continue
-
-            meta = doc_metadata.get(doc_id, {"xbrl_flag": "1"})
-            try:
-                client.acquire_type1(doc_id, catalog, meta)
-                downloaded += 1
-                if mode == "all":
-                    _set_xbrl_status(status_connection, doc_id, "True")
-            except Exception as exc:
-                failed += 1
-                if mode == "all":
-                    status = "Checked_Unavailable" if isinstance(exc, EdinetAcquisitionError) else "Checked_Error"
-                    _set_xbrl_status(status_connection, doc_id, status)
-                logger.warning("XBRL download failed for %s: %s", doc_id, exc)
+        download_ids, skipped, processed = _prepare_download_ids(
+            document_ids,
+            catalog,
+            overwrite=overwrite,
+            mode=mode,
+            status_connection=status_connection,
+            pending_statuses=pending_statuses,
+            context=context,
+        )
+        downloaded, failed, _ = _process_download_results(
+            client,
+            download_ids,
+            doc_metadata,
+            catalog,
+            mode=mode,
+            status_connection=status_connection,
+            pending_statuses=pending_statuses,
+            context=context,
+            processed=processed,
+            total=len(document_ids),
+        )
     finally:
+        _flush_xbrl_statuses(status_connection, pending_statuses)
         if status_connection is not None:
             status_connection.close()
+        close_client = getattr(client, "close", None)
+        if callable(close_client):
+            close_client()
 
     if context is not None:
         context.report_progress(

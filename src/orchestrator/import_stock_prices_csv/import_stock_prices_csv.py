@@ -192,7 +192,14 @@ STEP_DEFINITION = StepDefinition(
     display_name="Import Stock Prices (CSV)",
     required_keys=(),
     input_fields=(
-        StepFieldDefinition("csv_file", "file", required=True),
+        StepFieldDefinition(
+            "csv_file",
+            "file",
+            label="CSV file",
+            description="Choose the stock-price CSV file from your computer.",
+            filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+            required=True,
+        ),
         StepFieldDefinition("default_ticker", "str"),
         StepFieldDefinition("default_currency", "str", default="JPY"),
         StepFieldDefinition("date_column", "str", default="Date"),

@@ -55,6 +55,8 @@ export interface PipelineField {
   required?: boolean
   default?: unknown
   choices?: string[]
+  filetypes?: Array<[string, string]>
+  max_bytes?: number | null
 }
 
 export interface PipelineStep {

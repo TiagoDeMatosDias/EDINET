@@ -21,6 +21,9 @@
 .file-drop input, .file-button input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .file-drop svg { width: 32px; height: 32px; color: var(--primary); }
 .file-button { position: relative; }
+.pipeline-file-selection { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pipeline-file-selection small { min-width: 0; overflow-wrap: anywhere; }
+.pipeline-file-selection .button { min-height: 30px; padding: 5px 9px; }
 .activity-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 .company-link { display: flex; align-items: center; gap: 9px; padding: 0; border: 0; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .company-link > span { display: flex; flex-direction: column; }
