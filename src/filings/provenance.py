@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any
 
 from .catalog import FilingCatalog
-from .quality import assess_facts
 
 
 def _observation_hash(company_code: str, metric_id: str, period_end: str, value_numeric: float | None) -> str:

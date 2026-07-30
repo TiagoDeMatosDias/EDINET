@@ -418,7 +418,8 @@ async def dividends_history(
 
     # Read daily dividend income
     rows = conn.execute(
-        "SELECT date, dividend_income FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date"
+        "SELECT date, dividend_income FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date",
+        (user.user_id,),
     ).fetchall()
     conn.close()
 
@@ -528,7 +529,7 @@ async def holding_history(request: Request, symbol: str):
     rows = conn.execute(
         "SELECT date, market_price, market_value, market_value_native "
         "FROM Holdings_History WHERE owner_user_id = ? AND symbol = ? ORDER BY date",
-        (symbol,),
+        (user.user_id, symbol),
     ).fetchall()
     conn.close()
     if not rows:
@@ -577,7 +578,7 @@ async def holdings_with_performance(
             _ph = ",".join("?" for _ in closed_syms)
             _hr = _c.execute(
                 f"SELECT symbol, date FROM Holdings_History WHERE owner_user_id = ? AND symbol IN ({_ph}) ORDER BY symbol, date",
-                closed_syms,
+                [user.user_id, *closed_syms],
             ).fetchall()
             _c.close()
             for _r in _hr:
@@ -900,7 +901,8 @@ async def dividends_yoy(
 
     # Aggregate dividend_income from Portfolio_Daily by year
     rows = conn.execute(
-        "SELECT date, dividend_income, cash_ccy_json FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date"
+        "SELECT date, dividend_income, cash_ccy_json FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date",
+        (user.user_id,),
     ).fetchall()
     conn.close()
 
@@ -1166,7 +1168,7 @@ async def returns_by_company(request: Request):
           AND market_value IS NOT NULL
           AND quantity > 0
         ORDER BY symbol, date
-    """).fetchall()
+    """, (user.user_id,)).fetchall()
 
     # 2. Dividend income per symbol per year (net EUR)
     div_rows = conn.execute("""
@@ -1322,7 +1324,7 @@ async def returns_money_weighted(request: Request):
           AND is_option = 0
           AND market_value_native IS NOT NULL
         ORDER BY symbol, date
-    """).fetchall()
+    """, (user.user_id,)).fetchall()
 
     # Trade transactions: use raw trade_money (native currency).
     # Cancellation trades have negative trade_money and net correctly.
@@ -1543,7 +1545,7 @@ async def returns_contribution(
           AND is_option = 0
           AND market_value IS NOT NULL
         ORDER BY symbol, date
-    """).fetchall()
+    """, (user.user_id,)).fetchall()
 
     # Portfolio daily totals for denominator
     pf_rows = conn.execute(

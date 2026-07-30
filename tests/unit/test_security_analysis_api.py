@@ -6,17 +6,20 @@ The frontend never sends database paths — they are resolved server-side.
 
 from __future__ import annotations
 
-import json, sqlite3
+import sqlite3
+
 import pytest
 from fastapi.testclient import TestClient
-from src.web_app.server import app
+
 from src.web_app.security import PathPolicy
+from src.web_app.server import app
 
 client = TestClient(app)
 
 
 def _create_db(path: str) -> str:
-    conn = sqlite3.connect(path); cur = conn.cursor()
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
     cur.execute("CREATE TABLE CompanyInfo(Company_Code TEXT PRIMARY KEY, Company_Name TEXT, [Submitter Name] TEXT, Company_Industry TEXT, Company_Ticker TEXT, Listed TEXT)")
     cur.execute("CREATE TABLE FinancialStatements(Company_Code TEXT, docID TEXT UNIQUE, periodEnd TEXT, SharesOutstanding REAL, SharePrice REAL)")
     cur.execute("CREATE TABLE Stock_Prices(Date TEXT, Ticker TEXT, Currency TEXT, Price REAL, PRIMARY KEY(Date, Ticker))")
@@ -37,7 +40,8 @@ def _create_db(path: str) -> str:
     cur.execute("INSERT INTO PerShare_Metrics VALUES(?,?)", ("DOC1", 2000.0))
     cur.execute("INSERT INTO Financial_Ratios VALUES(?,?)", ("DOC1", 1.85))
     cur.execute("INSERT INTO Financial_Ratios_Rolling VALUES(?,?,?)", ("DOC1", 0.04, 0.125))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return path
 
 

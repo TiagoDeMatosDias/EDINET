@@ -3,15 +3,17 @@
 import os
 import sqlite3
 import tempfile
+
 import pytest
+
 from src.portfolio.schema import create_tables
 from src.portfolio.transactions import (
-    insert_entries,
+    delete_by_source,
+    get_activity_summary,
+    get_date_range,
     get_transactions,
     get_unique_symbols,
-    get_date_range,
-    get_activity_summary,
-    delete_by_source,
+    insert_entries,
 )
 
 

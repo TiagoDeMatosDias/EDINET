@@ -1,10 +1,19 @@
 """Tests for src/portfolio/schema.py — DDL creation and Pydantic validation."""
 
-import sqlite3
 import os
+import sqlite3
 import tempfile
+
 import pytest
-from src.portfolio.schema import create_tables, TransactionEntry, UploadResponse, HoldingItem, PerformanceResponse
+from pydantic import ValidationError
+
+from src.portfolio.schema import (
+    HoldingItem,
+    PerformanceResponse,
+    TransactionEntry,
+    UploadResponse,
+    create_tables,
+)
 
 
 class TestCreateTables:
@@ -60,6 +69,10 @@ class TestCreateTables:
         conn.commit()
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("INSERT INTO Portfolio_Daily (date) VALUES ('2024-01-01')")
+        conn.execute(
+            "INSERT INTO Portfolio_Daily (date, owner_user_id) VALUES (?, ?)",
+            ("2024-01-01", "another-owner"),
+        )
         conn.close()
 
     def test_holdings_primary_key(self, db_path):
@@ -77,6 +90,12 @@ class TestCreateTables:
                 "VALUES (?,?,?,?)",
                 ("VWCE", "STK", 20, "EUR"),
             )
+        conn.execute(
+            """INSERT INTO Portfolio_Holdings
+               (symbol, asset_category, owner_user_id, quantity, currency)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("VWCE", "STK", "another-owner", 20, "EUR"),
+        )
         conn.close()
 
 
@@ -94,7 +113,7 @@ class TestPydanticModels:
         assert e.activity_type == "TRADE"
 
     def test_transaction_entry_missing_required(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             TransactionEntry(activity_type="TRADE", currency="USD", trade_date="2024-01-01")
 
     def test_upload_response_defaults(self):

@@ -178,7 +178,12 @@ def flatten_overview(overview: dict[str, Any]) -> dict[str, float | None]:
     }
     eps = _number(share.get("EPS"))
     dividends = _number(share.get("Dividends"))
-    if metrics["PayoutRatio"] is None and eps not in (None, 0) and dividends is not None:
+    if (
+        metrics["PayoutRatio"] is None
+        and eps is not None
+        and eps != 0
+        and dividends is not None
+    ):
         metrics["PayoutRatio"] = dividends / eps
     return metrics
 
@@ -188,10 +193,11 @@ def common_size_income(metrics: dict[str, float | None]) -> dict[str, float | No
     revenue = metrics.get("Revenue")
     if not revenue:
         return {key: None for key in ("Revenue", "OperatingIncome", "NetIncome")}
-    return {
-        key: (metrics.get(key) / revenue if metrics.get(key) is not None else None)
-        for key in ("Revenue", "OperatingIncome", "NetIncome")
-    }
+    result: dict[str, float | None] = {}
+    for key in ("Revenue", "OperatingIncome", "NetIncome"):
+        value = metrics.get(key)
+        result[key] = value / revenue if value is not None else None
+    return result
 
 
 def common_size_balance(metrics: dict[str, float | None]) -> dict[str, float | None]:
@@ -199,10 +205,11 @@ def common_size_balance(metrics: dict[str, float | None]) -> dict[str, float | N
     assets = metrics.get("TotalAssets")
     if not assets:
         return {key: None for key in ("TotalAssets", "TotalEquity")}
-    return {
-        key: (metrics.get(key) / assets if metrics.get(key) is not None else None)
-        for key in ("TotalAssets", "TotalEquity")
-    }
+    result: dict[str, float | None] = {}
+    for key in ("TotalAssets", "TotalEquity"):
+        value = metrics.get(key)
+        result[key] = value / assets if value is not None else None
+    return result
 
 
 def growth_rate(current: float | None, previous: float | None) -> float | None:

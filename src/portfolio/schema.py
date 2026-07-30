@@ -6,11 +6,11 @@ Creates all tables in db3 (Portfolio.db) on first use.  All DDL uses
 
 from __future__ import annotations
 
-import sqlite3
 import logging
+import shutil
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-import shutil
 
 from src.orchestrator.common.sqlite import (
     connect_read,
@@ -18,19 +18,40 @@ from src.orchestrator.common.sqlite import (
     initialize_managed_database,
     table_exists,
 )
+
 # Compatibility re-exports; new code imports contracts from portfolio.models.
 from src.portfolio.models import (
-    ActivitySummaryResponse,
-    BenchmarkInfo,
-    DateRangeResponse,
-    DividendBreakdown,
-    HoldingItem,
-    PerformanceResponse,
-    RebuildResponse,
-    ReturnAttribution,
-    ReturnDistribution,
-    TransactionEntry,
-    UploadResponse,
+    ActivitySummaryResponse as ActivitySummaryResponse,
+)
+from src.portfolio.models import (
+    BenchmarkInfo as BenchmarkInfo,
+)
+from src.portfolio.models import (
+    DateRangeResponse as DateRangeResponse,
+)
+from src.portfolio.models import (
+    DividendBreakdown as DividendBreakdown,
+)
+from src.portfolio.models import (
+    HoldingItem as HoldingItem,
+)
+from src.portfolio.models import (
+    PerformanceResponse as PerformanceResponse,
+)
+from src.portfolio.models import (
+    RebuildResponse as RebuildResponse,
+)
+from src.portfolio.models import (
+    ReturnAttribution as ReturnAttribution,
+)
+from src.portfolio.models import (
+    ReturnDistribution as ReturnDistribution,
+)
+from src.portfolio.models import (
+    TransactionEntry as TransactionEntry,
+)
+from src.portfolio.models import (
+    UploadResponse as UploadResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,7 +112,7 @@ CREATE INDEX IF NOT EXISTS idx_trans_underlying ON Transactions(underlying_symbo
 
 _DDL_PORTFOLIO_DAILY = """
 CREATE TABLE IF NOT EXISTS Portfolio_Daily (
-    date               TEXT PRIMARY KEY,
+    date               TEXT NOT NULL,
     owner_user_id      TEXT NOT NULL DEFAULT '',
     total_value        REAL,
     cash_balance       REAL,
@@ -101,7 +122,8 @@ CREATE TABLE IF NOT EXISTS Portfolio_Daily (
     cumulative_return  REAL,
     dividend_income    REAL,
     net_inflow         REAL,
-    cash_ccy_json      TEXT
+    cash_ccy_json      TEXT,
+    PRIMARY KEY (date, owner_user_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_portdaily_date ON Portfolio_Daily(date);
@@ -124,7 +146,7 @@ CREATE TABLE IF NOT EXISTS Portfolio_Holdings (
     expiry          TEXT,
     put_call        TEXT,
     underlying      TEXT,
-    PRIMARY KEY (symbol, asset_category)
+    PRIMARY KEY (symbol, asset_category, owner_user_id)
 );
 """
 
@@ -145,7 +167,7 @@ CREATE TABLE IF NOT EXISTS Holdings_History (
     expiry          TEXT,
     put_call        TEXT,
     underlying      TEXT,
-    PRIMARY KEY (date, symbol, asset_category)
+    PRIMARY KEY (date, symbol, asset_category, owner_user_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_hh_date ON Holdings_History(date);
@@ -321,7 +343,107 @@ def _migration_4(conn: sqlite3.Connection) -> None:
     """)
 
 
-_MIGRATIONS = ((1, _migration_1), (2, _migration_2), (3, _migration_3), (4, _migration_4))
+def _primary_key_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
+    columns = [
+        (int(row[5]), str(row[1]))
+        for row in conn.execute(f'PRAGMA table_info("{table_name}")')
+        if int(row[5]) > 0
+    ]
+    return [name for _position, name in sorted(columns)]
+
+
+def _migration_5(conn: sqlite3.Connection) -> None:
+    """Include owner_user_id in all materialized portfolio primary keys."""
+    rebuilds = (
+        (
+            "Portfolio_Daily",
+            _DDL_PORTFOLIO_DAILY,
+            (
+                "date",
+                "owner_user_id",
+                "total_value",
+                "cash_balance",
+                "stock_value",
+                "option_value",
+                "daily_return",
+                "cumulative_return",
+                "dividend_income",
+                "net_inflow",
+                "cash_ccy_json",
+            ),
+            ["date", "owner_user_id"],
+            "idx_portdaily_date",
+        ),
+        (
+            "Portfolio_Holdings",
+            _DDL_HOLDINGS,
+            (
+                "symbol",
+                "asset_category",
+                "owner_user_id",
+                "quantity",
+                "avg_cost",
+                "market_price",
+                "market_value",
+                "market_value_native",
+                "currency",
+                "fx_rate",
+                "is_option",
+                "strike",
+                "expiry",
+                "put_call",
+                "underlying",
+            ),
+            ["symbol", "asset_category", "owner_user_id"],
+            None,
+        ),
+        (
+            "Holdings_History",
+            _DDL_HOLDINGS_HISTORY,
+            (
+                "date",
+                "symbol",
+                "asset_category",
+                "owner_user_id",
+                "quantity",
+                "market_price",
+                "market_value",
+                "market_value_native",
+                "currency",
+                "fx_rate",
+                "is_option",
+                "strike",
+                "expiry",
+                "put_call",
+                "underlying",
+            ),
+            ["date", "symbol", "asset_category", "owner_user_id"],
+            "idx_hh_date",
+        ),
+    )
+    for table_name, ddl, columns, expected_key, index_name in rebuilds:
+        if _primary_key_columns(conn, table_name) == expected_key:
+            continue
+        old_table = f"{table_name}_owner_key_v4"
+        if index_name:
+            conn.execute(f'DROP INDEX IF EXISTS "{index_name}"')
+        conn.execute(f'ALTER TABLE "{table_name}" RENAME TO "{old_table}"')
+        _execute_ddl(conn, ddl)
+        column_list = ", ".join(f'"{column}"' for column in columns)
+        conn.execute(
+            f'INSERT INTO "{table_name}" ({column_list}) '
+            f'SELECT {column_list} FROM "{old_table}"'
+        )
+        conn.execute(f'DROP TABLE "{old_table}"')
+
+
+_MIGRATIONS = (
+    (1, _migration_1),
+    (2, _migration_2),
+    (3, _migration_3),
+    (4, _migration_4),
+    (5, _migration_5),
+)
 
 
 def _needs_material_migration(path: Path) -> bool:
@@ -362,10 +484,27 @@ def _needs_material_migration(path: Path) -> bool:
             "Portfolio_Holdings": "market_value_native",
             "Holdings_History": "market_value_native",
         }
-        return any(
+        missing_columns = any(
             table_exists(conn, table)
             and column not in _column_names(conn, table)
             for table, column in required_columns.items()
+        )
+        if missing_columns:
+            return True
+        required_owner_keys = {
+            "Portfolio_Daily": ["date", "owner_user_id"],
+            "Portfolio_Holdings": ["symbol", "asset_category", "owner_user_id"],
+            "Holdings_History": [
+                "date",
+                "symbol",
+                "asset_category",
+                "owner_user_id",
+            ],
+        }
+        return any(
+            table_exists(conn, table)
+            and _primary_key_columns(conn, table) != expected
+            for table, expected in required_owner_keys.items()
         )
     finally:
         conn.close()

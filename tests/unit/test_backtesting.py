@@ -17,7 +17,6 @@ Strategy
 
 import os
 import shutil
-import sys
 import sqlite3
 import tempfile
 import unittest
@@ -25,25 +24,22 @@ import unittest
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-
 from src.orchestrator.common.backtesting import (
-    get_portfolio_prices,
-    get_dividend_data,
     build_daily_portfolio_tracker,
-    calculate_portfolio_returns,
     calculate_benchmark_returns,
-    calculate_return_decomposition,
-    calculate_per_company_returns,
-    calculate_yearly_returns,
     calculate_dividends_by_company_year,
     calculate_metrics,
-    generate_report,
+    calculate_per_company_returns,
+    calculate_portfolio_returns,
+    calculate_return_decomposition,
+    calculate_yearly_returns,
     generate_backtest_charts,
-    run_backtest,
+    generate_report,
+    get_dividend_data,
+    get_portfolio_prices,
     resolve_portfolio_allocations,
+    run_backtest,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -963,6 +959,7 @@ class TestGenerateReport(unittest.TestCase):
             self.assertTrue(os.path.isfile(path))
             with open(path, encoding="utf-8") as f:
                 content = f.read()
+            self.assertEqual(text, content)
             self.assertIn("BACKTESTING REPORT", content)
             self.assertIn("+15.00%", content)
 

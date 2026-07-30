@@ -6,6 +6,7 @@ import sqlite3
 
 import pytest
 
+from src.portfolio import schema as portfolio_schema
 from src.portfolio.schema import create_tables
 
 
@@ -45,6 +46,15 @@ def _columns(connection, table):
     }
 
 
+def _primary_key(connection, table):
+    columns = [
+        (row[5], row[1])
+        for row in connection.execute(f'PRAGMA table_info("{table}")')
+        if row[5]
+    ]
+    return [name for _position, name in sorted(columns)]
+
+
 def test_legacy_schema_is_backed_up_and_migrated_idempotently(tmp_path):
     path = tmp_path / "Portfolio.db"
     _legacy_database(path)
@@ -64,13 +74,25 @@ def test_legacy_schema_is_backed_up_and_migrated_idempotently(tmp_path):
         assert "cash_ccy_json" in _columns(connection, "Portfolio_Daily")
         assert "market_value_native" in _columns(connection, "Portfolio_Holdings")
         assert "market_value_native" in _columns(connection, "Holdings_History")
+        assert _primary_key(connection, "Portfolio_Daily") == ["date", "owner_user_id"]
+        assert _primary_key(connection, "Portfolio_Holdings") == [
+            "symbol",
+            "asset_category",
+            "owner_user_id",
+        ]
+        assert _primary_key(connection, "Holdings_History") == [
+            "date",
+            "symbol",
+            "asset_category",
+            "owner_user_id",
+        ]
         assert connection.execute(
             "SELECT total_value FROM Portfolio_Daily WHERE date = '2024-01-01'"
         ).fetchone()[0] == 10
     finally:
         connection.close()
 
-    assert versions == [1, 2]
+    assert versions == [version for version, _migration in portfolio_schema._MIGRATIONS]
     assert len(backups_after_first_run) == 1
     assert list(tmp_path.glob("Portfolio.db.backup-*")) == backups_after_first_run
 

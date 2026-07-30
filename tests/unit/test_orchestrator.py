@@ -1,13 +1,14 @@
 """Tests for the orchestrator module."""
 
 import importlib
-from pathlib import Path
 import sqlite3
 import sys
 import textwrap
 import threading
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from config import Config
 
@@ -380,7 +381,9 @@ class TestImportStockPricesCsvStep:
         Config.reset()
 
     def test_uses_price_column_default_matching_backup_csv_schema(self):
-        from src.orchestrator.import_stock_prices_csv.import_stock_prices_csv import run_import_stock_prices_csv
+        from src.orchestrator.import_stock_prices_csv.import_stock_prices_csv import (
+            run_import_stock_prices_csv,
+        )
 
         config = Config.from_dict({
             "import_stock_prices_csv_config": {
@@ -590,7 +593,9 @@ class TestGenerateFinancialStatementsStep:
         Config.reset()
 
     def test_passes_granularity_level(self):
-        from src.orchestrator.generate_financial_statements.generate_financial_statements import run_generate_financial_statements
+        from src.orchestrator.generate_financial_statements.generate_financial_statements import (
+            run_generate_financial_statements,
+        )
 
         config = Config.from_dict({
             "generate_financial_statements_config": {
@@ -629,7 +634,9 @@ class TestGenerateRollingMetricsStep:
         Config.reset()
 
     def test_passes_source_and_target_databases(self):
-        from src.orchestrator.generate_rolling_metrics.generate_rolling_metrics import run_generate_rolling_metrics
+        from src.orchestrator.generate_rolling_metrics.generate_rolling_metrics import (
+            run_generate_rolling_metrics,
+        )
 
         config = Config.from_dict({
             "generate_rolling_metrics_config": {},

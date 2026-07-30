@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Download, FileText, Globe, ShieldAlert, Table2, Tags } from 'lucide-react'
@@ -45,6 +45,10 @@ function fmtNum(n: number): string {
   if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + 'M'
   if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'K'
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
+}
+
+function translationErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
 }
 
 function conceptDisplay(concept: string): string {
@@ -250,39 +254,40 @@ export default function FilingViewerPage() {
     queryFn: () => apiRequest<{ facts: Fact[]; count: number }>(`/api/filings/${encodeURIComponent(docId ?? '')}/facts-translated${queryString({ limit: 3000 })}`),
   })
   const [translatingSections, setTranslatingSections] = useState<Set<string>>(new Set())
+  const [sectionTranslationErrors, setSectionTranslationErrors] = useState<Record<string, string>>({})
   const sections = useQuery({
-    queryKey: ['filing-sections-tr', docId],
+    queryKey: ['filing-sections', docId],
     enabled: Boolean(docId),
+    queryFn: () => apiRequest<{ sections: Section[]; count: number }>(`/api/filings/${encodeURIComponent(docId ?? '')}/sections${queryString({ limit: 500 })}`),
+  })
+  const sectionTranslations = useQuery({
+    queryKey: ['filing-sections-en', docId],
+    enabled: Boolean(docId) && tab === 'document' && sideBySide,
+    retry: false,
     queryFn: () => apiRequest<{ sections: Section[]; count: number }>(`/api/filings/${encodeURIComponent(docId ?? '')}/sections-translated${queryString({ limit: 500, bodies: 'true' })}`),
   })
-  // When side-by-side is enabled, fetch body translations for sections that lack them
+  const documentSections = useMemo(() => {
+    const translatedById = new Map((sectionTranslations.data?.sections ?? []).map(section => [section.section_id, section]))
+    return (sections.data?.sections ?? []).map(section => ({ ...section, ...(translatedById.get(section.section_id) ?? {}) }))
+  }, [sectionTranslations.data, sections.data])
   const fetchBodyTranslation = async (sectionId: string, force = false) => {
     if (translatingSections.has(sectionId)) return
     setTranslatingSections(prev => new Set(prev).add(sectionId))
+    setSectionTranslationErrors(prev => { const next = { ...prev }; delete next[sectionId]; return next })
     try {
       const params = force ? { section_id: sectionId, force: 'true' } : { section_id: sectionId }
       const data = await apiRequest<{ section: Section }>(`/api/filings/${encodeURIComponent(docId ?? '')}/translate-body${queryString(params)}`)
       if (data.section?.text_en) {
-        queryClient.setQueryData(['filing-sections-tr', docId], (old: { sections: Section[]; count: number } | undefined) => {
-          if (!old) return old
-          return { ...old, sections: old.sections.map(s => s.section_id === sectionId ? { ...s, text_en: data.section.text_en, title_en: data.section.title_en } : s) }
+        queryClient.setQueryData(['filing-sections-en', docId], (old: { sections: Section[]; count: number } | undefined) => {
+          const base = old ?? { sections: sections.data?.sections ?? [], count: sections.data?.count ?? 0 }
+          return { ...base, sections: base.sections.map(s => s.section_id === sectionId ? { ...s, text_en: data.section.text_en, title_en: data.section.title_en } : s) }
         })
       }
-    } catch { /* ignore */ }
+    } catch (error) {
+      setSectionTranslationErrors(prev => ({ ...prev, [sectionId]: translationErrorMessage(error, 'Translation request failed') }))
+    }
     setTranslatingSections(prev => { const next = new Set(prev); next.delete(sectionId); return next })
   }
-  // Trigger body translation fetch when sideBySide is toggled on
-  useEffect(() => {
-    if (sideBySide && sections.data?.sections) {
-      for (const s of sections.data.sections) {
-        if (!s.text_en && s.text && s.text.length > 0) {
-          // Translation is an explicit user-triggered side-by-side action.
-          // eslint-disable-next-line react-hooks/set-state-in-effect
-          void fetchBodyTranslation(s.section_id)
-        }
-      }
-    }
-  }, [sideBySide, sections.data])
   const taxonomy = useQuery({
     queryKey: ['filing-taxonomy', docId],
     enabled: Boolean(docId) && tab === 'taxonomy',
@@ -320,11 +325,11 @@ export default function FilingViewerPage() {
     try {
       const enData = await apiRequest<{ html: string; html_en?: string }>(`/api/filings/${encodeURIComponent(docId ?? '')}/html/${encodeURIComponent(artifactId)}?translate=true`)
       if (enData.html_en) {
-        setHtmCache(prev => { const m = new Map(prev); const entry = m.get(artifactId) || { jp: '', en: '' }; m.set(artifactId, { jp: entry.jp || htmContent, en: enData.html_en! }); return m })
+        setHtmCache(prev => { const m = new Map(prev); const entry = m.get(artifactId) || { jp: '', en: '' }; m.set(artifactId, { jp: entry.jp || enData.html, en: enData.html_en! }); return m })
         setShowEn(true)
         setHtmError('')
       } else { setHtmError('Translation returned empty') }
-    } catch { setHtmError('Translation request failed') }
+    } catch (error) { setHtmError(translationErrorMessage(error, 'Translation request failed')) }
     setTranslatingHtm(false)
   }
 
@@ -336,11 +341,11 @@ export default function FilingViewerPage() {
     try {
       const enData = await apiRequest<{ html: string; html_en?: string }>(`/api/filings/${encodeURIComponent(docId ?? '')}/html/${encodeURIComponent(selectedHtm)}?translate=true`)
       if (enData.html_en) {
-        setHtmCache(prev => { const m = new Map(prev); const entry = m.get(selectedHtm) || { jp: '', en: '' }; m.set(selectedHtm, { jp: entry.jp || htmContent, en: enData.html_en! }); return m })
+        setHtmCache(prev => { const m = new Map(prev); const entry = m.get(selectedHtm) || { jp: '', en: '' }; m.set(selectedHtm, { jp: entry.jp || enData.html, en: enData.html_en! }); return m })
         setShowEn(true)
         setHtmError('')
       } else { setHtmError('Translation returned empty') }
-    } catch { setHtmError('Translation request failed') }
+    } catch (error) { setHtmError(translationErrorMessage(error, 'Translation request failed')) }
     setTranslatingHtm(false)
   }
 
@@ -441,11 +446,11 @@ export default function FilingViewerPage() {
                         try {
                           const enData = await apiRequest<{ html: string; html_en?: string }>(`/api/filings/${encodeURIComponent(docId ?? '')}/html/${encodeURIComponent(selectedHtm)}?translate=true&force=true`)
                           if (enData.html_en) {
-                            setHtmCache(prev => { const m = new Map(prev); const entry = m.get(selectedHtm) || { jp: '', en: '' }; m.set(selectedHtm, { jp: entry.jp || htmContent, en: enData.html_en! }); return m })
+                            setHtmCache(prev => { const m = new Map(prev); const entry = m.get(selectedHtm) || { jp: '', en: '' }; m.set(selectedHtm, { jp: entry.jp || enData.html, en: enData.html_en! }); return m })
                             setShowEn(true)
                             setHtmError('')
                           } else { setHtmError('Translation returned empty') }
-                        } catch { setHtmError('Refresh failed') }
+                        } catch (error) { setHtmError(translationErrorMessage(error, 'Refresh failed')) }
                         setTranslatingHtm(false)
                       }}
                     >
@@ -491,49 +496,69 @@ export default function FilingViewerPage() {
         {/* Document */}
         {tab === 'document' && (
           <div className="filing-document">
+            <div className="facts-toolbar">
+              <label className="inline-toggle">
+                <input type="checkbox" checked={sideBySide} onChange={e => setSideBySide(e.target.checked)} /> Side-by-side English
+              </label>
+              {sideBySide && sectionTranslations.isFetching && <span className="text-muted">Translating the complete document…</span>}
+              {sideBySide && sectionTranslations.isError && (
+                <>
+                  <span role="alert" style={{ color: 'var(--danger)' }}>
+                    {translationErrorMessage(sectionTranslations.error, 'Document translation failed')}
+                  </span>
+                  <button className="button button--secondary button--small" onClick={() => { void sectionTranslations.refetch() }}>Retry</button>
+                </>
+              )}
+            </div>
             {sections.isLoading ? <LoadingState label="Loading document" /> : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {sections.data?.sections.map(s => (
-                  <article key={s.section_id} className="filing-section">
-                    <h2>{s.title || `Section ${s.ordinal}`}</h2>
-                    {sideBySide && s.title_en && (
-                      <h3 className="en-heading">{s.title_en}</h3>
-                    )}
-                    {sideBySide ? (
-                      <div className="side-by-side">
-                        <div className="side-panel jp-panel">
-                          <span className="panel-label">日本語</span>
-                          <p>{s.text}</p>
-                        </div>
-                        <div className="side-panel en-panel">
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                            <span className="panel-label" style={{ marginBottom: 0 }}>English</span>
-                            <button
-                              className="text-button"
-                              style={{ fontSize: '.7rem' }}
-                              disabled={translatingSections.has(s.section_id)}
-                              onClick={() => { void fetchBodyTranslation(s.section_id, true) }}
-                            >
-                              {translatingSections.has(s.section_id) ? 'Translating…' : 'Retranslate'}
-                            </button>
+                {documentSections.map(s => {
+                  const sectionIsTranslating = sectionTranslations.isFetching || translatingSections.has(s.section_id)
+                  return (
+                    <article key={s.section_id} className="filing-section">
+                      <h2>{s.title || `Section ${s.ordinal}`}</h2>
+                      {sideBySide && s.title_en && (
+                        <h3 className="en-heading">{s.title_en}</h3>
+                      )}
+                      {sideBySide ? (
+                        <div className="side-by-side">
+                          <div className="side-panel jp-panel">
+                            <span className="panel-label">日本語</span>
+                            <p>{s.text}</p>
                           </div>
-                          {s.text_en ? (
-                            <p>{s.text_en}</p>
-                          ) : translatingSections.has(s.section_id) ? (
-                            <p className="text-muted" style={{ fontStyle: 'italic' }}>Translating…</p>
-                          ) : (
-                            <p className="text-muted" style={{ fontStyle: 'italic', cursor: 'pointer', textDecoration: 'underline' }}
-                               onClick={() => { void fetchBodyTranslation(s.section_id) }}>
-                              Click to translate
-                            </p>
-                          )}
+                          <div className="side-panel en-panel">
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                              <span className="panel-label" style={{ marginBottom: 0 }}>English</span>
+                              <button
+                                className="text-button"
+                                style={{ fontSize: '.7rem' }}
+                                disabled={sectionIsTranslating}
+                                onClick={() => { void fetchBodyTranslation(s.section_id, true) }}
+                              >
+                                {translatingSections.has(s.section_id) ? 'Translating…' : 'Retranslate'}
+                              </button>
+                            </div>
+                            {s.text_en ? (
+                              <p>{s.text_en}</p>
+                            ) : sectionIsTranslating ? (
+                              <p className="text-muted" style={{ fontStyle: 'italic' }}>Translating…</p>
+                            ) : (
+                              <>
+                                <p className="text-muted" style={{ fontStyle: 'italic', cursor: 'pointer', textDecoration: 'underline' }}
+                                   onClick={() => { void fetchBodyTranslation(s.section_id) }}>
+                                  Click to translate
+                                </p>
+                                {sectionTranslationErrors[s.section_id] && <p role="alert" style={{ color: 'var(--danger)' }}>{sectionTranslationErrors[s.section_id]}</p>}
+                              </>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ) : (
-                      <p>{s.text}</p>
-                    )}
-                  </article>
-                ))}
+                      ) : (
+                        <p>{s.text}</p>
+                      )}
+                    </article>
+                  )
+                })}
               </div>
             )}
             {sections.data && !sections.data.sections.length && <EmptyState title="No narrative" />}

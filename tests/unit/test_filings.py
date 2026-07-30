@@ -201,7 +201,11 @@ def test_archive_rejects_path_traversal(tmp_path):
 
 
 def test_archive_rejects_duplicate_members(tmp_path):
-    content = _zip_bytes(("PublicDoc/report.xbrl", XBRL), ("PublicDoc/report.xbrl", XBRL))
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        content = _zip_bytes(
+            ("PublicDoc/report.xbrl", XBRL),
+            ("PublicDoc/report.xbrl", XBRL),
+        )
     with pytest.raises(UnsafeArchiveError, match="duplicate"):
         archive_zip(content, "S100DUP", tmp_path / "archive")
 

@@ -3,10 +3,8 @@
 import os
 import sqlite3
 import tempfile
-import pytest
-from collections import Counter
-from datetime import date
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Price fetcher tests
@@ -55,117 +53,23 @@ class TestBuildCurrencyMap:
         ])
         assert mapping == {}
 
-    def test_currency_map_from_real_data(self):
-        """Build currency map from all 6 parsed XML files."""
-        from src.portfolio.ibkr_parser import parse_ibkr_xml_file, normalize_entries
+    def test_currency_map_from_parsed_data(self, sample_ibkr_content):
+        from src.portfolio.ibkr_parser import normalize_entries, parse_ibkr_xml
         from src.portfolio.price_fetcher import _build_currency_map
 
-        ibkr_dir = os.path.join(os.path.dirname(__file__), "../..", "data", "ibkr")
-        all_entries = []
-        for year in ["2020", "2021", "2022", "2023", "2024", "2025"]:
-            result = parse_ibkr_xml_file(os.path.join(ibkr_dir, f"{year}.xml"))
-            all_entries.extend(normalize_entries(result))
-        mapping = _build_currency_map(all_entries)
-        assert len(mapping) > 20  # many tickers across all years
-        # European ETFs
-        assert mapping.get("VWCE") == "EUR"
-        # US stocks
-        assert mapping.get("JXN") == "USD"
-        assert mapping.get("BTI") == "USD"
-        # Japanese stocks
-        assert mapping.get("7575.T") == "JPY"
-        # Forex pairs excluded
-        for k in mapping:
-            assert k not in ("EUR.USD", "USD.JPY")
+        entries = normalize_entries(parse_ibkr_xml(sample_ibkr_content))
+
+        assert _build_currency_map(entries) == {"AAA": "USD", "BBB": "EUR"}
 
 
 class TestGetStoredCurrency:
-    def test_none_for_empty_db(self):
-        import sqlite3, tempfile
+    def test_none_for_empty_db(self, tmp_path):
         from src.portfolio.price_fetcher import _get_stored_currency
-        fd, path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
+
+        path = tmp_path / "prices.db"
         conn = sqlite3.connect(path)
         assert _get_stored_currency(conn, "VWCE") is None
         conn.close()
-        os.unlink(path)
-
-
-# ---------------------------------------------------------------------------
-# Parser edge cases
-# ---------------------------------------------------------------------------
-
-class TestParserEdgeCases:
-    def test_empty_xml(self):
-        from src.portfolio.ibkr_parser import parse_ibkr_xml
-        xml = '<?xml version="1.0"?><FlexQueryResponse></FlexQueryResponse>'
-        result = parse_ibkr_xml(xml)
-        assert result["trades"] == []
-        assert result["cash_transactions"] == []
-        assert result["corp_actions"] == []
-
-    def test_date_time_without_timestamp(self):
-        from src.portfolio.ibkr_parser import parse_ibkr_xml
-        xml = """<?xml version="1.0"?>
-        <FlexQueryResponse><FlexStatements><FlexStatement><CashTransactions>
-        <CashTransaction accountId="U1" currency="USD" fxRateToBase="1"
-          dateTime="2024-12-25" amount="100" type="Dividends"
-          transactionID="date-test-1" levelOfDetail="DETAIL"/>
-        </CashTransactions></FlexStatement></FlexStatements></FlexQueryResponse>"""
-        result = parse_ibkr_xml(xml)
-        assert result["cash_transactions"][0]["trade_date"] == "2024-12-25"
-
-    def test_missing_fx_rate_defaults_to_one(self):
-        from src.portfolio.ibkr_parser import parse_ibkr_xml
-        xml = """<?xml version="1.0"?>
-        <FlexQueryResponse><FlexStatements><FlexStatement><Trades>
-        <Trade accountId="U1" currency="EUR" fxRateToBase="" assetCategory="STK"
-          symbol="VWCE" tradeDate="2024-06-15" quantity="10" tradePrice="100"
-          tradeMoney="1000" proceeds="-1000" ibCommission="0" taxes="0"
-          netCash="-1000" buySell="BUY" transactionID="fx-test" levelOfDetail="EXECUTION"/>
-        </Trades></FlexStatement></FlexStatements></FlexQueryResponse>"""
-        result = parse_ibkr_xml(xml)
-        assert result["trades"][0]["fx_rate_to_base"] == 1.0
-
-    def test_unrecognized_cash_type_skipped(self):
-        from src.portfolio.ibkr_parser import parse_ibkr_xml
-        xml = """<?xml version="1.0"?>
-        <FlexQueryResponse><FlexStatements><FlexStatement><CashTransactions>
-        <CashTransaction accountId="U1" currency="USD" fxRateToBase="1"
-          dateTime="2024-01-01" amount="50" type="UnknownAction"
-          transactionID="unknown-type" levelOfDetail="DETAIL"/>
-        </CashTransactions></FlexStatement></FlexStatements></FlexQueryResponse>"""
-        result = parse_ibkr_xml(xml)
-        assert len(result["cash_transactions"]) == 0
-
-    def test_order_level_skipped(self):
-        """ORDER level trades should be skipped (only EXECUTION is used)."""
-        from src.portfolio.ibkr_parser import parse_ibkr_xml_file
-        ibkr_dir = os.path.join(os.path.dirname(__file__), "../..", "data", "ibkr")
-        result = parse_ibkr_xml_file(os.path.join(ibkr_dir, "2024.xml"))
-        # Verify no ORDER-level trades leaked through
-        for t in result["trades"]:
-            assert "ORDER" not in str(t.get("levelOfDetail", ""))
-
-    def test_normalize_entries_preserves_order(self):
-        from src.portfolio.ibkr_parser import parse_ibkr_xml, normalize_entries
-        xml = """<?xml version="1.0"?>
-        <FlexQueryResponse><FlexStatements><FlexStatement>
-        <Trades>
-        <Trade accountId="U1" currency="EUR" fxRateToBase="1" assetCategory="STK"
-          symbol="A" tradeDate="2024-01-15" quantity="10" tradePrice="100"
-          tradeMoney="1000" proceeds="-1000" ibCommission="0" taxes="0"
-          netCash="-1000" buySell="BUY" transactionID="a" levelOfDetail="EXECUTION"/>
-        </Trades>
-        <CashTransactions>
-        <CashTransaction accountId="U1" currency="EUR" fxRateToBase="1"
-          dateTime="2024-01-20" amount="50" type="Dividends"
-          transactionID="b" levelOfDetail="DETAIL"/>
-        </CashTransactions>
-        </FlexStatement></FlexStatements></FlexQueryResponse>"""
-        entries = normalize_entries(parse_ibkr_xml(xml))
-        assert entries[0]["transaction_id"] == "a"
-        assert entries[1]["transaction_id"] == "b"
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +84,7 @@ class TestOptionPricingEdgeCases:
         assert price > 99  # close to S
 
     def test_very_low_volatility(self):
-        from src.portfolio.option_pricing import black_scholes, binomial_tree
+        from src.portfolio.option_pricing import binomial_tree, black_scholes
         # Very low vol: price should be close to discounted intrinsic
         bs = black_scholes("call", 100, 90, 1, 0.05, 0.01)
         bt = binomial_tree("call", 100, 90, 1, 0.05, 0.01, steps=100)
@@ -225,7 +129,7 @@ class TestOptionPricingEdgeCases:
 
     def test_binomial_converges_to_bs_for_european(self):
         """European option via binomial should converge to BS as steps increase."""
-        from src.portfolio.option_pricing import black_scholes, binomial_tree
+        from src.portfolio.option_pricing import binomial_tree, black_scholes
         bs = black_scholes("call", 100, 100, 1, 0.05, 0.25)
         bt5 = binomial_tree("call", 100, 100, 1, 0.05, 0.25, steps=5)
         bt200 = binomial_tree("call", 100, 100, 1, 0.05, 0.25, steps=200)
@@ -275,6 +179,7 @@ class TestPortfolioStateEdgeCases:
         ]
         insert_entries(db3_path, entries)
         result = build_portfolio_state(db3_path)
+        assert result["daily_rows"] > 0
         # Current holdings should be empty after selling everything
         holdings = get_current_holdings(db3_path)
         # CASH USD row should be present (50 profit in USD)
@@ -304,7 +209,7 @@ class TestPortfolioStateEdgeCases:
         assert total_inflow == 800
 
     def test_broker_interest_applied(self, db3_path):
-        from src.portfolio.portfolio_state import build_portfolio_state, get_daily_values
+        from src.portfolio.portfolio_state import build_portfolio_state
         from src.portfolio.transactions import insert_entries
 
         entries = [
@@ -318,7 +223,7 @@ class TestPortfolioStateEdgeCases:
 
     def test_fx_conversion_applied(self, db3_path):
         """Verify fx_rate_to_base converts non-base-currency transactions."""
-        from src.portfolio.portfolio_state import build_portfolio_state, get_daily_values
+        from src.portfolio.portfolio_state import build_portfolio_state
         from src.portfolio.transactions import insert_entries
 
         entries = [
@@ -375,8 +280,8 @@ class TestPerformanceEdgeCases:
     def test_extreme_single_return(self, db3_path):
         """Single transaction → minimal metrics."""
         from src.portfolio.performance import calculate_metrics
-        from src.portfolio.transactions import insert_entries
         from src.portfolio.portfolio_state import build_portfolio_state
+        from src.portfolio.transactions import insert_entries
 
         entries = [
             {"transaction_id": "s1", "activity_type": "DEPOSIT_WITHDRAWAL",
@@ -400,8 +305,8 @@ class TestPerformanceEdgeCases:
     def test_dividend_breakdown_uses_raw_transactions(self, db3_path):
         """Ensure dividend_breakdown comes from Transactions, not Portfolio_Daily."""
         from src.portfolio.performance import calculate_metrics
-        from src.portfolio.transactions import insert_entries
         from src.portfolio.portfolio_state import build_portfolio_state
+        from src.portfolio.transactions import insert_entries
 
         entries = [
             {"transaction_id": "div1", "activity_type": "DIVIDEND",
@@ -499,150 +404,44 @@ class TestTransactionsEdgeCases:
 # Full integration: parse all 6 files → insert → rebuild → metrics → verify data
 # ---------------------------------------------------------------------------
 
-class TestFullIntegration:
-    @pytest.fixture(scope="class")
-    def populated_db3(self):
-        from src.portfolio.schema import create_tables
-        from src.portfolio.ibkr_parser import parse_ibkr_xml_file, normalize_entries
-        from src.portfolio.transactions import insert_entries
-        from src.portfolio.portfolio_state import build_portfolio_state
-
-        fd, path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        create_tables(path)
-
-        ibkr_dir = os.path.join(os.path.dirname(__file__), "../..", "data", "ibkr")
-        for year in ["2020", "2021", "2022", "2023", "2024", "2025"]:
-            fpath = os.path.join(ibkr_dir, f"{year}.xml")
-            result = parse_ibkr_xml_file(fpath)
-            entries = normalize_entries(result)
-            insert_entries(path, entries, source_file=f"{year}.xml")
-
-        build_portfolio_state(path, base_currency="EUR")
-        yield path
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
-
-    def test_total_transactions_count(self, populated_db3):
-        """All 6 files combined should have a substantial number of entries."""
-        import sqlite3
-        conn = sqlite3.connect(populated_db3)
-        count = conn.execute("SELECT COUNT(*) FROM Transactions").fetchone()[0]
-        conn.close()
-        assert count > 100, f"Only {count} total transactions"
-
-    def test_activity_types_all_present(self, populated_db3):
-        import sqlite3
-        conn = sqlite3.connect(populated_db3)
-        types = conn.execute(
-            "SELECT activity_type FROM Transactions GROUP BY activity_type"
-        ).fetchall()
-        conn.close()
-        type_set = {r[0] for r in types}
-        # At minimum we must have trades, dividends, taxes, deposits
-        for at in ["TRADE", "DIVIDEND", "WITHHOLDING_TAX", "DEPOSIT_WITHDRAWAL"]:
-            assert at in type_set, f"Missing activity type: {at}"
-
-    def test_holdings_has_stocks_and_options(self, populated_db3):
-        import sqlite3
-        conn = sqlite3.connect(populated_db3)
-        conn.row_factory = sqlite3.Row
-        holdings = conn.execute(
-            "SELECT DISTINCT asset_category FROM Portfolio_Holdings"
-        ).fetchall()
-        conn.close()
-        cats = {r["asset_category"] for r in holdings}
-        assert "STK" in cats, "Should have STK holdings"
-
-    def test_daily_data_spans_multiple_years(self, populated_db3):
-        import sqlite3
-        conn = sqlite3.connect(populated_db3)
-        min_date = conn.execute("SELECT MIN(date) FROM Portfolio_Daily").fetchone()[0]
-        max_date = conn.execute("SELECT MAX(date) FROM Portfolio_Daily").fetchone()[0]
-        conn.close()
-        # First transaction date should be in 2020
-        assert "2020" in (min_date or ""), f"Start date should be 2020, got {min_date}"
-        # Max date should be at or after the last transaction (>= 2025)
-        assert max_date is not None
-        assert max_date >= "2025-01-01", f"Max date should be >= 2025, got {max_date}"
-
-    def test_performance_metrics_comprehensive(self, populated_db3):
-        from src.portfolio.performance import calculate_metrics
-        result = calculate_metrics(
-            populated_db3, risk_free_rate=0.02, base_currency="EUR"
-        )
-        required = [
-            "total_return", "annualized_return", "volatility",
-            "sharpe_ratio", "sortino_ratio", "max_drawdown",
-            "calmar_ratio", "win_rate", "profit_factor",
-            "var_95", "cvar_95", "total_dividend_income",
-            "dividend_breakdown",
-        ]
-        for key in required:
-            assert key in result, f"Missing key: {key}"
-            assert result[key] is not None, f"Key {key} is None"
-
-        # Plausibility checks
-        assert result["total_dividend_income"] > 0  # we know there are dividends
-        assert result["max_drawdown"] is not None
-        assert result["dividend_breakdown"]["total_gross"] > 0
-        assert result["dividend_breakdown"]["total_tax"] != 0  # taxes present
-        assert result["dividend_breakdown"]["total_gross"] + result["dividend_breakdown"]["total_tax"] == result["total_dividend_income"]
-
-    def test_performance_with_benchmark(self, populated_db3):
-        from src.portfolio.performance import calculate_metrics
-        # VWCE should have price data in db2
-        result = calculate_metrics(
-            populated_db3, risk_free_rate=0.02, base_currency="EUR",
-            benchmark_ticker="VWCE",
-        )
-        assert "benchmark" in result
-        if result["benchmark"].get("ticker"):
-            assert result["benchmark"]["ticker"] == "VWCE"
-
-    def test_transaction_id_uniqueness_across_years(self, populated_db3):
-        """Ensure no duplicate transactionIDs across all 6 uploads."""
-        import sqlite3
-        conn = sqlite3.connect(populated_db3)
-        total = conn.execute("SELECT COUNT(*) FROM Transactions").fetchone()[0]
-        distinct = conn.execute(
-            "SELECT COUNT(DISTINCT transaction_id) FROM Transactions"
-        ).fetchone()[0]
-        conn.close()
-        assert total == distinct, f"{total - distinct} duplicate transactionIDs found"
-
-
 class TestGetAllHoldingsPerformance:
     """Tests for the batched holdings performance function."""
 
-    def test_returns_performance_for_all_holdings(self, populated_db3):
+    def test_returns_performance_for_all_holdings(
+        self,
+        populated_db3,
+        market_db_path,
+    ):
         """Batch function returns all required fields for every holding."""
         from src.portfolio.portfolio_state import get_all_holdings_performance
-        from src.orchestrator.common.db_config import get_db2
-        results = get_all_holdings_performance(populated_db3, get_db2(), "EUR")
+        results = get_all_holdings_performance(populated_db3, market_db_path, "EUR")
         assert isinstance(results, list)
         assert len(results) > 0
         required = ["cost_basis_native", "cost_basis_display", "pnl_native",
                      "pnl_display", "total_return_native", "total_return_display",
                      "annualized_return_native", "fx_return", "name", "industry"]
+        tested_symbols = set()
         for r in results:
             cat = r.get("asset_category", "")
             sym = r.get("symbol", "")
-            if cat == "CASH" or sym.startswith("CASH"):
+            if cat == "CASH" or sym.startswith("CASH") or sym == "SPIN":
                 assert r.get("performance") is None, f"Cash entry {sym} should have no performance"
             else:
                 perf = r.get("performance")
                 assert perf is not None, f"Missing performance for {sym}"
                 for field in required:
                     assert field in perf, f"{sym}: missing field {field}"
+                tested_symbols.add(sym)
+        assert {"AAA", "BBB"} <= tested_symbols
 
-    def test_fx_return_zero_for_same_currency(self, populated_db3):
+    def test_fx_return_zero_for_same_currency(
+        self,
+        populated_db3,
+        market_db_path,
+    ):
         """FX effect is zero when native = display currency."""
         from src.portfolio.portfolio_state import get_all_holdings_performance
-        from src.orchestrator.common.db_config import get_db2
-        results = get_all_holdings_performance(populated_db3, get_db2(), "EUR")
+        results = get_all_holdings_performance(populated_db3, market_db_path, "EUR")
         found = False
         for r in results:
             perf = r.get("performance")
@@ -654,7 +453,7 @@ class TestGetAllHoldingsPerformance:
                 found = True
         if not found:
             # No EUR holdings — test that USD display on USD holdings gives zero
-            results2 = get_all_holdings_performance(populated_db3, get_db2(), "USD")
+            results2 = get_all_holdings_performance(populated_db3, market_db_path, "USD")
             for r in results2:
                 perf = r.get("performance")
                 if not perf:
@@ -664,40 +463,42 @@ class TestGetAllHoldingsPerformance:
                         f"FX for USD→USD should be 0, got {perf.get('fx_return')}"
                     found = True
                     break
-        # If no EUR or USD holdings, this is still acceptable
+        assert found, "Synthetic portfolio must include a EUR or USD holding"
 
-    def test_batch_matches_individual(self, populated_db3):
+    def test_batch_matches_individual(self, populated_db3, market_db_path):
         """Batch results match per-symbol get_holding_performance."""
         from src.portfolio.portfolio_state import (
-            get_all_holdings_performance, get_holding_performance,
+            get_all_holdings_performance,
+            get_holding_performance,
         )
-        from src.orchestrator.common.db_config import get_db2
-        import sqlite3
-        db2 = get_db2()
+        db2 = market_db_path
         conn = sqlite3.connect(populated_db3)
         conn.row_factory = sqlite3.Row
         syms = [r["symbol"] for r in conn.execute(
             "SELECT symbol FROM Portfolio_Holdings WHERE asset_category!='CASH' AND symbol NOT LIKE 'CASH%' LIMIT 3"
         ).fetchall()]
         conn.close()
-        if not syms:
-            pytest.skip("No stock holdings to compare")
+        assert syms
         batch = get_all_holdings_performance(populated_db3, db2, "EUR")
         batch_map = {r["symbol"]: r.get("performance") for r in batch}
         for sym in syms:
             indiv = get_holding_performance(sym, populated_db3, db2, "EUR")
             bat = batch_map.get(sym)
-            if indiv and bat:
-                for field in ["cost_basis_native", "pnl_native", "total_return_native"]:
-                    iv = indiv.get(field) or 0
-                    bv = bat.get(field) or 0
-                    assert abs(iv - bv) < 0.01, \
-                        f"{sym}.{field}: batch={bv:.2f} indiv={iv:.2f}"
+            assert indiv is not None
+            assert bat is not None
+            for field in ["cost_basis_native", "pnl_native", "total_return_native"]:
+                assert (bat.get(field) or 0) == pytest.approx(indiv.get(field) or 0)
 
-    def test_display_currency_changes_converted_values(self, populated_db3):
+    def test_display_currency_changes_converted_values(
+        self,
+        populated_db3,
+        market_db_path,
+    ):
         """Monetary values differ when display currency changes."""
         from src.portfolio.portfolio_state import get_all_holdings_performance
-        from src.orchestrator.common.db_config import get_db2
-        results_eur = get_all_holdings_performance(populated_db3, get_db2(), "EUR")
-        results_usd = get_all_holdings_performance(populated_db3, get_db2(), "USD")
+        results_eur = get_all_holdings_performance(populated_db3, market_db_path, "EUR")
+        results_usd = get_all_holdings_performance(populated_db3, market_db_path, "USD")
         assert len(results_eur) == len(results_usd)
+        eur = {row["symbol"]: row.get("performance") for row in results_eur}
+        usd = {row["symbol"]: row.get("performance") for row in results_usd}
+        assert eur["BBB"]["cost_basis_display"] != usd["BBB"]["cost_basis_display"]

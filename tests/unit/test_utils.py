@@ -1,11 +1,11 @@
-import unittest
-from unittest.mock import patch, MagicMock
+import csv
 import os
 import sys
-import csv
+import unittest
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from src.utilities import utils
-from src.utilities import DISCOVERED_UTILITY_MODULES
+from src.utilities import DISCOVERED_UTILITY_MODULES, utils
+
 
 class TestHelper(unittest.TestCase):
 

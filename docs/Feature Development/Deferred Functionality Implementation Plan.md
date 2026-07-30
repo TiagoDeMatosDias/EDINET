@@ -1,10 +1,10 @@
 # Deferred Functionality Implementation Plan
 
-Status: Active implementation — authentication, research, filings, portfolio scoping, and engine primitives validated; remaining phases in progress
+Status: Core vertical slices implemented and validated; provenance, backtesting depth, portfolio UI, and additional report formats remain
 Created: 2026-07-23
-Revised: 2026-07-25 — completed authentication default-to-accounts, per-user portfolio scoping, database path centralisation, screening per-user storage, comparison/attribution/report-builder modules, and event-driven backtesting engine primitives
+Revised: 2026-07-30 — recorded compact filing storage, complete side-by-side translation, shared company discovery, flexible comparison metrics, tag-backed favorites/watchlists, XBRL pipeline modes/performance, startup database bootstrap, and current remaining work
 Scope: Account creation and token-authenticated APIs, EDINET filing archives and XBRL viewing, metric provenance, data quality, watchlists, research notes, alerts, point-in-time backtesting, company comparison, portfolio attribution and scenarios, and reproducible research reports.
-Implementation state: **Phase 1A authentication is complete**. Phase 1B research state, Phase 2A-2C filing archive/XBRL indexing, comparison foundations, execution-cost primitives, tax-lot/scenario primitives, and report-manifest primitives are implemented and validated. Remaining phase work is tracked below.
+Implementation state: Authentication, research-state core, filing archive/viewer, comparison, point-in-time primitives, analytical portfolio previews, and canonical ZIP reports are implemented and validated. Provenance drill-down, historical-universe depth, durable portfolio scenario/attribution UI, external alerts, and XLSX/PDF reports remain tracked below.
 
 ## Implementation record — 2026-07-23
 
@@ -1439,6 +1439,23 @@ After this revision is approved, implement the identity foundation before adding
 6. Only after Phase 1A acceptance, run the separate bounded XBRL feasibility gate and begin owner-scoped research and Phase 2A filing work.
 
 Do not combine authentication, ownership migrations, historical XBRL backfill, parser work, and the filing viewer into one change set.
+
+## Implementation record — 2026-07-30
+
+This plan is now partly an architectural record rather than a list of wholly deferred work. The current disposition is:
+
+- **Phase 0 / 1A — implemented core:** account mode, Argon2id credentials, rotating sessions, personal tokens, first-user administrator bootstrap, registration controls, users/invitations/resets, audit state, owner dependencies, and the administrator-controlled 15–128 character password minimum are active.
+- **Phase 1B — implemented core:** type-1 acquisition, bounded archive validation, compressed SQLite archive retention, compact numeric fact indexing, on-demand narrative reconstruction, Filing Explorer, source/report/section/fact/taxonomy/quality views, and Company Analysis filing links are active. `all` mode honors document type, caps downloads at five, batches status writes, and reuses HTTP connections.
+- **Translation follow-up — implemented:** Japanese source is never replaced. Complete Argos section/report HTML translation is displayed side by side, validates that no visible Japanese remains, returns retryable errors for incomplete/unavailable output, and caches only translator-version-3 results in `Filings.db`.
+- **Phase 2 — foundation implemented, depth partial:** observation/source/dependency schemas, archive/fact provenance, watermarks, and quality issues exist. Uniform cell-level drill-down and broader confidence/anomaly coverage remain.
+- **Phase 3 — implemented core:** private tags, Favorite/tag-backed watchlists, notes with revisions, thesis state, targets, review dates, and in-app alerts are active. External scheduling/delivery remains deferred.
+- **Phase 4 — partial:** as-of observations, execution-cost inputs, saved-screen rolling backtests, progress/cancellation, and reproducible artifacts are active. Historical universe completeness, delistings, liquidity/tax depth, and full survivorship diagnostics remain.
+- **Phase 5 — implemented core:** Comparison reuses shared company discovery and Company Analysis data, supports standard metrics, arbitrary numeric `Table.Column` metrics, per-metric removal, common-size views, and optional selected-peer percentiles.
+- **Phase 6 — engine previews implemented:** owner-scoped tax-lot, Greeks, and deterministic scenario preview endpoints exist. Durable scenario definitions and complete portfolio attribution/lot/scenario UI remain.
+- **Phase 7 — ZIP implemented:** owner-scoped report recipes/runs, canonical manifests, bounded atomic ZIP output, hashes, list/manifest/download/delete flows, and safe rendering are active. XLSX/PDF and the complete report-builder UI remain.
+- **Phase 8 — verification active:** generated fixtures isolate tests from operator data; backend unit/integration, frontend, OpenAPI, static, dependency, documentation, and package checks run through the bounded verifier. Clean server startup creates every configured application database and managed schema when absent.
+
+Current product behavior and operator commands are authoritative in `docs/USER_GUIDE.md`, `docs/RUNNING.md`, `docs/Application Details.md`, and `docs/Frontend Architecture.md`. The remaining items above require a fresh scoped review before implementation.
 
 ## 16. Explicitly deferred beyond this plan
 

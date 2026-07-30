@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import Depends, HTTPException, Request, status
 
 from .models import AuthenticatedUser
@@ -23,10 +25,13 @@ def current_user(request: Request) -> AuthenticatedUser:
     return user
 
 
+CurrentUser = Annotated[AuthenticatedUser, Depends(current_user)]
+
+
 def require_permission(permission: Permission):
     """FastAPI dependency factory: require a specific permission."""
 
-    def _dependency(user: AuthenticatedUser = Depends(current_user)) -> AuthenticatedUser:
+    def _dependency(user: CurrentUser) -> AuthenticatedUser:
         if not has_permission(user, permission):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -37,7 +42,7 @@ def require_permission(permission: Permission):
     return _dependency
 
 
-def require_admin(user: AuthenticatedUser = Depends(current_user)) -> AuthenticatedUser:
+def require_admin(user: CurrentUser) -> AuthenticatedUser:
     """Dependency: the caller must be an active administrator."""
     if user.role != "admin":
         raise HTTPException(
@@ -47,7 +52,7 @@ def require_admin(user: AuthenticatedUser = Depends(current_user)) -> Authentica
     return user
 
 
-def require_operator(user: AuthenticatedUser = Depends(current_user)) -> AuthenticatedUser:
+def require_operator(user: CurrentUser) -> AuthenticatedUser:
     """Dependency: the caller must be an active administrator or operator."""
     if user.role not in {"admin", "operator"}:
         raise HTTPException(

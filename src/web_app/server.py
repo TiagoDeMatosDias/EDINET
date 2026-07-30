@@ -6,6 +6,7 @@ The frontend is the React SPA at ``frontend-v2``.  API routes are built by
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -19,7 +20,9 @@ from src.web_app.security import AppSettings, install_security
 
 BASE_DIR = Path(__file__).resolve().parent
 BRAND_ASSETS_DIR = BASE_DIR.parent.parent / "assets"
-FRONTEND_V2_DIST = BASE_DIR.parent.parent / "frontend-v2" / "dist"
+FRONTEND_V2_DIST = Path(
+    os.getenv("EDINET_FRONTEND_DIST", BASE_DIR.parent.parent / "frontend-v2" / "dist")
+).expanduser().resolve(strict=False)
 
 # The API router_app from src.web_app.api already includes all API routes
 # (orchestrator, screening, security_analysis, portfolio, and auto-discovered
@@ -161,6 +164,8 @@ def _assert_unique_method_paths() -> None:
     duplicates: set[tuple[str, str]] = set()
     for route in app.router.routes:
         path = getattr(route, "path", None)
+        if not isinstance(path, str):
+            continue
         for method in getattr(route, "methods", None) or ():
             key = (method, path)
             if key in seen:

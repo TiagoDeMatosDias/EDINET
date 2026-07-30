@@ -1,6 +1,6 @@
 # Running the Application
 
-Deferred services: `/filings` is the XBRL Filing Explorer backed by immutable type-1 archives and `Filings.db`; `/research` stores account-owned watchlists, notes, and in-app alerts in `research.db`; `/compare` exposes bounded company comparisons; authenticated portfolio preview APIs cover tax lots, Greeks, and deterministic scenarios; `/api/reports/runs` creates owner-scoped reproducible ZIP reports. The `download_xbrl` pipeline step is the only new path that reads `EDINET_API_TOKEN`, and it uses it solely as an outbound EDINET provider credential.
+The current workstation includes the public homepage and pricing page, account authentication, shared company search, XBRL Filing Explorer, tags/research, arbitrary-metric company comparison, point-in-time backtesting, portfolio analytics, durable pipelines, and reproducible report ZIPs. The `download_xbrl` pipeline step is the only application path that reads `EDINET_API_TOKEN`, and it uses it solely as an outbound EDINET provider credential. See [USER_GUIDE.md](USER_GUIDE.md) for the user-facing workflow and current screenshots.
 
 ## Supported environments
 
@@ -46,7 +46,9 @@ $env:EDINET_TRUSTED_HOSTS = "research.example,192.0.2.10"
 
 Remote `/api/*` requests require an account-issued `Authorization: Bearer <token>`. Tokens must not be placed in URLs, logs, or browser storage. `/health` remains minimal and unauthenticated. `EDINET_API_TOKEN` is reserved for outbound EDINET downloads and is never used for application authentication.
 
-In account mode the first successful registration becomes the local administrator. Set `EDINET_REGISTRATION_MODE=open` only when additional self-service accounts are intended; the default is closed. Browser refresh tokens are held in an HttpOnly cookie, while access tokens remain in memory. Personal automation tokens can be created under `/api/auth/tokens` and should be revoked when no longer needed.
+Account mode and open registration are the defaults. The first successful registration becomes the local administrator; set `EDINET_REGISTRATION_MODE=closed` when additional self-service accounts should be disabled. Browser refresh tokens are held in an HttpOnly cookie, while access tokens remain in memory. Personal automation tokens can be created under `/api/auth/tokens` and should be revoked when no longer needed.
+
+Administrators can change the minimum password length under `/admin` → Security settings. The accepted range is 15–128 characters, and the stored policy applies to registration, invitations, resets, password changes, and administrator-created credentials. The public `/pricing` page currently advertises €10 per month or €100 per year; it is informational and does not enable billing or subscription enforcement.
 
 For frontend development, keep FastAPI running on port 8000 and start Vite in another terminal:
 
@@ -62,6 +64,7 @@ Database inputs are resolved and authorized server-side. Uploads and generated o
 ### Runtime size limits
 
 - `EDINET_MAX_UPLOAD_BYTES` defaults to 10 MiB for incoming files.
+- Pipeline multipart uploads have a separate 500 MiB default ceiling. The Import Stock Prices (CSV) step also rejects files larger than 500 MiB before parsing.
 - `EDINET_MAX_EXPORT_BYTES` defaults to 25 MiB for ordinary response exports.
 - `EDINET_MAX_BACKTEST_ARTIFACT_BYTES` defaults to 256 MiB for server-generated backtest files. Rolling archives are built directly on disk and partial archives are removed if this limit is reached.
 - `EDINET_MAX_REPORT_ARTIFACT_BYTES` defaults to 128 MiB for reproducible report ZIPs. Reports are written atomically beneath `data/reports/` and partial files are removed on failure.
@@ -71,6 +74,8 @@ Values are byte counts and are read at application startup. Increase the backtes
 ### Filing archive storage
 
 `Filings.db` retains each provider ZIP as a compressed `archive_content` BLOB. Extracted member bytes are not written for new ingests; the Filing Explorer extracts the requested member from the ZIP in memory when it is viewed. New catalogs retain numeric/analytical XBRL facts, contexts, units, and artifact metadata; narrative sections are reconstructed from the archive on demand instead of being materialized in the core database.
+
+Complete Japanese-to-English translations are cached in the versioned `filing_translations` table in `Filings.db`. The viewer always preserves the Japanese source and renders English alongside it. Translation covers complete section bodies and visible report HTML; model failures or residual Japanese return a retryable error instead of a partial English result.
 
 Existing databases created before this storage mode may still contain extracted `artifacts.content` BLOBs. Review the dry-run summary, then compact an existing database only after confirming that every archive is retained:
 
@@ -187,6 +192,7 @@ Downloads and indexes EDINET type-1 XBRL packages into `Filings.db`.
 - `doc_type_code` — applies to both `backfill` and `all`; `120` is annual, `130` semi-annual, `140` quarterly, and an empty value includes all types.
 - `provider_token` — optional override for `API_KEY` or `EDINET_API_TOKEN`.
 - `all` adds `DocumentList.XbrlDownloaded` when needed and records `True`, `Checked_Unavailable`, or `Checked_Error` per document. It does not modify the legacy CSV `DocumentList.Downloaded` marker, and failed documents remain eligible for a later retry.
+- Acquisition reuses one HTTP session, downloads at most five packages concurrently, and writes `DocumentList` status changes in batches. The document-type filter is applied before work is queued in both `backfill` and `all` modes.
 
 ---
 
@@ -224,7 +230,8 @@ Imports historical stock prices from a user-supplied CSV file into the `stock_pr
 ```
 
 - `Target_Database` — database where the stock prices table will be written.
-- `csv_file` — absolute path to the CSV file. In the GUI, use the file picker in the config dialog.
+- `csv_file` — absolute path to the CSV file. In the Pipeline workspace, use the step's file picker instead of typing a browser-local path.
+- The selected CSV and the enclosing pipeline multipart request are capped at 500 MiB. Oversized files are rejected before pandas allocates a dataframe.
 - `default_ticker` — fallback ticker assigned when the CSV has no ticker column or the row value is blank.
 - `default_currency` — fallback currency assigned when the CSV has no currency column or the row value is blank.
 - `date_column` — name of the CSV column that contains dates.

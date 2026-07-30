@@ -1,6 +1,6 @@
 # Building the Windows Release
 
-Updated: 2026-07-22
+Updated: 2026-07-30
 
 Windows is the packaged target. Use Python 3.12 or 3.13, Node.js 22/npm 10, and the declared `build` dependency group.
 
@@ -24,7 +24,7 @@ The script, in order:
 3. removes only the repository's exact `build/` and `dist/` directories;
 4. runs PyInstaller through the active interpreter with a 600-second default cap;
 5. assembles `dist/EDINET-<version>/`;
-6. creates fresh empty Base, Standardized, and Portfolio SQLite databases plus a relative `database_paths.json` and `.env` template;
+6. creates fresh empty Base, Standardized, and Portfolio SQLite databases plus a relative `database_paths.json` and `.env` template; auth, research, pipeline-job, and filings databases are created with their managed schemas on the first server start;
 7. starts the packaged executable on a temporary loopback port and checks `/health`, `/`, and `/api/steps` within 45 seconds;
 8. writes `dist/EDINET-<version>-Release.zip`.
 
@@ -57,7 +57,7 @@ EDINET-<version>/
         └── Portfolio.db
 ```
 
-The executable bundles the React production assets, brand assets, ratio definitions, rolling-metric definitions, Python source, and required libraries. Taxonomy archives, logs, job state, saved screens, uploads, exports, tests, docs, and operator data are not bundled.
+The executable bundles the React production assets, brand assets, ratio definitions, rolling-metric definitions, Python source, and required libraries. Taxonomy archives, the Argos Japanese-to-English model package, logs, job state, saved screens, uploads, exports, tests, docs, and operator data are not bundled. The translation runtime installs the Argos ja→en model on first use when it is not already available.
 
 Never copy development databases or the repository `.env` into a release. The assembly step generates its own files.
 

@@ -18,9 +18,9 @@ from src.screening import (
     export_screening_to_backtest_csv,
     export_screening_to_csv,
     format_financial_value,
-    get_default_columns,
     get_available_metrics,
     get_available_periods,
+    get_default_columns,
     list_saved_screenings,
     load_screening_criteria,
     load_screening_history,
@@ -1735,5 +1735,5 @@ def test_computed_expression_column_supports_metrics_values_and_parentheses(samp
             ],
         }],
     )
-    values = dict(zip(df["CompanyName"], df["Adjusted EPS"]))
+    values = dict(zip(df["CompanyName"], df["Adjusted EPS"], strict=True))
     assert values == {"Alpha Corp": 320, "Beta Co": 180, "Gamma Ltd": 620}

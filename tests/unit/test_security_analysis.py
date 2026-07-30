@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 
-import pandas as pd
 import pytest
 
 from src.security_analysis import (
     DISCOVERED_SECURITY_ANALYSIS_MODULES,
-    _summarize_english_text,
     _summarize_business_description,
+    _summarize_english_text,
     ensure_security_analysis_indexes,
     get_security_overview,
     get_security_peers,

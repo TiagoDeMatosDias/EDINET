@@ -449,6 +449,13 @@ class FilingCatalog:
                  FROM artifacts""",
             (),
         )
+        if row is None:
+            return {
+                "artifact_count": 0,
+                "content_count": 0,
+                "content_bytes": 0,
+                "safely_clearable_count": 0,
+            }
         return {
             key: int(row[key] or 0)
             for key in (
@@ -709,7 +716,7 @@ class FilingCatalog:
             "filings_with_issues": int(with_issues[0]["cnt"]) if with_issues else 0,
         }
 
-    def lookup_translations(self, texts: list[str], *, version: int = 2) -> dict[str, str]:
+    def lookup_translations(self, texts: list[str], *, version: int = 3) -> dict[str, str]:
         """Return cached translations for a batch of source texts (only current translator version)."""
         import hashlib
 
@@ -719,11 +726,11 @@ class FilingCatalog:
         placeholders = ",".join("?" for _ in hashes)
         rows = self._all(
             f"SELECT source_hash, translated_text FROM filing_translations WHERE source_hash IN ({placeholders}) AND translator_version = ?",
-            [*hashes, version],
+            (*hashes, version),
         )
         return {r["source_hash"]: r["translated_text"] for r in rows}
 
-    def store_translations(self, translations: dict[str, str], *, version: int = 2) -> None:
+    def store_translations(self, translations: dict[str, str], *, version: int = 3) -> None:
         """Persist translated text keyed by source text."""
         import hashlib
         from datetime import datetime, timezone

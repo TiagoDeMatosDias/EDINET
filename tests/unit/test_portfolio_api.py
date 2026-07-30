@@ -1,94 +1,135 @@
-"""Tests for src/portfolio/api.py — HTTP-level route verification.
+"""HTTP contract tests for the portfolio API."""
 
-Uses FastAPI's TestClient for in-process testing without a running server.
-"""
+from __future__ import annotations
 
-import os
-import sys
+from pathlib import Path
+
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-# Import the FastAPI app
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-from src.portfolio.schema import create_tables
 from src.portfolio.api import router
-
-from fastapi import FastAPI
+from src.portfolio.ibkr_parser import normalize_entries, parse_ibkr_xml
+from src.portfolio.portfolio_state import build_portfolio_state
+from src.portfolio.schema import create_tables
+from src.portfolio.transactions import insert_entries
+from src.web_app.security import AppSettings, install_security
 
 app = FastAPI()
 app.include_router(router)
-
+install_security(app, AppSettings.from_env())
 client = TestClient(app)
 
 
+def _configure_database(monkeypatch, portfolio_path: str, market_path: str) -> None:
+    monkeypatch.setattr("src.portfolio.api.get_db3", lambda: portfolio_path)
+    monkeypatch.setattr("src.portfolio.api.get_db2", lambda: market_path)
+    monkeypatch.setattr("src.portfolio.price_fetcher.get_db2", lambda: market_path)
+    monkeypatch.setattr("src.portfolio.portfolio_state.get_db3", lambda: portfolio_path)
+    monkeypatch.setattr("src.portfolio.portfolio_state.get_db2", lambda: market_path)
+    monkeypatch.setattr("src.portfolio.performance.get_db3", lambda: portfolio_path)
+    monkeypatch.setattr("src.portfolio.performance.get_db2", lambda: market_path)
+
+
+@pytest.fixture
+def empty_api_database(monkeypatch, tmp_path: Path, market_db_path: str) -> str:
+    path = str(tmp_path / "portfolio.db")
+    create_tables(path)
+    _configure_database(monkeypatch, path, market_db_path)
+    monkeypatch.setattr(
+        "src.portfolio.api.ensure_prices_for_tickers",
+        lambda *_args, **_kwargs: {"fetched": [], "failed": []},
+    )
+    return path
+
+
+@pytest.fixture
+def populated_api_database(
+    monkeypatch,
+    tmp_path: Path,
+    market_db_path: str,
+    sample_ibkr_content: str,
+) -> str:
+    path = str(tmp_path / "portfolio.db")
+    create_tables(path)
+    _configure_database(monkeypatch, path, market_db_path)
+    entries = normalize_entries(parse_ibkr_xml(sample_ibkr_content))
+    insert_entries(
+        path,
+        entries,
+        source_file="synthetic.xml",
+        owner_user_id="local",
+    )
+    build_portfolio_state(
+        path,
+        db2_path=market_db_path,
+        end_date="2024-01-20",
+        base_currency="EUR",
+        owner_user_id="local",
+    )
+    return path
+
+
 class TestUpload:
-    @pytest.fixture(autouse=True)
-    def setup_db(self, monkeypatch, tmp_path):
-        path = str(tmp_path / "portfolio.db")
-        create_tables(path)
-
-        def _mock_get_db3():
-            return path
-
-        def _mock_get_db2():
-            # Use real db2 for price lookups (read-only)
-            from src.orchestrator.common.db_config import get_db2 as _real_db2
-            return _real_db2()
-
-        monkeypatch.setattr("src.portfolio.api.get_db3", _mock_get_db3)
-        monkeypatch.setattr("src.portfolio.api.get_db2", _mock_get_db2)
-        monkeypatch.setattr("src.portfolio.price_fetcher.get_db2", _mock_get_db2)
-        monkeypatch.setattr(
-            "src.portfolio.api.ensure_prices_for_tickers",
-            lambda *_args, **_kwargs: {"fetched": [], "failed": []},
-        )
-
-    def _read_test_xml(self):
-        ibkr_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "../..", "data", "ibkr"
-        )
-        with open(os.path.join(ibkr_dir, "2024.xml"), "rb") as f:
-            return f.read()
-
-    def test_upload_xml_success(self):
-        content = self._read_test_xml()
-        resp = client.post(
+    def test_upload_xml_success(
+        self,
+        empty_api_database: str,
+        sample_ibkr_content: str,
+    ) -> None:
+        response = client.post(
             "/api/portfolio/upload",
-            files={"file": ("2024.xml", content, "application/xml")},
+            files={
+                "file": (
+                    "portfolio.xml",
+                    sample_ibkr_content.encode(),
+                    "application/xml",
+                )
+            },
         )
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
-        assert data["source_file"] == "2024.xml"
-        assert data["inserted"] > 0
-        assert "TRADE" in str(data["by_activity"])
 
-    def test_upload_non_xml_rejected(self):
-        resp = client.post(
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["source_file"] == "portfolio.xml"
+        assert data["inserted"] == 8
+        assert data["by_activity"]["TRADE"] == 3
+
+    def test_upload_non_xml_rejected(self, empty_api_database: str) -> None:
+        response = client.post(
             "/api/portfolio/upload",
             files={"file": ("test.txt", b"hello", "text/plain")},
         )
-        assert resp.status_code == 400
+        assert response.status_code == 400
 
-    def test_upload_rejects_oversized_content(self, monkeypatch):
+    def test_upload_rejects_oversized_content(
+        self,
+        monkeypatch,
+        empty_api_database: str,
+    ) -> None:
         monkeypatch.setattr("src.portfolio.api._MAX_XML_UPLOAD_BYTES", 16)
-        resp = client.post(
+        response = client.post(
             "/api/portfolio/upload",
             files={"file": ("large.xml", b"x" * 17, "application/xml")},
         )
-        assert resp.status_code == 413
+        assert response.status_code == 413
 
-    def test_upload_rejects_unsafe_xml_without_leaking_parser_details(self):
+    def test_upload_rejects_unsafe_xml_without_leaking_parser_details(
+        self,
+        empty_api_database: str,
+    ) -> None:
         content = b'<!DOCTYPE x [<!ENTITY y SYSTEM "file:///secret">]><x>&y;</x>'
-        resp = client.post(
+        response = client.post(
             "/api/portfolio/upload",
             files={"file": ("unsafe.xml", content, "application/xml")},
         )
-        assert resp.status_code == 400
-        assert resp.json()["detail"] == "Invalid IBKR XML document"
-        assert "secret" not in resp.text
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Invalid IBKR XML document"
+        assert "secret" not in response.text
 
-    def test_upload_stores_only_the_filename_basename(self):
-        resp = client.post(
+    def test_upload_stores_only_filename_basename(
+        self,
+        empty_api_database: str,
+    ) -> None:
+        response = client.post(
             "/api/portfolio/upload",
             files={
                 "file": (
@@ -98,118 +139,95 @@ class TestUpload:
                 )
             },
         )
-        assert resp.status_code == 200
-        assert resp.json()["source_file"] == "portfolio.xml"
+        assert response.status_code == 200
+        assert response.json()["source_file"] == "portfolio.xml"
 
-    def test_upload_twice_no_duplicates(self, monkeypatch):
-        """Uploading the same file twice should skip on second insert."""
-        content = self._read_test_xml()
-        r1 = client.post(
-            "/api/portfolio/upload",
-            files={"file": ("2024.xml", content, "application/xml")},
-        )
-        inserted1 = r1.json()["inserted"]
-        r2 = client.post(
-            "/api/portfolio/upload",
-            files={"file": ("2024.xml", content, "application/xml")},
-        )
-        inserted2 = r2.json()["inserted"]
-        assert inserted2 == 0
-        assert inserted1 > 0
+    def test_upload_is_idempotent(
+        self,
+        empty_api_database: str,
+        sample_ibkr_content: str,
+    ) -> None:
+        upload = {
+            "file": (
+                "portfolio.xml",
+                sample_ibkr_content.encode(),
+                "application/xml",
+            )
+        }
+        first = client.post("/api/portfolio/upload", files=upload)
+        second = client.post("/api/portfolio/upload", files=upload)
+
+        assert first.status_code == 200
+        assert first.json()["inserted"] == 8
+        assert second.status_code == 200
+        assert second.json()["inserted"] == 0
+        assert second.json()["skipped"] == 8
 
 
 class TestReadEndpoints:
-    @pytest.fixture(autouse=True)
-    def setup_db(self, monkeypatch):
-        import tempfile
-        fd, path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        create_tables(path)
+    def test_transactions_are_bounded(self, populated_api_database: str) -> None:
+        response = client.get("/api/portfolio/transactions?limit=5")
+        assert response.status_code == 200
+        assert len(response.json()) == 5
 
-        def _mock_get_db3():
-            return path
+    def test_symbols_and_date_range(self, populated_api_database: str) -> None:
+        symbols = client.get("/api/portfolio/symbols")
+        date_range = client.get("/api/portfolio/date-range")
 
-        def _mock_get_db2():
-            from src.orchestrator.common.db_config import get_db2 as _real_db2
-            return _real_db2()
+        assert symbols.status_code == 200
+        symbol_names = {item["symbol"] for item in symbols.json()}
+        assert {"AAA", "BBB", "SPIN"} <= symbol_names
+        assert date_range.status_code == 200
+        assert date_range.json()["min_date"] == "2024-01-02"
+        assert date_range.json()["max_date"] == "2024-01-10"
 
-        monkeypatch.setattr("src.portfolio.api.get_db3", _mock_get_db3)
-        monkeypatch.setattr("src.portfolio.api.get_db2", _mock_get_db2)
-        monkeypatch.setattr("src.portfolio.portfolio_state.get_db3", _mock_get_db3)
-        monkeypatch.setattr("src.portfolio.portfolio_state.get_db2", _mock_get_db2)
-        monkeypatch.setattr("src.portfolio.performance.get_db3", _mock_get_db3)
-        monkeypatch.setattr("src.portfolio.performance.get_db2", _mock_get_db2)
+    def test_activity_summary(self, populated_api_database: str) -> None:
+        response = client.get("/api/portfolio/activity-summary")
+        assert response.status_code == 200
+        assert response.json()["by_activity"]["TRADE"] == 3
 
-        # Load and build portfolio state
-        from src.portfolio.ibkr_parser import parse_ibkr_xml_file, normalize_entries
-        from src.portfolio.transactions import insert_entries
-        from src.portfolio.portfolio_state import build_portfolio_state
+    def test_holdings_and_history(self, populated_api_database: str) -> None:
+        holdings = client.get("/api/portfolio/holdings")
+        history = client.get("/api/portfolio/holdings/history")
 
-        ibkr_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "../..", "data", "ibkr"
-        )
-        for year in ["2024"]:
-            fpath = os.path.join(ibkr_dir, f"{year}.xml")
-            result = parse_ibkr_xml_file(fpath)
-            entries = normalize_entries(result)
-            insert_entries(path, entries, source_file=f"{year}.xml")
+        assert holdings.status_code == 200
+        assert any(row["symbol"] == "AAA" for row in holdings.json())
+        assert history.status_code == 200
+        assert history.json()
 
-        build_portfolio_state(path, base_currency="EUR")
+    def test_owner_scoped_holding_and_analytics_queries(
+        self,
+        populated_api_database: str,
+    ) -> None:
+        holding_history = client.get("/api/portfolio/holdings/AAA/history")
+        dividend_history = client.get("/api/portfolio/dividends/history")
+        dividend_yoy = client.get("/api/portfolio/dividends/yoy")
+        returns = {
+            path: client.get(f"/api/portfolio/returns/{path}")
+            for path in ("by-company", "money-weighted", "contribution")
+        }
 
-    def test_get_transactions(self):
-        resp = client.get("/api/portfolio/transactions?limit=5")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert isinstance(data, list)
-        assert len(data) <= 5
+        assert holding_history.status_code == 200
+        assert holding_history.json()[0]["date"] == "2024-01-02"
+        assert dividend_history.status_code == 200
+        assert dividend_history.json()[0]["net"] == pytest.approx(15.3)
+        assert dividend_yoy.status_code == 200
+        assert dividend_yoy.json()["years"] == [2024]
+        assert all(response.status_code == 200 for response in returns.values())
+        assert all("years" in response.json() for response in returns.values())
 
-    def test_get_symbols(self):
-        resp = client.get("/api/portfolio/symbols")
-        assert resp.status_code == 200
-        assert len(resp.json()) > 0
+    def test_performance(self, populated_api_database: str) -> None:
+        response = client.get("/api/portfolio/performance?risk_free_rate=0.02")
+        assert response.status_code == 200
+        assert response.json()["total_dividend_income"] > 0
+        assert "sharpe_ratio" in response.json()
 
-    def test_date_range(self):
-        resp = client.get("/api/portfolio/date-range")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["min_date"] is not None
+    def test_rebuild(self, populated_api_database: str) -> None:
+        response = client.post("/api/portfolio/rebuild")
+        assert response.status_code == 200
+        assert response.json()["daily_rows"] > 0
 
-    def test_activity_summary(self):
-        resp = client.get("/api/portfolio/activity-summary")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "TRADE" in data["by_activity"]
-
-    def test_holdings(self):
-        resp = client.get("/api/portfolio/holdings")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert isinstance(data, list)
-        if data:
-            assert "symbol" in data[0]
-
-    def test_holdings_history(self):
-        resp = client.get("/api/portfolio/holdings/history")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert isinstance(data, list)
-        assert len(data) > 0
-
-    def test_performance(self):
-        resp = client.get("/api/portfolio/performance?risk_free_rate=0.02")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "sharpe_ratio" in data
-        assert "total_dividend_income" in data
-
-    def test_rebuild(self):
-        resp = client.post("/api/portfolio/rebuild")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["daily_rows"] > 0
-
-    def test_risk_free_rate(self):
-        resp = client.get("/api/portfolio/risk-free-rate?base_currency=EUR")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["risk_free_rate"] is not None
+    def test_risk_free_rate(self, populated_api_database: str) -> None:
+        response = client.get("/api/portfolio/risk-free-rate?base_currency=EUR")
+        assert response.status_code == 200
+        assert response.json()["risk_free_rate"] >= 0

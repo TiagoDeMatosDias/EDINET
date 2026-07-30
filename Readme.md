@@ -1,149 +1,160 @@
-# EDINET Financial Data Tool
+# Shade Research
 
-Downloads financial filings from the Japanese securities regulator (EDINET), processes them into a structured SQLite database, and runs statistical analysis to identify relationships between financial ratios and stock valuations.
+Shade is a local-first research workstation for Japanese public companies. It combines EDINET filings and XBRL, standardized financial statements, company search, screening, comparison, backtesting, portfolio analysis, and private research state in one FastAPI and React application.
 
-The primary interface is a web workstation (FastAPI backend + React/TypeScript SPA) accessible at `http://127.0.0.1:8000`. It exposes six top-level views: Overview, Screening, Analysis, Backtesting, Portfolio, and Pipeline.
+The public homepage is served at `http://127.0.0.1:8000/`; the signed-in or local workspace starts at `/overview`. The pricing page currently presents one informational tier at €10 per month or €100 per year. Payment processing and subscription enforcement are not implemented.
 
-Each pipeline step is configured independently, including its source or target database path where applicable.
+## Current capabilities
 
-## Current Status
+- One best-effort company finder is shared by Analysis, Comparison, Filings, Research, and the global header. It searches names, tickers, EDINET codes, industries, markets, and available price tickers, and degrades gracefully when a configured database is incomplete.
+- Company Analysis combines prices, the full financial snapshot, filing history, statement history, ratios, charts, tags, and backtest handoffs.
+- Company Comparison supports 2–12 companies, standard metrics, arbitrary numeric `Table.Column` metrics, common-size statements, and optional peer percentiles.
+- Filing Explorer retains compressed type-1 ZIPs, indexes compact numeric XBRL facts, reconstructs narrative content on demand, and keeps Japanese and complete English translations side by side.
+- Favorites and watchlists use the same private tag system as Analysis, Research, and Screening. Research also stores notes, thesis state, targets, review dates, and in-app alerts.
+- Screening, point-in-time rolling backtests, manual/CSV backtests, IBKR FlexQuery portfolio imports, and reproducible report ZIPs are available from the web workspace.
+- The data pipeline exposes 13 dynamically discovered steps, durable job state, cancellation, progress, safe file uploads, XBRL `explicit`/`backfill`/`all` modes, and CSV- or filings-backed financial-statement generation.
+- Optional account mode provides registration, login, rotating sessions, personal API tokens, account administration, and an administrator-controlled 15–128 character minimum password length.
+- Missing configured databases and their managed schemas are created automatically when the server starts.
 
-- **Primary UI** — React 19 / TypeScript / Vite SPA in `frontend-v2/`, served by FastAPI.
-- **Portfolio module** — full-featured portfolio management with IBKR FlexQuery import, holdings tracking, performance analytics, interactive charts, dividend analysis, and backtest comparison.
-- **Research surfaces** — Screening and Analysis are fully functional views for candidate discovery and single-company research.
-- **Architecture** — FastAPI backend with React SPA frontend communicating via TanStack Query and REST API endpoints.
-
-## Quick Start
+## Quick start
 
 ### Prerequisites
 
-- **Python 3.10+** with pip
-- **Node.js 18+** with npm (for building the frontend)
+- Python 3.12 or 3.13
+- Node.js 22 and npm 10
+- Windows for packaged releases; Windows or Linux for source development
 
-### Setup
+### Install and run
 
-1. Clone the repository or download the latest release from [Releases](https://github.com/TiagoDeMatosDias/EDINET/releases)
-2. Install Python dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
-3. Build the React frontend:
-   ```
-   cd frontend-v2
-   npm ci
-   npm run build
-   cd ..
-   ```
-4. Create a `.env` file in the project root with your EDINET API key:
-   ```
-   API_KEY=<your_edinet_api_key>
-   ```
-5. Run the application:
-   ```
-   python main.py
-   ```
-6. Open `http://127.0.0.1:8000` in your browser
+```powershell
+py -3.13 -m venv .venv3
+.\.venv3\Scripts\python.exe -m pip install -e ".[dev]"
 
-> **Note:** The application creates default configuration and databases on first run. Pipeline steps are configured through the Pipeline view in the web UI.
+Set-Location frontend-v2
+npm ci
+npm run build
+Set-Location ..
 
-Optional flags:
-```
-python main.py --host 0.0.0.0 --port 8080 --no-reload
+.\.venv3\Scripts\python.exe main.py --no-reload
 ```
 
-For frontend development, keep FastAPI running on port 8000 and start the Vite dev server in another terminal:
+Open `http://127.0.0.1:8000`.
+
+Account mode and open registration are the defaults. The first registered account becomes the administrator. Set `EDINET_AUTH_MODE=disabled` only for unrestricted loopback compatibility.
+
+Set `EDINET_API_TOKEN` for the type-1 XBRL downloader. The legacy Get Documents and Download EDINET Documents steps read `API_KEY` from pipeline configuration; when both workflows use the same EDINET credential, both values may be set. They are outbound provider credentials only and are never accepted as application login tokens.
+
+```dotenv
+EDINET_API_TOKEN=<your-edinet-api-token>
+API_KEY=<your-edinet-api-token>
 ```
-cd frontend-v2
-npm run dev
-```
 
-## What it does
+On a clean start, the server creates the configured Base, Standardized, Portfolio, auth, research, pipeline-job, and filing databases if they do not exist. Use the Pipeline workspace to populate market and filing data.
 
-### Views
+For frontend development, keep FastAPI on port 8000 and run `npm run dev` from `frontend-v2/`. See [Running the Application](docs/RUNNING.md) for account mode, remote binding, storage, pipeline configuration, and recovery commands.
 
-| View | Route | Description |
-|---|---|---|
-| **Overview** | `/` | Job history, metrics summary, quick-launch cards |
-| **Pipeline** | `/pipeline` | Pipeline builder: step library, drag-to-order pipeline, per-step config inspector, run controls |
-| **Screening** | `/screen` | Filter companies by financial criteria with expression-based rules, weighted ranking, save/load, CSV export, backtest-set generation |
-| **Analysis** | `/analyze` | Single-company deep dive: search, overview metrics, financial history, interactive charts, peer comparison, price refresh |
-| **Backtesting** | `/backtest` | Portfolio backtesting with manual entry, screener import, or CSV upload. Charts, per-company decomposition, benchmark comparison, batch set heatmap |
-| **Portfolio** | `/portfolio` | IBKR FlexQuery XML import, multi-currency holdings, transactions, interactive charts, performance metrics, model portfolio comparison |
+## Routes
 
-### Pipeline Steps
+| Route | Purpose |
+|---|---|
+| `/` | Public product homepage with registration, login, and pricing links |
+| `/pricing` | Informational €10/month or €100/year plan |
+| `/login`, `/register` | Account access and registration |
+| `/overview` | Data health, recent jobs, and workflow shortcuts |
+| `/screen` | Expression-based company screening and rolling-backtest handoff |
+| `/analyze`, `/analyze/:companyCode` | Company search, snapshot, history, charts, tags, and filings |
+| `/compare` | Multi-company financial and arbitrary-metric comparison |
+| `/filings`, `/filings/:docId` | Filing search, coverage statistics, source report, sections, facts, taxonomy, and quality |
+| `/research` | Tags, favorites, watchlists, notes, thesis tracking, and alerts |
+| `/backtest` | Manual, CSV-set, and point-in-time rolling-screen backtests |
+| `/portfolio` | IBKR import, holdings, activity, performance, and risk views |
+| `/pipeline` | Pipeline recipes, uploads, run controls, progress, and job history |
+| `/account`, `/admin` | Account settings and administrator controls |
 
-1. **Fetch document list** — queries the EDINET API for available filings in a given date range.
-2. **Download documents** — downloads the XBRL/CSV filings that match the filter criteria.
-3. **Populate company info** — loads the EDINET company code list from CSV into the database.
-4. **Import stock prices (CSV)** — imports historical prices from a user-supplied CSV file with configurable column mapping.
-5. **Update stock prices** — fetches historical share prices via the Stooq API by default, with a Yahoo Finance chart fallback if Stooq is unavailable.
-6. **Parse taxonomy** — parses an EDINET XBRL taxonomy XSD file and stores element metadata in the database.
-7. **Generate financial statements** — extracts tagged values from raw XBRL data into structured per-company financial tables.
-8. **Generate ratios** — calculates per-share values, valuation ratios, and derived metrics for every company.
-9. **Generate rolling metrics** — computes rolling averages and CAGR-style growth rates for configurable metrics across selected statement tables, producing `<Table>_Rolling` output tables.
-10. **Backtest** — portfolio backtesting with weighted returns, dividend adjustment, and optional benchmark comparison.
-11. **Backtest set** — batch-runs 1/2/3/5/10-year backtests from a CSV of yearly portfolio selections.
+`/security` and `/backtesting` remain compatibility aliases for `/analyze` and `/backtest`.
+
+## Pipeline steps
+
+The step library is discovered from `src/orchestrator/` and currently contains:
+
+1. Get Documents
+2. Download EDINET Documents (CSV/type-5)
+3. Download XBRL Filings (type-1)
+4. Populate Company Info
+5. Import Stock Prices (CSV)
+6. Update Stock Prices
+7. Update FX Data
+8. Parse Taxonomy
+9. Generate Financial Statements
+10. Generate Ratios
+11. Generate Rolling Metrics
+12. Backtest
+13. Backtest Set (CSV)
+
+The stock-price CSV step uses a file picker and accepts files up to 500 MiB. XBRL `all` mode queries eligible filings from `DocumentList`, honors the document-type filter, skips completed downloads, uses at most five concurrent downloads, batches status writes, and reuses HTTP connections. Financial statements can be generated from either the legacy CSV database or compact numeric facts in `Filings.db`.
 
 ## Screenshots
 
-Current captures from the web workstation at 1280×800:
+These 1280×720 captures use generated demonstration companies, filings, and portfolio activity. The capture process never opens operator databases.
 
 | View | Screenshot |
 |---|---|
-| **Overview** | <img src="docs/images/web-dashboard.png" alt="EDINET Web Overview" width="640"> |
-| **Pipeline** | <img src="docs/images/web-pipeline.png" alt="EDINET Web Pipeline" width="640"> |
-| **Screening** | <img src="docs/images/web-screening.png" alt="EDINET Web Screening" width="640"> |
-| **Analysis** | <img src="docs/images/web-security-analysis.png" alt="EDINET Web Analysis" width="640"> |
-| **Backtesting** | <img src="docs/images/web-backtesting.png" alt="EDINET Web Backtesting" width="640"> |
-| **Portfolio** | <img src="docs/images/web-portfolio.png" alt="EDINET Web Portfolio" width="640"> |
+| Public homepage | <img src="docs/images/web-home.png" alt="Shade public homepage" width="640"> |
+| Company analysis | <img src="docs/images/web-security-analysis.png" alt="Populated company analysis" width="640"> |
+| Financial comparison | <img src="docs/images/web-comparison.png" alt="Side-by-side company comparison" width="640"> |
+| Filing translation | <img src="docs/images/web-filing-translation.png" alt="Japanese and English filing sections side by side" width="640"> |
+| Tags and research | <img src="docs/images/web-research.png" alt="Tags, favorites, watchlists, notes, and alerts" width="640"> |
+| Data pipeline | <img src="docs/images/web-pipeline.png" alt="Data pipeline workspace" width="640"> |
 
-> Screenshots captured via Playwright. Regenerate with `python tests/capture_screenshots.py`.
+See the [User Guide](docs/USER_GUIDE.md) for the complete screenshot gallery and feature walkthrough. Regenerate every image from isolated synthetic data with:
+
+```powershell
+.\.venv3\Scripts\python.exe tests\capture_screenshots.py
+```
+
+## Configuration and data
+
+| File or variable | Purpose |
+|---|---|
+| `config/database_paths.json` | Base, Standardized, Portfolio, auth, research, job, and filing database locations |
+| `.env` / `EDINET_API_TOKEN`, pipeline `API_KEY` | Outbound EDINET provider credentials for XBRL and legacy document steps |
+| `EDINET_AUTH_MODE` | `disabled` for loopback compatibility or `accounts` for account authentication |
+| `src/orchestrator/generate_ratios/ratios_definitions.json` | Ratio definitions |
+| `src/orchestrator/generate_rolling_metrics/rolling_metrics.json` | Rolling-average and growth definitions |
+
+`Filings.db` stores compressed provider ZIPs, compact numeric facts, catalog metadata, and versioned translation-cache rows. Narrative HTML and text are reconstructed from the retained ZIP only when requested.
 
 ## Documentation
 
-- [BUILDING.md](docs/BUILDING.md) — How to build a distributable EXE and ZIP
-- [RUNNING.md](docs/RUNNING.md) — Full description of every step and configuration options
-- [LOGGING.md](docs/LOGGING.md) — Logging system documentation
-- [Frontend Architecture.md](docs/Frontend%20Architecture.md) — Web frontend structure and extension guide
-- [Application Details.md](docs/Application%20Details.md) — Python source file reference
-- [Contributing.md](docs/Contributing.md) — Contribution guidelines
-- [CHANGELOG.md](docs/CHANGELOG.md) — Version history and changes
+- [User Guide](docs/USER_GUIDE.md) — user-facing workflows and complete screenshot gallery
+- [Running the Application](docs/RUNNING.md) — setup, security, database storage, and every pipeline step
+- [Building the Windows Release](docs/BUILDING.md) — packaged executable and ZIP workflow
+- [Frontend Architecture](docs/Frontend%20Architecture.md) — routes, state, components, and extension guide
+- [Python Source File Reference](docs/Application%20Details.md) — backend module responsibilities and contracts
+- [Contributing](docs/Contributing.md) — development and bounded verification workflow
+- [Logging and Correlation](docs/LOGGING.md) — logs, safe error envelopes, and correlation IDs
+- [Changelog](docs/CHANGELOG.md) — release history and unreleased changes
 
-## Building an executable
+## Verification and packaging
 
-Run the build script from the project root:
+Run all bounded backend, integration, frontend, static, contract, dependency, and documentation checks:
 
-```bash
-python scripts/build.py
+```powershell
+.\.venv3\Scripts\python.exe -B scripts\verify.py
 ```
 
-This produces `dist/EDINET-Release.zip` containing the `.exe`, empty databases, configuration files, and an `.env` template. See [docs/BUILDING.md](docs/BUILDING.md) for the full step-by-step guide.
+Build the Windows release with:
 
-## Configuration files
+```powershell
+.\.venv3\Scripts\python.exe -B scripts\build.py
+```
 
-| File | Purpose |
-|---|---|
-| `src/orchestrator/generate_ratios/ratios_definitions.json` | Ratio-table definitions used by `generate_ratios` |
-| `src/orchestrator/generate_rolling_metrics/rolling_metrics.json` | Rolling-metric column specifications |
-| `config/database_paths.json` | Lists the databases to be used |
-| `.env` | EDINET API key |
+The release builder generates fresh configuration and empty databases; it never bundles development databases, credentials, logs, uploads, or portfolio data.
 
-## Web Interface Features
-
-- **React SPA** — React 19 with TypeScript, client-side routing via React Router, lazy-loaded feature modules.
-- **Server state** — TanStack Query manages all API data with caching, background refetch, and loading/error states.
-- **Pipeline builder** — drag-and-drop step ordering, per-step configuration inspector, run/cancel controls with real-time job status, save/load setups.
-- **Screening** — expression-based criteria builder with metric picker, weighted ranking rules, sortable results, formatted/raw value toggle, save/load criteria, run history, CSV export, backtest-set generation, drill-in to Analysis.
-- **Analysis** — company search (by ticker, name, EDINET code, industry), overview metric tiles, unified historical data table with column filter, interactive Chart.js charts (line/bar/area, multi-series, add/remove panels), peer comparison, stock price refresh.
-- **Backtesting** — three input modes (manual portfolio, import from screener, CSV upload), allocation types (weight/shares/value), Chart.js visualizations (cumulative returns, drawdown, yearly breakdowns), per-company return decomposition, benchmark comparison, batch set analysis with heatmap.
-- **Portfolio** — IBKR FlexQuery XML upload with drag-and-drop, holdings table with sortable/filterable columns, column visibility and pinning, multi-currency support with display currency selector, FX effect column, holding period tracking, transaction log with filters, interactive Chart.js dashboard (pie charts, stacked area, stacked bars, heatmaps), performance metrics (total return, CAGR, Sharpe, Sortino, max drawdown, volatility, alpha, beta, benchmark comparison), per-company yearly returns, money-weighted returns (Modified Dietz), model portfolio comparison via backtest.
-- **Database management** — resolve, optimize, and select database paths from the UI.
-- **Session persistence** — screening criteria, backtesting state, and analysis context survive tab switches via localStorage/sessionStorage.
-
-## Key EDINET document type codes
+## Common EDINET document type codes
 
 | Code | Document type |
 |---|---|
-| 120 | Securities Report (Annual Report - 有価証券報告書) |
-| 140 | Quarterly Securities Report (四半期報告書) |
-| 150 | Semi-Annual Securities Report (半期報告書) |
+| `120` | Securities Report (Annual Report / 有価証券報告書) |
+| `130` | Semi-annual Securities Report (半期報告書) |
+| `140` | Quarterly Securities Report (四半期報告書) |

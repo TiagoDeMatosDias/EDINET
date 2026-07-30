@@ -1292,7 +1292,8 @@ class TestTaxonomyProcessing(unittest.TestCase):
         )
 
     def test_sync_taxonomy_releases_parses_archive_into_single_taxonomy_table(self):
-        fake_session_factory = lambda: _FakeSession(self.html_text, self.archive_bytes)
+        def fake_session_factory():
+            return _FakeSession(self.html_text, self.archive_bytes)
 
         with patch(
             "src.orchestrator.parse_taxonomy.taxonomy_processing.requests.get",

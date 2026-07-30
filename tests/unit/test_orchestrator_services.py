@@ -5,9 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from src.orchestrator.common import ratios as ratio_services
-from src.orchestrator.generate_ratios.generate_ratios import generate_ratios
 from src.orchestrator.generate_financial_statements import service as financial_statement_services
+from src.orchestrator.generate_ratios.generate_ratios import generate_ratios
 from src.orchestrator.generate_rolling_metrics import service as rolling_metrics_services
 
 

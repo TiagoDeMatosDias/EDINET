@@ -1,13 +1,13 @@
 """Tests for src/portfolio/option_pricing.py."""
 
 import math
-import pytest
+
 from src.portfolio.option_pricing import (
-    black_scholes,
     binomial_tree,
-    option_greeks,
-    implied_volatility,
+    black_scholes,
     get_option_price,
+    implied_volatility,
+    option_greeks,
 )
 
 

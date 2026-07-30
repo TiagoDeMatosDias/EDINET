@@ -36,3 +36,4 @@ __pycache__/config.cpython-313.pyc
 agents.md
 docs/Agent/*
 docs/images/*
+!docs/images/*.png

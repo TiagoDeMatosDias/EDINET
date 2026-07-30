@@ -4,7 +4,6 @@ Uses in-memory SQLite databases passed as real files (via tmp_path)
 so the /api/screening/* endpoints work with a TestClient.
 """
 
-import json
 import sqlite3
 from pathlib import Path
 
@@ -14,7 +13,6 @@ from fastapi.testclient import TestClient
 import src.web_app.api.screening as screening_api
 from src.web_app.security import PathPolicy
 from src.web_app.server import app
-
 
 client = TestClient(app)
 
@@ -396,7 +394,7 @@ def test_run_screening_validation_error(test_db_path):
         }],
         "columns": [],
     })
-    assert resp.status_code in (400, 500)  # ValueError → 400 via our handler
+    assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------

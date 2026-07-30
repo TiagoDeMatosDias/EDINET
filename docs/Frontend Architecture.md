@@ -32,6 +32,8 @@ flowchart LR
 | `/filings` | Retained EDINET type-1 filing and XBRL explorer |
 | `/compare` | Bounded multi-company comparison |
 | `/research` | Account-owned watchlists, notes, and in-app alerts |
+| `/account` | Password changes, sessions, and personal API tokens |
+| `/admin` | Users, invitations, credential resets, registration, and password policy |
 | `/security` | Compatibility alias for the React analysis workspace |
 
 All routes target one React SPA. Compatibility means URL aliasing only.
@@ -44,9 +46,14 @@ frontend-v2/
 │   ├── api/                 # typed fetch and SSE clients
 │   ├── components/          # shell, feedback, cards, fields, and data table
 │   ├── features/
+│   │   ├── marketing/
+│   │   ├── auth/
 │   │   ├── overview/
 │   │   ├── screening/
 │   │   ├── analysis/
+│   │   ├── comparison/
+│   │   ├── filings/
+│   │   ├── research/
 │   │   ├── backtesting/
 │   │   ├── portfolio/
 │   │   └── pipeline/
@@ -62,7 +69,7 @@ frontend-v2/
 
 src/web_app/
 ├── server.py                # API app, SPA entry routes, static mounts
-├── api/                     # API routers (screening, security_analysis, tags, portfolio)
+├── api/                     # screening, security analysis, tags, and router composition
 │   ├── __init__.py
 │   ├── screening.py
 │   ├── security_analysis.py
@@ -95,7 +102,10 @@ The layout is desktop-first but has a 390 px mobile treatment:
 
 - Screening preserves legacy saved definitions and supports full expressions on both sides of a comparison. Rule expressions and derived output fields share metric, literal-value, arithmetic-operator, and parenthesis tokens; validated parentheses provide explicit PEMDAS grouping while legacy numerator/denominator ratios remain editable.
 - Analysis supports company search, overview metrics, price history, multi-metric financial-history charts and dense tables, price refresh, peer-screen handoff, and backtest handoff.
-- Analysis also lists archived company XBRL reports and links to the Filing Explorer. Filings presents sanitized narrative sections, structured facts, and archive metadata without rendering submitted active content.
+- Analysis also lists archived company XBRL reports and links to the Filing Explorer. Filings presents sanitized narrative sections, structured facts, and archive metadata without rendering submitted active content. Filing translation preserves the Japanese source, requests one complete English document at a time, and displays explicit retryable errors instead of partial output or a per-section request fan-out.
+- Comparison reuses the shared company picker, supports 2–12 companies, and starts with standard snapshot metrics. Its metric picker exposes searchable statement tables and columns, removes metrics with individual X controls, and sends validated `Table.Column` references for arbitrary numeric comparisons.
+- Favorites and named watchlists are represented as ordinary private tags. Research reuses the shared company picker for tag membership, notes, thesis targets, and alerts; tag mutations invalidate both summary and member queries.
+- Marketing owns the public homepage and informational pricing page. Auth owns login, registration, account settings, personal tokens, users/invitations/resets, and the administrator-controlled 15–128 character password minimum.
 - Research, comparison, and authenticated portfolio/report slices use owner-scoped API contracts; the frontend never sends complete result payloads for report generation.
 - Backtesting supports manual portfolios, CSV sets, and point-in-time rolling screens with cadence, durations, weighting, progress, cancellation, saved results, and downloads.
 - Portfolio supports XML imports, rebuilds, currency selection, activity, holdings, transactions, performance, and company-analysis handoff.

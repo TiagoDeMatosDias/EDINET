@@ -1,7 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-07-23
+Last updated: 2026-07-30
 - Central reference for runtime/test Python modules (`src/`), web app modules (`src/web_app/`), React frontend (`frontend-v2/`), and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
@@ -51,7 +51,7 @@ Suggested per-function format:
 - `src/pipeline_jobs/store.py` owns versioned SQLite persistence. `manager.py` owns the one-worker queue and terminal-state rules. `context.py` exposes cooperative cancellation/progress/workspace state. `redaction.py` bounds and redacts persisted output.
 - `src/web_app/security.py` owns `AppSettings`, bearer authentication, trusted hosts, request/correlation IDs, safe error envelopes, request-size limits, and `PathPolicy`.
 - `src/orchestrator/common/sqlite.py` exposes `connect_read`, `connect_write`, `transaction`, managed WAL initialization, existence helpers, and identifier quoting.
-- `src/portfolio/models.py` owns Portfolio API contracts; `src/portfolio/schema.py` remains the compatibility facade for those models while owning versioned schema migrations.
+- `src/portfolio/models.py` owns Portfolio API contracts; `src/portfolio/schema.py` remains the compatibility facade for those models while owning versioned schema migrations. Materialized portfolio tables use owner-aware composite primary keys so rebuilding one account cannot replace another account's state.
 - `src/screening/formatting.py` and `src/screening/persistence.py` own formatting and atomic saved-screen/history persistence behind the existing `src.screening` facade.
 
 ## Architecture overview
@@ -69,11 +69,12 @@ flowchart LR
     end
 
     subgraph API["API"]
-        RTR["/api/*"]
+        RTR["Pipeline / jobs"]
         SCR_API["/api/screening/*"]
         SEC_API["/api/security/*"]
         PF_API["/api/portfolio/*"]
-        TAG_API["/api/tags/*"]
+        RES_API["Auth, tags, research, reports"]
+        FIL_API["Filings and comparison"]
     end
 
     subgraph Core["Core"]
@@ -81,6 +82,8 @@ flowchart LR
         SCR["Screening<br/>(src/screening/)"]
         SA["Security Analysis<br/>(src/security_analysis/)"]
         PF["Portfolio<br/>(src/portfolio/)"]
+        RES["Auth / Research / Reports"]
+        FIL["Filings / Comparison"]
     end
 
     MAIN --> REACT
@@ -88,15 +91,19 @@ flowchart LR
     REACT -->|"TanStack Query"| SCR_API
     REACT -->|"TanStack Query"| SEC_API
     REACT -->|"TanStack Query"| PF_API
+    REACT -->|"TanStack Query"| RES_API
+    REACT -->|"TanStack Query"| FIL_API
     RTR --> ORCH
     SCR_API --> SCR
     SEC_API --> SA
     PF_API --> PF
+    RES_API --> RES
+    FIL_API --> FIL
     ORCH --> SCR
     ORCH --> SA
 ```
 
-The FastAPI server mounts orchestrator (`/api/steps`, `/api/pipeline/run`, `/api/jobs`), screening (`/api/screening/*`), security analysis (`/api/security/*`), portfolio (`/api/portfolio/*`), and tags (`/api/tags/*`) API routes. The React frontend communicates with all endpoints via the API client layer in `frontend-v2/src/api/`.
+The FastAPI server mounts pipeline/jobs, authentication, screening, security analysis, portfolio, tags/research, filings, comparison, backtesting, and report routers. The React frontend communicates with all endpoints through the authenticated API client layer in `frontend-v2/src/api/`; it never opens SQLite databases directly.
 
 ### [src/orchestrator/__init__.py](../src/orchestrator/__init__.py)
 
@@ -433,7 +440,7 @@ This reference is intentionally concise. Expand signatures, examples, and depend
 
 ### [src/web_app/server.py](../src/web_app/server.py)
 
-Responsibility: FastAPI application assembly — mounts API routers, the React production bundle at `/app-assets`, primary SPA entry routes.
+Responsibility: FastAPI application assembly — mounts API routers, the React production bundle at `/app-assets`, primary SPA entry routes. `EDINET_FRONTEND_DIST` can override the bundle directory for packaging and isolated tests; production defaults to `frontend-v2/dist`.
 
 ### [src/web_app/api/screening.py](../src/web_app/api/screening.py)
 
@@ -532,17 +539,20 @@ Core implementation in `src/screening/screening.py`:
 
 ## Tests (`tests/`)
 
-Responsibility: Unit and integration tests covering core logic, API endpoints, and UI helpers.
+Responsibility: Unit and integration tests covering core logic, API endpoints, and UI helpers. Tests generate isolated databases, IBKR XML, and a minimal SPA bundle at runtime; they do not read operator files under `data/` or require a pre-existing frontend build.
+
+- **[factories.py](../tests/factories.py)** - Deterministic market-database and synthetic IBKR FlexQuery factories shared across test layers.
+- **[capture_screenshots.py](../tests/capture_screenshots.py)** - Builds isolated demonstration Base, Standardized, Portfolio, Research, Jobs, Auth, and Filings databases, serves the current SPA, and refreshes documentation screenshots without opening operator data.
 
 ### Unit tests (`tests/unit/`)
 
 - **[test_backtesting.py](../tests/unit/test_backtesting.py)** - tests backtest data retrieval, calculations, report and chart generation, and end-to-end `run_backtest` flows.
-- **[test_backtesting_api.py](../tests/unit/test_backtesting_api.py)** - Backtesting API endpoint tests.
 - **[test_backtesting_chart_response.py](../tests/unit/test_backtesting_chart_response.py)** - Chart response format tests.
 - **[test_database_bootstrap.py](../tests/unit/test_database_bootstrap.py)** - Verifies clean-startup creation and schema initialization for all configured databases.
 - **[test_backtesting_web.py](../tests/unit/test_backtesting_web.py)** - Web backtesting interface tests.
 - **[test_edinet_api.py](../tests/unit/test_edinet_api.py)** - tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
 - **[test_frontend_v2_server.py](../tests/unit/test_frontend_v2_server.py)** - Tests for the React SPA serving and API integration.
+- **[test_filings_translation.py](../tests/unit/test_filings_translation.py)** - Complete-translation, cache validation, chunking, HTML, model-failure, and API error-contract tests.
 - **[test_orchestrator.py](../tests/unit/test_orchestrator.py)** - Orchestrator tests: `run_pipeline` basic flow, cancellation, error handling, `execute_step` dispatch, `validate_config`, `Config.from_dict` independence and singleton behaviour.
 - **[test_orchestrator_services.py](../tests/unit/test_orchestrator_services.py)** - Tests for individual orchestrator step services.
 - **[test_portfolio_additional.py](../tests/unit/test_portfolio_additional.py)** - Additional portfolio edge case tests.
@@ -563,11 +573,10 @@ Responsibility: Unit and integration tests covering core logic, API endpoints, a
 - **[test_update_fx_data.py](../tests/unit/test_update_fx_data.py)** - tests ECB FX data download, transform, and database ingestion with dedup.
 - **[test_utils.py](../tests/unit/test_utils.py)** - small helper tests for URL generation and CSV export.
 - **[test_web_app_server.py](../tests/unit/test_web_app_server.py)** - Tests for the FastAPI web application server.
-- **[test_web_ui_smoke.py](../tests/unit/test_web_ui_smoke.py)** - Web UI smoke tests.
 
 ### Integration tests (`tests/integration/`)
 
-- **[test_backtesting_integration.py](../tests/integration/test_backtesting_integration.py)** - End-to-end backtesting integration tests.
+- **[test_backtesting_integration.py](../tests/integration/test_backtesting_integration.py)** - End-to-end backtesting API, persistence, validation, benchmark, and currency tests against generated market data.
 - **[test_rolling_screening_backtest.py](../tests/integration/test_rolling_screening_backtest.py)** - Rolling screening backtest integration tests.
 
 ---
@@ -578,7 +587,7 @@ Responsibility: dedicated account authentication state. `AuthStore` owns `auth.d
 
 ### [src/filings/](../src/filings/)
 
-Responsibility: EDINET type-1 acquisition and rebuildable filing indexes. `EdinetDownloadClient` is the only application subsystem that reads `EDINET_API_TOKEN`, solely for outbound EDINET requests. `archive.py` validates ZIPs and extracts requested members on demand, `xbrl.py` uses defused XML plus sanitized narrative parsing, and `FilingCatalog` owns `Filings.db` metadata, compressed archives, compact numeric facts, contexts/units, on-demand narrative reconstruction, and quality issues. `rebuild_filings_db.py` creates a new catalog without materialized narrative text or the wide raw-fact uniqueness index. The Filing Explorer coverage endpoint provides unique filing/company/archive counts for the empty-state dashboard, and the report viewer keeps Japanese and translated HTML panes side by side.
+Responsibility: EDINET type-1 acquisition and rebuildable filing indexes. `EdinetDownloadClient` is the only application subsystem that reads `EDINET_API_TOKEN`, solely for outbound EDINET requests. `archive.py` validates ZIPs and extracts requested members on demand, `xbrl.py` uses defused XML plus sanitized narrative parsing, and `FilingCatalog` owns `Filings.db` metadata, compressed archives, compact numeric facts, contexts/units, on-demand narrative reconstruction, and quality issues. `rebuild_filings_db.py` creates a new catalog without materialized narrative text or the wide raw-fact uniqueness index. The Filing Explorer coverage endpoint provides unique filing/company/archive counts for the empty-state dashboard, and the report viewer keeps Japanese and translated HTML panes side by side. `translate.py` uses an application-wide, serialized Argos ja→en model, glossary handling for short EDINET labels, boundary-aware long-text chunks, residual-Japanese repair, and cache version 3. It translates complete section bodies and all visible HTML text/labels; only output validated as complete is cached or returned. Model/runtime failures return HTTP 503 and never masquerade as an English pane.
 
 ### [src/research/](../src/research/)
 
@@ -596,7 +605,7 @@ Responsibility: bounded comparison snapshots/history/peer endpoints and owner-sc
 
 `POST /api/portfolio/tax-lots` applies FIFO, average-cost, or specific-lot matching to a submitted preview event stream. `POST /api/portfolio/greeks` aggregates Black-Scholes Greeks with explicit quantity/multiplier/volatility assumptions. `POST /api/portfolio/scenarios/evaluate` applies deterministic equity and FX shocks. All three endpoints require an authenticated account and return assumptions; they do not mutate imported portfolio activity.
 
-Last updated: 2026-07-23
+Last updated: 2026-07-30
 
 Keep this document aligned with code changes in the same PR or commit.
 

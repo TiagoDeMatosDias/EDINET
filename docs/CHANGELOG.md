@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Filing translation now processes complete section bodies and all visible report HTML in bounded chunks, retries residual Japanese, rejects partial output, and caches only translator-version-3 results that contain no remaining Japanese. Japanese and English remain visible side by side.
+- Company comparison now resolves its values through the Company Analysis contracts and statement history, so standard snapshot metrics, common-size rows, and arbitrary numeric statement columns are populated consistently.
+- Research tag membership uses the shared company picker and correctly invalidates tag summaries and member results after a company is added or removed.
+- Pipeline multipart parsing now associates uploads only with declared file fields, supports mixed upload/non-upload recipes, and rejects oversized stock-price CSVs with a bounded error instead of allocation overflow.
+- The compact filings rebuild copies the seven-column artifact catalog correctly and no longer attempts an eight-value insert.
 - Rolling backtest archives use a separate 256 MiB configurable artifact budget and are written through a size-limited disk stream, avoiding false 25 MiB export failures and duplicate in-memory ZIP allocation.
 - Portfolio routes are registered exactly once and startup rejects duplicate method/path pairs.
 - Saved screens retain `screening_date`; old JSON without the field remains compatible and invalid non-ISO dates are rejected.
@@ -20,6 +25,9 @@ All notable changes to this project will be documented in this file.
 - Portfolio XML and embedded pipeline uploads are size-bounded, strictly decoded/validated, and owned by deterministic cleanup workspaces.
 
 ### Reliability
+- The test suite is hermetic by default: generated market databases, filing archives, portfolio XML, auth/research/job state, and a minimal SPA replace operator databases and ignored local artifacts. The complete bounded verifier passes out of the box.
+- Server startup now creates every missing configured Base, Standardized, Portfolio, auth, research, pipeline-job, and filings database, including managed schemas and migrations.
+- XBRL acquisition reuses HTTP connections, batches `DocumentList` status updates, and caps concurrent downloads at five.
 - Pipeline submissions return `202` and run through a persistent single-worker job manager with per-step state, cooperative cancellation, bounded output, retention, and interrupted-job recovery.
 - Added a shared SQLite connection/transaction policy, WAL initialization for managed databases, bounded lock errors, read-only query connections, and explicit Portfolio/job migrations.
 - React Pipeline polling now survives page reloads and exposes truthful cancellation and terminal output.
@@ -38,6 +46,14 @@ All notable changes to this project will be documented in this file.
 - **`docs/design/UX Design Language.md`** — removed; was the design spec for the pre-React vanilla JS UI.
 
 ### Added
+- **Public product pages** — `/` now provides a product homepage with registration, login, and pricing links; `/pricing` presents the current €10/month or €100/year informational tier.
+- **Unified company discovery** — Analysis, Comparison, Filings, Research, and the global header share best-effort search by company name, ticker, EDINET code, industry, market, and available price ticker, with graceful partial-database fallback.
+- **Flexible comparison metrics** — Comparison can add searchable `Table.Column` metrics from numeric statement tables and remove each selected metric independently.
+- **Filing Explorer landing statistics** — the no-selection state shows only the shared company finder and basic unique filing, company, parsed-filing, and retained-archive counts.
+- **Administrator password policy** — administrators can set a 15–128 character minimum in the Admin dashboard; registration, invitations, resets, changes, and administrator-created credentials share the stored policy.
+- **XBRL all mode and filings-backed statements** — `download_xbrl` can process every eligible uncompleted `DocumentList` row while honoring the document-type filter, and `generate_financial_statements` accepts `Source_Mode=filings` in addition to the legacy CSV source.
+- **Compact filing storage** — provider ZIPs are retained as compressed SQLite BLOBs, extracted members and narrative sections are reconstructed on demand, and compact catalogs retain only numeric/non-nil analytical facts.
+- **Documentation demo runtime** — screenshots are generated from isolated synthetic databases and now cover the public pages, current research workspaces, comparison metric picker, filing statistics, and side-by-side translation.
 - **React/TypeScript frontend (`frontend-v2/`)** — new primary web workstation built with React 19, TypeScript, Vite, TanStack Query, and React Router:
   - Six feature modules: Overview, Screening, Analysis, Backtesting, Portfolio, and Pipeline.
   - Shared component library: AppShell (sidebar + mobile nav), DataTable, Feedback states, GlobalCompanySearch.
@@ -58,6 +74,9 @@ All notable changes to this project will be documented in this file.
   - Supports `overwrite`; config keys are `Source_Database` and `Target_Database`.
 
 ### Changed
+- Favorites and watchlists are ordinary owner-scoped tags, so the same labels and membership flow are reused by Analysis, Research, and Screening.
+- Import Stock Prices (CSV) uses a browser file picker and a dedicated 500 MiB pipeline upload limit.
+- The Filing Explorer stores complete Argos translations in `Filings.db` rather than replacing the Japanese source in the viewer.
 - **Orchestration layer rework** — complete rewrite of the orchestration entrypoint, now exposed through `src/orchestrator/`:
   - **Step handler pattern**: each orchestration step is handled by a dedicated function (`_step_get_documents`, `_step_download_documents`, etc.) registered in a `STEP_HANDLERS` dict, replacing the monolithic `if/elif` chain.
   - **No shared state**: `run()` and `run_pipeline()` no longer pre-create shared `Edinet` or `data` instances. Each step handler creates its own module instances with explicit parameters.

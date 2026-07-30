@@ -1,87 +1,119 @@
-"""Japanese-to-English translation — fully offline.
+"""Complete Japanese-to-English filing translation.
 
-Uses Argos Translate (OpenNMT neural models) when available; falls back
-to a local EDINET financial-term dictionary when Argos is not installed
-or its models have not been downloaded.
-
-Zero external API calls.  All translations are cached in
-``filing_translations`` for reuse.
+Translations run locally through Argos Translate after its Japanese-to-English
+model is installed. The model may be downloaded on first use. A financial-term
+glossary handles short EDINET labels that neural translation commonly leaves
+empty. Only validated, complete translations are cached.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from threading import Lock
+from time import monotonic
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Argos Translate (offline neural) — try to load on first use
+# Argos Translate (offline neural) — load or install on first use
 # ---------------------------------------------------------------------------
 
-_argos_loaded = False
-_argos_ja_en = None
+TRANSLATOR_VERSION = 3
+
+_ARGOS_RETRY_COOLDOWN_SECONDS = 30.0
+_argos_ja_en: Any | None = None
+_argos_last_error: str | None = None
+_argos_retry_after = 0.0
+_argos_init_lock = Lock()
+_argos_call_lock = Lock()
 
 
-def _try_load_argos() -> bool:
-    """Attempt to load the Argos Japanese→English model.  Returns True on success."""
-    global _argos_loaded, _argos_ja_en
-    if _argos_loaded:
-        return _argos_ja_en is not None
-    _argos_loaded = True
-    try:
-        import argostranslate.package
-        import argostranslate.translate
+class TranslationError(RuntimeError):
+    """Base class for a translation that cannot be completed."""
 
-        installed = argostranslate.translate.get_installed_languages()
-        ja = next((l for l in installed if l.code == "ja"), None)
-        en = next((l for l in installed if l.code == "en"), None)
 
-        if ja is None or en is None:
-            # After server restart, models may need re-indexing
-            argostranslate.package.update_package_index()
-            available = argostranslate.package.get_available_packages()
-            ja_en_pkg = next((p for p in available if p.from_code == "ja" and p.to_code == "en"), None)
-            if ja_en_pkg is None:
-                logger.info("Argos ja→en package not found; run: pip install argostranslate")
-                return False
-            if not ja_en_pkg.is_installed() if hasattr(ja_en_pkg, 'is_installed') else True:
-                logger.info("Installing Argos ja→en model (~200 MB, one-time)…")
-                download_path = ja_en_pkg.download()
-                argostranslate.package.install_from_path(download_path)
-                logger.info("Argos ja→en model installed")
-            # Re-read installed languages after install
-            installed = argostranslate.translate.get_installed_languages()
-            ja = next((l for l in installed if l.code == "ja"), None)
-            en = next((l for l in installed if l.code == "en"), None)
+class TranslationUnavailableError(TranslationError):
+    """Raised when the local Japanese-to-English engine is unavailable."""
 
-        if ja and en and ja.get_translation(en):
-            _argos_ja_en = True
+
+class IncompleteTranslationError(TranslationError):
+    """Raised when translated output still contains Japanese text."""
+
+
+def _unavailable_error() -> TranslationUnavailableError:
+    detail = f" Last error: {_argos_last_error}" if _argos_last_error else ""
+    return TranslationUnavailableError(
+        "The Argos Japanese-to-English model is unavailable. Retry the translation "
+        f"or use Retranslate to reinitialize it.{detail}"
+    )
+
+
+def _try_load_argos(*, force_retry: bool = False) -> bool:
+    """Load the Japanese→English model, retrying transient initialization failures."""
+    global _argos_ja_en, _argos_last_error, _argos_retry_after
+    if _argos_ja_en is not None:
+        return True
+    if not force_retry and monotonic() < _argos_retry_after:
+        return False
+
+    with _argos_init_lock:
+        if _argos_ja_en is not None:
             return True
-        return False
-    except ImportError:
-        logger.info("argostranslate not installed; using dictionary fallback")
-        return False
-    except Exception as exc:
-        logger.warning("Argos load failed: %s; using dictionary fallback", exc)
+        if not force_retry and monotonic() < _argos_retry_after:
+            return False
+        try:
+            import argostranslate.package
+            import argostranslate.translate
+
+            def installed_translation() -> Any | None:
+                installed = argostranslate.translate.get_installed_languages()
+                ja = next((language for language in installed if language.code == "ja"), None)
+                en = next((language for language in installed if language.code == "en"), None)
+                return ja.get_translation(en) if ja is not None and en is not None else None
+
+            translation = installed_translation()
+            if translation is None:
+                logger.info("Installing the Argos Japanese-to-English model on first use")
+                argostranslate.package.update_package_index()
+                package = next(
+                    (
+                        candidate
+                        for candidate in argostranslate.package.get_available_packages()
+                        if candidate.from_code == "ja" and candidate.to_code == "en"
+                    ),
+                    None,
+                )
+                if package is None:
+                    raise RuntimeError("the Argos package index has no ja→en model")
+                download_path = package.download()
+                argostranslate.package.install_from_path(download_path)
+                translation = installed_translation()
+            if translation is None:
+                raise RuntimeError("the installed ja→en model could not be loaded")
+            _argos_ja_en = translation
+            _argos_last_error = None
+            _argos_retry_after = 0.0
+            return True
+        except ImportError as exc:
+            _argos_last_error = f"argostranslate is not installed ({exc})"
+        except Exception as exc:  # noqa: BLE001  # model/package failures are reported to callers
+            _argos_last_error = str(exc)
+        _argos_retry_after = monotonic() + _ARGOS_RETRY_COOLDOWN_SECONDS
+        logger.warning("Argos Japanese-to-English initialization failed: %s", _argos_last_error)
         return False
 
 
 def _argos_translate(text: str) -> str:
     """Translate a single string using Argos (offline neural)."""
     if not _try_load_argos():
-        return text
-    import argostranslate.translate
-
-    installed = argostranslate.translate.get_installed_languages()
-    ja = next((l for l in installed if l.code == "ja"), None)
-    en = next((l for l in installed if l.code == "en"), None)
-    if ja and en:
-        translation = ja.get_translation(en)
-        if translation:
-            return translation.translate(text)
-    return text
+        raise _unavailable_error()
+    translation = _argos_ja_en
+    if translation is None:  # pragma: no cover - guarded by _try_load_argos
+        raise _unavailable_error()
+    with _argos_call_lock:
+        return str(translation.translate(text) or "")
 
 # ---------------------------------------------------------------------------
 # Local Japanese financial-term dictionary (EDINET standard terminology)
@@ -163,6 +195,11 @@ _JP_EN_GLOSSARY: dict[str, str] = {
     "差引": "Net",
     "うち": "of which",
     "その他": "Other",
+    "内訳": "Breakdown",
+    "注": "Note",
+    "計": "Total",
+    "有": "Yes",
+    "無": "None",
     "注記": "Notes",
     "概要": "Overview",
     "主要": "Key",
@@ -233,11 +270,22 @@ _SORTED_KEYS = sorted(_JP_EN_GLOSSARY.keys(), key=len, reverse=True)
 _DICT_RE = re.compile("|".join(re.escape(k) for k in _SORTED_KEYS))
 
 
+_CJK_CHAR_CLASS = (
+    r"\u3005\u3006\u303b\u3041-\u3096\u309d-\u309f\u30a1-\u30fa"
+    r"\u30fc-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff"
+    r"\uf900-\ufaff\uff66-\uff9d\U00020000-\U0002fa1f"
+)
+_CJK_RE = re.compile(f"[{_CJK_CHAR_CLASS}]")
+_CJK_RUN_RE = re.compile(f"[{_CJK_CHAR_CLASS}]+")
+_CHUNK_BOUNDARIES = "\n。！？!?；;、, "
+_MAX_TRANSLATION_CHARS = 600
+_MAX_REPAIR_DEPTH = 2
+_TRANSLATABLE_ATTRIBUTES = ("alt", "aria-label", "placeholder", "title", "value")
+
+
 def _needs_translation(text: str) -> bool:
-    """Return True when text contains CJK characters."""
-    if not text or not text.strip():
-        return False
-    return bool(re.search(r"[぀-ヿ㐀-䶿一-鿿]", text))
+    """Return True when text contains Japanese kana or CJK ideographs."""
+    return bool(text and text.strip() and _CJK_RE.search(text))
 
 
 def _dict_translate(text: str) -> str:
@@ -250,15 +298,133 @@ def _dict_translate(text: str) -> str:
     return result
 
 
+def _is_complete_translation(source: str, translated: str) -> bool:
+    if not _needs_translation(source):
+        return translated == source
+    return bool(translated and translated.strip() and not _needs_translation(translated))
+
+
+def _split_translation_chunks(text: str, max_chars: int) -> list[str]:
+    """Split text without dropping punctuation or whitespace."""
+    if len(text) <= max_chars:
+        return [text]
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_chars, len(text))
+        if end < len(text):
+            candidate = text[start:end]
+            boundary = max(candidate.rfind(character) for character in _CHUNK_BOUNDARIES)
+            if boundary >= max_chars // 3:
+                end = start + boundary + 1
+        chunks.append(text[start:end])
+        start = end
+    return chunks
+
+
+def _call_argos(text: str) -> str:
+    """Call Argos twice for transient runtime failures or empty output."""
+    last_error: Exception | None = None
+    for _attempt in range(2):
+        try:
+            translated = _argos_translate(text)
+            if translated and translated.strip():
+                return translated
+        except TranslationUnavailableError:
+            raise
+        except Exception as exc:  # noqa: BLE001  # retry transient native-model failures
+            last_error = exc
+    if last_error is not None:
+        raise TranslationUnavailableError(
+            f"The Argos translation engine failed while translating text: {last_error}"
+        ) from last_error
+    return ""
+
+
+def _repair_residual_japanese(translated: str) -> str:
+    """Retry residual Japanese runs that Argos left inside otherwise English output."""
+    repaired = translated
+    residuals = list(dict.fromkeys(_CJK_RUN_RE.findall(repaired)))
+    for residual in residuals:
+        replacement = _dict_translate(residual)
+        if _needs_translation(replacement):
+            candidate = _call_argos(residual)
+            replacement = _dict_translate(candidate)
+        if _is_complete_translation(residual, replacement):
+            repaired = repaired.replace(residual, replacement)
+    return repaired
+
+
+def _translate_short_text_with_context(text: str) -> str:
+    """Give isolated labels and names enough context for Argos to translate them."""
+    contextual = _dict_translate(_call_argos(f"項目：{text}"))
+    candidate = re.sub(
+        r"^\s*(?:item|field|entry|name)\s*[:：-]\s*",
+        "",
+        contextual,
+        flags=re.IGNORECASE,
+    ).strip()
+    return candidate if _is_complete_translation(text, candidate) else ""
+
+
+def _translate_chunk(text: str, *, depth: int = 0) -> str:
+    if not _needs_translation(text):
+        return text
+
+    glossary_translation = _dict_translate(text)
+    if _is_complete_translation(text, glossary_translation):
+        return glossary_translation
+
+    candidate = _dict_translate(_call_argos(text))
+    if _needs_translation(candidate):
+        candidate = _repair_residual_japanese(candidate)
+    if _is_complete_translation(text, candidate):
+        return candidate
+
+
+    if len(text) <= 80:
+        contextual = _translate_short_text_with_context(text)
+        if contextual:
+            return contextual
+
+    if depth < _MAX_REPAIR_DEPTH and len(text) > 1:
+        retry_size = max(8, min(240, len(text) // 2))
+        chunks = _split_translation_chunks(text, retry_size)
+        if len(chunks) > 1:
+            translated = "".join(
+                _translate_chunk(chunk, depth=depth + 1) for chunk in chunks
+            )
+            if _is_complete_translation(text, translated):
+                return translated
+
+    residual_count = len(_CJK_RE.findall(candidate or text))
+    raise IncompleteTranslationError(
+        "The local translator left Japanese text in its output "
+        f"after retries ({residual_count} residual characters)."
+    )
+
+
+def _translate_complete_text(text: str) -> str:
+    chunks = _split_translation_chunks(text, _MAX_TRANSLATION_CHARS)
+    translated = "".join(_translate_chunk(chunk) for chunk in chunks)
+    if not _is_complete_translation(text, translated):
+        raise IncompleteTranslationError(
+            "The local translator did not produce a complete English translation."
+        )
+    return translated
+
+
 def translate_batch(
     texts: list[str],
     catalog: Any | None = None,
     *,
     force: bool = False,
 ) -> dict[str, str]:
-    """Translate a batch of Japanese strings to English using the local dictionary.
+    """Return complete English translations for every supplied string.
 
-    All translations are cached in ``filing_translations``.
+    Cached output is accepted only when it contains no residual Japanese. The
+    function raises :class:`TranslationError` rather than returning source or
+    partially translated text as a successful English result.
     """
     if not texts:
         return {}
@@ -267,53 +433,110 @@ def translate_batch(
     if not unique:
         return {}
 
-    # Check cache (version 2 = Argos, version 1 = old dictionary)
+    # Version 3 invalidates the former cache, which could contain partial output.
     cached: dict[str, str] = {}
     uncached = unique
     if catalog is not None and not force:
         import hashlib
 
-        hashed = catalog.lookup_translations(unique, version=2)
+        hashed = catalog.lookup_translations(unique, version=TRANSLATOR_VERSION)
         hash_to_text = {hashlib.sha256(t.encode("utf-8")).hexdigest(): t for t in unique}
         for h, translated in hashed.items():
             src = hash_to_text.get(h)
-            if src:
+            if src and _is_complete_translation(src, translated):
                 cached[src] = translated
+            elif src:
+                logger.warning("Ignoring incomplete cached translation for source hash %s", h)
         uncached = [t for t in unique if t not in cached]
 
-    # Use Argos exclusively — chunk long texts
-    use_argos = _try_load_argos()
+    needs_model = any(
+        _needs_translation(text) and _needs_translation(_dict_translate(text))
+        for text in uncached
+    )
+    if needs_model and not _try_load_argos(force_retry=force):
+        raise _unavailable_error()
+
     new_translations: dict[str, str] = {}
     for text in uncached:
-        if not _needs_translation(str(text)):
+        if not _needs_translation(text):
             new_translations[text] = text
             continue
-        try:
-            if use_argos:
-                t = str(text)
-                if len(t) <= 800:
-                    result = _argos_translate(t)
-                    new_translations[text] = result if result and result != t else t
-                else:
-                    # Chunk and reassemble
-                    chunks = [t[i:i + 700] for i in range(0, len(t), 700)]
-                    translated_chunks = [_argos_translate(c) for c in chunks]
-                    new_translations[text] = "".join(
-                        tc if tc and tc != c else c
-                        for tc, c in zip(translated_chunks, chunks)
-                    )
-            else:
-                new_translations[text] = text
-        except Exception:
-            new_translations[text] = text
+        new_translations[text] = _translate_complete_text(text)
 
-    # Store changed translations (version 2 = Argos)
-    changed = {k: v for k, v in new_translations.items() if v != k}
-    if catalog is not None and changed:
-        catalog.store_translations(changed, version=2)
+    complete = {
+        source: translated
+        for source, translated in new_translations.items()
+        if _needs_translation(source) and _is_complete_translation(source, translated)
+    }
+    if catalog is not None and complete:
+        catalog.store_translations(complete, version=TRANSLATOR_VERSION)
     cached.update(new_translations)
 
     return cached
+
+
+def translate_html_fragment(
+    html: str,
+    catalog: Any | None = None,
+    *,
+    force: bool = False,
+) -> tuple[str, int]:
+    """Translate every visible text node and user-facing attribute in HTML."""
+    from bs4 import BeautifulSoup, Comment, Declaration, Doctype, ProcessingInstruction
+
+    soup = BeautifulSoup(html, "html.parser")
+    text_targets: list[tuple[Any, str, str]] = []
+    attribute_targets: list[tuple[Any, str, str]] = []
+
+    ignored_string_types = (Comment, Declaration, Doctype, ProcessingInstruction)
+    for node in soup.find_all(string=True):
+        if isinstance(node, ignored_string_types):
+            continue
+        raw = str(node)
+        source = raw.strip()
+        if source and _needs_translation(source):
+            text_targets.append((node, raw, source))
+
+    for tag in soup.find_all(True):
+        for attribute in _TRANSLATABLE_ATTRIBUTES:
+            value = tag.get(attribute)
+            if isinstance(value, str) and _needs_translation(value):
+                attribute_targets.append((tag, attribute, value))
+
+    sources = list(
+        dict.fromkeys(
+            [source for _node, _raw, source in text_targets]
+            + [source for _tag, _attribute, source in attribute_targets]
+        )
+    )
+    translations = translate_batch(sources, catalog, force=force)
+
+    for node, raw, source in text_targets:
+        leading_length = len(raw) - len(raw.lstrip())
+        trailing_start = len(raw.rstrip())
+        node.replace_with(
+            raw[:leading_length] + translations[source] + raw[trailing_start:]
+        )
+    for tag, attribute, source in attribute_targets:
+        tag[attribute] = translations[source]
+
+    remaining = [
+        str(node).strip()
+        for node in soup.find_all(string=True)
+        if not isinstance(node, ignored_string_types) and _needs_translation(str(node))
+    ]
+    remaining.extend(
+        value
+        for tag in soup.find_all(True)
+        for attribute in _TRANSLATABLE_ATTRIBUTES
+        if isinstance((value := tag.get(attribute)), str) and _needs_translation(value)
+    )
+    if remaining:
+        raise IncompleteTranslationError(
+            "The translated document still contains Japanese content "
+            f"in {len(remaining)} visible locations."
+        )
+    return str(soup), len(sources)
 
 
 def translate_filing_sections(
@@ -321,39 +544,30 @@ def translate_filing_sections(
     catalog: Any | None = None,
     *,
     translate_bodies: bool = True,
+    force: bool = False,
 ) -> list[dict[str, Any]]:
-    """Translate section titles and body text using the local dictionary."""
+    """Translate complete section titles and bodies without truncation."""
     if not sections:
         return sections
-    titles = [s.get("title", "") for s in sections if s.get("title")]
-    all_texts = [t for t in titles if t and _needs_translation(str(t))]
+    titles = [str(section.get("title", "")) for section in sections if section.get("title")]
+    all_texts = [title for title in titles if _needs_translation(title)]
 
     if translate_bodies:
-        for s in sections:
-            body = s.get("text", "")
-            if body and _needs_translation(str(body)):
-                all_texts.append(body[:3000])
+        for section in sections:
+            body = str(section.get("text", ""))
+            if body and _needs_translation(body):
+                all_texts.append(body)
 
-    if not all_texts:
-        return sections
-
-    translations = translate_batch(all_texts, catalog)
+    translations = translate_batch(all_texts, catalog, force=force)
     result = []
-    for s in sections:
-        entry = dict(s)
-        title = entry.get("title", "")
-        if title and title in translations and translations[title] != title:
-            entry["title_en"] = translations[title]
-        body = entry.get("text", "")
-        if translate_bodies and body and _needs_translation(str(body)):
-            translated_body = translations.get(body[:3000])
-            if translated_body and translated_body != body[:3000]:
-                # For longer bodies, repeat the translation for the full text
-                body_key = body[:3000]
-                if body_key in translations:
-                    entry["text_en"] = translations[body_key]
-                    if len(body) > 3000:
-                        entry["text_en"] += "…"
+    for section in sections:
+        entry = dict(section)
+        title = str(entry.get("title", ""))
+        if title:
+            entry["title_en"] = translations.get(title, title)
+        body = str(entry.get("text", ""))
+        if translate_bodies and body:
+            entry["text_en"] = translations.get(body, body)
         result.append(entry)
     return result
 

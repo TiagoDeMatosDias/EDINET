@@ -2,20 +2,33 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import logging
+import os
+from html import escape
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.auth.models import AuthenticatedUser
+from src.orchestrator.common.db_config import get_db1
+from src.orchestrator.common.sqlite import connect_read
 
 from .acquisition import EdinetAcquisitionError, EdinetDownloadClient
 from .archive import ArchiveMemberNotFoundError, UnsafeArchiveError
 from .runtime import catalog
+from .translate import (
+    TRANSLATOR_VERSION,
+    TranslationError,
+    translate_batch,
+    translate_facts,
+    translate_filing_sections,
+    translate_html_fragment,
+)
 
 router = APIRouter(prefix="/api/filings", tags=["filings"])
+logger = logging.getLogger(__name__)
 
 
 class AcquireRequest(BaseModel):
@@ -37,6 +50,22 @@ def _record(row: Any) -> dict[str, Any]:
     for key in ("archive_path", "archive_content", "content"):
         result.pop(key, None)
     return result
+
+
+def _translation_http_exception(exc: TranslationError) -> HTTPException:
+    logger.warning("Filing translation could not be completed: %s", exc)
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=f"Translation could not be completed: {exc}",
+    )
+
+
+def _serialize_html_attributes(attributes: dict[str, Any]) -> str:
+    rendered = []
+    for name, value in attributes.items():
+        text = " ".join(str(item) for item in value) if isinstance(value, list) else str(value)
+        rendered.append(f'{name}="{escape(text, quote=True)}"')
+    return " ".join(rendered)
 
 
 def _require_operator(request: Request) -> AuthenticatedUser:
@@ -193,15 +222,8 @@ def list_xbrl_eligible(
     """
     if not isinstance(getattr(request.state, "user", None), AuthenticatedUser):
         raise HTTPException(status_code=401, detail="Account authentication is required")
-    try:
-        from src.orchestrator.common.db_config import get_db1
-        from src.orchestrator.common.sqlite import connect_read
-        import os as _os
-    except Exception:
-        return {"eligible": [], "total": 0}
-
     db1_path = get_db1()
-    if not _os.path.exists(db1_path):
+    if not os.path.exists(db1_path):
         return {"eligible": [], "total": 0}
 
     conn = connect_read(db1_path)
@@ -259,15 +281,8 @@ def trigger_xbrl_backfill(
     Leave empty for all document types. Requires operator or admin permission.
     """
     _require_operator(request)
-    try:
-        from src.orchestrator.common.db_config import get_db1
-        from src.orchestrator.common.sqlite import connect_read
-        import os as _os
-    except Exception:
-        return {"downloaded": 0, "skipped": 0, "failed": 0, "total": 0}
-
     db1_path = get_db1()
-    if not _os.path.exists(db1_path):
+    if not os.path.exists(db1_path):
         return {"downloaded": 0, "skipped": 0, "failed": 0, "total": 0}
 
     conn = connect_read(db1_path)
@@ -319,8 +334,11 @@ def trigger_xbrl_backfill(
                 },
             )
             downloaded += 1
-        except Exception:
+        except Exception as exc:  # noqa: BLE001  # continue the independent backfill batch
+            logger.warning("XBRL backfill failed for %s: %s", doc_id, exc)
             failed += 1
+
+    client.close()
 
     return {
         "downloaded": downloaded,
@@ -384,7 +402,8 @@ def get_filing_html(
     body = soup.body or soup
 
     # Wrap as a complete HTML document so the iframe renders correctly
-    html_attrs = " ".join(f'{k}="{v}"' for k, v in soup.html.attrs.items()) if soup.html else ""
+    source_html_attributes = dict(soup.html.attrs) if soup.html else {}
+    html_attrs = _serialize_html_attributes(source_html_attributes)
     full_html = f"<!DOCTYPE html><html {html_attrs}><head><meta charset=\"utf-8\"></head>{str(body)}</html>"
 
     result: dict[str, Any] = {
@@ -395,44 +414,24 @@ def get_filing_html(
     }
 
     if translate:
-        import hashlib
-        from .translate import translate_batch
-
-        from .translate import _needs_translation
-
-        en_soup = BeautifulSoup(str(body), "html.parser")
-
-        # If forcing, clear the entire translation cache
-        if force:
-            from src.orchestrator.common.sqlite import connect_write
-            conn = connect_write(catalog.path)
-            deleted = conn.execute("DELETE FROM filing_translations").rowcount
-            conn.commit()
-            conn.close()
-            import logging
-            logging.getLogger(__name__).info("Force translate: cleared %d cache entries for %s", deleted, doc_id)
-
-        jp_nodes = []
-        for node in en_soup.find_all(string=True):
-            text = node.strip()
-            if text and len(text) > 2 and not text.startswith("<?xml"):
-                if _needs_translation(text):
-                    jp_nodes.append((node, text))
-
-        if jp_nodes:
-            unique_texts = list(dict.fromkeys(t for _, t in jp_nodes))
-            batch_size = 50
-            all_translations: dict[str, str] = {}
-            for i in range(0, len(unique_texts), batch_size):
-                batch = unique_texts[i:i + batch_size]
-                all_translations.update(translate_batch(batch, catalog))
-
-            for node, text in jp_nodes:
-                if text in all_translations and all_translations[text] != text:
-                    node.replace_with(all_translations[text])
-
-        en_body = en_soup.body or en_soup
-        result["html_en"] = f"<!DOCTYPE html><html {html_attrs}><head><meta charset=\"utf-8\"></head>{str(en_body)}</html>"
+        try:
+            en_body, translated_items = translate_html_fragment(
+                str(body),
+                catalog,
+                force=force,
+            )
+        except TranslationError as exc:
+            raise _translation_http_exception(exc) from exc
+        en_attrs = _serialize_html_attributes({**source_html_attributes, "lang": "en"})
+        result["html_en"] = (
+            f"<!DOCTYPE html><html {en_attrs}><head><meta charset=\"utf-8\"></head>"
+            f"{en_body}</html>"
+        )
+        result["translation"] = {
+            "status": "complete",
+            "translated_items": translated_items,
+            "translator_version": TRANSLATOR_VERSION,
+        }
 
     return result
 
@@ -482,9 +481,10 @@ class TranslateRequest(BaseModel):
 @router.post("/translate")
 def translate_texts(payload: TranslateRequest) -> dict[str, Any]:
     """Translate a batch of Japanese text strings to English."""
-    from .translate import translate_batch
-
-    translations = translate_batch(payload.texts, catalog, force=payload.force)
+    try:
+        translations = translate_batch(payload.texts, catalog, force=payload.force)
+    except TranslationError as exc:
+        raise _translation_http_exception(exc) from exc
     return {"translations": [{"source": k, "translated": v} for k, v in translations.items()]}
 
 
@@ -497,12 +497,15 @@ def translated_sections(doc_id: str, bodies: bool = False, limit: int = 500) -> 
     """
     if catalog.get_filing(doc_id) is None:
         raise HTTPException(status_code=404, detail="Filing not found")
-    from .translate import translate_filing_sections
-
     rows = catalog.list_sections(doc_id, limit=limit)
-    translated = translate_filing_sections(
-        [_record(r) for r in rows], catalog, translate_bodies=bodies,
-    )
+    try:
+        translated = translate_filing_sections(
+            [_record(r) for r in rows],
+            catalog,
+            translate_bodies=bodies,
+        )
+    except TranslationError as exc:
+        raise _translation_http_exception(exc) from exc
     return {"sections": translated, "count": len(translated)}
 
 
@@ -518,41 +521,20 @@ def translate_section_body(
     """
     if catalog.get_filing(doc_id) is None:
         raise HTTPException(status_code=404, detail="Filing not found")
-    from .translate import translate_batch
 
     row = catalog.get_section(doc_id, section_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Section not found")
 
-    if force:
-        # Clear cache for this specific text
-        import hashlib
-        from src.orchestrator.common.sqlite import connect_write
-
-        body = row["text"] or ""
-        if body:
-            h = hashlib.sha256(body[:3000].encode("utf-8")).hexdigest()
-            conn = connect_write(catalog.path)
-            conn.execute(
-                "DELETE FROM filing_translations WHERE source_hash = ?",
-                (h,),
-            )
-            conn.commit()
-            conn.close()
-        title = row["title"] or ""
-        if title:
-            h = hashlib.sha256(title.encode("utf-8")).hexdigest()
-            conn = connect_write(catalog.path)
-            conn.execute(
-                "DELETE FROM filing_translations WHERE source_hash = ?",
-                (h,),
-            )
-            conn.commit()
-            conn.close()
-
-    from .translate import translate_filing_sections
-
-    translated = translate_filing_sections([_record(row)], catalog, translate_bodies=True)
+    try:
+        translated = translate_filing_sections(
+            [_record(row)],
+            catalog,
+            translate_bodies=True,
+            force=force,
+        )
+    except TranslationError as exc:
+        raise _translation_http_exception(exc) from exc
     return {"section": translated[0] if translated else {}}
 
 
@@ -561,11 +543,12 @@ def translated_facts(doc_id: str, concept: str | None = None, limit: int = 2000)
     """Return filing facts with English concept labels added."""
     if catalog.get_filing(doc_id) is None:
         raise HTTPException(status_code=404, detail="Filing not found")
-    from .translate import translate_facts
-
     rows = catalog.list_facts(doc_id, concept, limit)
     facts_list = [_record(r) for r in rows]
-    concept_map = translate_facts(facts_list, catalog)
+    try:
+        concept_map = translate_facts(facts_list, catalog)
+    except TranslationError as exc:
+        raise _translation_http_exception(exc) from exc
     for f in facts_list:
         c = f.get("concept", "")
         if c in concept_map:

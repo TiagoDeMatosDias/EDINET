@@ -1,6 +1,6 @@
 # Contributing
 
-Updated: 2026-07-22
+Updated: 2026-07-30
 
 ## Environment
 
@@ -25,6 +25,8 @@ Run the same bounded stages used by CI:
 ```
 
 For a focused change, repeat `--stage` with one or more of `unit`, `integration`, `frontend-test`, `frontend-lint`, `frontend-build`, `requirements`, `documentation`, `static-ruff`, `static-mypy`, or `package-check`. Every stage has a hard timeout and pytest workspaces are removed after each run; do not replace the verifier with an unbounded wrapper.
+
+Python tests are hermetic by default: `tests/conftest.py` creates temporary application databases and a minimal SPA bundle, while `tests/factories.py` supplies generated market and IBKR data. New tests must use temporary/generated fixtures rather than ignored files under `data/`, machine-specific paths, network services, or an existing frontend build. Assert one exact contract wherever possible; do not condition assertions on a successful status or accept unrelated status-code ranges.
 
 Before review:
 
@@ -90,6 +92,14 @@ Long/network/batch work must accept the optional execution context and checkpoin
 - Update `frontend-v2/src/api/types.ts` with backend contract changes.
 - Add a Vitest test and, for route/API changes, update `tests/unit/test_openapi_contract.py`.
 - Save documentation screenshots under `docs/images/` at a consistent viewport.
+
+Refresh the screenshot set with the isolated demonstration runtime:
+
+```powershell
+.\.venv3\Scripts\python.exe tests\capture_screenshots.py
+```
+
+The capture script generates temporary companies, financial history, filings, research state, and portfolio activity. Keep it hermetic: it must never fall back to `data/`, `config/database_paths.json`, or another operator-owned database.
 
 ## Pull requests
 

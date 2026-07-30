@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from typing import Any
 
 from src.filings.catalog import FilingCatalog
 from src.research.storage import ResearchStore
-
-from .manifest import build_manifest, canonical_json
 
 
 def _now() -> str:

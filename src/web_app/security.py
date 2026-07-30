@@ -339,6 +339,7 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
         return
     app.state.security_installed = True
     app.state.settings = settings
+    from src.auth.models import AuthenticatedUser
     from src.auth.service import AuthService
     from src.auth.storage import AuthStore
 
@@ -348,6 +349,13 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
             busy_timeout_ms=settings.sqlite_busy_timeout_ms,
         ),
         registration_mode=settings.registration_mode,
+    )
+    local_user = AuthenticatedUser(
+        user_id="local",
+        username="local",
+        email=None,
+        role="admin",
+        status="active",
     )
     if settings.remote:
         app.add_middleware(
@@ -359,6 +367,8 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
     async def request_security(request: Request, call_next):
         correlation_id = str(uuid4())
         request.state.correlation_id = correlation_id
+        if not settings.authentication_required:
+            request.state.user = local_user
         max_request_bytes = (
             max(settings.max_upload_bytes, settings.max_export_bytes)
             + _REQUEST_ENVELOPE_OVERHEAD_BYTES

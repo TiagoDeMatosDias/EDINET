@@ -7,19 +7,18 @@ import zipfile
 from unittest.mock import Mock, patch
 
 import pandas as pd
+import requests
 
 from src.orchestrator.update_fx_data.update_fx_data import (
     _download_ecb_fx_csv,
     _download_ecb_hicp,
     _download_fred_cpi,
     _fetch_all_inflation_prices,
-    _fetch_ecb_fx_prices,
-    _transform_ecb_fx_to_prices,
     _insert_new_pairs,
+    _transform_ecb_fx_to_prices,
     update_fx_data,
 )
 from src.utilities.stock_prices import _create_prices_table
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -125,7 +124,7 @@ class TestDownloadFredCpi(unittest.TestCase):
 
     def test_returns_empty_on_http_error(self):
         mock_response = Mock()
-        mock_response.raise_for_status.side_effect = Exception("Server error")
+        mock_response.raise_for_status.side_effect = requests.HTTPError("Server error")
         mock_session = Mock()
         mock_session.get.return_value = mock_response
 
@@ -175,7 +174,7 @@ class TestDownloadEcbHicp(unittest.TestCase):
 
     def test_returns_empty_on_http_error(self):
         mock_response = Mock()
-        mock_response.raise_for_status.side_effect = Exception("Server error")
+        mock_response.raise_for_status.side_effect = requests.HTTPError("Server error")
         mock_session = Mock()
         mock_session.get.return_value = mock_response
 
@@ -287,12 +286,12 @@ class TestDownloadEcbFx(unittest.TestCase):
     def test_raises_on_http_error(self):
         mock_response = Mock()
         mock_response.status_code = 500
-        mock_response.raise_for_status.side_effect = Exception("Server error")
+        mock_response.raise_for_status.side_effect = requests.HTTPError("Server error")
 
         mock_session = Mock()
         mock_session.get.return_value = mock_response
 
-        with self.assertRaises(Exception):
+        with self.assertRaises(requests.HTTPError):
             _download_ecb_fx_csv(session=mock_session)
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 import src.web_app.security as security_module
@@ -237,3 +237,28 @@ def test_pipeline_request_uses_large_upload_envelope(monkeypatch):
     )
     assert response.status_code == 200
     assert response.json() == {"accepted": True}
+
+
+def test_disabled_auth_supplies_local_admin_principal():
+    app = FastAPI()
+
+    @app.get("/api/whoami")
+    async def whoami(request: Request):
+        user = request.state.user
+        return {
+            "user_id": user.user_id,
+            "username": user.username,
+            "role": user.role,
+            "status": user.status,
+        }
+
+    install_security(app, AppSettings(auth_mode="disabled"))
+    response = TestClient(app).get("/api/whoami")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "user_id": "local",
+        "username": "local",
+        "role": "admin",
+        "status": "active",
+    }

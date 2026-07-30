@@ -128,7 +128,7 @@ def _analysis_metrics(db: str, code: str, overview: dict[str, Any]) -> dict[str,
             overview.get("market", {}),
             overview.get("company", {}),
         )
-    except Exception as exc:  # pragma: no cover - defensive fallback for partial databases
+    except Exception as exc:  # noqa: BLE001  # partial-database fallback
         _LOGGER.warning("Could not load Analyze metrics for %s: %s", code, exc)
         return {}
 
@@ -150,7 +150,7 @@ def _enrich_overview(db: str, code: str, overview: dict[str, Any]) -> dict[str, 
             statement_sources=_ANALYSIS_STATEMENT_SOURCES,
         )
         statement_metrics, metric_period = extract_latest_statement_metrics(history)
-    except Exception as exc:  # pragma: no cover - preserve ratio-only comparisons
+    except Exception as exc:  # noqa: BLE001  # preserve ratio-only comparisons
         _LOGGER.warning("Could not load statement metrics for %s: %s", code, exc)
         return enriched
 
@@ -163,7 +163,7 @@ def _enrich_overview(db: str, code: str, overview: dict[str, Any]) -> dict[str, 
     revenue = statement_metrics.get("Revenue")
     valuation = dict(enriched.get("valuation_latest") or {})
     quality = dict(enriched.get("quality_latest") or {})
-    if revenue not in (None, 0):
+    if revenue is not None and revenue != 0:
         operating_income = statement_metrics.get("OperatingIncome")
         net_income = statement_metrics.get("NetIncome")
         if operating_income is not None:
@@ -175,11 +175,15 @@ def _enrich_overview(db: str, code: str, overview: dict[str, Any]) -> dict[str, 
             _set_if_missing(quality, "GrossMargin", (revenue - cost_of_sales) / revenue)
     equity = statement_metrics.get("TotalEquity")
     liabilities = statement_metrics.get("TotalLiabilities")
-    if equity not in (None, 0) and liabilities is not None:
+    if equity is not None and equity != 0 and liabilities is not None:
         _set_if_missing(quality, "DebtToEquity", liabilities / equity)
     current_assets = statement_metrics.get("CurrentAssets")
     current_liabilities = statement_metrics.get("CurrentLiabilities")
-    if current_liabilities not in (None, 0) and current_assets is not None:
+    if (
+        current_liabilities is not None
+        and current_liabilities != 0
+        and current_assets is not None
+    ):
         _set_if_missing(quality, "CurrentRatio", current_assets / current_liabilities)
     enriched["valuation_latest"] = valuation
     enriched["quality_latest"] = quality

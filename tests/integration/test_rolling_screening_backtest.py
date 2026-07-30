@@ -17,7 +17,6 @@ from src.backtesting.backtesting import (
     run_screening_backtest_rolling,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1059,9 +1058,9 @@ class TestChartDataIntegrity:
                     cumulative = cd.get("cumulative", [])
                     if cumulative:
                         for point in cumulative:
-                            assert "date" in point, f"Missing date in cumulative point"
-                            assert point["date"], f"Empty date"
-                            assert "portfolio" in point, f"Missing portfolio value"
+                            assert "date" in point, "Missing date in cumulative point"
+                            assert point["date"], "Empty date"
+                            assert "portfolio" in point, "Missing portfolio value"
                             assert np.isfinite(point["portfolio"]), \
                                 f"Non-finite portfolio: {point['portfolio']}"
 
@@ -1303,8 +1302,7 @@ class TestChartDataAccuracy:
         result = rolling_result_with_benchmark
         hm = result["aggregate"]["heatmap"]
 
-        if "excess" not in hm:
-            pytest.skip("No excess heatmap data")
+        assert "excess" in hm
 
         # Build lookup: period|dur → (portfolio, benchmark)
         port_bench = {}
@@ -1344,17 +1342,15 @@ class TestChartDataAccuracy:
     def test_excess_heatmap_negative_is_red_range(self, rolling_result_with_benchmark):
         """Excess heatmap has both negative and non-negative values."""
         hm = rolling_result_with_benchmark["aggregate"]["heatmap"]
-        if "excess" not in hm:
-            pytest.skip("No excess heatmap data")
+        assert "excess" in hm
 
         all_excess = []
-        for dur, entries in hm["excess"].items():
+        for _dur, entries in hm["excess"].items():
             for entry in entries:
                 if entry["return"] is not None:
                     all_excess.append(entry["return"])
 
         has_negative = any(v < 0 for v in all_excess)
-        has_positive = any(v >= 0 for v in all_excess)
         # We expect at least one negative (2020-02-01 1yr: -0.05 - 0.07 = -0.12)
         assert has_negative, "Expected at least one negative excess return"
 
@@ -1364,7 +1360,7 @@ class TestChartDataAccuracy:
         """Distribution chart shows 1yr total_returns from all backtests."""
         expected_1yr = []
         for r in rolling_result_with_benchmark["results"]:
-            for wm, dur_data in r["backtests"].items():
+            for _wm, dur_data in r["backtests"].items():
                 bt = dur_data.get("1yr")
                 if bt and bt.get("metrics"):
                     expected_1yr.append(bt["metrics"]["total_return"])
@@ -1379,8 +1375,8 @@ class TestChartDataAccuracy:
         """Each period's ticker list in drill-down matches the backtest data."""
         for r in rolling_result_with_benchmark["results"]:
             tickers_in_backtests = set()
-            for wm, dur_data in r["backtests"].items():
-                for dur, bt in dur_data.items():
+            for _wm, dur_data in r["backtests"].items():
+                for _dur, bt in dur_data.items():
                     per_co = bt.get("per_company", [])
                     for co in per_co:
                         tickers_in_backtests.add(co.get("Ticker"))
