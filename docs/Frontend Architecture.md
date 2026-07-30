@@ -1,6 +1,6 @@
 # Frontend Architecture
 
-Updated: 2026-07-23
+Updated: 2026-07-30
 
 ## Overview
 
@@ -20,7 +20,10 @@ flowchart LR
 
 | Route | Workspace |
 |---|---|
-| `/` | Overview and recent work |
+| `/` | Public product homepage |
+| `/pricing` | Public single-tier pricing page |
+| `/login` and `/register` | Account authentication and registration |
+| `/overview` | Signed-in overview and recent work |
 | `/screen` | Company screening |
 | `/analyze` and `/analyze/:companyCode` | Company search and analysis |
 | `/backtest` (`/backtesting` alias) | Manual, CSV, and rolling-screen backtests |
@@ -69,7 +72,7 @@ src/web_app/
 
 ## Application shell
 
-`AppShell` owns the persistent desktop sidebar, mobile navigation, global company search, and backend-health indicator. Feature pages supply only their content. Routes are lazy-loaded so charting and feature code do not inflate the initial workspace bundle.
+`AppShell` owns the persistent desktop sidebar, mobile navigation, global company search, and backend-health indicator for signed-in workspace routes. The homepage, pricing, login, and registration routes use standalone public layouts. Routes are lazy-loaded so charting and feature code do not inflate the initial bundle.
 
 The layout is desktop-first but has a 390 px mobile treatment:
 

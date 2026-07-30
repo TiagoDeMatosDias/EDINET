@@ -7,7 +7,7 @@ import { GlobalCompanySearch } from './GlobalCompanySearch'
 import { useAuth } from '../features/auth/AuthProvider'
 
 const navigation = [
-  { to: '/', label: 'Overview', icon: Home },
+  { to: '/overview', label: 'Overview', icon: Home },
   { to: '/screen', label: 'Screen', icon: Search },
   { to: '/analyze', label: 'Analyze', icon: Building2 },
   { to: '/backtest', label: 'Backtest', icon: BarChart3 },
@@ -21,7 +21,7 @@ const navigation = [
 function Navigation({ onNavigate }: { onNavigate?: () => void }) {
   const auth = useAuth()
   return <nav className="primary-nav" aria-label="Primary navigation">
-    {navigation.map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/'} onClick={onNavigate}><Icon aria-hidden="true" /><span>{item.label}</span></NavLink> })}
+    {navigation.map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/overview'} onClick={onNavigate}><Icon aria-hidden="true" /><span>{item.label}</span></NavLink> })}
     {auth.user && <NavLink to="/account" end onClick={onNavigate}><Settings aria-hidden="true" /><span>Account</span></NavLink>}
     {auth.user?.role === 'admin' && <NavLink to="/admin" end onClick={onNavigate}><Shield aria-hidden="true" /><span>Admin</span></NavLink>}
   </nav>
@@ -99,7 +99,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="app-content">
       <header className="topbar"><button className="icon-button mobile-only" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button><GlobalCompanySearch /><div className="topbar-actions"><div className={health.isError ? 'health health--error' : 'health'}>{health.isError ? <CircleX /> : <CircleCheck />}<span>{health.isError ? 'Backend unavailable' : health.data?.jobs_active ? `${health.data.jobs_active} job active` : 'Data service ready'}</span></div><AuthSection /></div></header>
       <main id="main-content" key={location.pathname}>{children}</main>
-      <nav className="mobile-nav" aria-label="Mobile primary navigation">{navigation.slice(0, 5).map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/'}><Icon /><span>{item.label}</span></NavLink> })}</nav>
+      <nav className="mobile-nav" aria-label="Mobile primary navigation">{navigation.slice(0, 5).map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/overview'}><Icon /><span>{item.label}</span></NavLink> })}</nav>
     </div>
   </div>
 }

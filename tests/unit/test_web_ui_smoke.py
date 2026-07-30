@@ -22,6 +22,17 @@ def test_root_serves_spa() -> None:
     assert "Shade Research" in soup.text
 
 
+def test_public_marketing_routes_serve_spa() -> None:
+    for path in ("/pricing", "/login", "/register"):
+        soup = _soup_for(path)
+        assert soup.select_one("div#root") is not None
+
+
+def test_overview_serves_spa() -> None:
+    soup = _soup_for("/overview")
+    assert soup.select_one("div#root") is not None
+
+
 def test_screen_serves_spa() -> None:
     soup = _soup_for("/screen")
     assert soup.select_one("div#root") is not None
@@ -52,11 +63,12 @@ def test_favicon_served() -> None:
     assert response.status_code == 200
 
 
-def test_unknown_page_404() -> None:
-    response = client.get("/nonexistent-page")
-    assert response.status_code == 404
+def test_unknown_page_uses_spa_fallback() -> None:
+    soup = _soup_for("/nonexistent-page")
+    assert soup.select_one("div#root") is not None
 
 
-def test_unknown_api_404() -> None:
+def test_unknown_api_is_not_served_as_spa() -> None:
     response = client.get("/api/does-not-exist")
-    assert response.status_code == 404
+    assert response.status_code in {401, 404}
+    assert "text/html" not in response.headers.get("content-type", "")

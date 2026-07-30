@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import { apiRequest, getAccessToken, setAccessToken } from '../../api/client'
 
@@ -28,8 +28,10 @@ export interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
+const PUBLIC_PATHS = new Set(['/', '/pricing', '/login', '/register'])
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const location = useLocation()
   const [status, setStatus] = useState<AuthStatus | null>(null)
   const [user, setUser] = useState<AuthUser | null>(null)
   const [loading, setLoading] = useState(true)
@@ -128,6 +130,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
   }), [loading, status, user])
 
+  const normalizedPath = location.pathname.replace(/\/+$/, '') || '/'
+  const isPublicPath = PUBLIC_PATHS.has(normalizedPath)
+
   if (loading) {
     return (
       <div className="app-loading">
@@ -143,7 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={value}>
-      {status?.mode === 'accounts' && !user ? (
+      {status?.mode === 'accounts' && !user && !isPublicPath ? (
         <AuthGate
           status={status}
           onLogin={(loggedInUser) => setUser(loggedInUser)}
@@ -212,7 +217,7 @@ function AuthGate({ status, onLogin }: { status: AuthStatus; onLogin: (user: Aut
         })
         setAccessToken(loginResult.access_token)
         onLogin(loginResult.user)
-        navigate('/')
+        navigate('/overview')
       } else {
         const loginResult = await apiRequest<{ access_token: string; user: AuthUser }>('/api/auth/login', {
           method: 'POST',
@@ -220,7 +225,7 @@ function AuthGate({ status, onLogin }: { status: AuthStatus; onLogin: (user: Aut
         })
         setAccessToken(loginResult.access_token)
         onLogin(loginResult.user)
-        navigate('/')
+        navigate('/overview')
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed')

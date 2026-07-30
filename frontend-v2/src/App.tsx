@@ -1,11 +1,13 @@
 import { lazy, Suspense } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 
 import { AppShell } from './components/AppShell'
 import { LoadingState } from './components/Feedback'
 import { AuthProvider } from './features/auth/AuthProvider'
 
 const OverviewPage = lazy(() => import('./features/overview/OverviewPage'))
+const HomePage = lazy(() => import('./features/marketing/HomePage'))
+const PricingPage = lazy(() => import('./features/marketing/PricingPage'))
 const ScreeningPage = lazy(() => import('./features/screening/ScreeningPage'))
 const AnalysisPage = lazy(() => import('./features/analysis/AnalysisPage'))
 const BacktestingPage = lazy(() => import('./features/backtesting/BacktestingPage'))
@@ -19,30 +21,45 @@ const LoginPage = lazy(() => import('./features/auth/LoginPage'))
 const AccountPage = lazy(() => import('./features/auth/AccountPage'))
 const AdminPage = lazy(() => import('./features/auth/AdminPage'))
 
+function WorkspaceLayout() {
+  return (
+    <AppShell>
+      <Outlet />
+    </AppShell>
+  )
+}
+
 export function App() {
   return (
     <AuthProvider>
-      <AppShell>
-        <Suspense fallback={<LoadingState label="Loading workspace" />}>
-          <Routes>
-          <Route path="/" element={<OverviewPage />} />
-          <Route path="/screen" element={<ScreeningPage />} />
-          <Route path="/analyze" element={<AnalysisPage />} />
-          <Route path="/analyze/:companyCode" element={<AnalysisPage />} />
-          <Route path="/backtest" element={<BacktestingPage />} />
-          <Route path="/portfolio" element={<PortfolioPage />} />
+      <Suspense fallback={<LoadingState label="Loading page" />}>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/pricing" element={<PricingPage />} />
+          <Route path="/login" element={<LoginPage key="login" initialMode="login" />} />
+          <Route path="/register" element={<LoginPage key="register" initialMode="register" />} />
+          <Route path="/security" element={<Navigate replace to="/analyze" />} />
+          <Route path="/backtesting" element={<Navigate replace to="/backtest" />} />
+
+          <Route element={<WorkspaceLayout />}>
+            <Route path="/overview" element={<OverviewPage />} />
+            <Route path="/screen" element={<ScreeningPage />} />
+            <Route path="/analyze" element={<AnalysisPage />} />
+            <Route path="/analyze/:companyCode" element={<AnalysisPage />} />
+            <Route path="/backtest" element={<BacktestingPage />} />
+            <Route path="/portfolio" element={<PortfolioPage />} />
             <Route path="/pipeline" element={<PipelinePage />} />
             <Route path="/filings" element={<FilingsPage />} />
             <Route path="/filings/:docId" element={<FilingViewerPage />} />
             <Route path="/compare" element={<ComparisonPage />} />
             <Route path="/research" element={<ResearchPage />} />
-            <Route path="/login" element={<LoginPage />} />
             <Route path="/account" element={<AccountPage />} />
             <Route path="/admin" element={<AdminPage />} />
-            <Route path="*" element={<Navigate replace to="/" />} />
-          </Routes>
-        </Suspense>
-      </AppShell>
+          </Route>
+
+          <Route path="*" element={<Navigate replace to="/" />} />
+        </Routes>
+      </Suspense>
     </AuthProvider>
   )
 }

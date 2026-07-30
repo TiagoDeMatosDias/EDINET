@@ -1,40 +1,57 @@
 import { useState } from 'react'
-import { Navigate, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
 
 import { apiRequest, setAccessToken } from '../../api/client'
 import { useAuth, type AuthUser } from './AuthProvider'
 
-export default function LoginPage() {
+type AuthMode = 'login' | 'register'
+
+export default function LoginPage({ initialMode = 'login' }: { initialMode?: AuthMode }) {
   const auth = useAuth()
   const navigate = useNavigate()
 
-  // If already logged in, redirect home
-  if (auth.user) return <Navigate to="/" replace />
+  // If already logged in, redirect to the signed-in workspace.
+  if (auth.user) return <Navigate to="/overview" replace />
   // If auth is disabled, no login needed
-  if (auth.status?.mode === 'disabled') return <Navigate to="/" replace />
+  if (auth.status?.mode === 'disabled') return <Navigate to="/overview" replace />
+
+  const bootstrapRequired = auth.status?.bootstrap_required ?? false
+  const registrationOpen = auth.status?.registration_open ?? false
+  const registrationAvailable = bootstrapRequired || registrationOpen
+  const resolvedMode: AuthMode = bootstrapRequired
+    ? 'register'
+    : initialMode === 'register' && registrationAvailable
+      ? 'register'
+      : 'login'
 
   return (
     <LoginForm
-      bootstrapRequired={auth.status?.bootstrap_required ?? false}
-      registrationOpen={auth.status?.registration_open ?? false}
+      initialMode={resolvedMode}
+      registrationUnavailable={initialMode === 'register' && !registrationAvailable}
+      bootstrapRequired={bootstrapRequired}
+      registrationOpen={registrationOpen}
       passwordMinimum={auth.status?.password_min_length ?? 15}
-      onSuccess={() => navigate('/')}
+      onSuccess={() => navigate('/overview')}
     />
   )
 }
 
 function LoginForm({
+  initialMode,
+  registrationUnavailable,
   bootstrapRequired,
   registrationOpen,
   passwordMinimum,
   onSuccess,
 }: {
+  initialMode: AuthMode
+  registrationUnavailable: boolean
   bootstrapRequired: boolean
   registrationOpen: boolean
   passwordMinimum: number
   onSuccess: () => void
 }) {
-  const [mode, setMode] = useState<'login' | 'register'>(bootstrapRequired ? 'register' : 'login')
+  const mode = initialMode
   const [loginField, setLoginField] = useState('')
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
@@ -83,6 +100,11 @@ function LoginForm({
         <span className="eyebrow">Shade research workspace</span>
         <h1>{mode === 'register' ? 'Create your account' : 'Sign in'}</h1>
 
+        {registrationUnavailable && (
+          <div className="callout callout--warning">
+            Registration is currently closed. Sign in with an existing account or contact the administrator.
+          </div>
+        )}
         {bootstrapRequired && mode === 'register' && (
           <div className="callout callout--info">
             <strong>First-time setup.</strong> The first account becomes the local administrator.
@@ -140,16 +162,17 @@ function LoginForm({
         </form>
 
         <div className="auth-footer">
-          {mode === 'register' ? (
-            <button className="text-button" onClick={() => { setMode('login'); setError(null) }}>
+          {mode === 'register' && !bootstrapRequired ? (
+            <Link className="text-button" to="/login">
               Already have an account? Sign in
-            </button>
+            </Link>
           ) : registrationOpen ? (
-            <button className="text-button" onClick={() => { setMode('register'); setError(null) }}>
+            <Link className="text-button" to="/register">
               Create an account
-            </button>
+            </Link>
           ) : null}
         </div>
+        <Link className="auth-home-link" to="/">Back to the homepage</Link>
       </div>
     </main>
   )

@@ -64,6 +64,16 @@ def page_main() -> FileResponse:
     return _frontend_v2()
 
 
+@app.get("/overview")
+def page_overview() -> FileResponse:
+    return _frontend_v2()
+
+
+@app.get("/pricing")
+def page_pricing() -> FileResponse:
+    return _frontend_v2()
+
+
 @app.get("/screen")
 def page_screen() -> FileResponse:
     return _frontend_v2()
@@ -120,6 +130,11 @@ def page_admin() -> FileResponse:
 
 @app.get("/login")
 def page_login() -> FileResponse:
+    return _frontend_v2()
+
+
+@app.get("/register")
+def page_register() -> FileResponse:
     return _frontend_v2()
 
 
