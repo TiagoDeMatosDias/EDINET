@@ -1,4 +1,4 @@
-"""EDINET launcher — starts the web workstation server."""
+"""Shade Research launcher — starts the web workstation server."""
 
 import argparse
 import logging
@@ -62,7 +62,7 @@ def _parse_args() -> argparse.Namespace:
     Returns:
         Parsed argparse namespace.
     """
-    parser = argparse.ArgumentParser(description="EDINET launcher")
+    parser = argparse.ArgumentParser(description="Shade Research launcher")
     parser.add_argument(
         "--host",
         default="127.0.0.1",

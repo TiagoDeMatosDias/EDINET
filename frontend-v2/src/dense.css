@@ -38,9 +38,9 @@
 .expression-label { display: block; margin-bottom: 3px; color: var(--muted); font-size: .66rem; font-weight: 700; text-transform: uppercase; }
 .expression-tokens { display: flex; align-items: center; gap: 3px; min-height: 31px; overflow-x: auto; }
 .expr-token { display: inline-flex; align-items: center; flex: 0 0 auto; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); overflow: hidden; }
-.expr-token--column { border-color: #9fc4ff; background: #f3f7ff; }
-.expr-token--value { border-color: #a8dbc7; background: #f2fbf7; }
-.expr-token--op { border-color: #d7c6ff; background: #f8f5ff; }
+.expr-token--column { border-color: rgb(24 32 111 / 38%); background: rgb(24 32 111 / 6%); }
+.expr-token--value { border-color: rgb(40 116 90 / 38%); background: rgb(40 116 90 / 7%); }
+.expr-token--op { border-color: rgb(216 131 115 / 52%); background: rgb(216 131 115 / 10%); }
 .expr-token input, .expr-token select { height: 28px; padding: 3px 6px; border: 0; outline: none; background: transparent; font-size: .73rem; }
 .expr-metric { width: 190px; }
 .expr-value { width: 76px; }
@@ -139,4 +139,3 @@
   .mini-chart { height: 230px; }
   .activity-grid--dense { grid-template-columns: repeat(2, 1fr); }
 }
-

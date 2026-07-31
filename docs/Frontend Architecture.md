@@ -77,6 +77,10 @@ src/web_app/
 └── static/
 ```
 
+## Brand system
+
+Production brand files live only in `assets/brand/`. FastAPI exposes that directory at `/brand-assets`, while `BrandLockup` in `frontend-v2/src/components/Brand.tsx` supplies the responsive wordmark used by marketing, authentication, loading, and workspace layouts. Shared CSS tokens define the approved indigo, midnight, paper, coral, and signal-red palette; chart colors come from `frontend-v2/src/brand.ts`. Draft boards under `docs/Feature Development/rebrand/` are design history and are not runtime inputs.
+
 ## Application shell
 
 `AppShell` owns the persistent desktop sidebar, mobile navigation, global company search, and backend-health indicator for signed-in workspace routes. The homepage, pricing, login, and registration routes use standalone public layouts. Routes are lazy-loaded so charting and feature code do not inflate the initial bundle.
@@ -119,7 +123,7 @@ Frontend-facing method/path pairs and unique OpenAPI operation IDs are checked b
 
 Run `npm ci` and `npm run build` from `frontend-v2/`. The checked-in build and test scripts use Vite/Vitest's runner config loader so verification does not depend on writing temporary bundled config files under `node_modules`. Vite writes the entry point to `frontend-v2/dist/index.html` and hashed chunks to `dist/app-assets/`. FastAPI mounts those chunks at `/app-assets`.
 
-During development, run FastAPI on port 8000 and `npm run dev` from `frontend-v2/`. Vite proxies `/api`, `/health`, and `/favicon.ico` to FastAPI.
+During development, run FastAPI on port 8000 and `npm run dev` from `frontend-v2/`. Vite proxies `/api`, `/health`, `/favicon.ico`, and `/brand-assets` to FastAPI.
 
 ## Extending the frontend
 

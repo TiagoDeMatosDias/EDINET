@@ -2,6 +2,7 @@ import { BarElement, CategoryScale, Chart as ChartJS, Filler, Legend, LinearScal
 import { Download } from 'lucide-react'
 import { Bar, Line } from 'react-chartjs-2'
 
+import { BRAND_COLORS, SEMANTIC_CHART_COLORS } from '../../brand'
 import { Card, Metric } from '../../components/Page'
 
 ChartJS.register(BarElement, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip)
@@ -22,18 +23,18 @@ function ResultMetrics({ summary }: { summary: Record<string, unknown> }) {
 }
 
 function ReturnChart({ rows }: { rows: Point[] }) {
-  const data = { labels: rows.map(row => row.date), datasets: [{ label: 'Portfolio', data: rows.map(row => row.portfolio == null ? null : row.portfolio * 100), borderColor: '#146ef5', backgroundColor: '#146ef518', fill: true, pointRadius: 0 }, { label: 'Benchmark', data: rows.map(row => row.benchmark == null ? null : row.benchmark * 100), borderColor: '#64748b', pointRadius: 0 }] }
+  const data = { labels: rows.map(row => row.date), datasets: [{ label: 'Portfolio', data: rows.map(row => row.portfolio == null ? null : row.portfolio * 100), borderColor: BRAND_COLORS.midnight, backgroundColor: `${BRAND_COLORS.midnight}18`, fill: true, pointRadius: 0 }, { label: 'Benchmark', data: rows.map(row => row.benchmark == null ? null : row.benchmark * 100), borderColor: SEMANTIC_CHART_COLORS.neutral, pointRadius: 0 }] }
   return <Line data={data} options={{ responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { position: 'bottom' } }, scales: { x: { display: false }, y: { position: 'right', ticks: { callback: value => `${value}%` } } } }} />
 }
 
 function DrawdownChart({ rows }: { rows: Point[] }) {
-  const data = { labels: rows.map(row => row.date), datasets: [{ label: 'Portfolio', data: rows.map(row => (row.portfolio ?? 0) * 100), borderColor: '#e14d5a', backgroundColor: '#e14d5a22', fill: true, pointRadius: 0 }, { label: 'Benchmark', data: rows.map(row => row.benchmark == null ? null : row.benchmark * 100), borderColor: '#64748b', pointRadius: 0 }] }
+  const data = { labels: rows.map(row => row.date), datasets: [{ label: 'Portfolio', data: rows.map(row => (row.portfolio ?? 0) * 100), borderColor: SEMANTIC_CHART_COLORS.negative, backgroundColor: `${SEMANTIC_CHART_COLORS.negative}22`, fill: true, pointRadius: 0 }, { label: 'Benchmark', data: rows.map(row => row.benchmark == null ? null : row.benchmark * 100), borderColor: SEMANTIC_CHART_COLORS.neutral, pointRadius: 0 }] }
   return <Line data={data} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } }, scales: { x: { display: false }, y: { position: 'right', max: 0, ticks: { callback: value => `${value}%` } } } }} />
 }
 
 function DecompositionChart({ rows }: { rows: Point[] }) {
   const sampled = rows.filter((_, index) => index % Math.max(1, Math.floor(rows.length / 80)) === 0 || index === rows.length - 1)
-  const data = { labels: sampled.map(row => row.date), datasets: [{ label: 'Price', data: sampled.map(row => (row.price_only ?? 0) * 100), backgroundColor: '#146ef5aa' }, { label: 'Dividend', data: sampled.map(row => (row.dividend_only ?? 0) * 100), backgroundColor: '#12a56caa' }] }
+  const data = { labels: sampled.map(row => row.date), datasets: [{ label: 'Price', data: sampled.map(row => (row.price_only ?? 0) * 100), backgroundColor: `${BRAND_COLORS.midnight}aa` }, { label: 'Dividend', data: sampled.map(row => (row.dividend_only ?? 0) * 100), backgroundColor: `${BRAND_COLORS.coral}cc` }] }
   return <Bar data={data} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } }, scales: { x: { display: false }, y: { position: 'right', ticks: { callback: value => `${value}%` } } } }} />
 }
 

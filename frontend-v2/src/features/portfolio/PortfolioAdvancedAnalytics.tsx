@@ -1,6 +1,7 @@
 import { BarElement, CategoryScale, Chart as ChartJS, Legend, LinearScale, LineElement, PointElement, Tooltip } from 'chart.js'
 import { Bar, Line } from 'react-chartjs-2'
 
+import { BRAND_COLORS, SEMANTIC_CHART_COLORS } from '../../brand'
 import { Card, Metric } from '../../components/Page'
 
 ChartJS.register(BarElement, CategoryScale, Legend, LinearScale, LineElement, PointElement, Tooltip)
@@ -79,8 +80,8 @@ function RiskTrend({ data }: { data?: ValueHistory }) {
     <p className="analytics-explainer">Drawdown is the fall from the previous peak after deposits and withdrawals are removed. Rolling volatility is the annualized standard deviation of the last 30 trading-day returns.</p>
     <div className="analytics-stat-strip"><Metric label="Current drawdown" value={currentDrawdown.toFixed(1) + '%'} /><Metric label="Max drawdown" value={maxDrawdown.toFixed(1) + '%'} /><Metric label="30-day volatility" value={currentVolatility.toFixed(1) + '%'} /><Metric label="Trading-day observations" value={String(rows.returns.length)} /></div>
     <div className="analytics-risk-charts">
-      <div className="analytics-risk-panel"><strong>Drawdown from peak</strong><div className="analytics-risk-chart"><Line data={{ labels: rows.dates, datasets: [{ label: 'Drawdown', data: rows.drawdown, borderColor: '#e14d5a', backgroundColor: '#e14d5a18', fill: true, pointRadius: 0 }] }} options={{ ...common, scales: { x: { display: false }, y: { min: Math.min(-5, Math.floor(maxDrawdown / 5) * 5), max: 0, ticks: { callback: axisPercent }, title: { display: true, text: '%' } } } }} /></div></div>
-      <div className="analytics-risk-panel"><strong>30-day annualized volatility</strong><div className="analytics-risk-chart"><Line data={{ labels: rows.dates, datasets: [{ label: 'Volatility', data: rows.volatility, borderColor: '#8b5cf6', pointRadius: 0 }] }} options={{ ...common, scales: { x: { display: false }, y: { beginAtZero: true, max: volatilityMax, ticks: { callback: axisPercent }, title: { display: true, text: '%' } } } }} /></div></div>
+      <div className="analytics-risk-panel"><strong>Drawdown from peak</strong><div className="analytics-risk-chart"><Line data={{ labels: rows.dates, datasets: [{ label: 'Drawdown', data: rows.drawdown, borderColor: SEMANTIC_CHART_COLORS.negative, backgroundColor: `${SEMANTIC_CHART_COLORS.negative}18`, fill: true, pointRadius: 0 }] }} options={{ ...common, scales: { x: { display: false }, y: { min: Math.min(-5, Math.floor(maxDrawdown / 5) * 5), max: 0, ticks: { callback: axisPercent }, title: { display: true, text: '%' } } } }} /></div></div>
+      <div className="analytics-risk-panel"><strong>30-day annualized volatility</strong><div className="analytics-risk-chart"><Line data={{ labels: rows.dates, datasets: [{ label: 'Volatility', data: rows.volatility, borderColor: BRAND_COLORS.coral, pointRadius: 0 }] }} options={{ ...common, scales: { x: { display: false }, y: { beginAtZero: true, max: volatilityMax, ticks: { callback: axisPercent }, title: { display: true, text: '%' } } } }} /></div></div>
     </div>
   </div>
 }
@@ -97,7 +98,7 @@ function ReturnDistribution({ data }: { data?: ValueHistory }) {
   const mean = returns.length ? returns.reduce((sum, value) => sum + value, 0) / returns.length : 0
   const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0
   const positive = returns.filter(value => value > 0).length
-  const chart = { labels: bins.map((bin, index) => index === 0 ? '≤ ' + bin.end.toFixed(1) + '%' : index === 11 ? '≥ ' + bin.start.toFixed(1) + '%' : bin.start.toFixed(1) + '%'), datasets: [{ label: 'Trading days', data: bins.map(bin => bin.count), backgroundColor: bins.map(bin => bin.end <= 0 ? '#e14d5aaa' : bin.start >= 0 ? '#12a56caa' : '#64748baa') }] }
+  const chart = { labels: bins.map((bin, index) => index === 0 ? '≤ ' + bin.end.toFixed(1) + '%' : index === 11 ? '≥ ' + bin.start.toFixed(1) + '%' : bin.start.toFixed(1) + '%'), datasets: [{ label: 'Trading days', data: bins.map(bin => bin.count), backgroundColor: bins.map(bin => bin.end <= 0 ? `${SEMANTIC_CHART_COLORS.negative}aa` : bin.start >= 0 ? `${SEMANTIC_CHART_COLORS.positive}aa` : `${SEMANTIC_CHART_COLORS.neutral}aa`) }] }
   return <div className="analytics-distribution-content">
     <p className="analytics-explainer">Flow-adjusted daily portfolio returns. Each bar counts trading days in a return range; weekends and cash-flow effects are excluded.</p>
     <div className="analytics-stat-strip"><Metric label="Average day" value={mean.toFixed(2) + '%'} /><Metric label="Median day" value={median.toFixed(2) + '%'} /><Metric label="Positive days" value={positive + ' / ' + returns.length} /><Metric label="Displayed range" value={'±' + bound.toFixed(1) + '%'} /></div>

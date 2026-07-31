@@ -35,6 +35,6 @@
 .step-library button:disabled { opacity: .45; cursor: not-allowed; }
 .details { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 14px; }
 .details summary { color: var(--muted); font-weight: 650; cursor: pointer; }
-.details pre { max-height: 420px; overflow: auto; padding: 14px; border-radius: 8px; color: #d0d5dd; background: #101828; font: .78rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+.details pre { max-height: 420px; overflow: auto; padding: 14px; border-radius: 8px; color: var(--shade-paper); background: var(--shade-indigo); font: .78rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
 @media (max-width: 1180px) { .rule-row { grid-template-columns: 34px repeat(3, minmax(130px, 1fr)) 38px; } .rule-row .field:nth-of-type(4), .rule-row .field:nth-of-type(5) { grid-column: span 2; } }
 @media (max-width: 720px) { .rule-row, .holding-row { grid-template-columns: 28px 1fr 38px; } .rule-row .field, .holding-row .field { grid-column: 2 / 3; } .rule-row .field:nth-of-type(4), .rule-row .field:nth-of-type(5) { grid-column: 2 / 3; } .rule-remove { grid-column: 3; grid-row: 1; } .pipeline-step { grid-template-columns: 32px 1fr; } .pipeline-step .check, .step-actions { grid-column: 2; } .chart-frame { height: 250px; } }

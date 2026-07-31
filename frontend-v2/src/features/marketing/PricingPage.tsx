@@ -27,7 +27,7 @@ export default function PricingPage() {
             <div className="pricing-card__summary">
               <span className="pricing-card__badge">Shade Research</span>
               <h2>Full access</h2>
-              <p>Everything you need to research, compare, and track Japanese public companies.</p>
+              <p>Everything you need to research, compare, and track public companies across markets and sources.</p>
               <div className="pricing-amount">
                 <strong>€10</strong>
                 <span>per month</span>

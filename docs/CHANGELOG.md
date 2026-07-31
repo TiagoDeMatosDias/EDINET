@@ -46,6 +46,7 @@ All notable changes to this project will be documented in this file.
 - **`docs/design/UX Design Language.md`** — removed; was the design spec for the pre-React vanilla JS UI.
 
 ### Added
+- **Shade Research brand system** — the five-segment signal ring, two-colour wordmark, “Value in context.” tagline, canonical `assets/brand/` package, warm technical palette, chart colors, browser metadata, Windows application icon, and refreshed documentation gallery now form one shared identity across public, authentication, and workspace routes.
 - **Public product pages** — `/` now provides a product homepage with registration, login, and pricing links; `/pricing` presents the current €10/month or €100/year informational tier.
 - **Unified company discovery** — Analysis, Comparison, Filings, Research, and the global header share best-effort search by company name, ticker, EDINET code, industry, market, and available price ticker, with graceful partial-database fallback.
 - **Flexible comparison metrics** — Comparison can add searchable `Table.Column` metrics from numeric statement tables and remove each selected metric independently.

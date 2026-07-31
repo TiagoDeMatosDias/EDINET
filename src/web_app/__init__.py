@@ -1,4 +1,4 @@
-"""Web-based EDINET workstation frontend."""
+"""Shade Research web workstation frontend."""
 
 __all__ = ["app"]
 

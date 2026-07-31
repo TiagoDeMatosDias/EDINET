@@ -289,11 +289,7 @@ def _capture_with_playwright(
         capture(page, "/overview", "web-dashboard.png")
         capture(page, "/pipeline", "web-pipeline.png")
 
-        page.goto(f"{base_url}/screen", wait_until="networkidle")
-        dismiss_local_warning(page)
-        page.get_by_role("button", name="Run screen").click()
-        page.get_by_text("Alpha Test Company").wait_for(timeout=10_000)
-        page.screenshot(path=str(output_dir / "web-screening.png"))
+        capture(page, "/screen", "web-screening.png")
 
         capture(page, "/analyze/E00001", "web-security-analysis.png", wait_ms=1_500)
         capture(page, "/backtest", "web-backtesting.png")

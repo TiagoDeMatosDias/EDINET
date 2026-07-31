@@ -1,7 +1,7 @@
-import { Activity } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Link, NavLink } from 'react-router-dom'
 
+import { BrandLockup } from '../../components/Brand'
 import './marketing.css'
 
 export function MarketingLayout({ children }: { children: ReactNode }) {
@@ -9,9 +9,8 @@ export function MarketingLayout({ children }: { children: ReactNode }) {
     <div className="marketing-page">
       <header className="marketing-header">
         <div className="marketing-container marketing-header__inner">
-          <Link className="marketing-brand" to="/" aria-label="Shade home">
-            <span className="marketing-brand__mark"><Activity aria-hidden="true" /></span>
-            <span><strong>Shade</strong><small>Japanese equity research</small></span>
+          <Link className="marketing-brand" to="/" aria-label="Shade Research home">
+            <BrandLockup showTagline />
           </Link>
 
           <nav className="marketing-nav" aria-label="Public navigation">
@@ -31,11 +30,10 @@ export function MarketingLayout({ children }: { children: ReactNode }) {
       <footer className="marketing-footer">
         <div className="marketing-container marketing-footer__inner">
           <div>
-            <Link className="marketing-brand marketing-brand--footer" to="/">
-              <span className="marketing-brand__mark"><Activity aria-hidden="true" /></span>
-              <strong>Shade</strong>
+            <Link className="marketing-brand marketing-brand--footer" to="/" aria-label="Shade Research home">
+              <BrandLockup compact />
             </Link>
-            <p>Research Japanese public companies from source filing to investment view.</p>
+            <p>Research companies with the evidence attached and the value placed in context.</p>
           </div>
           <nav aria-label="Footer navigation">
             <Link to="/pricing">Pricing</Link>

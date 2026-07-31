@@ -1,6 +1,6 @@
 # Shade Research
 
-Shade is a local-first research workstation for Japanese public companies. It combines EDINET filings and XBRL, standardized financial statements, company search, screening, comparison, backtesting, portfolio analysis, and private research state in one FastAPI and React application.
+Shade Research is a local-first company research workstation. It combines source filings and XBRL—including EDINET—standardized financial statements, company search, screening, comparison, backtesting, portfolio analysis, and private research state in one FastAPI and React application.
 
 The public homepage is served at `http://127.0.0.1:8000/`; the signed-in or local workspace starts at `/overview`. The pricing page currently presents one informational tier at €10 per month or €100 per year. Payment processing and subscription enforcement are not implemented.
 
@@ -99,7 +99,7 @@ These 1280×720 captures use generated demonstration companies, filings, and por
 
 | View | Screenshot |
 |---|---|
-| Public homepage | <img src="docs/images/web-home.png" alt="Shade public homepage" width="640"> |
+| Public homepage | <img src="docs/images/web-home.png" alt="Shade Research public homepage" width="640"> |
 | Company analysis | <img src="docs/images/web-security-analysis.png" alt="Populated company analysis" width="640"> |
 | Financial comparison | <img src="docs/images/web-comparison.png" alt="Side-by-side company comparison" width="640"> |
 | Filing translation | <img src="docs/images/web-filing-translation.png" alt="Japanese and English filing sections side by side" width="640"> |

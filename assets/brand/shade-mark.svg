@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Shade Research signal ring mark</title>
+  <desc id="desc">A simple five-segment ring with one fully red top-right segment on a deep indigo field.</desc>
+  <rect width="256" height="256" rx="56" fill="#17255A"/>
+  <g transform="rotate(12 128 128)">
+    <g fill="none" stroke="#F5E2C8" stroke-width="16" stroke-linecap="round">
+      <path d="M194.57 106.37A70 70 0 0 1 191.67 157.10"/>
+      <path d="M169.14 184.63A70 70 0 0 1 120 197.54"/>
+      <path d="M86.86 184.63A70 70 0 0 1 59.39 141.88"/>
+      <path d="M61.43 106.37A70 70 0 0 1 93.60 67.04"/>
+    </g>
+    <path d="M128 58A70 70 0 0 1 175.35 76.44" fill="none" stroke="#BD1E1E" stroke-width="16" stroke-linecap="round"/>
+  </g>
+</svg>

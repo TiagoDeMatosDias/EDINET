@@ -1,8 +1,9 @@
-import { Activity, BarChart3, BriefcaseBusiness, Building2, CircleCheck, CircleX, FileText, GitCompare, Home, LogIn, Menu, PanelLeftClose, Search, Settings, Shield, StickyNote, UserCircle, Workflow, X } from 'lucide-react'
+import { BarChart3, BriefcaseBusiness, Building2, CircleCheck, CircleX, FileText, GitCompare, Home, LogIn, Menu, PanelLeftClose, Search, Settings, Shield, StickyNote, UserCircle, Workflow, X } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 
 import { useHealth } from '../hooks/useHealth'
+import { BrandLockup } from './Brand'
 import { GlobalCompanySearch } from './GlobalCompanySearch'
 import { useAuth } from '../features/auth/AuthProvider'
 
@@ -91,7 +92,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return <div className={collapsed ? 'app-shell app-shell--collapsed' : 'app-shell'}>
     <aside className={mobileOpen ? 'sidebar sidebar--open' : 'sidebar'}>
-      <div className="brand"><span className="brand-mark"><Activity aria-hidden="true" /></span><span className="brand-copy"><strong>Shade</strong><small>Research workspace</small></span><button className="icon-button mobile-only" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
+      <div className="brand"><BrandLockup tone="dark" showTagline /><button className="icon-button mobile-only" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
       <Navigation onNavigate={() => setMobileOpen(false)} />
       <button className="sidebar-collapse desktop-only" onClick={() => setCollapsed(value => !value)}><PanelLeftClose aria-hidden="true" /><span>{collapsed ? 'Expand' : 'Collapse'}</span></button>
     </aside>

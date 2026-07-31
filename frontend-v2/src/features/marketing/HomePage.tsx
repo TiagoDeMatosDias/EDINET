@@ -1,6 +1,7 @@
 import { ArrowRight, BarChart3, Building2, Check, FileText, GitCompare, Search, StickyNote } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
+import { BrandLockup } from '../../components/Brand'
 import { MarketingLayout } from './MarketingLayout'
 
 const features = [
@@ -42,11 +43,11 @@ export default function HomePage() {
       <section className="marketing-hero">
         <div className="marketing-container marketing-hero__grid">
           <div className="marketing-hero__copy">
-            <span className="marketing-kicker">EDINET data, made useful</span>
-            <h1>Research Japanese public companies with the filing context intact.</h1>
+            <span className="marketing-kicker">Value in context</span>
+            <h1>Research companies with the evidence still attached.</h1>
             <p>
-              Shade brings company discovery, EDINET filings, standardized financials,
-              comparisons, screening, and portfolio research into a single workspace.
+              Shade Research brings company discovery, source filings, standardized financials,
+              comparisons, screening, and portfolio research into one focused workspace.
             </p>
             <div className="marketing-hero__actions">
               <Link className="button button--primary marketing-button" to="/register">
@@ -64,7 +65,7 @@ export default function HomePage() {
 
           <div className="product-preview" aria-label="Example company research snapshot">
             <div className="product-preview__bar">
-              <div className="product-preview__brand"><span>Shade</span><small>Company analysis</small></div>
+              <BrandLockup className="product-preview__brand" compact />
               <span className="product-preview__status">Data ready</span>
             </div>
             <div className="product-preview__search"><Search aria-hidden="true" /> Search name, ticker, or EDINET code</div>
@@ -86,8 +87,8 @@ export default function HomePage() {
               <svg viewBox="0 0 520 150" role="img" aria-label="Illustrative rising revenue chart">
                 <defs>
                   <linearGradient id="preview-fill" x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="0%" stopColor="#2f7cf6" stopOpacity=".25" />
-                    <stop offset="100%" stopColor="#2f7cf6" stopOpacity="0" />
+                    <stop offset="0%" stopColor="#D88373" stopOpacity=".32" />
+                    <stop offset="100%" stopColor="#D88373" stopOpacity="0" />
                   </linearGradient>
                 </defs>
                 <path className="chart-gridline" d="M0 30H520M0 75H520M0 120H520" />

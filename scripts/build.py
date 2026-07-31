@@ -24,9 +24,10 @@ from src.version import __version__  # noqa: E402
 
 DIST_DIR = PROJECT_ROOT / "dist"
 BUILD_DIR = PROJECT_ROOT / "build"
-STAGING_DIR = DIST_DIR / f"EDINET-{__version__}"
-EXE_SOURCE = DIST_DIR / "EDINET.exe"
-ZIP_DESTINATION = DIST_DIR / f"EDINET-{__version__}-Release.zip"
+PRODUCT_SLUG = "ShadeResearch"
+STAGING_DIR = DIST_DIR / f"{PRODUCT_SLUG}-{__version__}"
+EXE_SOURCE = DIST_DIR / f"{PRODUCT_SLUG}.exe"
+ZIP_DESTINATION = DIST_DIR / f"{PRODUCT_SLUG}-{__version__}-Release.zip"
 SPEC_FILE = PROJECT_ROOT / "EDINET.spec"
 FRONTEND_ROOT = PROJECT_ROOT / "frontend-v2"
 DATABASE_PATHS = {
@@ -95,7 +96,7 @@ def preflight() -> None:
         ) from exc
     npm = "npm.cmd" if os.name == "nt" else "npm"
     run([npm, "--version"], cwd=FRONTEND_ROOT, timeout=15)
-    print(f"Build preflight passed for EDINET {__version__}")
+    print(f"Build preflight passed for Shade Research {__version__}")
 
 
 def _safe_remove(directory: Path) -> None:
@@ -132,7 +133,7 @@ def build_executable(command_timeout: int) -> None:
 
 def assemble_distribution() -> None:
     STAGING_DIR.mkdir(parents=True, exist_ok=False)
-    shutil.copy2(EXE_SOURCE, STAGING_DIR / "EDINET.exe")
+    shutil.copy2(EXE_SOURCE, STAGING_DIR / f"{PRODUCT_SLUG}.exe")
     config_dir = STAGING_DIR / "config"
     config_dir.mkdir()
     (config_dir / "database_paths.json").write_text(
@@ -160,7 +161,7 @@ def _free_loopback_port() -> int:
 
 def smoke_test(timeout: int) -> None:
     """Start the packaged app and verify health, SPA, and a read-only API."""
-    executable = STAGING_DIR / "EDINET.exe"
+    executable = STAGING_DIR / f"{PRODUCT_SLUG}.exe"
     port = _free_loopback_port()
     process = subprocess.Popen(
         [str(executable), "--no-reload", "--port", str(port)],

@@ -56,7 +56,7 @@ describe('public pages and workspace shell', () => {
   it('keeps the homepage public and links to authentication and pricing', async () => {
     renderApp('/')
 
-    expect(await screen.findByRole('heading', { name: 'Research Japanese public companies with the filing context intact.' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Research companies with the evidence still attached.' })).toBeInTheDocument()
     expect(screen.getAllByRole('link', { name: /create (your )?account/i }).some(link => link.getAttribute('href') === '/register')).toBe(true)
     expect(screen.getAllByRole('link', { name: 'Sign in' }).some(link => link.getAttribute('href') === '/login')).toBe(true)
     expect(screen.getAllByRole('link', { name: /pricing/i }).some(link => link.getAttribute('href') === '/pricing')).toBe(true)

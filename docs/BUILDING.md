@@ -23,10 +23,10 @@ The script, in order:
 2. runs `npm ci` and the production frontend build with hard timeouts;
 3. removes only the repository's exact `build/` and `dist/` directories;
 4. runs PyInstaller through the active interpreter with a 600-second default cap;
-5. assembles `dist/EDINET-<version>/`;
+5. assembles `dist/ShadeResearch-<version>/`;
 6. creates fresh empty Base, Standardized, and Portfolio SQLite databases plus a relative `database_paths.json` and `.env` template; auth, research, pipeline-job, and filings databases are created with their managed schemas on the first server start;
 7. starts the packaged executable on a temporary loopback port and checks `/health`, `/`, and `/api/steps` within 45 seconds;
-8. writes `dist/EDINET-<version>-Release.zip`.
+8. writes `dist/ShadeResearch-<version>-Release.zip`.
 
 Run non-mutating preflight only:
 
@@ -45,8 +45,8 @@ The build script never installs missing dependencies. Install them explicitly so
 ## Release contents
 
 ```text
-EDINET-<version>/
-├── EDINET.exe
+ShadeResearch-<version>/
+├── ShadeResearch.exe
 ├── .env
 ├── config/
 │   └── database_paths.json
@@ -67,7 +67,7 @@ Router composition is explicit. `EDINET.spec` still lists API modules for audita
 
 ## CI
 
-The `windows-package-smoke` job runs on the weekly schedule and manual dispatch. It uses the same build script and uploads only `dist/EDINET-*-Release.zip`. Pull requests run the faster unit, integration, frontend, documentation, contract, and static-quality jobs.
+The `windows-package-smoke` job runs on the weekly schedule and manual dispatch. It uses the same build script and uploads only `dist/ShadeResearch-*-Release.zip`. Pull requests run the faster unit, integration, frontend, documentation, contract, and static-quality jobs.
 
 ## Recovery
 

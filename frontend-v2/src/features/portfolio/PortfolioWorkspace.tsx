@@ -7,13 +7,14 @@ import { Bar, Doughnut, Line, Scatter } from 'react-chartjs-2'
 import { useNavigate } from 'react-router-dom'
 
 import { apiRequest, queryString } from '../../api/client'
+import { BRAND_CHART_COLORS, BRAND_COLORS } from '../../brand'
 import { DataTable } from '../../components/DataTable'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
 import { Card, Field, Metric, PageHeader } from '../../components/Page'
 import { PortfolioAdvancedAnalytics } from './PortfolioAdvancedAnalytics'
 
 ChartJS.register(ArcElement, BarElement, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip)
-const COLORS = ['#146ef5', '#12a56c', '#8b5cf6', '#e58b16', '#e14d5a', '#0e9fbe', '#64748b', '#d946ef', '#84cc16', '#f97316']
+const COLORS = [...BRAND_CHART_COLORS]
 
 type Holding = { symbol: string; asset_category?: string; quantity?: number; avg_cost?: number | null; market_price?: number | null; market_value?: number | null; currency?: string; performance?: Record<string, unknown> }
 type Transaction = { id?: number; trade_date?: string; activity_type?: string; symbol?: string; description?: string; quantity?: number; amount?: number; currency?: string; source_file?: string }
@@ -40,7 +41,7 @@ function compactPie(data?: PieData, limit = 8) {
 
 function ValueChart({ data, currency }: { data?: ValueHistory; currency: string }) {
   const totals = data?.portfolio_values?.length === data?.dates.length ? data?.portfolio_values?.map(value => value ?? 0) ?? [] : data?.dates.map((_, index) => Object.values(data?.holdings ?? {}).reduce((sum, values) => sum + Number(values[index] ?? 0), 0)) ?? []
-  const chart = { labels: data?.dates ?? [], datasets: [{ label: `Portfolio value (${currency})`, data: totals, borderColor: COLORS[0], backgroundColor: '#146ef518', fill: true, pointRadius: 0, tension: .18 }] }
+  const chart = { labels: data?.dates ?? [], datasets: [{ label: `Portfolio value (${currency})`, data: totals, borderColor: COLORS[0], backgroundColor: `${BRAND_COLORS.midnight}18`, fill: true, pointRadius: 0, tension: .18 }] }
   return <div className="portfolio-value-chart"><Line data={chart} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { position: 'right', ticks: { callback: value => Number(value).toLocaleString(undefined, { notation: 'compact' }) } } } }} /></div>
 }
 
@@ -52,7 +53,7 @@ function AllocationChart({ data, title }: { data?: PieData; title: string }) {
 
 function ReturnHeatmap({ data }: { data?: HeatmapData }) {
   if (!data?.years.length) return <EmptyState title="No monthly returns" description="Return history is not available." />
-  const color = (value: number | null) => { if (value == null) return undefined; const strength = Math.min(Math.abs(value) / 10, 1); return value >= 0 ? `rgba(18,165,108,${.12 + strength * .72})` : `rgba(225,77,90,${.12 + strength * .72})` }
+  const color = (value: number | null) => { if (value == null) return undefined; const strength = Math.min(Math.abs(value) / 10, 1); return value >= 0 ? `rgba(40,116,90,${.12 + strength * .72})` : `rgba(163,58,69,${.12 + strength * .72})` }
   return <div className="return-heatmap"><div className="heatmap-row heatmap-head"><span>Year</span>{data.months.map(month => <span key={month}>{new Date(2020, month - 1).toLocaleString(undefined, { month: 'short' })}</span>)}</div>{data.years.map((year, row) => <div className="heatmap-row" key={year}><strong>{year}</strong>{data.values[row].map((value, column) => <span key={column} style={{ background: color(value) }} title={value == null ? 'No data' : `${value.toFixed(2)}%`}>{value == null ? '·' : value.toFixed(1)}</span>)}</div>)}</div>
 }
 
@@ -122,10 +123,10 @@ function DividendGrowthChart({ data }: { data?: DividendGrowthData }) {
       type: 'line' as const,
       label: 'Portfolio avg',
       data: data.weighted_average_growth.map((v, j) => v != null ? { x: (data?.years ?? [])[j], y: v } : null).filter(Boolean),
-      borderColor: '#1e293b',
+      borderColor: BRAND_COLORS.indigo,
       borderWidth: 2.5,
       pointRadius: 4,
-      pointBackgroundColor: '#1e293b',
+      pointBackgroundColor: BRAND_COLORS.indigo,
       backgroundColor: 'transparent',
     })
   }

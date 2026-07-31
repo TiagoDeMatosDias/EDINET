@@ -3,9 +3,10 @@ import { useMemo, useState } from 'react'
 import { Line } from 'react-chartjs-2'
 
 import type { HistoryMetric, HistoryTable, SecurityHistory } from '../../api/types'
+import { BRAND_CHART_COLORS } from '../../brand'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
 
-const COLORS = ['#146ef5', '#12a56c', '#8b5cf6', '#e58b16', '#e14d5a', '#0e9fbe', '#64748b', '#d946ef']
+const COLORS = [...BRAND_CHART_COLORS]
 const INCOME_STATEMENT_DEFAULTS = [
   'Net Sales',
   'Operating Income - Operating Profit (loss)',

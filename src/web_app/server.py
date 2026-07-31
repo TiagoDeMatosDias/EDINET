@@ -1,4 +1,4 @@
-"""FastAPI server for the web-based EDINET workstation.
+"""FastAPI server for the Shade Research workstation.
 
 The frontend is the React SPA at ``frontend-v2``.  API routes are built by
 ``src.web_app.api`` and mounted directly here.
@@ -19,7 +19,7 @@ from src.web_app.api import router_app
 from src.web_app.security import AppSettings, install_security
 
 BASE_DIR = Path(__file__).resolve().parent
-BRAND_ASSETS_DIR = BASE_DIR.parent.parent / "assets"
+BRAND_ASSETS_DIR = BASE_DIR.parent.parent / "assets" / "brand"
 FRONTEND_V2_DIST = Path(
     os.getenv("EDINET_FRONTEND_DIST", BASE_DIR.parent.parent / "frontend-v2" / "dist")
 ).expanduser().resolve(strict=False)
@@ -28,8 +28,8 @@ FRONTEND_V2_DIST = Path(
 # (orchestrator, screening, security_analysis, portfolio, and auto-discovered
 # view routers).
 app = router_app
-app.title = "EDINET Web Workstation"
-app.description = "Bloomberg-style web frontend for EDINET research workflows."
+app.title = "Shade Research"
+app.description = "Value in context: source-linked company research and analysis."
 app.version = __version__
 SETTINGS = AppSettings.from_env()
 install_security(app, SETTINGS)
@@ -146,7 +146,7 @@ def page_register() -> FileResponse:
 
 @app.get("/favicon.ico")
 def page_favicon() -> FileResponse:
-    return FileResponse(BRAND_ASSETS_DIR / "icon.ico")
+    return FileResponse(BRAND_ASSETS_DIR / "shade-icon.ico")
 
 
 @app.get("/{path:path}")

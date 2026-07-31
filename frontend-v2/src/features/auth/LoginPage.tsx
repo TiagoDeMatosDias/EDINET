@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
 
 import { apiRequest, setAccessToken } from '../../api/client'
+import { BrandLockup } from '../../components/Brand'
 import { useAuth, type AuthUser } from './AuthProvider'
 
 type AuthMode = 'login' | 'register'
@@ -97,7 +98,7 @@ function LoginForm({
   return (
     <main className="auth-page">
       <div className="auth-card card">
-        <span className="eyebrow">Shade research workspace</span>
+        <BrandLockup className="auth-brand" showTagline />
         <h1>{mode === 'register' ? 'Create your account' : 'Sign in'}</h1>
 
         {registrationUnavailable && (

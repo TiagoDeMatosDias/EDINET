@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { apiRequest, getAccessToken, setAccessToken } from '../../api/client'
+import { BrandLockup } from '../../components/Brand'
 
 export interface AuthUser {
   user_id: string
@@ -137,8 +138,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return (
       <div className="app-loading">
         <div className="splash">
-          <h1>Shade</h1>
-          <p>Research workspace</p>
+          <BrandLockup className="splash-brand" showTagline />
           <div className="loading-spinner" />
           <small>Checking account session…</small>
         </div>
@@ -237,7 +237,7 @@ function AuthGate({ status, onLogin }: { status: AuthStatus; onLogin: (user: Aut
   return (
     <main className="auth-page">
       <div className="auth-card card">
-        <span className="eyebrow">Shade research workspace</span>
+        <BrandLockup className="auth-brand" showTagline />
         <h1>{mode === 'register' ? 'Create your account' : 'Sign in'}</h1>
         <p>
           {status.bootstrap_required && mode === 'register'

@@ -440,7 +440,7 @@ This reference is intentionally concise. Expand signatures, examples, and depend
 
 ### [src/web_app/server.py](../src/web_app/server.py)
 
-Responsibility: FastAPI application assembly — mounts API routers, the React production bundle at `/app-assets`, primary SPA entry routes. `EDINET_FRONTEND_DIST` can override the bundle directory for packaging and isolated tests; production defaults to `frontend-v2/dist`.
+Responsibility: FastAPI application assembly — mounts API routers, the React production bundle at `/app-assets`, canonical Shade Research files from `assets/brand/` at `/brand-assets`, the branded favicon, and primary SPA entry routes. `EDINET_FRONTEND_DIST` can override the bundle directory for packaging and isolated tests; production defaults to `frontend-v2/dist`.
 
 ### [src/web_app/api/screening.py](../src/web_app/api/screening.py)
 
@@ -460,7 +460,7 @@ Responsibility: Portfolio API routes at `/api/portfolio/*` — import, holdings,
 
 ### [frontend-v2/](../frontend-v2/)
 
-Responsibility: Primary React/TypeScript/Vite workspace — application shell (AppShell), feature routes (Overview, Screening, Analysis, Backtesting, Portfolio, Pipeline), shared components (DataTable, Feedback, GlobalCompanySearch), API clients, responsive styles, and Vitest coverage.
+Responsibility: Primary React/TypeScript/Vite workspace — application shell (AppShell), feature routes (Overview, Screening, Analysis, Backtesting, Portfolio, Pipeline), shared components (BrandLockup, DataTable, Feedback, GlobalCompanySearch), shared brand/chart tokens, responsive styles, API clients, and Vitest coverage.
 
 ---
 

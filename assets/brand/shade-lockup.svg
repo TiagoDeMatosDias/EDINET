@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 256" role="img" aria-labelledby="title desc">
+  <title id="title">Shade Research horizontal logo</title>
+  <desc id="desc">A bold two-colour Shade Research wordmark with a five-segment ring and a fully red top-right signal segment.</desc>
+  <rect width="660" height="256" rx="40" fill="#F5E2C8"/>
+  <rect x="32" y="32" width="192" height="192" rx="44" fill="#17255A"/>
+  <g transform="rotate(12 128 128)">
+    <g fill="none" stroke="#F5E2C8" stroke-width="14" stroke-linecap="round">
+      <path d="M183.16 110.08A58 58 0 0 1 180.79 152.03"/>
+      <path d="M162.09 174.92A58 58 0 0 1 121.46 185.63"/>
+      <path d="M93.91 174.92A58 58 0 0 1 71.17 139.59"/>
+      <path d="M72.84 110.08A58 58 0 0 1 99.42 77.53"/>
+    </g>
+    <path d="M128 70A58 58 0 0 1 167.17 85.22" fill="none" stroke="#BD1E1E" stroke-width="14" stroke-linecap="round"/>
+  </g>
+  <text x="278" y="128" fill="#17255A" font-family="Inter, Arial, sans-serif" font-size="96" font-weight="800" letter-spacing="-4">SHADE</text>
+  <text x="282" y="187" fill="#BD1E1E" font-family="Inter, Arial, sans-serif" font-size="36" font-weight="800" letter-spacing="5.5">RESEARCH</text>
+</svg>

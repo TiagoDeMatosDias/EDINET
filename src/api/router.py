@@ -27,8 +27,8 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="EDINET Orchestrator API",
-    description="HTTP API for running EDINET research pipelines",
+    title="Shade Research API",
+    description="HTTP API for Shade Research data and research pipelines",
     version=__version__,
     lifespan=lifespan,
 )

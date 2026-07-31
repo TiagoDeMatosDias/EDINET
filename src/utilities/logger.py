@@ -1,5 +1,5 @@
 """
-Logging utility for the EDINET application.
+Logging utility for the Shade Research application.
 
 This module provides centralized logging functionality that:
 - Writes all output to a timestamped log file

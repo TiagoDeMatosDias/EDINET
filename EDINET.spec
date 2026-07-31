@@ -4,7 +4,7 @@
 # Build the distributable EXE with:
 #   pyinstaller EDINET.spec
 #
-# The resulting dist/EDINET.exe bundles all Python code, the web frontend,
+# The resulting dist/ShadeResearch.exe bundles all Python code, the web frontend,
 # brand assets, ratio definitions, and rolling-metrics config.
 #
 # Files that stay OUTSIDE the exe (placed next to it in the .zip):
@@ -21,11 +21,7 @@ datas = [
     ('frontend-v2/dist', 'frontend-v2/dist'),
 
     # ── Brand assets (icon, favicon) ──
-    ('assets/icon.ico', 'assets'),
-    ('assets/icon.png', 'assets'),
-    ('assets/icon.svg', 'assets'),
-    ('assets/icon_hexagon.svg', 'assets'),
-    ('assets/ShadeResearch.svg', 'assets'),
+    ('assets/brand', 'assets/brand'),
 
     # ── Ratio & rolling-metrics definitions (loaded relative to __file__) ──
     ('src/orchestrator/generate_ratios/ratios_definitions.json',
@@ -121,7 +117,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='EDINET',
+    name='ShadeResearch',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -132,6 +128,7 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
+    icon='assets/brand/shade-icon.ico',
     codesign_identity=None,
     entitlements_file=None,
 )

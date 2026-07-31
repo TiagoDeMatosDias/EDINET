@@ -2,7 +2,7 @@
 
 Updated: 2026-07-30
 
-Shade is a browser-based workspace for researching Japanese public companies from source EDINET filings through standardized financial analysis, comparison, screening, backtesting, and portfolio review.
+Shade Research is a browser-based workspace for researching companies from source filings through standardized financial analysis, comparison, screening, backtesting, and portfolio review. EDINET and its XBRL disclosures are one supported source, not the limit of the product identity.
 
 All screenshots in this guide were captured at 1280×720 from generated demonstration databases. Company names, filings, prices, and portfolio activity shown here are synthetic.
 
@@ -12,7 +12,7 @@ The public homepage at `/` explains the product and links directly to registrati
 
 | Homepage | Pricing |
 |---|---|
-| <img src="images/web-home.png" alt="Shade public homepage" width="600"> | <img src="images/web-pricing.png" alt="Shade pricing page" width="600"> |
+| <img src="images/web-home.png" alt="Shade Research public homepage" width="600"> | <img src="images/web-pricing.png" alt="Shade Research pricing page" width="600"> |
 
 Account authentication is optional for loopback use. In account mode:
 
@@ -38,7 +38,7 @@ The header company finder searches across the best data currently available. It 
 
 Screening builds table-first expressions over company, price, statement, ratio, rolling, and tag fields. A rule can compare complete expressions on both sides, including metrics, literals, arithmetic operators, tags, and validated parentheses. Select result columns independently, add derived fields, save definitions, export CSV, or send the current draft into a point-in-time rolling backtest.
 
-<img src="images/web-screening.png" alt="Populated company screen" width="900">
+<img src="images/web-screening.png" alt="Company screen builder" width="900">
 
 Use the optional as-of date when the result must be limited to data that was available by a historical date. The backtest handoff reruns the saved screening logic at each rebalance period instead of applying today's result list retroactively.
 

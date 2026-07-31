@@ -89,7 +89,7 @@
 .expression-rule { grid-template-columns: minmax(270px, .8fr) 52px minmax(0, 1.2fr); align-items: start; gap: 3px; padding: 3px 4px; }
 .expression-label { margin-bottom: 1px; font-size: .58rem; }
 .expression-tokens { min-height: 27px; flex-wrap: wrap; align-content: flex-start; gap: 2px; overflow: visible; }
-.expr-token--paren { border-color: #b9c3d4; background: var(--surface-subtle); }
+.expr-token--paren { border-color: var(--border-strong); background: var(--surface-subtle); }
 .expr-paren { display: grid; width: 20px; height: 25px; place-items: center; font-size: .84rem; font-weight: 850; }
 .expr-token input, .expr-token select { height: 25px; }
 .expr-token .metric-select { grid-template-columns: 78px 117px; }
