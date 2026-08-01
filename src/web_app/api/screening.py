@@ -10,7 +10,7 @@ import io
 import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 from fastapi import APIRouter, Body, HTTPException, Query, Request
@@ -68,8 +68,23 @@ class ScreeningCriterion(BaseModel):
     value: Any = Field(default=None, description="Comparison value (required for fixed/LIKE mode)")
     value2: Any = Field(default=None, description="Second value for BETWEEN operator")
     values: list[Any] | None = Field(default=None, description="Value list for IN operator")
-    field_type: str = Field(default="num", description="Value type hint: num, text, percent")
-    comparison_mode: str = Field(default="fixed", description="fixed, column, expression, in, like, stock_price, or full_expression")
+    field_type: str = Field(default="num", description="Value type hint: num, text, percent, or date")
+    comparison_mode: str = Field(
+        default="fixed",
+        description="fixed, column, expression, in, like, stock_price, recent_split, or full_expression",
+    )
+    split_action: Literal["exclude", "include"] = Field(
+        default="exclude",
+        description="For recent_split: exclude or include companies matching the event rule",
+    )
+    split_status: Literal["confirmed", "rejected", "pending", "any"] = Field(
+        default="confirmed",
+        description="For recent_split: split confirmation status to match",
+    )
+    split_date_operator: Literal["on_or_after", "on_or_before"] = Field(
+        default="on_or_after",
+        description="For recent_split: compare split_date on or after/before the cutoff",
+    )
     compare_table: str | None = Field(default=None, description="Comparison table (column mode)")
     compare_column: str | None = Field(default=None, description="Comparison column (column mode)")
     offset: float | None = Field(default=None, description="Numeric offset for column comparison")
@@ -181,6 +196,12 @@ def _criteria_to_dicts(criteria: list[ScreeningCriterion]) -> list[dict]:
             "field_type": c.field_type,
             "comparison_mode": c.comparison_mode,
         }
+        if c.comparison_mode == "recent_split":
+            d.update(
+                split_action=c.split_action,
+                split_status=c.split_status,
+                split_date_operator=c.split_date_operator,
+            )
         if c.value2 is not None:
             d["value2"] = c.value2
         if c.values is not None:

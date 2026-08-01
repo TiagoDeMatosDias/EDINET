@@ -56,18 +56,20 @@ function PriceChart({ ticker }: { ticker: string }) {
   const prices = useQuery({
     queryKey: ['security-prices', ticker],
     enabled: Boolean(ticker),
-    queryFn: () => apiRequest<{ prices: PriceHistoryRow[] }>(`/api/security/price-history${queryString({ ticker })}`),
+    queryFn: () => apiRequest<{ prices: PriceHistoryRow[] }>(`/api/security/price-history${queryString({ ticker, adjusted: true })}`),
   })
   const rows = prices.data?.prices ?? []
   if (prices.isLoading) return <LoadingState label="Loading prices" />
   if (!rows.length) return <EmptyState title="No price history" description="No prices found." />
   const visible = filterPriceHistory(rows, range)
+  const basisLabels = [...new Set(visible.map(row => row.price_basis).filter(Boolean))]
+  const providerLabels = [...new Set(visible.map(row => row.provider).filter(Boolean))]
   const data = {
     labels: visible.map(row => row.trade_date ?? row.Date ?? row.date ?? ''),
     datasets: [{ data: visible.map(row => row.Price ?? row.price ?? null), borderColor: PRICE_COLOR, backgroundColor: `${BRAND_COLORS.midnight}18`, fill: true, pointRadius: 0, tension: .2 }],
   }
   const options = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false }, ticks: { autoSkip: true, maxTicksLimit: 9, maxRotation: 0 } }, y: { position: 'right' as const } } }
-  return <div className="price-history-workspace"><div className="price-range-toolbar"><div className="price-range-buttons" role="group" aria-label="Price history range">{PRICE_RANGE_OPTIONS.map(option => <button key={option.key} type="button" className={range === option.key ? 'active' : ''} aria-pressed={range === option.key} onClick={() => setRange(option.key)}>{option.label}</button>)}</div><span>{visible.length.toLocaleString()} prices</span></div><div className="price-chart"><Line data={data} options={options} /></div></div>
+  return <div className="price-history-workspace"><div className="price-range-toolbar"><div className="price-range-buttons" role="group" aria-label="Price history range">{PRICE_RANGE_OPTIONS.map(option => <button key={option.key} type="button" className={range === option.key ? 'active' : ''} aria-pressed={range === option.key} onClick={() => setRange(option.key)}>{option.label}</button>)}</div><span>{visible.length.toLocaleString()} prices</span>{basisLabels.length > 0 && <span title="Price basis recorded with each source row">Basis: {basisLabels.join(', ')}</span>}{providerLabels.length > 0 && <span title="Price provider recorded with each source row">Source: {providerLabels.join(', ')}</span>}</div><div className="price-chart"><Line data={data} options={options} /></div></div>
 }
 
 function FilingSummaryCard({ companyCode }: { companyCode: string }) {

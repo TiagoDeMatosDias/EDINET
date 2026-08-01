@@ -24,6 +24,7 @@ from typing import Any
 import pandas as pd
 
 from src.orchestrator.common.sqlite import connect_read, connect_write, transaction
+from src.utilities.price_provenance import table_columns
 from src.utilities.stock_prices import _create_prices_table, load_ticker_data
 
 logger = logging.getLogger(__name__)
@@ -1146,11 +1147,26 @@ def _as_peer_row(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 def _compute_ratio_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Compute ratio values with fallbacks when direct values are missing."""
-    share_price = _safe_float(_coalesce(snapshot.get("latest_price"), snapshot.get("SharePrice")))
-    eps = _safe_float(snapshot.get("EPS"))
-    book_value = _safe_float(snapshot.get("BookValue"))
-    dividends = _safe_float(snapshot.get("Dividends"))
-    shares_outstanding = _safe_float(snapshot.get("SharesOutstanding"))
+    share_price = _safe_float(
+        _coalesce(
+            snapshot.get("latest_price"),
+            snapshot.get("SharePrice_adjusted"),
+            snapshot.get("SharePrice"),
+        )
+    )
+    eps = _safe_float(_coalesce(snapshot.get("EPS_adjusted"), snapshot.get("EPS")))
+    book_value = _safe_float(
+        _coalesce(snapshot.get("BookValue_adjusted"), snapshot.get("BookValue"))
+    )
+    dividends = _safe_float(
+        _coalesce(snapshot.get("Dividends_adjusted"), snapshot.get("Dividends"))
+    )
+    shares_outstanding = _safe_float(
+        _coalesce(
+            snapshot.get("SharesOutstanding_adjusted"),
+            snapshot.get("SharesOutstanding"),
+        )
+    )
     market_cap = _safe_float(snapshot.get("MarketCap"))
 
     pe_ratio = _safe_float(snapshot.get("PERatio"))
@@ -1322,6 +1338,11 @@ def ensure_security_analysis_indexes(db_path: str) -> dict[str, Any]:
         schema = resolve_schema(normalised_path)
         created: list[str] = []
         with transaction(normalised_path) as conn:
+            # Migrate legacy price rows before any split-aware read.  Unknown
+            # provenance is deliberately preserved as unknown so a provider's
+            # already-adjusted history is never guessed to be raw.
+            from src.utilities.price_provenance import ensure_price_provenance_columns
+            ensure_price_provenance_columns(conn, schema.prices_table)
             statements = [
                 (
                     "idx_sa_prices_ticker_date",
@@ -1390,10 +1411,109 @@ def _load_company_by_ticker(db_path: str, ticker: str) -> dict[str, Any] | None:
         conn.close()
 
 
+def _split_adjusted_value(
+    conn: sqlite3.Connection,
+    ticker: str,
+    date_value: Any,
+    price: Any,
+    basis: Any = "raw",
+) -> float | None:
+    """Apply confirmed split factors to one raw price when safe to do so."""
+    value = _safe_float(price)
+    if value is None or str(basis or "raw").strip().lower() != "raw":
+        return value
+    try:
+        from src.portfolio.portfolio_state import _load_split_factors
+        factors = _load_split_factors(conn, ticker)
+    except Exception:
+        return value
+    date_text = str(date_value)[:10]
+    for split_date, cumulative_factor in factors:
+        if split_date > date_text:
+            return value * cumulative_factor
+    return value
+
+
+def _split_adjustment_factor(
+    conn: sqlite3.Connection,
+    ticker: str,
+    period_end: Any,
+) -> float:
+    """Return the cumulative per-share factor after *period_end*.
+
+    ``Stock_Splits`` stores ratios as shares-before:shares-after.  The price
+    factor for a 2-for-1 split is therefore ``0.5``; historical per-share
+    statement values must be multiplied by that factor when they are compared
+    with a current, post-split quote.  Only confirmed, raw-basis split events
+    are returned by ``_load_split_factors``.  A factor of ``1.0`` means that
+    no reviewed split is known after the statement period.
+    """
+    date_text = _safe_date_str(period_end)
+    if not ticker or not date_text:
+        return 1.0
+    try:
+        from src.portfolio.portfolio_state import _load_split_factors
+
+        for split_date, cumulative_factor in _load_split_factors(conn, ticker):
+            if str(split_date)[:10] > date_text:
+                return float(cumulative_factor)
+    except (TypeError, ValueError, sqlite3.Error):
+        return 1.0
+    return 1.0
+
+
+def _split_adjusted_statement_value(
+    conn: sqlite3.Connection,
+    ticker: str,
+    period_end: Any,
+    value: Any,
+    *,
+    per_share: bool = True,
+) -> float | None:
+    """Project one report value onto the current share basis.
+
+    The stored filing value is never changed.  Per-share values are multiplied
+    by the post-split price factor; share counts are divided by it.  This
+    keeps market-cap and valuation calculations consistent with the adjusted
+    quote while preserving the report's original value for audit purposes.
+    """
+    numeric = _safe_float(value)
+    if numeric is None:
+        return None
+    factor = _split_adjustment_factor(conn, ticker, period_end)
+    if not factor or factor == 1.0:
+        return numeric
+    return numeric * factor if per_share else numeric / factor
+
+
+def _annotate_statement_snapshot_splits(
+    conn: sqlite3.Connection,
+    ticker: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Add non-destructive current-share projections to a filing snapshot."""
+    period_end = snapshot.get("period_end")
+    factor = _split_adjustment_factor(conn, ticker, period_end)
+    snapshot["statement_split_adjustment_factor"] = factor
+    if not ticker or factor == 1.0:
+        return snapshot
+
+    for field in ("EPS", "BookValue", "Dividends", "SalesPerShare", "SharePrice"):
+        value = _safe_float(snapshot.get(field))
+        if value is not None:
+            snapshot[f"{field}_adjusted"] = value * factor
+    shares = _safe_float(snapshot.get("SharesOutstanding"))
+    if shares is not None:
+        snapshot["SharesOutstanding_adjusted"] = shares / factor
+    return snapshot
+
+
 def _load_latest_prices_frame(conn: sqlite3.Connection, schema: SecuritySchema) -> pd.DataFrame:
     """Load the latest available price row per ticker."""
+    columns = table_columns(conn, schema.prices_table)
+    basis_select = ", p.Price_Basis AS price_basis" if "Price_Basis" in columns else ""
     sql = f"""
-        SELECT p.Ticker AS ticker, p.[Date] AS latest_price_date, p.Price AS latest_price
+        SELECT p.Ticker AS ticker, p.[Date] AS latest_price_date, p.Price AS latest_price{basis_select}
         FROM {_quote_ident(schema.prices_table)} p
         INNER JOIN (
             SELECT Ticker, MAX([Date]) AS MaxDate
@@ -1401,7 +1521,14 @@ def _load_latest_prices_frame(conn: sqlite3.Connection, schema: SecuritySchema) 
             GROUP BY Ticker
         ) px ON px.Ticker = p.Ticker AND px.MaxDate = p.[Date]
     """
-    return pd.read_sql_query(sql, conn)
+    frame = pd.read_sql_query(sql, conn)
+    if not frame.empty:
+        frame["latest_price"] = [
+            _split_adjusted_value(conn, row.ticker, row.latest_price_date,
+                                  row.latest_price, getattr(row, "price_basis", "raw"))
+            for row in frame.itertuples(index=False)
+        ]
+    return frame
 
 
 def _load_latest_prices_for_tickers(
@@ -1415,8 +1542,10 @@ def _load_latest_prices_for_tickers(
         return pd.DataFrame(columns=["ticker", "latest_price_date", "latest_price"])
 
     placeholders = ",".join(["?"] * len(clean_tickers))
+    columns = table_columns(conn, schema.prices_table)
+    basis_select = ", p.Price_Basis AS price_basis" if "Price_Basis" in columns else ""
     sql = f"""
-        SELECT p.Ticker AS ticker, p.[Date] AS latest_price_date, p.Price AS latest_price
+        SELECT p.Ticker AS ticker, p.[Date] AS latest_price_date, p.Price AS latest_price{basis_select}
         FROM {_quote_ident(schema.prices_table)} p
         INNER JOIN (
             SELECT Ticker, MAX([Date]) AS MaxDate
@@ -1425,13 +1554,32 @@ def _load_latest_prices_for_tickers(
             GROUP BY Ticker
         ) px ON px.Ticker = p.Ticker AND px.MaxDate = p.[Date]
     """
-    return pd.read_sql_query(sql, conn, params=clean_tickers)
+    frame = pd.read_sql_query(sql, conn, params=clean_tickers)
+    if not frame.empty:
+        frame["latest_price"] = [
+            _split_adjusted_value(conn, row.ticker, row.latest_price_date,
+                                  row.latest_price, getattr(row, "price_basis", "raw"))
+            for row in frame.itertuples(index=False)
+        ]
+    return frame
 
 
 def _load_price_range(conn: sqlite3.Connection, schema: SecuritySchema, ticker: str) -> dict[str, Any]:
     """Load latest price, previous price, and trailing 52-week range."""
+    columns = table_columns(conn, schema.prices_table)
+    basis_select = ", Price_Basis" if "Price_Basis" in columns else ""
+    provenance_select = "".join(
+        f", {column} AS {alias}"
+        for column, alias in (
+            ("Provider", "price_provider"),
+            ("Source_Id", "price_source_id"),
+            ("Source_Revision", "price_source_revision"),
+            ("Retrieved_At", "price_retrieved_at"),
+        )
+        if column in columns
+    )
     latest_df = pd.read_sql_query(
-        f"SELECT [Date], Price FROM {_quote_ident(schema.prices_table)} "
+        f"SELECT [Date], Price{basis_select}{provenance_select} FROM {_quote_ident(schema.prices_table)} "
         "WHERE Ticker = ? ORDER BY [Date] DESC LIMIT 2",
         conn,
         params=[ticker],
@@ -1440,17 +1588,39 @@ def _load_price_range(conn: sqlite3.Connection, schema: SecuritySchema, ticker: 
         return {
             "latest_price": None,
             "latest_price_date": None,
+            "price_basis": None,
+            "price_provider": None,
+            "price_source_id": None,
+            "price_source_revision": None,
+            "price_retrieved_at": None,
             "previous_price": None,
             "change_pct_1d": None,
             "range_52w_low": None,
             "range_52w_high": None,
         }
 
-    latest_price = _safe_float(latest_df.iloc[0]["Price"])
+    latest_price = _split_adjusted_value(
+        conn, ticker, latest_df.iloc[0]["Date"], latest_df.iloc[0]["Price"],
+        latest_df.iloc[0].get("Price_Basis", "raw"),
+    )
+    latest_basis = str(latest_df.iloc[0].get("Price_Basis", "raw") or "raw").lower()
+    latest_provenance = {
+        key: latest_df.iloc[0].get(key)
+        for key in (
+            "price_provider",
+            "price_source_id",
+            "price_source_revision",
+            "price_retrieved_at",
+        )
+        if key in latest_df.columns
+    }
     latest_date = pd.to_datetime(latest_df.iloc[0]["Date"], errors="coerce")
     previous_price = None
     if len(latest_df) > 1:
-        previous_price = _safe_float(latest_df.iloc[1]["Price"])
+        previous_price = _split_adjusted_value(
+            conn, ticker, latest_df.iloc[1]["Date"], latest_df.iloc[1]["Price"],
+            latest_df.iloc[1].get("Price_Basis", "raw"),
+        )
 
     change_pct = None
     if latest_price not in (None, 0.0) and previous_price not in (None, 0.0):
@@ -1461,18 +1631,29 @@ def _load_price_range(conn: sqlite3.Connection, schema: SecuritySchema, ticker: 
     if latest_date is not pd.NaT:
         start_date = (latest_date - timedelta(days=365)).strftime("%Y-%m-%d")
         range_df = pd.read_sql_query(
-            f"SELECT MIN(Price) AS low_price, MAX(Price) AS high_price "
-            f"FROM {_quote_ident(schema.prices_table)} WHERE Ticker = ? AND [Date] >= ?",
+            f"SELECT [Date], Price{basis_select} FROM {_quote_ident(schema.prices_table)} "
+            "WHERE Ticker = ? AND [Date] >= ?",
             conn,
             params=[ticker, start_date],
         )
         if not range_df.empty:
-            low_52 = _safe_float(range_df.iloc[0]["low_price"])
-            high_52 = _safe_float(range_df.iloc[0]["high_price"])
+            adjusted_values = [
+                _split_adjusted_value(
+                    conn, ticker, row["Date"], row["Price"],
+                    row.get("Price_Basis", "raw"),
+                )
+                for _, row in range_df.iterrows()
+            ]
+            adjusted_values = [value for value in adjusted_values if value is not None]
+            if adjusted_values:
+                low_52 = min(adjusted_values)
+                high_52 = max(adjusted_values)
 
     return {
         "latest_price": latest_price,
         "latest_price_date": latest_date.strftime("%Y-%m-%d") if latest_date is not pd.NaT else None,
+        "price_basis": latest_basis,
+        **latest_provenance,
         "previous_price": previous_price,
         "change_pct_1d": change_pct,
         "range_52w_low": low_52,
@@ -1704,8 +1885,10 @@ def _price_return_1y(conn: sqlite3.Connection, schema: SecuritySchema, tickers: 
         return pd.DataFrame(columns=["ticker", "one_year_return"])  # pragma: no cover - trivial guard
 
     placeholders = ",".join(["?"] * len(tickers))
+    price_columns = table_columns(conn, schema.prices_table)
+    basis_select = ", Price_Basis AS price_basis" if "Price_Basis" in price_columns else ""
     sql = (
-        f"SELECT Ticker AS ticker, [Date] AS trade_date, Price "
+        f"SELECT Ticker AS ticker, [Date] AS trade_date, Price{basis_select} "
         f"FROM {_quote_ident(schema.prices_table)} WHERE Ticker IN ({placeholders}) "
         "ORDER BY ticker, trade_date"
     )
@@ -1728,13 +1911,21 @@ def _price_return_1y(conn: sqlite3.Connection, schema: SecuritySchema, tickers: 
             out_rows.append({"ticker": ticker, "one_year_return": None})
             continue
         prior = prior_df.iloc[-1]
-        if prior["Price"] in (None, 0.0):
+        latest_value = _split_adjusted_value(
+            conn, ticker, latest["trade_date"], latest["Price"],
+            latest.get("price_basis", "raw"),
+        )
+        prior_value = _split_adjusted_value(
+            conn, ticker, prior["trade_date"], prior["Price"],
+            prior.get("price_basis", "raw"),
+        )
+        if prior_value in (None, 0.0) or latest_value is None:
             out_rows.append({"ticker": ticker, "one_year_return": None})
             continue
         out_rows.append(
             {
                 "ticker": ticker,
-                "one_year_return": (float(latest["Price"]) - float(prior["Price"])) / float(prior["Price"]),
+                "one_year_return": (float(latest_value) - float(prior_value)) / float(prior_value),
             }
         )
     return pd.DataFrame(out_rows)
@@ -1793,9 +1984,11 @@ def _load_search_latest_price(
     ):
         return None, None
     try:
+        price_columns = table_columns(conn, schema.prices_table)
+        basis_select = ", Price_Basis" if "Price_Basis" in price_columns else ""
         row = conn.execute(
             f"SELECT {_quote_ident(schema.price_date_col)} AS latest_price_date, "
-            f"{_quote_ident(schema.price_value_col)} AS latest_price "
+            f"{_quote_ident(schema.price_value_col)} AS latest_price{basis_select} "
             f"FROM {_quote_ident(schema.prices_table)} "
             f"WHERE {_quote_ident(schema.price_ticker_col)} = ? "
             f"ORDER BY {_quote_ident(schema.price_date_col)} DESC LIMIT 1",
@@ -1806,7 +1999,8 @@ def _load_search_latest_price(
         return None, None
     if row is None:
         return None, None
-    return _safe_float(row[1]), _safe_date_str(row[0])
+    basis = row[2] if "Price_Basis" in price_columns else "raw"
+    return _split_adjusted_value(conn, ticker, row[0], row[1], basis), _safe_date_str(row[0])
 
 
 def _load_search_price_matches(
@@ -1977,6 +2171,11 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
             "market": {
                 "latest_price": price_info.get("latest_price"),
                 "latest_price_date": price_info.get("latest_price_date"),
+                "price_basis": price_info.get("price_basis"),
+                "price_provider": price_info.get("price_provider"),
+                "price_source_id": price_info.get("price_source_id"),
+                "price_source_revision": price_info.get("price_source_revision"),
+                "price_retrieved_at": price_info.get("price_retrieved_at"),
                 "previous_price": price_info.get("previous_price"),
                 "change_pct_1d": price_info.get("change_pct_1d"),
                 "range_52w_low": price_info.get("range_52w_low"),
@@ -2014,11 +2213,18 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
         price_info = _load_price_range(conn, schema, ticker) if ticker else {
             "latest_price": None,
             "latest_price_date": None,
+            "price_basis": None,
+            "price_provider": None,
+            "price_source_id": None,
+            "price_source_revision": None,
+            "price_retrieved_at": None,
             "previous_price": None,
             "change_pct_1d": None,
             "range_52w_low": None,
             "range_52w_high": None,
         }
+        if snapshot:
+            _annotate_statement_snapshot_splits(conn, ticker, snapshot)
     finally:
         conn.close()
 
@@ -2045,6 +2251,10 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
     data_quality_flags: list[str] = []
     if combined.get("latest_price") is None:
         data_quality_flags.append("missing_latest_price")
+    if combined.get("price_basis") == "unknown":
+        data_quality_flags.append("price_basis_unknown")
+    if combined.get("statement_split_adjustment_factor", 1.0) != 1.0:
+        data_quality_flags.append("statement_values_split_adjusted")
     if combined.get("period_end") is None:
         data_quality_flags.append("missing_financial_statements")
 
@@ -2064,6 +2274,11 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
         "market": {
             "latest_price": combined.get("latest_price"),
             "latest_price_date": combined.get("latest_price_date"),
+            "price_basis": combined.get("price_basis"),
+            "price_provider": combined.get("price_provider"),
+            "price_source_id": combined.get("price_source_id"),
+            "price_source_revision": combined.get("price_source_revision"),
+            "price_retrieved_at": combined.get("price_retrieved_at"),
             "previous_price": combined.get("previous_price"),
             "change_pct_1d": combined.get("change_pct_1d"),
             "range_52w_low": combined.get("range_52w_low"),
@@ -2076,6 +2291,9 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
             "TotalAssets": _safe_float(snapshot.get("totalAssets")),
             "ShareholdersEquity": _safe_float(snapshot.get("shareholdersEquity")),
             "SharesOutstanding": _safe_float(snapshot.get("SharesOutstanding")),
+            "SharesOutstandingCurrentBasis": _safe_float(
+                snapshot.get("SharesOutstanding_adjusted")
+            ),
         },
         "valuation_latest": ratios,
         "quality_latest": {
@@ -2088,6 +2306,9 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
             "last_financial_period_end": snapshot.get("period_end"),
             "last_price_date": combined.get("latest_price_date"),
             "doc_id": _safe_str(snapshot.get("docID")),
+            "statement_split_adjustment_factor": snapshot.get(
+                "statement_split_adjustment_factor", 1.0
+            ),
             "data_quality_flags": data_quality_flags,
         },
     }
@@ -2133,6 +2354,7 @@ def get_security_price_history(
     ticker: str,
     start_date: str | None = None,
     end_date: str | None = None,
+    adjusted: bool = False,
 ) -> list[dict[str, Any]]:
     """Return historical daily stock prices for a ticker.
 
@@ -2141,6 +2363,8 @@ def get_security_price_history(
         ticker (str): Company ticker.
         start_date (str | None): Optional inclusive lower date bound.
         end_date (str | None): Optional inclusive upper date bound.
+        adjusted (bool): If True, apply split adjustments so all prices
+            are on a current-share basis.
 
     Returns:
         list[dict[str, Any]]: Ordered list of price rows.
@@ -2160,19 +2384,108 @@ def get_security_price_history(
         if end_date:
             where_parts.append("[Date] <= ?")
             params.append(end_date)
+        price_columns = table_columns(conn, schema.prices_table)
+        optional_selects = []
+        for column, alias in (
+            ("Price_Basis", "price_basis"),
+            ("Provider", "provider"),
+            ("Source_Id", "source_id"),
+            ("Source_Revision", "source_revision"),
+            ("Adjustment_Factor", "adjustment_factor"),
+            ("Split_Adjustment_Factor", "split_adjustment_factor"),
+            ("Adjusted_Price", "adjusted_price"),
+            ("Retrieved_At", "retrieved_at"),
+        ):
+            if column in price_columns:
+                optional_selects.append(
+                    f", {_quote_ident(column)} AS {_quote_ident(alias)}"
+                )
+        currency_order = ", Currency" if "Currency" in price_columns else ""
         sql = (
-            f"SELECT [Date] AS trade_date, Price FROM {_quote_ident(schema.prices_table)} "
-            f"WHERE {' AND '.join(where_parts)} ORDER BY [Date]"
+            f"SELECT [Date] AS trade_date, Price AS price{''.join(optional_selects)} "
+            f"FROM {_quote_ident(schema.prices_table)} "
+            f"WHERE {' AND '.join(where_parts)} ORDER BY [Date]{currency_order}"
         )
         df = pd.read_sql_query(sql, conn, params=params)
+        if not df.empty:
+            # ``Price`` is the source value; it is not necessarily raw when a
+            # provider (for example Yahoo) supplies an already split-adjusted
+            # close.  Keep the legacy ``raw_price`` field for clients, and add
+            # an unambiguous alias for new consumers.
+            df["source_price"] = pd.to_numeric(df["price"], errors="coerce")
+            df["raw_price"] = df["source_price"]
+
+        # Apply split adjustments if requested.
+        # Splits with price_basis='adjusted' are skipped — the provider
+        # already adjusted those prices, so re-applying would double-adjust.
+        if adjusted and not df.empty:
+            try:
+                split_columns = table_columns(conn, "Stock_Splits")
+                basis_clause = "AND COALESCE(price_basis, 'raw') = 'raw'" \
+                    if "price_basis" in split_columns else ""
+                superseded_clause = "AND COALESCE(superseded_by, 0) = 0" \
+                    if "superseded_by" in split_columns else ""
+                method_select = "detection_method" if "detection_method" in split_columns else "NULL"
+                id_select = "id" if "id" in split_columns else "NULL"
+                method_order = (
+                    "CASE WHEN detection_method = 'provider' THEN 0 "
+                    "WHEN detection_method = 'manual' THEN 1 ELSE 2 END"
+                    if "detection_method" in split_columns else "0"
+                )
+                id_order = "id DESC" if "id" in split_columns else "rowid DESC"
+                split_rows = conn.execute(
+                    "SELECT split_date, ratio_from, ratio_to, "
+                    f"{method_select}, {id_select} FROM Stock_Splits "
+                    "WHERE ticker = ? AND confirmation = 'confirmed' "
+                    f"{basis_clause} {superseded_clause} ORDER BY split_date ASC, "
+                    f"{method_order}, {id_order}",
+                    (ticker,),
+                ).fetchall()
+                if split_rows:
+                    splits = []
+                    seen_split_dates: set[str] = set()
+                    for split_row in split_rows:
+                        split_date = str(split_row[0])[:10]
+                        if split_date in seen_split_dates:
+                            continue
+                        try:
+                            ratio = float(split_row[2]) / float(split_row[1])
+                        except (TypeError, ValueError, ZeroDivisionError):
+                            continue
+                        if ratio > 0:
+                            seen_split_dates.add(split_date)
+                            splits.append((split_date, ratio))
+                    # Build cumulative factors (newest-first multiplication)
+                    factors: list[tuple[str, float]] = []
+                    cum: float = 1.0
+                    for sd, ratio in reversed(splits):
+                        cum /= ratio
+                        factors.append((sd, cum))
+                    factors.reverse()
+
+                    # Apply to each row
+                    def _adjust(row):
+                        p = row["price"]
+                        basis = str(row.get("price_basis") or "raw").strip().lower()
+                        if basis != "raw":
+                            return p
+                        trade_date = str(row["trade_date"])[:10]
+                        for sd, cf in factors:
+                            if sd > trade_date:
+                                return p * cf
+                        return p
+
+                    df["price"] = df.apply(_adjust, axis=1)
+            except sqlite3.OperationalError:
+                pass  # Stock_Splits table doesn't exist, return raw prices
     finally:
         conn.close()
 
     if df.empty:
         return []
     df["trade_date"] = df["trade_date"].astype(str).str[:10]
-    df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
-    return df.rename(columns={"Price": "price"}).to_dict(orient="records")
+    df["price"] = pd.to_numeric(df["price"], errors="coerce")
+    return df.to_dict(orient="records")
 
 
 def get_security_peers(
@@ -2214,6 +2527,11 @@ def get_security_peers(
     conn = _connect(db_path)
     try:
         selected_snapshot = _load_latest_snapshot(conn, schema, company_code)
+        selected_snapshot = _annotate_statement_snapshot_splits(
+            conn,
+            _safe_str(selected.get("ticker")),
+            selected_snapshot or {},
+        )
         selected_price_info = _load_price_range(conn, schema, _safe_str(selected.get("ticker")))
         selected_market_cap = _safe_float(
             _compute_ratio_payload({
@@ -2226,6 +2544,19 @@ def get_security_peers(
         snapshots_df = _latest_snapshots_for_codes(conn, schema, company_codes)
         if snapshots_df.empty:
             return []
+
+        ticker_by_code = {
+            str(row["company_code"]): str(row["ticker"])
+            for row in peer_companies[["company_code", "ticker"]].to_dict("records")
+        }
+        snapshots_df = pd.DataFrame([
+            _annotate_statement_snapshot_splits(
+                conn,
+                ticker_by_code.get(str(record.get("company_code")), ""),
+                record,
+            )
+            for record in snapshots_df.to_dict(orient="records")
+        ])
 
         tickers = peer_companies["ticker"].astype(str).tolist()
         latest_prices_df = _load_latest_prices_for_tickers(conn, schema, tickers)

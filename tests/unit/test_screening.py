@@ -335,6 +335,167 @@ def test_build_screening_query_between():
     assert params == [5, 15]
 
 
+def test_build_screening_query_recent_split_uses_company_ticker_and_cutoff():
+    criteria = [{
+        "comparison_mode": "recent_split",
+        "operator": "=",
+        "value": "2024-11-01",
+    }]
+    sql, params = build_screening_query(
+        criteria,
+        ["CompanyInfo.Company_Code"],
+        screening_date="2024-12-01",
+    )
+
+    assert "NOT EXISTS (SELECT 1 FROM Stock_Splits ss" in sql
+    assert "FinancialStatements" in sql and "CompanyInfo" in sql
+    assert "ss.[confirmation] = 'confirmed'" in sql
+    assert params == ["2024-12-01", "2024-12-01", "2024-11-01", "2024-12-01"]
+
+
+def test_build_screening_query_recent_split_supports_status_action_and_date_direction():
+    criteria = [{
+        "comparison_mode": "recent_split",
+        "operator": "=",
+        "value": "2024-11-01",
+        "split_action": "include",
+        "split_status": "pending",
+        "split_date_operator": "on_or_before",
+    }]
+
+    sql, params = build_screening_query(criteria, ["CompanyInfo.Company_Code"])
+
+    assert "EXISTS (SELECT 1 FROM Stock_Splits ss" in sql
+    assert "NOT EXISTS" not in sql
+    assert "ss.[confirmation] = 'pending'" in sql
+    assert "date(ss.[split_date]) <= date(?)" in sql
+    assert params == ["2024-11-01"]
+
+
+def test_run_screening_stock_split_date_filter_links_through_company_ticker(sample_db):
+    with sqlite3.connect(sample_db) as conn:
+        conn.execute(
+            "CREATE TABLE Stock_Splits ("
+            "ticker TEXT, split_date TEXT, ratio_from REAL, ratio_to REAL, "
+            "confirmation TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO Stock_Splits VALUES (?, ?, ?, ?, ?)",
+            [
+                ("10010", "2024-11-15", 1, 2, "confirmed"),
+                ("20020", "2024-01-15", 1, 2, "confirmed"),
+            ],
+        )
+
+    criteria = [{
+        "table": "Stock_Splits",
+        "column": "split_date",
+        "operator": ">=",
+        "value": "2024-11-01",
+    }]
+    df = run_screening(
+        sample_db,
+        criteria,
+        ["CompanyInfo.Company_Code", "CompanyInfo.Company_Ticker", "Stock_Splits.split_date"],
+        screening_date="2024-12-01",
+    )
+
+    assert df["Company_Code"].tolist() == ["E00001"]
+    assert df["split_date"].tolist() == ["2024-11-15"]
+
+
+def test_run_screening_stock_split_date_filter_includes_timestamp_on_end_date(sample_db):
+    with sqlite3.connect(sample_db) as conn:
+        conn.execute(
+            "CREATE TABLE Stock_Splits ("
+            "ticker TEXT, split_date TEXT, ratio_from REAL, ratio_to REAL, "
+            "confirmation TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO Stock_Splits VALUES (?, ?, ?, ?, ?)",
+            ("10010", "2024-11-15T18:00:00", 1, 2, "confirmed"),
+        )
+
+    df = run_screening(
+        sample_db,
+        [{
+            "table": "Stock_Splits",
+            "column": "split_date",
+            "operator": "BETWEEN",
+            "value": "2024-11-15",
+            "value2": "2024-11-15",
+        }],
+        ["CompanyInfo.Company_Code", "Stock_Splits.split_date"],
+        screening_date="2024-12-01",
+    )
+
+    assert df["Company_Code"].tolist() == ["E00001"]
+    assert df["split_date"].tolist() == ["2024-11-15T18:00:00"]
+
+
+def test_run_screening_excludes_recent_confirmed_splits(sample_db):
+    with sqlite3.connect(sample_db) as conn:
+        conn.execute(
+            "CREATE TABLE Stock_Splits ("
+            "ticker TEXT, split_date TEXT, ratio_from REAL, ratio_to REAL, "
+            "confirmation TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO Stock_Splits VALUES (?, ?, ?, ?, ?)",
+            [
+                ("10010", "2024-11-15", 1, 2, "confirmed"),
+                ("20020", "2024-11-15", 1, 2, "pending"),
+            ],
+        )
+
+    criteria = [{
+        "comparison_mode": "recent_split",
+        "operator": "=",
+        "value": "2024-11-01",
+    }]
+    df = run_screening(
+        sample_db,
+        criteria,
+        ["CompanyInfo.Company_Code"],
+        screening_date="2024-12-01",
+    )
+
+    assert set(df["Company_Code"]) == {"E00002", "E00003"}
+
+
+def test_run_screening_recent_split_options_include_pending_events(sample_db):
+    with sqlite3.connect(sample_db) as conn:
+        conn.execute(
+            "CREATE TABLE Stock_Splits ("
+            "ticker TEXT, split_date TEXT, ratio_from REAL, ratio_to REAL, "
+            "confirmation TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO Stock_Splits VALUES (?, ?, ?, ?, ?)",
+            [
+                ("10010", "2024-11-15", 1, 2, "confirmed"),
+                ("20020", "2024-11-15", 1, 2, "pending"),
+                ("30030", "2024-01-15", 1, 2, "rejected"),
+            ],
+        )
+
+    df = run_screening(
+        sample_db,
+        [{
+            "comparison_mode": "recent_split",
+            "operator": "=",
+            "value": "2024-11-01",
+            "split_action": "include",
+            "split_status": "pending",
+            "split_date_operator": "on_or_after",
+        }],
+        ["CompanyInfo.Company_Code"],
+        screening_date="2024-12-01",
+    )
+
+    assert set(df["Company_Code"]) == {"E00002"}
+
+
 def test_build_screening_query_with_period():
     """Period filter should be applied."""
     criteria = [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 5}]

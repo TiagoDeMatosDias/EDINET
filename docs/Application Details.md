@@ -1,7 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-07-30
+Last updated: 2026-08-01
 - Central reference for runtime/test Python modules (`src/`), web app modules (`src/web_app/`), React frontend (`frontend-v2/`), and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
@@ -286,22 +286,60 @@ Responsibility: Shared stock price provider access and persistence helpers used 
 
 - `def load_ticker_data(ticker: str, prices_table: str, conn) -> bool`
 	- Purpose: Fetch normalized history for `ticker`, append new rows, return `False` when the upstream provider flow fails.
-	- Calls/Dependencies: `_load_provider_history`, `pd.read_sql_query`, `to_sql`, `logger`.
+	- Calls/Dependencies: `_load_provider_history`, `pd.read_sql_query`, `_append_price_rows`, `logger`.
 
-- `def _load_provider_history(ticker: str, start_date: str | None = None) -> tuple[str, pd.DataFrame]`
-	- Purpose: Try Stooq first and Yahoo Finance chart as a fallback, then normalize the returned price history.
-	- Calls/Dependencies: `_fetch_stooq_history`, `_fetch_yahoo_history`, `_normalise_price_history`.
+- `def _load_provider_history(ticker: str, start_date: str | None = None) -> tuple[str, pd.DataFrame, list[dict]]`
+	- Purpose: Try the JPX quote historical page first for Japanese tickers, then Stooq and Yahoo Finance chart fallbacks; normalize the returned price history and authoritative provider split events. JPX's 50-session page is used for incremental coverage and is skipped when it would truncate an initial/older backfill.
+	- Calls/Dependencies: `_fetch_jpx_history`, `_fetch_stooq_history`, `_fetch_yahoo_history`, `_normalise_price_history`.
+
+- `def _request_with_retries(provider, request_fn, url, *, response_validator=None, cooldown_on_failure=True, **kwargs) -> requests.Response`
+	- Purpose: Apply bounded retry/backoff handling to transient provider failures, honor `Retry-After`, detect rate-limit responses, and cool down blocked providers between ticker requests.
+
+- `def _fetch_jpx_history(provider_ticker: str, start_date: str | None = None) -> pd.DataFrame`
+	- Purpose: Establish JPX's search/detail navigation referrer chain, then fetch and parse its split-adjusted `#historical` closing-price table for the latest 50 trading sessions.
 
 - `def _create_prices_table(conn, table_name) -> None`
-	- Purpose: Ensure the destination stock-prices table exists with the expected schema.
-	- Calls/Dependencies: `pd.DataFrame`, `to_sql`, `logger`.
+	- Purpose: Ensure the destination stock-prices table exists, migrate row-level provenance columns, and create lookup indexes.
+	- Calls/Dependencies: SQLite DDL, `price_provenance.ensure_price_provenance_columns`, `logger`.
+
+- `def _append_price_rows(conn, prices_table, ticker, df, currency, *, provider=None, price_basis=None, provider_symbol=None, source_revision=None, retrieved_at=None, split_events=None) -> None`
+	- Purpose: Append source quotes without rewriting `Price`; records provider, stable source ID/revision, retrieval timestamp, and raw/adjusted/unknown basis using transaction-preserving SQLite inserts so overwrite SAVEPOINTs remain active.
+
+- `def reconcile_ticker_price_basis(conn, prices_table, ticker) -> dict`
+	- Purpose: Explicitly repair reviewed legacy mixed-basis boundaries; this is separate from normal ingestion and never runs implicitly.
+
+### [src/utilities/price_provenance.py](../src/utilities/price_provenance.py)
+
+Responsibility: Idempotent Stock_Prices provenance migration and the SQL-friendly split-adjusted read model.
+
+- `def ensure_price_provenance_columns(conn, table_name="Stock_Prices") -> set[str]` - Add provenance columns without replacing existing rows; pre-existing rows are marked `unknown`.
+- `def refresh_split_adjusted_prices(conn, ticker=None, prices_table="Stock_Prices") -> int` - Populate `Split_Adjustment_Factor` and `Adjusted_Price` only for raw rows and confirmed raw-basis split events; source `Price` is never changed.
+- `def source_id(provider, provider_symbol, date) -> str` - Build a stable row-level provenance identifier.
+
+`Stock_Prices` provenance columns: `Price_Basis`, `Provider`, `Source_Id`, `Source_Revision`, `Adjustment_Factor`, `Split_Adjustment_Factor`, `Adjusted_Price`, and `Retrieved_At`.
+
+JPX and Yahoo daily historical closes are stored as received with `Price_Basis='adjusted'` (split-adjusted); Stooq, ETF, and user CSV rows remain `unknown` until their adjustment convention is reviewed.
+
+### [src/portfolio/split_schema.py](../src/portfolio/split_schema.py)
+
+Responsibility: Managed `Stock_Splits`/`Split_Detection_Watermarks` schema with source/action metadata, confirmation state, and basis semantics.
+
+- `def ensure_split_tables(db2_path=None, conn=None) -> None` - Create or migrate split/action tables and indexes without replacing history.
+
+### [src/portfolio/split_detection.py](../src/portfolio/split_detection.py)
+
+Responsibility: Conservative price-heuristic detection and annual-report/share-price cross-checking.
+
+- `def detect_splits_by_price_heuristic(conn, ticker, threshold=0.40, start_date=None) -> list[dict]` - Detect integer/fractional discontinuities while carrying source/basis context and honoring incremental watermarks.
+- `def verify_split_with_share_metrics(conn, ticker, candidate_date_str, candidate_ratio_from, candidate_ratio_to) -> dict` - Compare issued-share and, when available, report share-price ratios.
+- `def run_split_detection(db2_path, tickers=None, mode="incremental", threshold=0.40) -> dict` - Persist pending/confirmed/rejected events and update per-ticker scan watermarks.
 
 ### [src/orchestrator/update_stock_prices/update_stock_prices.py](../src/orchestrator/update_stock_prices/update_stock_prices.py)
 
 Responsibility: Step-owned workflow that decides which company tickers should be refreshed before delegating actual provider queries to the shared stock price utilities.
 
-- `def update_all_stock_prices(db_name, Company_Table, prices_table, standardized_table=None) -> None`
-	- Purpose: Select eligible tickers from the configured company and financial-data tables, then call `load_ticker_data` for each one.
+- `def update_all_stock_prices(db_name, Company_Table, prices_table, context=None, overwrite=False) -> None`
+	- Purpose: Select eligible tickers from the configured company and financial-data tables, then call `load_ticker_data` for each one. Individual provider failures are logged while later tickers continue. With `overwrite=True`, each selected ticker is replaced transactionally and failed/empty downloads roll back to the previous rows.
 	- Calls/Dependencies: `sqlite3.connect`, `stock_prices._create_prices_table`, `cursor.execute`, `stock_prices.load_ticker_data`, `conn.close`.
 
 ### [src/orchestrator/update_fx_data/update_fx_data.py](../src/orchestrator/update_fx_data/update_fx_data.py)
@@ -458,9 +496,29 @@ Responsibility: Company tags API routes at `/api/tags/*` — CRUD operations for
 
 Responsibility: Portfolio API routes at `/api/portfolio/*` — import, holdings, transactions, performance, charts, currency, options.
 
+### [src/portfolio/performance.py](../src/portfolio/performance.py)
+
+Responsibility: Owner-scoped portfolio return, risk, drawdown, dividend, inflation, and benchmark calculations. Requested date windows rebase the inception wealth index before total/annualized returns are calculated; drawdown follows flow-adjusted wealth rather than raw account value.
+
 ### [frontend-v2/](../frontend-v2/)
 
 Responsibility: Primary React/TypeScript/Vite workspace — application shell (AppShell), feature routes (Overview, Screening, Analysis, Backtesting, Portfolio, Pipeline), shared components (BrandLockup, DataTable, Feedback, GlobalCompanySearch), shared brand/chart tokens, responsive styles, API clients, and Vitest coverage.
+
+### [frontend-v2/src/features/portfolio/PortfolioWorkspace.tsx](../frontend-v2/src/features/portfolio/PortfolioWorkspace.tsx)
+
+Responsibility: Portfolio query orchestration and navigation. Owns the five-section workspace, performance range and display currency, lazy analytical queries, imports/rebuilds, six headline drill-down metrics, and selected drawer state.
+
+### [PortfolioOverview.tsx](../frontend-v2/src/features/portfolio/PortfolioOverview.tsx), [PortfolioHoldings.tsx](../frontend-v2/src/features/portfolio/PortfolioHoldings.tsx), [PortfolioPerformance.tsx](../frontend-v2/src/features/portfolio/PortfolioPerformance.tsx), [PortfolioIncome.tsx](../frontend-v2/src/features/portfolio/PortfolioIncome.tsx), [PortfolioActivity.tsx](../frontend-v2/src/features/portfolio/PortfolioActivity.tsx)
+
+Responsibility: Decision-focused portfolio sections for wealth/allocation, searchable weighted positions, return and risk analytics, gross/tax/net income, and a filtered/paginated transaction ledger with real cash effects.
+
+### [PortfolioCharts.tsx](../frontend-v2/src/features/portfolio/PortfolioCharts.tsx), [PortfolioAdvancedAnalytics.tsx](../frontend-v2/src/features/portfolio/PortfolioAdvancedAnalytics.tsx), [PortfolioDrawer.tsx](../frontend-v2/src/features/portfolio/PortfolioDrawer.tsx), [PortfolioDetailContent.tsx](../frontend-v2/src/features/portfolio/PortfolioDetailContent.tsx)
+
+Responsibility: Bounded Chart.js views, flow-adjusted risk/distribution/concentration analysis, and the accessible modal side drawer used for value, performance, risk, allocation, income, activity, holding, and transaction detail.
+
+### [portfolioFormat.ts](../frontend-v2/src/features/portfolio/portfolioFormat.ts), [portfolioTypes.ts](../frontend-v2/src/features/portfolio/portfolioTypes.ts), [portfolio.css](../frontend-v2/src/portfolio.css)
+
+Responsibility: Portfolio-specific contracts, currency/percent/quantity formatting, range slicing, aggregate summaries, transaction cash-effect selection, and responsive chart/table/drawer containment.
 
 ---
 
@@ -480,23 +538,26 @@ Core implementation in `src/security_analysis/security_analysis.py`:
 	- Purpose: Resolve actual table and column names for `CompanyInfo`, `FinancialStatements`, `Stock_Prices`, optional statement/ratio tables, and optional `DocumentList` metadata when present, including fallback company-name fields used by the standardized database.
 
 - `def ensure_security_analysis_indexes(db_path: str) -> dict[str, Any]`
-	- Purpose: Create one-time indexes that accelerate Security Analysis search, overview, statement lookup, price history, and peer-comparison queries.
+	- Purpose: Migrate legacy price rows to explicit provenance before creating one-time indexes that accelerate Security Analysis search, overview, statement lookup, price history, and peer-comparison queries.
 
 - `def search_securities(db_path: str, query: str, limit: int = 25) -> list[dict[str, Any]]`
 	- Purpose: Search securities across name, ticker, EDINET code, and industry with deterministic ranking.
 
 - `def get_security_overview(db_path: str, edinet_code: str) -> dict[str, Any]`
-	- Purpose: Return company profile, market snapshot, fundamentals, valuation, quality, and metadata for the selected security.
+	- Purpose: Return company profile, market snapshot, fundamentals, valuation, quality, and metadata for the selected security. Confirmed post-filing splits project report per-share values and share counts onto the current-share basis without changing filed values.
 
 - `def get_security_ratios(db_path: str, edinet_code: str) -> dict[str, Any]`
-	- Purpose: Return latest valuation and quality ratios, including fallback calculations when direct valuation fields are missing.
+	- Purpose: Return latest valuation and quality ratios, including fallback calculations when direct valuation fields are missing and split-basis projections for report metrics.
+
+- `def _split_adjusted_statement_value(conn, ticker, period_end, value, *, per_share=True) -> float | None`
+	- Purpose: Project filed per-share metrics (or issued-share counts when `per_share=False`) onto the current-share basis using confirmed raw-basis events, without rewriting the source statement.
 
 - `def get_security_statements(db_path: str, edinet_code: str, periods: int = 8, statement_sources: dict[str, str] | None = None) -> dict[str, Any]`
 	- Purpose: Return ordered historical statement rows for the requested financial statement and ratio sources.
 	- Implementation: Delegates to history.get_security_statements_by_source, which queries each wide statement source independently to stay below SQLite's result-column limit.
 
-- `def get_security_price_history(db_path: str, ticker: str, start_date: str | None = None, end_date: str | None = None) -> list[dict[str, Any]]`
-	- Purpose: Return ordered daily price history rows for charting and change calculations.
+- `def get_security_price_history(db_path: str, ticker: str, start_date: str | None = None, end_date: str | None = None, adjusted: bool = False) -> list[dict[str, Any]]`
+	- Purpose: Return ordered daily price history rows for charting and change calculations, retaining source-price provenance and optionally materializing a current-share split-adjusted view.
 
 - `def get_security_peers(db_path: str, edinet_code: str, industry: str | None = None, limit: int = 10) -> list[dict[str, Any]]`
 	- Purpose: Return deterministic peer-comparison rows based on the selected company's industry and latest snapshot.
@@ -517,13 +578,15 @@ Core implementation in `src/screening/screening.py`:
 
 - Constants: `SCREENING_TABLES`, `OPERATOR_MAP`, `DEFAULT_COLUMNS`, `FORMAT_RULES`, ranking-related constants, and column alias helpers.
 
-- `def get_available_metrics(db_path: str) -> dict[str, list[str]]` - Introspect DB for screening table columns.
+- `def get_available_metrics(db_path: str) -> dict[str, list[str]]` - Introspect DB for screening table columns, including the managed `Stock_Splits` action-table schema.
 - `def get_available_periods(db_path: str) -> list[str]` - Return distinct periodEnd years.
 - ``screening_date`` (YYYY-MM-DD) selects the most recent filing per company with ``periodEnd <= date``, and caps stock prices at that date.
 - ``computed_columns`` accepts legacy ratio specs or validated ``expression_tokens`` (metrics, values, ``+ - * /``, and balanced parentheses) for runtime output fields.
 - Column comparisons now support an optional ``offset`` parameter for relative thresholds.
+- `Stock_Splits` criteria are correlated through `FinancialStatements` -> `CompanyInfo` (company code) -> `CompanyInfo.Company_Ticker` -> `Stock_Splits.ticker` (with `.T`/`.JP` suffix normalization); `split_date` and related action dates accept ISO date values.
+- `comparison_mode="recent_split"` adds a configurable split-event rule: `split_action` includes or excludes matching companies, `split_status` selects confirmed/rejected/pending/any events, and `split_date_operator` compares `split_date` on or after/on or before the cutoff; matching events are optionally capped by `screening_date`.
 
-- `def build_screening_query(criteria, columns, period=None, screening_date=None, available_metrics=None, column_aliases=None, computed_columns=None) -> tuple[str, list]` - Build parameterised SQL with validation.
+- `def build_screening_query(criteria, columns, period=None, screening_date=None, available_metrics=None, column_aliases=None, computed_columns=None, use_adjusted_price=False) -> tuple[str, list]` - Build parameterised SQL with validation, including company-linked stock-split criteria.
 - `def run_screening(db_path: str, criteria: list[dict], columns: list[str], period: str | None = None, sort_by: str | None = None, sort_order: str = "ASC", ranking_algorithm: str = "none", ranking_rules: list[dict] | None = None) -> pd.DataFrame` - Execute screening, apply optional ranking, and return results.
 - `def export_screening_to_backtest_csv(db_path: str, criteria: list[dict], columns: list[str], output_path: str, period: str | None = None, max_companies: int = 25, ranking_algorithm: str = "none", ranking_rules: list[dict] | None = None, historical: bool = False) -> str` - Export screening results in the CSV format used by `run_backtest_set`.
 - `def export_screening_to_csv(df, output_path) -> str` - Export DataFrame to CSV.
@@ -605,7 +668,7 @@ Responsibility: bounded comparison snapshots/history/peer endpoints and owner-sc
 
 `POST /api/portfolio/tax-lots` applies FIFO, average-cost, or specific-lot matching to a submitted preview event stream. `POST /api/portfolio/greeks` aggregates Black-Scholes Greeks with explicit quantity/multiplier/volatility assumptions. `POST /api/portfolio/scenarios/evaluate` applies deterministic equity and FX shocks. All three endpoints require an authenticated account and return assumptions; they do not mutate imported portfolio activity.
 
-Last updated: 2026-07-30
+Last updated: 2026-08-01
 
 Keep this document aligned with code changes in the same PR or commit.
 

@@ -16,6 +16,7 @@ from src.research.api import router as _research_router
 from src.reports.api import router as _reports_router
 from src.web_app.api.screening import router as _screening_router
 from src.web_app.api.security_analysis import router as _security_router
+from src.web_app.api.splits import router as _splits_router
 from src.web_app.api.tags import router as _tags_router
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ _ROUTERS = (
     _reports_router,
     _screening_router,
     _security_router,
+    _splits_router,
     _tags_router,
     _backtesting_router,
     _comparison_router,

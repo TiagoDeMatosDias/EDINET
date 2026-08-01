@@ -14,6 +14,21 @@ export function splitMetricRef(ref: string) {
 
 export function normalizeCriterion(raw: Partial<Criterion>): Criterion {
   const base = { ...raw, id: raw.id || crypto.randomUUID() }
+  if (raw.comparison_mode === 'recent_split') {
+    return {
+      ...base,
+      operator: raw.operator || '=',
+      comparison_mode: 'recent_split',
+      value: raw.value ?? '',
+      split_action: raw.split_action === 'include' ? 'include' : 'exclude',
+      split_status: ['confirmed', 'rejected', 'pending', 'any'].includes(raw.split_status ?? '') ? raw.split_status : 'confirmed',
+      split_date_operator: raw.split_date_operator === 'on_or_before' ? 'on_or_before' : 'on_or_after',
+    }
+  }
+  const stockSplitDate = raw.table === 'Stock_Splits' && ['split_date', 'announced_at', 'ex_date', 'effective_date', 'record_date'].includes(raw.column ?? '')
+  if (stockSplitDate && (!raw.comparison_mode || raw.comparison_mode === 'fixed')) {
+    return { ...base, operator: raw.operator || '>', comparison_mode: 'fixed', value: raw.value ?? '', value2: raw.value2 ?? '', field_type: 'date' }
+  }
   if (raw.comparison_mode === 'full_expression') {
     return { ...base, operator: raw.operator || '>', comparison_mode: 'full_expression', left_side: raw.left_side ?? [], right_side: raw.right_side ?? [] }
   }
@@ -37,6 +52,19 @@ export function normalizeCriterion(raw: Partial<Criterion>): Criterion {
     right = [{ type: 'column', table: 'Stock_Prices', column: 'Price' }]
   }
   return { ...base, operator: raw.operator || '>', comparison_mode: 'full_expression', left_side: left, right_side: right }
+}
+
+export function newRecentSplitCriterion(): Criterion {
+  return {
+    id: crypto.randomUUID(),
+    operator: '=',
+    comparison_mode: 'recent_split',
+    value: '',
+    field_type: 'date',
+    split_action: 'exclude',
+    split_status: 'confirmed',
+    split_date_operator: 'on_or_after',
+  }
 }
 
 export function newExpressionCriterion(): Criterion {

@@ -7,16 +7,19 @@ currency per ticker (derived from the IBKR XML ``currency`` field).
 
 from __future__ import annotations
 
-import sqlite3
 import logging
-from collections import defaultdict
+import sqlite3
 
 import pandas as pd
 
-from src.utilities.stock_prices import load_ticker_data, _create_prices_table
 from src.orchestrator.common.db_config import get_db2
 from src.orchestrator.common.sqlite import connect_write
-from src.portfolio.etf_data import fetch_etf_history, is_etf, get_etf_info
+from src.portfolio.etf_data import fetch_etf_history, is_etf
+from src.utilities.stock_prices import (
+    _append_price_rows,
+    _create_prices_table,
+    load_ticker_data,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -211,16 +214,19 @@ def _fetch_etf_to_db(conn: sqlite3.Connection, ticker: str, expected_currency: s
                     logger.debug("ETF %s already up to date", ticker)
                     return True
 
-            df["Ticker"] = ticker
-            df["Currency"] = expected_currency
-            # Keep only needed columns
-            cols = [c for c in ["Date", "Ticker", "Currency", "Price"] if c in df.columns]
-            df = df[cols]
+            # Keep only the normalized date/close frame; the common append
+            # path adds row-level provenance consistently with stock prices.
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
             # Remove duplicates by date
             df = df.drop_duplicates(subset=["Date"], keep="last")
             df = df.sort_values("Date")
-            df_to_store = df
+            df_to_store = df.rename(columns={"Price": "Close"})[["Date", "Close"]]
+            df_to_store.attrs.update({
+                "provider": source_label,
+                "provider_symbol": ticker,
+                "price_basis": "unknown",
+            })
             logger.info(
                 "ETF %s: fetched %d rows via %s", ticker, len(df), source_label,
             )
@@ -242,7 +248,12 @@ def _fetch_etf_to_db(conn: sqlite3.Connection, ticker: str, expected_currency: s
 
     if df_to_store is not None and not df_to_store.empty:
         try:
-            df_to_store.to_sql("Stock_Prices", conn, if_exists="append", index=False)
+            _append_price_rows(
+                conn, "Stock_Prices", ticker, df_to_store, expected_currency,
+                provider=df_to_store.attrs.get("provider", source_label),
+                price_basis="unknown",
+                provider_symbol=df_to_store.attrs.get("provider_symbol", ticker),
+            )
             conn.commit()
             return True
         except Exception as exc:

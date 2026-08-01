@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Stock-price updates now use the JPX quote historical page as the primary source for Japanese tickers, preserve its split-adjusted basis and source revision, and fall back to Stooq/Yahoo when JPX's 50-session window cannot cover the requested range.
+- The stock-price update step now honors `overwrite` by replacing each selected ticker's cached history transactionally; failed or empty replacements retain the prior rows.
+- Stooq/Yahoo price requests now use bounded retry/backoff, `Retry-After` handling, alternate Yahoo chart hosts, and process-local provider cooldowns after rate limiting or repeated transient failures.
+- Bulk price updates continue with the remaining tickers after an individual provider failure instead of aborting the run at the first failed ticker.
+- Fixed overwrite updates failing with `no such savepoint` when pandas committed the SQLite connection while replacing a ticker's price rows.
+- Screening now exposes `Stock_Splits` as a company-linked action table, supports date-valued split filters and expression tokens, and adds a configurable date-picker rule for including or excluding confirmed/rejected/pending/any splits on or after or before a cutoff date.
+- Stock-price ingestion now records provider, source ID/revision, retrieval time, quote basis, and a non-destructive split-adjusted read model; confirmed split actions are applied to portfolio quantities/cost bases, benchmark/security analytics, and backtests without rewriting source prices.
+- Security Analysis valuation metrics now project filed per-share values and share counts onto the current-share basis for confirmed post-filing splits while preserving the filed values and exposing source-price provenance.
+- Split reconciliation rollback now preserves every price-provenance column and removes any transient split rows created during a failed verification.
+- Portfolio period statistics now rebase the inception wealth index, drawdown follows flow-adjusted returns, and raw dividend totals are owner-scoped; withdrawals and other accounts can no longer distort displayed return, risk, or income figures.
+- Portfolio activity uses actual trade cash effects instead of the often-zero generic amount field, and paginated ledger transitions return to the first row.
 - Filing translation now processes complete section bodies and all visible report HTML in bounded chunks, retries residual Japanese, rejects partial output, and caches only translator-version-3 results that contain no remaining Japanese. Japanese and English remain visible side by side.
 - Company comparison now resolves its values through the Company Analysis contracts and statement history, so standard snapshot metrics, common-size rows, and arbitrary numeric statement columns are populated consistently.
 - Research tag membership uses the shared company picker and correctly invalidates tag summaries and member results after a company is added or removed.
@@ -46,6 +57,7 @@ All notable changes to this project will be documented in this file.
 - **`docs/design/UX Design Language.md`** — removed; was the design spec for the pre-React vanilla JS UI.
 
 ### Added
+- **Portfolio intelligence workspace** — reorganized `/portfolio` into Overview, Holdings, Performance, Income, and Activity with six drillable headline metrics, position and transaction drawers, bounded wide-screen charts, allocation/risk/return/income/contribution analytics, filters, weights, formatted multi-currency values, and a paginated 1,000-record activity ledger.
 - **Shade Research brand system** — the five-segment signal ring, two-colour wordmark, “Value in context.” tagline, canonical `assets/brand/` package, warm technical palette, chart colors, browser metadata, Windows application icon, and refreshed documentation gallery now form one shared identity across public, authentication, and workspace routes.
 - **Public product pages** — `/` now provides a product homepage with registration, login, and pricing links; `/pricing` presents the current €10/month or €100/year informational tier.
 - **Unified company discovery** — Analysis, Comparison, Filings, Research, and the global header share best-effort search by company name, ticker, EDINET code, industry, market, and available price ticker, with graceful partial-database fallback.

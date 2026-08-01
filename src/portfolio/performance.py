@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+
 import numpy as np
 from scipy import stats as scipy_stats
 
 from src.orchestrator.common.db_config import get_db2, get_db3
 from src.orchestrator.common.sqlite import connect_read
 from src.portfolio.portfolio_state import get_daily_values
+from src.utilities.price_provenance import table_columns
 
 logger = logging.getLogger(__name__)
 
@@ -213,9 +215,11 @@ def _get_benchmark_returns(
     min_date = dates[0]
     max_date = dates[-1]
 
+    price_columns = table_columns(conn, "Stock_Prices")
+    basis_select = ", Price_Basis" if "Price_Basis" in price_columns else ""
     rows = conn.execute(
-        "SELECT Date, Price, Currency FROM Stock_Prices WHERE Ticker = ? "
-        "AND Date >= ? AND Date <= ? ORDER BY Date",
+        f"SELECT Date, Price, Currency{basis_select} FROM Stock_Prices "
+        "WHERE Ticker = ? AND Date >= ? AND Date <= ? ORDER BY Date",
         (benchmark_ticker, min_date, max_date),
     ).fetchall()
 
@@ -225,6 +229,23 @@ def _get_benchmark_returns(
         return None, None
 
     bench_currency = rows[0][2] or "???"
+
+    # Apply split adjustments so benchmark returns are on a current-share basis
+    from src.portfolio.portfolio_state import _load_split_factors
+    split_factors = _load_split_factors(conn, benchmark_ticker)
+    if split_factors:
+        adjusted_rows: list[tuple] = []
+        for row in rows:
+            date_val, price, currency = row[:3]
+            basis = str(row[3] or "raw").strip().lower() if len(row) > 3 else "raw"
+            adj_price = price
+            if basis == "raw":
+                for split_date, cum_factor in split_factors:
+                    if split_date > date_val:
+                        adj_price = price * cum_factor
+                        break
+            adjusted_rows.append((date_val, adj_price, currency, basis))
+        rows = adjusted_rows
 
     # Build price map
     price_map: dict[str, float] = {row[0]: row[1] for row in rows}
@@ -451,12 +472,18 @@ def calculate_metrics(
             cash_flows = _inflows_converted
             crs = _cum_series
             returns = _converted_returns
-            logger.info("Converted portfolio values from EUR to %s using %s",
-                        base_currency, _fx_ticker)
+            logger.info("Converted portfolio values from EUR to %s using FX data",
+                        base_currency)
 
-    # Total return from stored cumulative return (time-weighted).
-    # crs[-1] = Π(1+r_i) - 1 → total_return = crs[-1]
-    total_return = crs[-1] if crs else 0.0
+    # Portfolio_Daily stores an inception-to-date time-weighted wealth index.
+    # Portfolio_Daily cumulative returns are inception-to-date. Rebase the
+    # wealth index so one-year, YTD, and custom windows report their own return.
+    if crs:
+        starting_wealth = 1.0 + float(crs[0] or 0.0)
+        ending_wealth = 1.0 + float(crs[-1] or 0.0)
+        total_return = ending_wealth / starting_wealth - 1.0 if starting_wealth > 0 else 0.0
+    else:
+        total_return = 0.0
 
     # Clean daily returns: skip days where portfolio hasn't started yet
     # (i.e. first days with all zeros before first transaction)
@@ -477,19 +504,24 @@ def calculate_metrics(
     ann_return = _annualize_return(total_return, max(years, 0.01))
     vol = float(np.std(returns_clean, ddof=1) * np.sqrt(252)) if len(returns_clean) >= 2 else 0
 
-    # Drawdown
-    dd_val, peak_date, trough_date = max_drawdown_with_dates(values, dates)
+    # Drawdown must follow the flow-adjusted wealth index. Raw portfolio value
+    # would mistake deposits and withdrawals for investment gains or losses.
+    wealth_index = [1.0 + float(value or 0.0) for value in crs]
+    dd_val, peak_date, trough_date = max_drawdown_with_dates(wealth_index, dates)
 
     # Dividend breakdown — from raw transactions for accuracy
     # (Portfolio_Daily nets gross+tax, so we need source data)
     import sqlite3 as _sql
     conn3 = _sql.connect(db3_path)
     conn3.row_factory = _sql.Row
+    dividend_params: list[str] = [owner_user_id]
+    dividend_filter = "WHERE owner_user_id = ? AND activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')"
+    if start_date and end_date:
+        dividend_filter += " AND trade_date >= ? AND trade_date <= ?"
+        dividend_params.extend([start_date, end_date])
     div_rows = conn3.execute(
-        "SELECT activity_type, amount, fx_rate_to_base FROM Transactions "
-        "WHERE activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')"
-        + (" AND trade_date >= ? AND trade_date <= ?" if start_date and end_date else ""),
-        tuple(filter(None, [start_date, end_date]))
+        "SELECT activity_type, amount, fx_rate_to_base FROM Transactions " + dividend_filter,
+        dividend_params,
     ).fetchall()
     conn3.close()
     div_gross = sum(
@@ -693,8 +725,6 @@ def calculate_metrics(
     # Dividend yield = total dividends / average portfolio value
     avg_value = float(np.mean(values)) if values and sum(values) > 0 else 0
     div_yield = div_net / avg_value if avg_value > 0 else 0
-    # Annualize dividend yield
-    div_yield_ann = (1 + div_yield) ** (1 / max(years, 0.01)) - 1 if years > 0 and div_yield > 0 else div_yield
     capital_appreciation = total_return - div_yield if total_return else 0
     # Real return = (1 + nominal) / (1 + inflation) - 1 (Fisher equation)
     real_return = ((1 + total_return) / (1 + inflation_total) - 1) if total_return and (1 + inflation_total) > 0 else total_return

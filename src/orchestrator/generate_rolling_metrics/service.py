@@ -13,7 +13,7 @@ logger = logging.getLogger("src.data_processing")
 
 _DB_HELPER = OrchestratorProcessorBase()
 
-_ROLLING_WINDOWS = (3, 5, 10)
+_ROLLING_WINDOWS = (2, 3, 5, 10)
 _PROGRESS_LOG_EVERY_ROWS = 5000
 ROLLING_METRICS_CONFIG_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "rolling_metrics.json")

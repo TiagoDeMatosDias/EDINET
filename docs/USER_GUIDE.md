@@ -36,7 +36,7 @@ The header company finder searches across the best data currently available. It 
 
 ### Screening
 
-Screening builds table-first expressions over company, price, statement, ratio, rolling, and tag fields. A rule can compare complete expressions on both sides, including metrics, literals, arithmetic operators, tags, and validated parentheses. Select result columns independently, add derived fields, save definitions, export CSV, or send the current draft into a point-in-time rolling backtest.
+Screening builds table-first expressions over company, price, statement, ratio, rolling, tag, and corporate-action fields. `Stock_Splits` is linked through each filing's `Company_Code` to `CompanyInfo.Company_Ticker`, so split-date rules apply to the right company. Select a split date in the metric picker to use the date input; in an Expression rule, choose `Date` from the right-side `+ Add` menu. The `No recent split` rule can include or exclude companies, match confirmed/rejected/pending/any status, and compare dates on or after/on or before the cutoff. You can also choose `Filter`/`Between` for a direct date rule. Rules can compare complete expressions on both sides, including metrics, literals, arithmetic operators, tags, and validated parentheses. Select result columns independently, add derived fields, save definitions, export CSV, or send the current draft into a point-in-time rolling backtest.
 
 <img src="images/web-screening.png" alt="Company screen builder" width="900">
 

@@ -64,6 +64,42 @@ COMPANYINFO_INDUSTRY_CANDIDATES: list[str] = [
     "Business_Industry",
 ]
 
+STOCK_SPLIT_SCREENING_COLUMNS: list[str] = [
+    "id",
+    "ticker",
+    "split_date",
+    "ratio_from",
+    "ratio_to",
+    "detection_method",
+    "confirmation",
+    "confirmed_by",
+    "source_detail",
+    "share_count_before",
+    "share_count_after",
+    "share_count_ratio",
+    "price_basis",
+    "provider",
+    "source_id",
+    "source_revision",
+    "retrieved_at",
+    "announced_at",
+    "ex_date",
+    "effective_date",
+    "record_date",
+]
+
+STOCK_SPLIT_DATE_COLUMNS: frozenset[str] = frozenset({
+    "split_date",
+    "announced_at",
+    "ex_date",
+    "effective_date",
+    "record_date",
+})
+
+RECENT_SPLIT_ACTIONS: frozenset[str] = frozenset({"exclude", "include"})
+RECENT_SPLIT_STATUSES: frozenset[str] = frozenset({"confirmed", "rejected", "pending", "any"})
+RECENT_SPLIT_DATE_OPERATORS: frozenset[str] = frozenset({"on_or_after", "on_or_before"})
+
 SHARES_OUTSTANDING_CANDIDATES: list[str] = [
     "SharesOutstanding",
     "Shares_Outstanding",
@@ -131,6 +167,7 @@ _TABLE_ALIAS: dict[str, str] = {
     "FinancialStatements": "f",
     "CompanyInfo": "c",
     "Stock_Prices": "s_p",
+    "Stock_Splits": "ss",
     "PerShare": "ps",
     "Valuation": "v",
     "Quality": "q",
@@ -176,6 +213,126 @@ def _resolve_column_ref_for_sql(
             return actual_col
     # If no match, return the original (SQLite will error if column doesn't exist)
     return column
+
+
+def _validate_date_filter(value: object, label: str) -> str:
+    """Validate a screening date value and return its ISO representation."""
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{label} requires a date")
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError(f"{label} must use YYYY-MM-DD") from exc
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _stock_split_ticker_match(split_alias: str, company_ticker_ref: str) -> str:
+    """Match split tickers to CompanyInfo tickers with provider suffixes."""
+    split_ticker = f"REPLACE(REPLACE(UPPER({split_alias}.[ticker]), '.T', ''), '.JP', '')"
+    company_ticker = (
+        "REPLACE(REPLACE(UPPER("
+        f"{company_ticker_ref}), '.T', ''), '.JP', '')"
+    )
+    return f"{split_ticker} = {company_ticker}"
+
+
+def _stock_split_filter_sql(
+    criterion: dict,
+    company_ticker_ref: str,
+    params: list,
+) -> str:
+    """Build an EXISTS predicate for a Stock_Splits criterion."""
+    operator = OPERATOR_MAP[criterion["operator"]]
+    column = _safe_identifier(str(criterion.get("column", "")))
+    match = _stock_split_ticker_match("ss", company_ticker_ref)
+    base = f"FROM Stock_Splits ss WHERE {match}"
+
+    if operator == "IS":
+        return (
+            f"(NOT EXISTS (SELECT 1 {base}) OR EXISTS "
+            f"(SELECT 1 {base} AND ss.[{column}] IS NULL))"
+        )
+    if operator == "IS NOT":
+        return f"EXISTS (SELECT 1 {base} AND ss.[{column}] IS NOT NULL)"
+    if operator == "IN":
+        values = criterion.get("values")
+        if not values or not isinstance(values, list):
+            values = [criterion.get("value")] if criterion.get("value") is not None else []
+        if not values:
+            raise ValueError("IN operator requires a list of values")
+        if column.lower() in STOCK_SPLIT_DATE_COLUMNS:
+            values = [_validate_date_filter(value, "Stock split date") for value in values]
+        placeholders = ", ".join("?" for _ in values)
+        params.extend(values)
+        date_expr = f"date(ss.[{column}])" if column.lower() in STOCK_SPLIT_DATE_COLUMNS else f"ss.[{column}]"
+        condition = f"{date_expr} IN ({placeholders})"
+    elif operator == "LIKE":
+        params.append(str(criterion.get("value", "")))
+        condition = f"ss.[{column}] LIKE ?"
+    elif operator == "BETWEEN":
+        first = criterion.get("value")
+        second = criterion.get("value2")
+        date_column = column.lower() in STOCK_SPLIT_DATE_COLUMNS
+        if date_column:
+            first = _validate_date_filter(first, "Stock split date")
+            second = _validate_date_filter(second, "Stock split date")
+        params.extend([first, second])
+        date_expr = f"date(ss.[{column}])" if date_column else f"ss.[{column}]"
+        condition = f"{date_expr} BETWEEN ? AND ?"
+    else:
+        value = criterion.get("value")
+        date_column = column.lower() in STOCK_SPLIT_DATE_COLUMNS
+        if date_column:
+            value = _validate_date_filter(value, "Stock split date")
+        params.append(value)
+        date_expr = f"date(ss.[{column}])" if date_column else f"ss.[{column}]"
+        condition = f"{date_expr} {operator} date(?)" if date_column else f"{date_expr} {operator} ?"
+    return f"EXISTS (SELECT 1 {base} AND {condition})"
+
+
+def _recent_split_filter_sql(
+    criterion: dict,
+    company_ticker_ref: str,
+    screening_date: str | None,
+    params: list,
+) -> str:
+    """Build the configurable include/exclude split-event predicate."""
+    action = str(criterion.get("split_action") or "exclude").strip().lower()
+    status = str(criterion.get("split_status") or "confirmed").strip().lower()
+    date_operator = str(
+        criterion.get("split_date_operator") or "on_or_after"
+    ).strip().lower()
+    if action not in RECENT_SPLIT_ACTIONS:
+        raise ValueError("split_action must be 'exclude' or 'include'")
+    if status not in RECENT_SPLIT_STATUSES:
+        raise ValueError(
+            "split_status must be 'confirmed', 'rejected', 'pending', or 'any'"
+        )
+    if date_operator not in RECENT_SPLIT_DATE_OPERATORS:
+        raise ValueError(
+            "split_date_operator must be 'on_or_after' or 'on_or_before'"
+        )
+
+    cutoff = _validate_date_filter(criterion.get("value"), "Recent split cutoff")
+    match = _stock_split_ticker_match("ss", company_ticker_ref)
+    conditions = [match]
+    if status != "any":
+        # The value is restricted to the allow-list above before interpolation.
+        conditions.append(f"ss.[confirmation] = '{status}'")
+    date_op = ">=" if date_operator == "on_or_after" else "<="
+    conditions.append(f"date(ss.[split_date]) {date_op} date(?)")
+    params.append(cutoff)
+    if screening_date:
+        conditions.append("date(ss.[split_date]) <= date(?)")
+        params.append(screening_date)
+
+    exists_sql = (
+        "EXISTS (SELECT 1 FROM Stock_Splits ss WHERE "
+        + " AND ".join(conditions)
+        + ")"
+    )
+    return f"NOT {exists_sql}" if action == "exclude" else exists_sql
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +487,10 @@ def get_available_metrics(db_path: str) -> dict[str, list[str]]:
                 continue
     finally:
         conn.close()
+    # Stock_Splits is a managed action table.  Advertise its stable schema
+    # even before the first split-detection run creates it; screening setup
+    # creates the table transactionally before executing a query.
+    result.setdefault("Stock_Splits", list(STOCK_SPLIT_SCREENING_COLUMNS))
     return result
 
 
@@ -578,6 +739,7 @@ def build_screening_query(
     available_metrics: dict[str, list[str]] | None = None,
     column_aliases: dict[str, str] | None = None,
     computed_columns: list[dict] | None = None,
+    use_adjusted_price: bool = False,
 ) -> tuple[str, list]:
     """Build a parameterised SQL query for screening.
 
@@ -618,7 +780,10 @@ def build_screening_query(
         if len(parts) == 2:
             needed_tables.add(parts[0])
     for crit in criteria:
-        if crit.get("comparison_mode") == "full_expression":
+        comparison_mode = crit.get("comparison_mode")
+        if comparison_mode == "recent_split":
+            continue
+        if comparison_mode == "full_expression":
             for token_list in (crit.get("left_side", []), crit.get("right_side", [])):
                 for token in token_list:
                     if token.get("type") == "column" and token.get("table"):
@@ -657,13 +822,36 @@ def build_screening_query(
     else:
         _fs_code_col = "Company_Code"
 
+    # A screening run opts into the materialized split-adjusted read model.
+    # Keep the direct-query default raw for backwards compatibility, but make
+    # every generated reference to Stock_Prices.Price use the same basis as the
+    # displayed LatestPrice (including filters and computed expressions).
+    stock_price_expr = (
+        "COALESCE(s_p.[Adjusted_Price], s_p.[Price])"
+        if use_adjusted_price else "s_p.[Price]"
+    )
+
+    def _column_sql(table: str, column: str, alias: str) -> str:
+        if use_adjusted_price and table == "Stock_Prices" and column.lower() == "price":
+            return stock_price_expr
+        return f"{alias}.[{_safe_identifier(column)}]"
+
+    def _rewrite_stock_price_expression(expression_sql: str) -> str:
+        if use_adjusted_price:
+            return expression_sql.replace("s_p.[Price]", stock_price_expr)
+        return expression_sql
+
     # Validate columns against available metrics
     if available_metrics is not None:
         for col in columns:
             if not _validate_column_ref(col, available_metrics):
                 raise ValueError(f"Invalid column reference: {col!r}")
         for crit in criteria:
-            if crit.get("comparison_mode") == "full_expression":
+            comparison_mode = crit.get("comparison_mode")
+            if comparison_mode == "recent_split":
+                _validate_date_filter(crit.get("value"), "Recent split cutoff")
+                continue
+            if comparison_mode == "full_expression":
                 # Validate all column tokens in left_side and right_side
                 for side_key in ("left_side", "right_side"):
                     for token in crit.get(side_key, []):
@@ -713,12 +901,16 @@ def build_screening_query(
 
     # Validate operators
     for crit in criteria:
+        if crit.get("comparison_mode") == "recent_split":
+            continue
         op = crit["operator"]
         if op not in OPERATOR_MAP:
             raise ValueError(f"Invalid operator: {op!r}")
 
     # --- Build SELECT ---
     select_parts: list[str] = []
+    _ticker_safe = _safe_identifier(_ticker_col)
+    _company_ticker_ref = f"c.[{_ticker_safe}]"
     result_aliases = _build_result_column_aliases(columns)
     if column_aliases:
         result_aliases.update(column_aliases)
@@ -738,9 +930,19 @@ def build_screening_query(
                 f" WHERE ct.edinetCode = c.[{code_col}])"
                 f" AS {_quote_identifier(result_alias)}"
             )
+        elif table == "Stock_Splits":
+            # Stock_Splits is company-level rather than document-level.  Show
+            # the latest confirmed event without multiplying financial rows.
+            select_parts.append(
+                f"(SELECT ss_select.[{safe_col}] FROM Stock_Splits ss_select "
+                f"WHERE {_stock_split_ticker_match('ss_select', _company_ticker_ref)} "
+                "AND ss_select.[confirmation] = 'confirmed' "
+                "ORDER BY date(ss_select.[split_date]) DESC LIMIT 1) "
+                f"AS {_quote_identifier(result_alias)}"
+            )
         else:
             select_parts.append(
-                f"{alias}.[{safe_col}] AS {_quote_identifier(result_alias)}"
+                f"{_column_sql(table, resolved_column, alias)} AS {_quote_identifier(result_alias)}"
             )
 
     # Computed / formula columns
@@ -755,6 +957,7 @@ def build_screening_query(
 
             if expression_tokens:
                 expression_sql, expression_params = _build_expression_sql(expression_tokens)
+                expression_sql = _rewrite_stock_price_expression(expression_sql)
                 select_parts.append(f"({expression_sql}) AS {_quote_identifier(cc_name)}")
                 params.extend(expression_params)
             elif formula_type == "expression":
@@ -771,9 +974,11 @@ def build_screening_query(
                 den_col = _safe_identifier(str(cc.get("denominator_column", "")))
                 num_alias = _get_table_alias(num_table)
                 den_alias = _get_table_alias(den_table)
+                num_ref = _column_sql(num_table, num_col, num_alias)
+                den_ref = _column_sql(den_table, den_col, den_alias)
                 select_parts.append(
-                    f"CASE WHEN COALESCE({den_alias}.[{den_col}], 0) != 0 "
-                    f"THEN {num_alias}.[{num_col}] * 1.0 / {den_alias}.[{den_col}] "
+                    f"CASE WHEN COALESCE({den_ref}, 0) != 0 "
+                    f"THEN {num_ref} * 1.0 / {den_ref} "
                     f"ELSE NULL END AS {_quote_identifier(cc_name)}"
                 )
             else:
@@ -789,7 +994,11 @@ def build_screening_query(
     if "Stock_Prices" in needed_tables or True:
         needed_tables.add("Stock_Prices")
         if "s_p.[Price]" not in select_parts:
-            select_parts.append("s_p.[Price] AS LatestPrice")
+            latest_price_expr = (
+                "COALESCE(s_p.[Adjusted_Price], s_p.[Price])"
+                if use_adjusted_price else "s_p.[Price]"
+            )
+            select_parts.append(f"{latest_price_expr} AS LatestPrice")
             select_parts.append("s_p.[Date] AS PriceDate")
 
     select_clause = ", ".join(select_parts) if select_parts else "*"
@@ -880,7 +1089,6 @@ def build_screening_query(
 
     # Stock prices — latest price per company (via pre-aggregated subquery)
     # Use date([Date]) to compare only the date part, avoiding timestamp mismatch
-    _ticker_safe = _safe_identifier(_ticker_col)
     if screening_date:
         join_clauses.append(
             "LEFT JOIN ("
@@ -906,12 +1114,27 @@ def build_screening_query(
         "ON s_p.Ticker = sp_max.Ticker AND s_p.[Date] = sp_max.MaxDate"
     )
 
+    if "Stock_Splits" in needed_tables:
+        # Keep one latest confirmed action row available for expressions or
+        # computed columns while criteria themselves use EXISTS semantics.
+        split_partition = "REPLACE(REPLACE(UPPER(ss_latest.[ticker]), '.T', ''), '.JP', '')"
+        join_clauses.append(
+            "LEFT JOIN (SELECT * FROM ("
+            "SELECT ss_latest.*, ROW_NUMBER() OVER ("
+            f"PARTITION BY {split_partition} "
+            "ORDER BY date(ss_latest.[split_date]) DESC, ss_latest.rowid DESC"
+            ") AS _screening_split_rank FROM Stock_Splits ss_latest "
+            "WHERE ss_latest.[confirmation] = 'confirmed'"
+            ") WHERE _screening_split_rank = 1) ss "
+            f"ON {_stock_split_ticker_match('ss', _company_ticker_ref)}"
+        )
+
     # Screening & statement tables
     for table in sorted(needed_tables):
         if table in ("FinancialStatements", "CompanyInfo", "Stock_Prices"):
             continue
-        if table == "Company_Tags":
-            # Company_Tags has no docID — it's handled via EXISTS
+        if table in ("Company_Tags", "Stock_Splits"):
+            # Company-level action/tag tables use correlated subqueries
             # subqueries in the WHERE clause and GROUP_CONCAT in SELECT.
             continue
         alias = _get_table_alias(table)
@@ -929,6 +1152,16 @@ def build_screening_query(
 
     for crit in criteria:
         comparison_mode = crit.get("comparison_mode", "fixed")
+        if comparison_mode == "recent_split":
+            where_parts.append(
+                _recent_split_filter_sql(
+                    crit,
+                    _company_ticker_ref,
+                    screening_date,
+                    params,
+                )
+            )
+            continue
         op = OPERATOR_MAP[crit["operator"]]
 
         if comparison_mode != "full_expression":
@@ -937,7 +1170,13 @@ def build_screening_query(
             resolved_column = _resolve_column_ref_for_sql(table, column, available_metrics)
             alias = _get_table_alias(table)
             safe_col = _safe_identifier(resolved_column)
-            col_ref = f"{alias}.[{safe_col}]"
+            col_ref = _column_sql(table, resolved_column, alias)
+
+            if table == "Stock_Splits":
+                where_parts.append(
+                    _stock_split_filter_sql(crit, _company_ticker_ref, params)
+                )
+                continue
 
             # --- Company_Tags: EXISTS subquery (no docID join) ---
             if table == "Company_Tags":
@@ -1007,8 +1246,10 @@ def build_screening_query(
                     "Dynamic criteria require compare_table and compare_column"
                 )
             compare_alias = _get_table_alias(compare_table)
-            safe_compare_col = _safe_identifier(compare_column)
-            compare_ref = f"{compare_alias}.[{safe_compare_col}]"
+            compare_column = _resolve_column_ref_for_sql(
+                compare_table, compare_column, available_metrics,
+            )
+            compare_ref = _column_sql(compare_table, compare_column, compare_alias)
             offset = crit.get("offset")
             if offset is not None:
                 # left OP (right + offset)  e.g.  a.col > b.col2 + 0.02
@@ -1022,6 +1263,7 @@ def build_screening_query(
             if not expr_tokens:
                 raise ValueError("expression mode requires right_side tokens")
             expr_sql, expr_params = _build_expression_sql(expr_tokens)
+            expr_sql = _rewrite_stock_price_expression(expr_sql)
             where_parts.append(f"{col_ref} {op} ({expr_sql})")
             params.extend(expr_params)
         elif comparison_mode == "stock_price":
@@ -1034,7 +1276,7 @@ def build_screening_query(
                 left_ref = f"({col_ref} {left_expr})"
             else:
                 left_ref = col_ref
-            where_parts.append(f"{left_ref} {op} s_p.[Price]")
+            where_parts.append(f"{left_ref} {op} {stock_price_expr}")
         elif comparison_mode == "full_expression":
             # Check whether this expression references Company_Tags.
             # Company_Tags has no docID join — use an EXISTS subquery.
@@ -1065,6 +1307,7 @@ def build_screening_query(
                     params.extend(values)
                 else:
                     right_sql, right_params = _build_expression_sql(right_tokens)
+                    right_sql = _rewrite_stock_price_expression(right_sql)
                     where_parts.append(
                         f"EXISTS (SELECT 1 FROM Company_Tags ct"
                         f" WHERE ct.edinetCode = c.[{code_col}]"
@@ -1083,6 +1326,7 @@ def build_screening_query(
                 raise ValueError("full_expression requires left_side and right_side token arrays")
             if op == "IN":
                 left_sql, left_params = _build_expression_sql(left_tokens)
+                left_sql = _rewrite_stock_price_expression(left_sql)
                 values = _expression_values(right_tokens)
                 if not values:
                     raise ValueError("IN requires at least one value on the right side")
@@ -1093,6 +1337,8 @@ def build_screening_query(
             else:
                 left_sql, left_params = _build_expression_sql(left_tokens)
                 right_sql, right_params = _build_expression_sql(right_tokens)
+                left_sql = _rewrite_stock_price_expression(left_sql)
+                right_sql = _rewrite_stock_price_expression(right_sql)
                 where_parts.append(f"({left_sql}) {op} ({right_sql})")
                 params.extend(left_params)
                 params.extend(right_params)
@@ -1166,7 +1412,16 @@ def populate_user_tags(db_path: str, owner_user_id: str) -> None:
 
 def _prepare_screening_database(db_path: str) -> None:
     """Create managed helper objects in one explicit write transaction."""
+    from src.portfolio.split_schema import ensure_split_tables
+    from src.utilities.price_provenance import (
+        ensure_price_provenance_columns,
+        refresh_split_adjusted_prices,
+    )
+
     with transaction(db_path) as conn:
+        ensure_split_tables(None, conn=conn)
+        ensure_price_provenance_columns(conn, "Stock_Prices")
+        refresh_split_adjusted_prices(conn)
         fs_info = conn.execute("PRAGMA table_info(FinancialStatements)").fetchall()
         fs_columns = [row[1] for row in fs_info]
         code_column = _resolve_matching_column(
@@ -1221,6 +1476,7 @@ def run_screening(
     Returns:
         DataFrame with screening results.
     """
+    _prepare_screening_database(db_path)
     if available_metrics is None:
         available_metrics = get_available_metrics(db_path)
     available = available_metrics
@@ -1237,6 +1493,7 @@ def run_screening(
         available_metrics=available,
         column_aliases=column_aliases,
         computed_columns=computed_columns,
+        use_adjusted_price=True,
     )
 
     logger.info("Running screening query with %d criteria", len(criteria))
@@ -1247,7 +1504,6 @@ def run_screening(
     import time as _time
     _connect_start = _time.monotonic()
     logger.info("screening connecting to db: %s", db_path)
-    _prepare_screening_database(db_path)
     conn = connect_read(db_path, busy_timeout_ms=30_000)
     logger.info("screening db connected (%.2fs)", _time.monotonic() - _connect_start)
     try:

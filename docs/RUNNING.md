@@ -249,7 +249,22 @@ Date,Ticker,Currency,Price
 ---
 
 ### `update_stock_prices`
-Fetches historical share prices from the Stooq API for all companies in the selected database that have financial data, with a Yahoo Finance chart fallback if Stooq is unavailable.
+Fetches daily share prices from the JPX quote historical page for Japanese
+tickers, with Stooq and Yahoo Finance chart fallbacks. JPX's public detail page
+exposes the latest 50 trading sessions and already reflects stock splits in its
+historical closes; initial or older backfills fall through to a provider with
+broader coverage rather than silently truncating history.
+
+Stooq and Yahoo requests use bounded retries with exponential backoff and
+jitter for transient transport/HTTP failures, honor `Retry-After` when present,
+and temporarily cool down a rate-limited provider so a bulk run does not repeat
+blocked requests for every ticker. Yahoo also tries both chart hostnames before
+the provider is marked unavailable. A failure for one ticker no longer aborts
+the remaining ticker updates; the failed ticker is logged for the run.
+
+The step supports `overwrite`: when enabled, each ticker selected for the run
+is cleared and downloaded from scratch. The replacement is transactional per
+ticker, so a failed or empty download restores that ticker's previous rows.
 
 ```json
 "update_stock_prices_config": {

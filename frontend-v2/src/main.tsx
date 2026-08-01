@@ -8,6 +8,7 @@ import './styles.css'
 import './features.css'
 import './dense.css'
 import './dense-v3.css'
+import './portfolio.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {

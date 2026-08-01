@@ -1,210 +1,196 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ColumnDef } from '@tanstack/react-table'
-import { ArcElement, BarElement, CategoryScale, Chart as ChartJS, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip } from 'chart.js'
-import { Building2, FileUp, RefreshCw, Upload } from 'lucide-react'
-import { useMemo, useState } from 'react'
-import { Bar, Doughnut, Line, Scatter } from 'react-chartjs-2'
+import { FileUp, RefreshCw, Upload } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { apiRequest, queryString } from '../../api/client'
-import { BRAND_CHART_COLORS, BRAND_COLORS } from '../../brand'
-import { DataTable } from '../../components/DataTable'
-import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
-import { Card, Field, Metric, PageHeader } from '../../components/Page'
-import { PortfolioAdvancedAnalytics } from './PortfolioAdvancedAnalytics'
+import { Card, Field, PageHeader } from '../../components/Page'
+import { PortfolioActivity } from './PortfolioActivity'
+import { PortfolioDetailContent } from './PortfolioDetailContent'
+import { PortfolioDrawer } from './PortfolioDrawer'
+import { PortfolioHoldings } from './PortfolioHoldings'
+import { PortfolioIncome } from './PortfolioIncome'
+import { PortfolioOverview } from './PortfolioOverview'
+import { PortfolioPerformance } from './PortfolioPerformance'
+import { buildPortfolioSummary, money, percent, performanceStart, sliceValueHistory } from './portfolioFormat'
+import { StatButton } from './PortfolioPrimitives'
+import type {
+  ContributionData,
+  DividendCurrencyHistory,
+  DividendGrowthData,
+  DividendHistory,
+  HeatmapData,
+  Holding,
+  HoldingHistoryPoint,
+  Performance,
+  PerformanceRange,
+  PieData,
+  PortfolioDetail,
+  PortfolioTab,
+  ScatterPoint,
+  Transaction,
+  ValueHistory,
+} from './portfolioTypes'
 
-ChartJS.register(ArcElement, BarElement, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip)
-const COLORS = [...BRAND_CHART_COLORS]
-
-type Holding = { symbol: string; asset_category?: string; quantity?: number; avg_cost?: number | null; market_price?: number | null; market_value?: number | null; currency?: string; performance?: Record<string, unknown> }
-type Transaction = { id?: number; trade_date?: string; activity_type?: string; symbol?: string; description?: string; quantity?: number; amount?: number; currency?: string; source_file?: string }
-type Performance = Record<string, unknown> & { dividend_breakdown?: Record<string, unknown>; return_distribution?: Record<string, unknown>; return_attribution?: Record<string, unknown> }
-type PieData = { labels: string[]; values: number[]; total: number; currency: string }
-type ValueHistory = { dates: string[]; holdings: Record<string, Array<number | null>>; currency: string; portfolio_values?: Array<number | null>; daily_returns?: Array<number | null>; cumulative_returns?: Array<number | null> }
-type DividendHistory = { periods: string[]; companies: Record<string, number[]>; currency: string }
-type DividendCurrencyHistory = { periods: string[]; currencies: Record<string, number[]>; currency: string }
-type DividendGrowthData = { years: number[]; companies: Record<string, { currency: string; dps: Array<number | null>; yoy_growth: Array<number | null>; avg_market_value_eur: Array<number | null> }>; weighted_average_growth: Array<number | null> }
-type HeatmapData = { years: number[]; months: number[]; values: Array<Array<number | null>> }
-type ScatterPoint = { symbol: string; cost_basis_display: number; annualized_return: number; is_open: boolean }
-
-function money(value: unknown, currency = 'EUR') { const number = Number(value); return Number.isFinite(number) ? new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 0 }).format(number) : '—' }
-function percent(value: unknown) { const number = Number(value); return Number.isFinite(number) ? `${(number * 100).toFixed(1)}%` : '—' }
-function number(value: unknown, digits = 2) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed.toFixed(digits) : '—' }
-
-function compactPie(data?: PieData, limit = 8) {
-  if (!data) return { labels: [], values: [] }
-  const rows = data.labels.map((label, index) => ({ label, value: data.values[index] ?? 0 })).sort((a, b) => b.value - a.value)
-  const shown = rows.slice(0, limit)
-  const other = rows.slice(limit).reduce((sum, row) => sum + row.value, 0)
-  return { labels: [...shown.map(row => row.label), ...(other ? ['Other'] : [])], values: [...shown.map(row => row.value), ...(other ? [other] : [])] }
+const RANGE_LABELS: Record<PerformanceRange, string> = {
+  all: 'All history',
+  '5y': '5 years',
+  '3y': '3 years',
+  '1y': '1 year',
+  ytd: 'Year to date',
 }
 
-function ValueChart({ data, currency }: { data?: ValueHistory; currency: string }) {
-  const totals = data?.portfolio_values?.length === data?.dates.length ? data?.portfolio_values?.map(value => value ?? 0) ?? [] : data?.dates.map((_, index) => Object.values(data?.holdings ?? {}).reduce((sum, values) => sum + Number(values[index] ?? 0), 0)) ?? []
-  const chart = { labels: data?.dates ?? [], datasets: [{ label: `Portfolio value (${currency})`, data: totals, borderColor: COLORS[0], backgroundColor: `${BRAND_COLORS.midnight}18`, fill: true, pointRadius: 0, tension: .18 }] }
-  return <div className="portfolio-value-chart"><Line data={chart} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { position: 'right', ticks: { callback: value => Number(value).toLocaleString(undefined, { notation: 'compact' }) } } } }} /></div>
+const TABS: Array<{ id: PortfolioTab; label: string }> = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'holdings', label: 'Holdings' },
+  { id: 'performance', label: 'Performance' },
+  { id: 'income', label: 'Income' },
+  { id: 'activity', label: 'Activity' },
+]
+
+function detailMeta(detail?: PortfolioDetail | null) {
+  if (!detail) return { title: '', eyebrow: '' }
+  if (detail.kind === 'value') return { title: 'Portfolio value', eyebrow: 'Valuation detail', description: 'Current wealth, cash flows, and the complete value history.' }
+  if (detail.kind === 'performance') return { title: 'Performance methodology', eyebrow: 'Return detail', description: 'Return composition, consistency, and the assumptions behind each statistic.' }
+  if (detail.kind === 'risk') return { title: 'Risk diagnostics', eyebrow: 'Risk detail', description: 'Drawdown, volatility, tail loss, and the daily return distribution.' }
+  if (detail.kind === 'allocation') return { title: 'Exposure map', eyebrow: 'Allocation detail', description: 'Position and native-currency concentration at current market values.' }
+  if (detail.kind === 'income') return { title: 'Income detail', eyebrow: 'Dividend analysis', description: 'Gross income, withholding, net cash received, and payer concentration.' }
+  if (detail.kind === 'activity') return { title: 'Activity summary', eyebrow: 'Ledger detail', description: 'Imported records by type and the latest portfolio events.' }
+  if (detail.kind === 'holding') return { title: detail.holding.symbol, eyebrow: 'Position detail', description: detail.holding.performance?.name || detail.holding.asset_category || 'Portfolio position' }
+  return { title: detail.transaction.symbol || detail.transaction.activity_type || 'Transaction', eyebrow: 'Transaction detail', description: detail.transaction.trade_date || 'Imported activity record' }
 }
 
-function AllocationChart({ data, title }: { data?: PieData; title: string }) {
-  const compact = compactPie(data)
-  const chart = { labels: compact.labels, datasets: [{ data: compact.values, backgroundColor: COLORS, borderWidth: 0 }] }
-  return <div className="mini-chart"><strong>{title}</strong><Doughnut data={chart} options={{ responsive: true, maintainAspectRatio: false, cutout: '64%', plugins: { legend: { position: 'right', labels: { boxWidth: 9, font: { size: 10 } } } } }} /></div>
-}
-
-function ReturnHeatmap({ data }: { data?: HeatmapData }) {
-  if (!data?.years.length) return <EmptyState title="No monthly returns" description="Return history is not available." />
-  const color = (value: number | null) => { if (value == null) return undefined; const strength = Math.min(Math.abs(value) / 10, 1); return value >= 0 ? `rgba(40,116,90,${.12 + strength * .72})` : `rgba(163,58,69,${.12 + strength * .72})` }
-  return <div className="return-heatmap"><div className="heatmap-row heatmap-head"><span>Year</span>{data.months.map(month => <span key={month}>{new Date(2020, month - 1).toLocaleString(undefined, { month: 'short' })}</span>)}</div>{data.years.map((year, row) => <div className="heatmap-row" key={year}><strong>{year}</strong>{data.values[row].map((value, column) => <span key={column} style={{ background: color(value) }} title={value == null ? 'No data' : `${value.toFixed(2)}%`}>{value == null ? '·' : value.toFixed(1)}</span>)}</div>)}</div>
-}
-
-function DividendsByCurrencyChart({ data }: { data?: DividendCurrencyHistory }) {
-  const currencies = Object.entries(data?.currencies ?? {}).map(([ccy, values]) => ({ ccy, values, total: values.reduce((sum, v) => sum + v, 0) })).sort((a, b) => b.total - a.total)
-  const chart = { labels: data?.periods ?? [], datasets: currencies.map((row, i) => ({ label: row.ccy, data: row.values, backgroundColor: COLORS[i % COLORS.length] })) }
-  return <div className="analytics-chart"><Bar data={chart} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 9, font: { size: 10 } } } }, scales: { x: { stacked: true }, y: { stacked: true, position: 'right' } } }} /></div>
-}
-
-function DividendsByCompanyBar({ data }: { data?: DividendHistory }) {
-  const companies = Object.entries(data?.companies ?? {}).map(([symbol, values], i) => ({ symbol, values, total: values.reduce((sum, v) => sum + v, 0), color: COLORS[i % COLORS.length] })).sort((a, b) => b.total - a.total)
-  const [selected, setSelected] = useState<string[]>(() => companies.map(c => c.symbol))
-  const filtered = companies.filter(c => selected.includes(c.symbol))
-  const chart = { labels: data?.periods ?? [], datasets: filtered.map(row => ({ label: row.symbol, data: row.values, backgroundColor: row.color })) }
-  return <div>
-    <CompanyFilter companies={companies} selected={selected} onChange={setSelected} />
-    <div className="analytics-chart"><Bar data={chart} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { stacked: true }, y: { stacked: true, position: 'right' } } }} /></div>
+function PortfolioPulse({ summary, performance, currency, rangeLabel, isLoading, onOpenDetail }: {
+  summary: ReturnType<typeof buildPortfolioSummary>
+  performance?: Performance
+  currency: string
+  rangeLabel: string
+  isLoading: boolean
+  onOpenDetail: (detail: PortfolioDetail) => void
+}) {
+  return <div className="portfolio-pulse">
+    <StatButton label="Portfolio value" value={isLoading ? '—' : money(summary.totalValue, currency)} detail={isLoading ? 'Loading positions' : `${summary.positionCount} positions`} onClick={() => onOpenDetail({ kind: 'value' })} />
+    <StatButton label="Total return" value={percent(performance?.total_return)} detail="Time-weighted" tone={Number(performance?.total_return) >= 0 ? 'positive' : 'negative'} onClick={() => onOpenDetail({ kind: 'performance' })} />
+    <StatButton label="Annualized return" value={percent(performance?.annualized_return)} detail={rangeLabel} tone={Number(performance?.annualized_return) >= 0 ? 'positive' : 'negative'} onClick={() => onOpenDetail({ kind: 'performance' })} />
+    <StatButton label="Max drawdown" value={percent(performance?.max_drawdown)} detail="Peak-to-trough" tone="negative" onClick={() => onOpenDetail({ kind: 'risk' })} />
+    <StatButton label="Net dividends" value={money(performance?.dividend_breakdown?.total_net, currency)} detail={percent(performance?.return_attribution?.dividend_yield) + ' contribution'} onClick={() => onOpenDetail({ kind: 'income' })} />
+    <StatButton label="Cash reserve" value={isLoading ? '—' : money(summary.cashValue, currency)} detail={isLoading ? 'Loading balances' : percent(summary.cashWeight)} onClick={() => onOpenDetail({ kind: 'allocation' })} />
   </div>
 }
 
-function DividendsByCompanyPie({ data }: { data?: DividendHistory }) {
-  const companies = Object.entries(data?.companies ?? {}).map(([symbol, values], i) => ({ symbol, values, total: values.reduce((sum, v) => sum + v, 0), color: COLORS[i % COLORS.length] })).sort((a, b) => b.total - a.total)
-  const [selected, setSelected] = useState<string[]>(() => companies.map(c => c.symbol))
-  const filtered = companies.filter(c => selected.includes(c.symbol))
-  const total = filtered.reduce((sum, c) => sum + c.total, 0)
-  const compact = compactPie({ labels: filtered.map(c => c.symbol), values: filtered.map(c => c.total), total, currency: data?.currency ?? 'EUR' })
-  const chart = { labels: compact.labels, datasets: [{ data: compact.values, backgroundColor: filtered.map(c => c.color).concat(compact.labels.length > filtered.length ? [COLORS[6]] : []), borderWidth: 0 }] }
-  return <div className="mini-chart">
-    <strong>Total dividends by company</strong>
-    <CompanyFilter companies={companies} selected={selected} onChange={setSelected} />
-    <Doughnut data={chart} options={{ responsive: true, maintainAspectRatio: false, cutout: '64%', plugins: { legend: { display: false } } }} />
-  </div>
+function filterHeatmap(data?: HeatmapData, startDate?: string) {
+  if (!data || !startDate) return data
+  const startYear = Number(startDate.slice(0, 4))
+  const indexes = data.years.map((year, index) => ({ year, index })).filter(row => row.year >= startYear)
+  return { ...data, years: indexes.map(row => row.year), values: indexes.map(row => data.values[row.index]) }
 }
 
-function CompanyFilter({ companies, selected, onChange }: { companies: { symbol: string; color: string }[]; selected: string[]; onChange: (s: string[]) => void }) {
-  const [open, setOpen] = useState(false)
-  return <div className="company-filter">
-    <button className="company-filter-toggle" onClick={() => setOpen(o => !o)}>{selected.length} of {companies.length}</button>
-    {open && <div className="company-filter-dropdown">
-      <label className="company-filter-item"><input type="checkbox" checked={selected.length === companies.length} onChange={() => onChange(selected.length === companies.length ? [] : companies.map(c => c.symbol))} /> All</label>
-      {companies.map(c => <label key={c.symbol} className="company-filter-item"><input type="checkbox" checked={selected.includes(c.symbol)} onChange={() => onChange(selected.includes(c.symbol) ? selected.filter(s => s !== c.symbol) : [...selected, c.symbol])} /><span className="company-filter-dot" style={{ background: c.color }} />{c.symbol}</label>)}
-    </div>}
-  </div>
-}
-
-function DividendGrowthChart({ data }: { data?: DividendGrowthData }) {
-  const companies = Object.entries(data?.companies ?? {})
-    .map(([symbol, c], i) => ({ symbol, currency: c.currency, yoy: c.yoy_growth, mv: c.avg_market_value_eur ?? [], total: c.dps.reduce<number>((sum, v) => sum + (v ?? 0), 0), color: COLORS[i % COLORS.length] }))
-    .filter(c => c.yoy.some(v => v != null))
-    .sort((a, b) => b.total - a.total)
-  const [selected, setSelected] = useState<string[]>(() => companies.map(c => c.symbol))
-  if (!companies.length) return <EmptyState title="No dividend growth data" description="No companies with dividend history found." />
-  const filtered = companies.filter(c => selected.includes(c.symbol))
-  const allMv = filtered.flatMap(c => c.mv.filter((v): v is number => v != null))
-  const maxMv = Math.max(...allMv, 1)
-  const scale = (mv: number | null) => mv ? Math.max(3, Math.sqrt((mv || 1) / maxMv) * 16) : 3
-  const datasets: any[] = filtered.map(c => ({
-    label: c.symbol,
-    data: c.yoy.map((growth, j) => growth != null ? { x: (data?.years ?? [])[j], y: growth } : null).filter(Boolean),
-    pointRadius: c.yoy.map((_, j) => scale(c.mv[j])),
-    backgroundColor: c.color + 'aa',
-    borderColor: c.color,
-    borderWidth: 1,
-  }))
-  if (data?.weighted_average_growth?.some((v): v is number => v != null)) {
-    datasets.push({
-      type: 'line' as const,
-      label: 'Portfolio avg',
-      data: data.weighted_average_growth.map((v, j) => v != null ? { x: (data?.years ?? [])[j], y: v } : null).filter(Boolean),
-      borderColor: BRAND_COLORS.indigo,
-      borderWidth: 2.5,
-      pointRadius: 4,
-      pointBackgroundColor: BRAND_COLORS.indigo,
-      backgroundColor: 'transparent',
-    })
-  }
-  return <div>
-    <CompanyFilter companies={companies} selected={selected} onChange={setSelected} />
-    <div className="analytics-chart">
-      <Scatter data={{ datasets }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${(ctx.parsed.y ?? 0).toFixed(1)}%` } } }, scales: { x: { type: 'linear', grid: { display: false }, title: { display: true, text: 'Year' }, ticks: { stepSize: 1, callback: v => String(v) } }, y: { position: 'right', title: { display: true, text: 'YoY growth %' }, ticks: { callback: v => Number(v).toFixed(0) + '%' } } } }} />
-    </div>
-  </div>
-}
-
-function CostReturnChart({ data }: { data?: ScatterPoint[] }) {
-  const symbols = [...new Set((data ?? []).map(p => p.symbol))].sort()
-  const colorMap = Object.fromEntries(symbols.map((s, i) => [s, COLORS[i % COLORS.length]]))
-  const companies = symbols.map(s => ({ symbol: s, color: colorMap[s] }))
-  const [selected, setSelected] = useState<string[]>(() => symbols)
-  const filtered = (data ?? []).filter(p => selected.includes(p.symbol))
-  const chart = { datasets: [
-    { label: 'Open', data: filtered.filter(p => p.is_open).map(p => ({ x: p.cost_basis_display, y: p.annualized_return, symbol: p.symbol })), backgroundColor: filtered.filter(p => p.is_open).map(p => colorMap[p.symbol] + 'cc'), borderColor: filtered.filter(p => p.is_open).map(p => colorMap[p.symbol]), borderWidth: 1 },
-    { label: 'Closed', data: filtered.filter(p => !p.is_open).map(p => ({ x: p.cost_basis_display, y: p.annualized_return, symbol: p.symbol })), backgroundColor: filtered.filter(p => !p.is_open).map(p => colorMap[p.symbol] + '66'), borderColor: filtered.filter(p => !p.is_open).map(p => colorMap[p.symbol]), borderWidth: 1, pointStyle: 'triangle' },
-  ]}
-  return <div>
-    <CompanyFilter companies={companies} selected={selected} onChange={setSelected} />
-    <div className="analytics-chart"><Scatter data={chart} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: context => { const raw = context.raw as { x: number; y: number; symbol: string }; return `${raw.symbol}: ${raw.y.toFixed(1)}% on ${raw.x.toLocaleString()}` } } } }, scales: { x: { title: { display: true, text: 'Cost basis' } }, y: { position: 'right', title: { display: true, text: 'Annualized return %' } } } }} /></div>
-  </div>
-}
-
-function PerformanceMetrics({ data, currency }: { data?: Performance; currency: string }) {
-  const distribution = data?.return_distribution ?? {}
-  const attribution = data?.return_attribution ?? {}
-  return <div className="metric-strip metric-strip--wrap"><Metric label="Total return" value={percent(data?.total_return)} /><Metric label="Annualized" value={percent(data?.annualized_return)} /><Metric label="Volatility" value={percent(data?.volatility)} /><Metric label="Sharpe" value={number(data?.sharpe_ratio)} /><Metric label="Sortino" value={number(data?.sortino_ratio)} /><Metric label="Max drawdown" value={percent(data?.max_drawdown)} /><Metric label="Calmar" value={number(data?.calmar_ratio)} /><Metric label="Win rate" value={percent(data?.win_rate)} /><Metric label="Profit factor" value={number(data?.profit_factor)} /><Metric label="VaR 95%" value={percent(data?.var_95)} /><Metric label="CVaR 95%" value={percent(data?.cvar_95)} /><Metric label="Dividends" value={money(data?.total_dividend_income, currency)} /><Metric label="Capital appreciation" value={percent(attribution.capital_appreciation)} /><Metric label="Dividend yield" value={percent(attribution.dividend_yield)} /><Metric label="Best day" value={percent(distribution.max)} /><Metric label="Worst day" value={percent(distribution.min)} /></div>
-}
-
-function HoldingsTable({ data, currency, navigate }: { data: Holding[]; currency: string; navigate: ReturnType<typeof useNavigate> }) {
-  const columns = useMemo<ColumnDef<Holding>[]>(() => [{ accessorKey: 'symbol', header: 'Holding', cell: ({ row }) => <button className="company-link" onClick={() => navigate(`/analyze?q=${encodeURIComponent(row.original.symbol)}`)}><Building2 /><span><strong>{row.original.symbol}</strong><small>{String(row.original.performance?.name ?? row.original.asset_category ?? '')}</small></span></button> }, { accessorKey: 'quantity', header: 'Qty' }, { accessorKey: 'market_price', header: 'Price', cell: info => money(info.getValue(), String(info.row.original.currency ?? currency)) }, { accessorKey: 'market_value', header: `Value (${currency})`, cell: info => money(info.getValue(), currency) }, { id: 'cost', header: 'Cost basis', accessorFn: row => row.performance?.cost_basis_display, cell: info => money(info.getValue(), currency) }, { id: 'pnl', header: 'P&L', accessorFn: row => row.performance?.pnl_display, cell: info => money(info.getValue(), currency) }, { id: 'return', header: 'Return', accessorFn: row => row.performance?.total_return_display ?? row.performance?.total_return_native, cell: info => percent(info.getValue()) }, { id: 'annualized', header: 'Ann. return', accessorFn: row => row.performance?.annualized_return, cell: info => percent(info.getValue()) }], [currency, navigate])
-  return <DataTable data={data} columns={columns} emptyText="No holdings." dense />
-}
-
-function TransactionsTable({ data, currency }: { data: Transaction[]; currency: string }) {
-  const columns = useMemo<ColumnDef<Transaction>[]>(() => [{ accessorKey: 'trade_date', header: 'Date' }, { accessorKey: 'activity_type', header: 'Activity' }, { accessorKey: 'symbol', header: 'Symbol' }, { accessorKey: 'description', header: 'Description' }, { accessorKey: 'quantity', header: 'Qty' }, { accessorKey: 'amount', header: 'Amount', cell: info => money(info.getValue(), String(info.row.original.currency ?? currency)) }, { accessorKey: 'source_file', header: 'Source' }], [currency])
-  return <DataTable data={data} columns={columns} emptyText="No transactions." dense />
+function currencyOptions(data?: Array<{ code?: string } | string>) {
+  return data?.map(item => typeof item === 'string' ? item : item.code ?? '').filter(Boolean) ?? ['EUR', 'USD', 'JPY']
 }
 
 export default function PortfolioWorkspace() {
-  const [tab, setTab] = useState<'overview' | 'holdings' | 'analytics' | 'transactions'>('overview')
+  const [tab, setTab] = useState<PortfolioTab>('overview')
   const [currency, setCurrency] = useState('EUR')
+  const [range, setRange] = useState<PerformanceRange>('all')
+  const [includeClosed, setIncludeClosed] = useState(false)
   const [dividendPeriod, setDividendPeriod] = useState<'monthly' | 'quarterly' | 'yearly'>('quarterly')
-  const [uploadStatus, setUploadStatus] = useState('')
+  const [detail, setDetail] = useState<PortfolioDetail | null>(null)
+  const [status, setStatus] = useState('')
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const closeDetail = useCallback(() => setDetail(null), [])
+  const openDetail = useCallback((next: PortfolioDetail) => setDetail(next), [])
   const suffix = queryString({ display_currency: currency })
+
   const currencies = useQuery({ queryKey: ['portfolio-currencies'], queryFn: () => apiRequest<Array<{ code?: string } | string>>('/api/portfolio/display-currencies'), retry: false })
+  const dateRange = useQuery({ queryKey: ['portfolio-date-range'], queryFn: () => apiRequest<{ min_date?: string | null; max_date?: string | null }>('/api/portfolio/date-range'), retry: false })
   const activity = useQuery({ queryKey: ['portfolio-activity'], queryFn: () => apiRequest<{ by_activity: Record<string, number> }>('/api/portfolio/activity-summary'), retry: false })
-  const holdings = useQuery({ queryKey: ['portfolio-holdings', currency], queryFn: () => apiRequest<Holding[]>(`/api/portfolio/holdings/performance${queryString({ display_currency: currency, include_closed: false })}`), retry: false })
   const transactions = useQuery({ queryKey: ['portfolio-transactions'], queryFn: () => apiRequest<Transaction[]>('/api/portfolio/transactions?limit=1000'), retry: false })
-  const performance = useQuery({ queryKey: ['portfolio-performance', currency], queryFn: () => apiRequest<Performance>(`/api/portfolio/performance${queryString({ base_currency: currency })}`), retry: false })
+  const holdings = useQuery({
+    queryKey: ['portfolio-holdings', currency, includeClosed],
+    queryFn: () => apiRequest<Holding[]>(`/api/portfolio/holdings/performance${queryString({ display_currency: currency, include_closed: includeClosed })}`),
+    retry: false,
+  })
+  const rangeStart = performanceStart(range, dateRange.data?.max_date ?? undefined)
+  const performance = useQuery({
+    queryKey: ['portfolio-performance', currency, rangeStart, dateRange.data?.max_date],
+    queryFn: () => apiRequest<Performance>(`/api/portfolio/performance${queryString({ base_currency: currency, start_date: rangeStart, end_date: rangeStart ? dateRange.data?.max_date : undefined })}`),
+    retry: false,
+  })
   const valueHistory = useQuery({ queryKey: ['portfolio-value-history', currency], queryFn: () => apiRequest<ValueHistory>(`/api/portfolio/charts/portfolio-value-history${suffix}`), retry: false })
   const allocation = useQuery({ queryKey: ['portfolio-allocation', currency], queryFn: () => apiRequest<PieData>(`/api/portfolio/charts/holdings-by-value${suffix}`), retry: false })
-  const currenciesChart = useQuery({ queryKey: ['portfolio-currency-chart', currency], queryFn: () => apiRequest<PieData>(`/api/portfolio/charts/holdings-by-currency${suffix}`), retry: false })
-  const dividendsByCurrency = useQuery({ queryKey: ['portfolio-dividends-currency', currency, dividendPeriod], queryFn: () => apiRequest<DividendCurrencyHistory>(`/api/portfolio/charts/dividends-by-currency${suffix}&period=${dividendPeriod}`), retry: false })
-  const dividendsByCompany = useQuery({ queryKey: ['portfolio-dividends-by-company', currency], queryFn: () => apiRequest<DividendHistory>(`/api/portfolio/charts/dividends-by-company${suffix}&period=yearly`), retry: false })
-  const dividendsByCompanyPie = useQuery({ queryKey: ['portfolio-dividends-company-pie', currency], queryFn: () => apiRequest<DividendHistory>(`/api/portfolio/charts/dividends-by-company${suffix}&period=yearly`), retry: false })
-  const dividendGrowth = useQuery({ queryKey: ['portfolio-dividend-growth', currency], queryFn: () => apiRequest<DividendGrowthData>('/api/portfolio/dividends/yoy/per-company'), retry: false })
-  const heatmap = useQuery({ queryKey: ['portfolio-return-heatmap', currency], queryFn: () => apiRequest<HeatmapData>(`/api/portfolio/charts/returns-heatmap${suffix}`), retry: false })
-  const scatter = useQuery({ queryKey: ['portfolio-return-cost', currency], queryFn: () => apiRequest<ScatterPoint[]>(`/api/portfolio/charts/return-vs-cost${suffix}`), retry: false })
-  const invalidate = () => queryClient.invalidateQueries({ predicate: query => String(query.queryKey[0]).startsWith('portfolio') })
-  const rebuild = useMutation({ mutationFn: () => apiRequest(`/api/portfolio/rebuild${queryString({ base_currency: currency })}`, { method: 'POST' }), onSuccess: invalidate })
-  const totalValue = (holdings.data ?? []).reduce((sum, item) => sum + Number(item.market_value ?? 0), 0)
-  const uploadFiles = async (files: FileList | null) => { if (!files?.length) return; setUploadStatus('Importing…'); try { for (const file of Array.from(files)) { const form = new FormData(); form.set('file', file); await apiRequest('/api/portfolio/upload', { method: 'POST', body: form }) } setUploadStatus(`${files.length} imported`); await rebuild.mutateAsync(); await invalidate() } catch (error) { setUploadStatus(error instanceof Error ? error.message : 'Import failed') } }
+  const currencyExposure = useQuery({ queryKey: ['portfolio-currency-chart', currency], queryFn: () => apiRequest<PieData>(`/api/portfolio/charts/holdings-by-currency${suffix}`), retry: false })
+
+  const incomeEnabled = tab === 'income' || detail?.kind === 'income'
+  const performanceEnabled = tab === 'performance'
+  const dividendsByCurrency = useQuery({ queryKey: ['portfolio-dividends-currency', currency, dividendPeriod], queryFn: () => apiRequest<DividendCurrencyHistory>(`/api/portfolio/charts/dividends-by-currency${suffix}&period=${dividendPeriod}`), retry: false, enabled: incomeEnabled })
+  const dividendsByCompany = useQuery({ queryKey: ['portfolio-dividends-by-company', currency], queryFn: () => apiRequest<DividendHistory>(`/api/portfolio/charts/dividends-by-company${suffix}&period=yearly`), retry: false, enabled: incomeEnabled })
+  const dividendGrowth = useQuery({ queryKey: ['portfolio-dividend-growth'], queryFn: () => apiRequest<DividendGrowthData>('/api/portfolio/dividends/yoy/per-company'), retry: false, enabled: incomeEnabled })
+  const heatmap = useQuery({ queryKey: ['portfolio-return-heatmap', currency], queryFn: () => apiRequest<HeatmapData>(`/api/portfolio/charts/returns-heatmap${suffix}`), retry: false, enabled: performanceEnabled })
+  const scatter = useQuery({ queryKey: ['portfolio-return-cost', currency], queryFn: () => apiRequest<ScatterPoint[]>(`/api/portfolio/charts/return-vs-cost${suffix}`), retry: false, enabled: performanceEnabled })
+  const contribution = useQuery({ queryKey: ['portfolio-contribution', currency], queryFn: () => apiRequest<ContributionData>(`/api/portfolio/returns/contribution${queryString({ base_currency: currency })}`), retry: false, enabled: performanceEnabled })
+
+  const detailHolding = detail?.kind === 'holding' ? detail.holding : undefined
+  const detailIsCash = detailHolding?.asset_category === 'CASH' || detailHolding?.symbol.startsWith('CASH')
+  const holdingHistory = useQuery({
+    queryKey: ['portfolio-holding-history', detailHolding?.symbol],
+    queryFn: () => apiRequest<HoldingHistoryPoint[]>(`/api/portfolio/holdings/${encodeURIComponent(detailHolding?.symbol ?? '')}/history`),
+    enabled: Boolean(detailHolding?.symbol) && !detailIsCash,
+    retry: false,
+  })
+
+  const invalidate = useCallback(() => queryClient.invalidateQueries({ predicate: query => String(query.queryKey[0]).startsWith('portfolio') }), [queryClient])
+  const rebuild = useMutation({
+    mutationFn: () => apiRequest<{ daily_rows?: number; holdings_count?: number }>(`/api/portfolio/rebuild${queryString({ base_currency: currency })}`, { method: 'POST' }),
+    onMutate: () => setStatus('Rebuilding portfolio state…'),
+    onSuccess: async result => {
+      setStatus(`Rebuilt ${result.holdings_count ?? 0} holdings across ${(result.daily_rows ?? 0).toLocaleString()} daily rows.`)
+      await invalidate()
+    },
+    onError: error => setStatus(error instanceof Error ? error.message : 'Rebuild failed'),
+  })
+  const uploadFiles = async (files: FileList | null) => {
+    if (!files?.length) return
+    setStatus(`Importing ${files.length} file${files.length === 1 ? '' : 's'}…`)
+    try {
+      for (const file of Array.from(files)) {
+        const form = new FormData()
+        form.set('file', file)
+        await apiRequest('/api/portfolio/upload', { method: 'POST', body: form })
+      }
+      setStatus(`${files.length} file${files.length === 1 ? '' : 's'} imported. Rebuilding…`)
+      await rebuild.mutateAsync()
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Import failed')
+    }
+  }
+
+  const summary = useMemo(() => buildPortfolioSummary(holdings.data ?? [], allocation.data), [allocation.data, holdings.data])
+  const rangedHistory = useMemo(() => sliceValueHistory(valueHistory.data, rangeStart), [rangeStart, valueHistory.data])
+  const rangedHeatmap = useMemo(() => filterHeatmap(heatmap.data, rangeStart), [heatmap.data, rangeStart])
+  const metadata = detailMeta(detail)
   const unavailable = holdings.isError && activity.isError
 
-  return <div className="stack dense-page portfolio-workspace"><PageHeader eyebrow="Portfolio monitoring" title="Portfolio" description="Performance, exposures, holdings, income, and risk in one dense workspace." actions={<div className="button-row"><Field label="Currency"><select className="select" value={currency} onChange={event => setCurrency(event.target.value)}>{(currencies.data ?? ['EUR', 'USD', 'JPY']).map(item => { const code = typeof item === 'string' ? item : item.code ?? ''; return <option key={code}>{code}</option> })}</select></Field><button className="button button--secondary" disabled={rebuild.isPending} onClick={() => rebuild.mutate()}><RefreshCw />Rebuild</button><label className="button button--ghost file-button"><Upload />Import<input type="file" accept=".xml,text/xml" multiple onChange={event => void uploadFiles(event.target.files)} /></label></div>} />
-    {uploadStatus && <div className="inline-status" role="status">{uploadStatus}</div>}
-    {unavailable ? <Card title="Connect portfolio activity"><label className="file-drop"><FileUp /><strong>Import IBKR FlexQuery XML</strong><input type="file" accept=".xml,text/xml" multiple onChange={event => void uploadFiles(event.target.files)} /></label></Card> : <><PerformanceMetrics data={performance.data} currency={currency} /><div className="step-tabs"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>Overview</button><button className={tab === 'holdings' ? 'active' : ''} onClick={() => setTab('holdings')}>Holdings</button><button className={tab === 'analytics' ? 'active' : ''} onClick={() => setTab('analytics')}>Analytics</button><button className={tab === 'transactions' ? 'active' : ''} onClick={() => setTab('transactions')}>Transactions</button></div>
-      {tab === 'overview' && <div className="portfolio-overview-grid"><Card title="Portfolio value" description={`${money(totalValue, currency)} · ${performance.data?.start_date ?? '—'} to ${performance.data?.end_date ?? '—'}`}>{valueHistory.isLoading ? <LoadingState label="Loading value history" /> : <ValueChart data={valueHistory.data} currency={currency} />}</Card><Card title="Current exposure"><div className="allocation-grid"><AllocationChart data={allocation.data} title="Holdings" /><AllocationChart data={currenciesChart.data} title="Currencies" /></div></Card><Card title="Activity" description="Imported records by type"><div className="activity-grid activity-grid--dense">{Object.entries(activity.data?.by_activity ?? {}).map(([name, count]) => <Metric key={name} label={name.replaceAll('_', ' ')} value={count.toLocaleString()} />)}</div></Card></div>}
-      {tab === 'holdings' && <Card title={`${holdings.data?.length ?? 0} open holdings`} description="Value, cost, P&L, and native/display-currency returns.">{holdings.isLoading ? <LoadingState label="Loading holdings" /> : holdings.isError ? <ErrorState error={holdings.error} /> : <div className="fixed-table"><HoldingsTable data={holdings.data ?? []} currency={currency} navigate={navigate} /></div>}</Card>}
-      {tab === 'analytics' && <div className="analytics-grid"><Card title="Monthly return heatmap"><ReturnHeatmap data={heatmap.data} /></Card><Card title="Dividends by currency" style={{ gridColumn: '1 / -1' }}><div className="period-toolbar"><span className="period-label">Aggregation</span><div className="period-tabs">{['monthly','quarterly','yearly'].map(p => <button key={p} className={`period-tab${dividendPeriod === p ? ' active' : ''}`} onClick={() => setDividendPeriod(p as typeof dividendPeriod)}>{p}</button>)}</div></div><DividendsByCurrencyChart data={dividendsByCurrency.data} /></Card><Card title="Dividend per share growth" style={{ gridColumn: '1 / -1' }}><DividendGrowthChart data={dividendGrowth.data} /></Card><Card title="Dividends by company (total)"><DividendsByCompanyPie data={dividendsByCompanyPie.data} /></Card><Card title="Yearly dividends by company"><DividendsByCompanyBar data={dividendsByCompany.data} /></Card><Card title="Return versus cost basis"><CostReturnChart data={scatter.data} /></Card><PortfolioAdvancedAnalytics valueHistory={valueHistory.data} allocation={allocation.data} holdings={holdings.data ?? []} /></div>}
-      {tab === 'transactions' && <Card title="Transactions" description="Latest 1,000 imported activity records.">{transactions.isLoading ? <LoadingState label="Loading transactions" /> : transactions.isError ? <ErrorState error={transactions.error} /> : <div className="fixed-table"><TransactionsTable data={transactions.data ?? []} currency={currency} /></div>}</Card>}</>}
+  return <div className="stack dense-page portfolio-workspace">
+    <PageHeader eyebrow="Portfolio intelligence" title="Portfolio" description="A decision-ready view of wealth, exposures, performance, income, and portfolio activity." actions={<div className="portfolio-header-actions">
+      <Field label="Performance period"><select className="select" value={range} onChange={event => setRange(event.target.value as PerformanceRange)}>{Object.entries(RANGE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
+      <Field label="Display currency"><select className="select" value={currency} onChange={event => setCurrency(event.target.value)}>{currencyOptions(currencies.data).map(code => <option key={code}>{code}</option>)}</select></Field>
+      <button className="button button--secondary" disabled={rebuild.isPending} onClick={() => rebuild.mutate()}><RefreshCw />Rebuild</button>
+      <label className="button button--ghost file-button"><Upload />Import<input type="file" accept=".xml,text/xml" multiple onChange={event => void uploadFiles(event.target.files)} /></label>
+    </div>} />
+    {status && <div className="inline-status" role="status">{status}</div>}
+    {unavailable ? <Card title="Connect portfolio activity"><label className="file-drop"><FileUp /><strong>Import IBKR FlexQuery XML</strong><input type="file" accept=".xml,text/xml" multiple onChange={event => void uploadFiles(event.target.files)} /></label></Card> : <>
+      <PortfolioPulse summary={summary} performance={performance.data} currency={currency} rangeLabel={RANGE_LABELS[range]} isLoading={holdings.isLoading} onOpenDetail={openDetail} />
+      <nav className="step-tabs portfolio-tabs" aria-label="Portfolio sections">{TABS.map(item => <button key={item.id} className={tab === item.id ? 'active' : ''} aria-pressed={tab === item.id} onClick={() => setTab(item.id)}>{item.label}</button>)}</nav>
+      {tab === 'overview' && <PortfolioOverview summary={summary} performance={performance.data} valueHistory={rangedHistory} allocation={allocation.data} currencies={currencyExposure.data} activity={activity.data?.by_activity ?? {}} transactions={transactions.data ?? []} currency={currency} onOpenDetail={openDetail} />}
+      {tab === 'holdings' && <PortfolioHoldings data={holdings.data ?? []} summary={summary} currency={currency} includeClosed={includeClosed} isLoading={holdings.isLoading} error={holdings.error} onIncludeClosed={setIncludeClosed} onOpenDetail={openDetail} />}
+      {tab === 'performance' && <PortfolioPerformance performance={performance.data} valueHistory={rangedHistory} heatmap={rangedHeatmap} scatter={scatter.data} contribution={contribution.data} allocation={allocation.data} holdings={(holdings.data ?? []).filter(holding => holding.is_open !== false)} currency={currency} onOpenDetail={openDetail} />}
+      {tab === 'income' && <PortfolioIncome performance={performance.data} byCurrency={dividendsByCurrency.data} byCompany={dividendsByCompany.data} growth={dividendGrowth.data} currency={currency} period={dividendPeriod} onPeriod={setDividendPeriod} onOpenDetail={openDetail} />}
+      {tab === 'activity' && <PortfolioActivity data={transactions.data ?? []} activity={activity.data?.by_activity ?? {}} dateRange={dateRange.data} isLoading={transactions.isLoading} error={transactions.error} onOpenDetail={openDetail} />}
+    </>}
+    <PortfolioDrawer open={Boolean(detail)} eyebrow={metadata.eyebrow} title={metadata.title} description={metadata.description} onClose={closeDetail}>
+      {detail && <PortfolioDetailContent detail={detail} performance={performance.data} summary={summary} valueHistory={rangedHistory} allocation={allocation.data} currencies={currencyExposure.data} dividends={dividendsByCompany.data} activity={activity.data?.by_activity ?? {}} transactions={transactions.data ?? []} holdingHistory={holdingHistory.data} holdingHistoryLoading={holdingHistory.isLoading} currency={currency} onAnalyze={symbol => navigate(`/analyze?q=${encodeURIComponent(symbol)}`)} />}
+    </PortfolioDrawer>
   </div>
 }
-

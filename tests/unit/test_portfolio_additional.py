@@ -289,6 +289,11 @@ class TestPerformanceEdgeCases:
              "amount": 5000, "fx_rate_to_base": 1.0},
         ]
         insert_entries(db3_path, entries)
+        insert_entries(db3_path, [{
+            "transaction_id": "other-user-dividend", "activity_type": "DIVIDEND",
+            "symbol": "OTHER", "currency": "EUR", "trade_date": "2024-06-15",
+            "amount": 999.0, "fx_rate_to_base": 1.0,
+        }], owner_user_id="other-user")
         build_portfolio_state(db3_path)
         result = calculate_metrics(db3_path, risk_free_rate=0.0)
         # Should not crash

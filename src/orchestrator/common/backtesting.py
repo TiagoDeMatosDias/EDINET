@@ -234,7 +234,14 @@ def get_portfolio_prices(
         ).fetchall()
         col_names = {row[1] for row in col_info}
         has_currency = "Currency" in col_names
-        price_cols = "Date, Ticker, Price" + (", Currency" if has_currency else "")
+        has_adjusted_price = "Adjusted_Price" in col_names
+        has_basis = "Price_Basis" in col_names
+        price_cols = "Date, Ticker, Price"
+        if has_adjusted_price:
+            price_cols += ", Adjusted_Price"
+        if has_basis:
+            price_cols += ", Price_Basis"
+        price_cols += ", Currency" if has_currency else ""
         query = (
             f"SELECT {price_cols} FROM {prices_table} "
             f"WHERE Ticker IN ({placeholders}) "
@@ -245,6 +252,12 @@ def get_portfolio_prices(
         df = pd.read_sql_query(query, conn, params=params)
         df["Date"] = pd.to_datetime(df["Date"])
         df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
+        if has_adjusted_price:
+            df["Adjusted_Price"] = pd.to_numeric(df["Adjusted_Price"], errors="coerce")
+            df["RawPrice"] = df["Price"]
+            df["Price"] = df["Adjusted_Price"].where(
+                df["Adjusted_Price"].notna(), df["Price"]
+            )
         if "Currency" not in df.columns:
             df["Currency"] = "EUR"
         else:
@@ -1066,8 +1079,6 @@ def calculate_yearly_returns(
         ``Dividend Return``, ``Total Return``.
     """
     total_df = decomposition.get("total")
-    price_df = decomposition.get("price_only")
-
     if total_df is None or total_df.empty:
         return pd.DataFrame(
             columns=["Year", "Price Return", "Dividend Return", "Total Return"]
@@ -2171,11 +2182,11 @@ def generate_backtest_charts(
         price_pct = per_company["weighted_price"].values * 100
         div_pct = per_company["weighted_dividend"].values * 100
 
-        bars_price = ax.barh(
+        ax.barh(
             y_pos, price_pct, height=0.5,
             color="#42A5F5", label="Price Contribution",
         )
-        bars_div = ax.barh(
+        ax.barh(
             y_pos, div_pct, height=0.5, left=price_pct,
             color="#66BB6A", label="Dividend Contribution",
         )
@@ -2436,7 +2447,7 @@ def run_backtest(
         shares_map = None
         if per_company is not None and "shares_purchased" in per_company.columns:
             shares_map = dict(
-                zip(per_company["Ticker"], per_company["shares_purchased"])
+                zip(per_company["Ticker"], per_company["shares_purchased"], strict=True)
             )
         dividends_by_year = calculate_dividends_by_company_year(
             dividends_df, shares_purchased=shares_map,

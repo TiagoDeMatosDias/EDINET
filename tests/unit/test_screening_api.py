@@ -190,6 +190,8 @@ def test_get_metrics(test_db_path):
     assert "PerShare" in tables
     assert "Valuation" in tables
     assert "Quality" in tables
+    assert "Stock_Splits" in tables
+    assert "split_date" in tables["Stock_Splits"]
     assert "BookValue" in tables["PerShare"]
     assert "EPS" in tables["PerShare"]
 
@@ -278,6 +280,66 @@ def test_run_screening_with_criteria(test_db_path):
         if "Sony" in str(row):
             found = True
     assert found, f"Sony not found in results: {data['rows']}"
+
+
+def test_run_screening_excludes_recent_stock_splits_by_date(test_db_path):
+    with sqlite3.connect(test_db_path) as conn:
+        conn.execute(
+            "CREATE TABLE Stock_Splits ("
+            "ticker TEXT, split_date TEXT, ratio_from REAL, ratio_to REAL, "
+            "confirmation TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO Stock_Splits VALUES (?, ?, ?, ?, ?)",
+            ("7203.T", "2024-11-15", 1, 2, "confirmed"),
+        )
+
+    resp = client.post("/api/screening/run", json={
+        "db_path": test_db_path,
+        "criteria": [{
+            "comparison_mode": "recent_split",
+            "operator": "=",
+            "value": "2024-11-01",
+        }],
+        "columns": ["CompanyInfo.Company_Ticker"],
+        "screening_date": "2024-12-01",
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "7203.T" not in {row[0] for row in data["rows"]}
+    assert "6758.T" in {row[0] for row in data["rows"]}
+
+
+def test_run_screening_recent_split_options_are_forwarded(test_db_path):
+    with sqlite3.connect(test_db_path) as conn:
+        conn.execute(
+            "CREATE TABLE Stock_Splits ("
+            "ticker TEXT, split_date TEXT, ratio_from REAL, ratio_to REAL, "
+            "confirmation TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO Stock_Splits VALUES (?, ?, ?, ?, ?)",
+            ("6758.T", "2024-03-15", 1, 2, "pending"),
+        )
+
+    resp = client.post("/api/screening/run", json={
+        "db_path": test_db_path,
+        "criteria": [{
+            "comparison_mode": "recent_split",
+            "operator": "=",
+            "value": "2024-04-01",
+            "split_action": "include",
+            "split_status": "pending",
+            "split_date_operator": "on_or_before",
+        }],
+        "columns": ["CompanyInfo.Company_Ticker"],
+        "screening_date": "2024-12-01",
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert {row[0] for row in data["rows"]} == {"6758.T"}
 
 
 def test_run_screening_with_column_compare_and_offset(test_db_path):

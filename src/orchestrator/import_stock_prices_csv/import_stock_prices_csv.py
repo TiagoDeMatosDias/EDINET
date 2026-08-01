@@ -6,6 +6,8 @@ import pandas as pd
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common.db_config import get_db2
 from src.utilities import stock_prices
+from src.utilities.price_provenance import source_id as build_source_id
+from src.utilities.price_provenance import utc_now
 
 logger = logging.getLogger(__name__)
 _MAX_CSV_UPLOAD_BYTES = 500 * 1024 * 1024
@@ -152,6 +154,20 @@ def import_stock_prices_csv(
         if out.empty:
             logger.info("No new rows to insert - all Date+Ticker pairs already exist.")
             return 0
+
+        # A CSV does not carry a provider adjustment contract.  Keep the
+        # imported quote, but make that uncertainty explicit rather than
+        # allowing downstream split logic to assume raw or adjusted values.
+        retrieved_at = utc_now()
+        out["Price_Basis"] = "unknown"
+        out["Provider"] = "CSV import"
+        out["Source_Id"] = [
+            build_source_id("CSV import", ticker, row_date)
+            for ticker, row_date in zip(out["Ticker"], out["Date"], strict=True)
+        ]
+        out["Source_Revision"] = "csv-v1"
+        out["Adjustment_Factor"] = None
+        out["Retrieved_At"] = retrieved_at
 
         out.to_sql(prices_table, conn, if_exists="append", index=False)
         conn.commit()

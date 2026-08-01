@@ -115,6 +115,38 @@ def test_overview_metrics_computed(db):
     # Latest Price
     assert m["LatestPrice"] == 1520.0
 
+
+def test_overview_metrics_project_report_values_onto_current_share_basis(db):
+    """A reviewed post-filing split adjusts per-share metrics, not source rows."""
+    from src.portfolio.split_schema import ensure_split_tables
+
+    conn = sqlite3.connect(db)
+    ensure_split_tables(conn=conn)
+    conn.execute(
+        "INSERT INTO Stock_Splits "
+        "(ticker, split_date, ratio_from, ratio_to, confirmation, price_basis) "
+        "VALUES (?, ?, ?, ?, 'confirmed', 'raw')",
+        ("1001.T", "2024-06-01", 1, 2),
+    )
+    conn.execute(
+        "INSERT INTO Stock_Prices VALUES (?, ?, ?, ?)",
+        ("2024-07-01", "1001.T", "JPY", 300),
+    )
+    conn.commit()
+    conn.close()
+
+    data = client.get("/api/security/overview", params={"company_code": "E00001"}).json()
+    metrics = data["metrics"]
+    # Report EPS/DPS are halved and issued shares doubled for the 2-for-1 split.
+    assert metrics["LatestPrice"] == 300.0
+    assert metrics["MarketCap"] == pytest.approx(3_000_000_000.0)
+    assert metrics["SharesOutstanding"] == pytest.approx(10_000_000.0)
+    assert metrics["PERatio"] == pytest.approx(6.0)
+    assert metrics["PriceToBook"] == pytest.approx(300 / 325)
+    assert metrics["PriceToSales"] == pytest.approx(300 / 1000)
+    assert metrics["DividendsYield"] == pytest.approx(12.5 / 300)
+    assert metrics["PayoutRatio"] == pytest.approx(0.25)
+
 def test_overview_404(db):
     assert client.get("/api/security/overview", params={"company_code": "E99999"}).status_code == 404
 

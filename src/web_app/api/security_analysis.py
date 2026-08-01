@@ -46,7 +46,7 @@ def _resolve_db() -> str:
 
 def _safe_float(value: Any) -> float | None:
     if value is None: return None
-    try: return float(value)
+    try: return float(str(value).replace(",", "").strip())
     except (TypeError, ValueError): return None
 
 
@@ -123,6 +123,7 @@ def get_overview(
                 "LatestPrice", "MarketCap", "PERatio", "PriceToBook",
                 "PriceToSales", "DividendsYield", "PayoutRatio",
                 "ReturnOnAssets", "ReturnOnEquity", "CurrentRatio",
+                "SharesOutstanding",
             )}
         return result
     except HTTPException: raise
@@ -147,11 +148,21 @@ def _compute_metrics(db: str, code: str, market: dict, company: dict) -> dict:
         # Get latest stock price
         price = None
         if "stock_prices" in tables:
+            price_columns = {
+                row[1] for row in conn.execute(
+                    f'PRAGMA table_info("{tables["stock_prices"]}")'
+                ).fetchall()
+            }
+            basis_select = ", Price_Basis" if "Price_Basis" in price_columns else ""
             r = conn.execute(
-                f'SELECT Price FROM "{tables["stock_prices"]}" '
+                f'SELECT Date, Price{basis_select} FROM "{tables["stock_prices"]}" '
                 f'WHERE Ticker=? ORDER BY Date DESC LIMIT 1', (ticker,)
             ).fetchone()
-            if r: price = _safe_float(r["Price"])
+            if r:
+                price = _security._split_adjusted_value(
+                    conn, ticker, r["Date"], r["Price"],
+                    r["Price_Basis"] if "Price_Basis" in price_columns else "raw",
+                )
 
         # Find the latest docID with actual data in ShareMetrics
         doc_id = _find_doc_with_data(conn, tables, code,
@@ -167,11 +178,33 @@ def _compute_metrics(db: str, code: str, market: dict, company: dict) -> dict:
         fin_ratios = _query_row(conn, tables, "Financial_Ratios", doc_id)
         fin_rolling = _query_row(conn, tables, "Financial_Ratios_Rolling", doc_id)
 
-        eps = _col(share, "Basic earnings (loss) per share")
-        bvps = _col(share, "Net assets per share")
-        dps = _col(share, "Dividend paid per share")
-        shares = _col(share, "Number of issued shares as of filing date")
-        sps = _col(ps_metrics, "Sales Per Share")
+        period_row = conn.execute(
+            "SELECT periodEnd FROM FinancialStatements WHERE docID = ? LIMIT 1",
+            (doc_id,),
+        ).fetchone()
+        period_end = period_row[0] if period_row else None
+
+        eps = _security._split_adjusted_statement_value(
+            conn, ticker, period_end,
+            _col(share, "Basic earnings (loss) per share"),
+        )
+        bvps = _security._split_adjusted_statement_value(
+            conn, ticker, period_end,
+            _col(share, "Net assets per share"),
+        )
+        dps = _security._split_adjusted_statement_value(
+            conn, ticker, period_end,
+            _col(share, "Dividend paid per share"),
+        )
+        shares = _security._split_adjusted_statement_value(
+            conn, ticker, period_end,
+            _col(share, "Number of issued shares as of filing date"),
+            per_share=False,
+        )
+        sps = _security._split_adjusted_statement_value(
+            conn, ticker, period_end,
+            _col(ps_metrics, "Sales Per Share"),
+        )
         cr = _col(fin_ratios, "Current Ratio")
         roa = _col(fin_rolling, "Return on Assets_Average_3_Year")
         roe = _col(fin_rolling, "Return on Equity_Average_3_Year")
@@ -179,6 +212,7 @@ def _compute_metrics(db: str, code: str, market: dict, company: dict) -> dict:
         return {
             "LatestPrice": price,
             "MarketCap": (price * shares) if (price and shares) else None,
+            "SharesOutstanding": shares,
             "PERatio": (price / eps) if (price and eps and eps != 0) else None,
             "PriceToBook": (price / bvps) if (price and bvps and bvps != 0) else None,
             "PriceToSales": (price / sps) if (price and sps and sps != 0) else None,
@@ -248,6 +282,7 @@ def _empty_metrics():
         "LatestPrice", "MarketCap", "PERatio", "PriceToBook",
         "PriceToSales", "DividendsYield", "PayoutRatio",
         "ReturnOnAssets", "ReturnOnEquity", "CurrentRatio",
+        "SharesOutstanding",
     )}
 
 
@@ -302,12 +337,14 @@ def get_price_history(
     ticker: str = Query(...),
     start_date: str | None = Query(default=None),
     end_date: str | None = Query(default=None),
+    adjusted: bool = Query(default=False),
 ) -> dict:
     if not ticker.strip():
         raise HTTPException(status_code=400, detail="ticker is required")
     try:
         return {"prices": _security.get_security_price_history(
-            _resolve_db(), ticker.strip(), start_date, end_date)}
+            _resolve_db(), ticker.strip(), start_date, end_date,
+            adjusted=adjusted)}
     except HTTPException: raise
     except Exception as e:
         logger.error("Price history failed: %s", str(e))

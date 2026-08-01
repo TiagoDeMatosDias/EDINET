@@ -11,17 +11,192 @@ and ``Holdings_History`` tables for fast retrieval by the API.
 
 from __future__ import annotations
 
-import sqlite3
 import logging
+import sqlite3
 from collections import defaultdict
-from datetime import date as Date, timedelta
+from datetime import date as Date
+from datetime import timedelta
 
 from src.orchestrator.common.db_config import get_db2, get_db3
 from src.orchestrator.common.sqlite import connect_read, connect_write
-from src.portfolio.schema import create_tables
 from src.portfolio import option_pricing as _op
+from src.portfolio.schema import create_tables
+from src.utilities.price_provenance import table_columns
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Split-adjusted price helpers
+# ---------------------------------------------------------------------------
+
+_split_table_checked: set[str] = set()
+# Cache keyed by (connection_id, ticker) to avoid cross-database contamination
+# (e.g. when tests switch between different database files).
+_split_factor_cache: dict[tuple[int, str], list[tuple[str, float]]] = {}
+
+
+def _ensure_split_table_exists(db2_path: str) -> None:
+    """Ensure the Stock_Splits table exists in db2 (idempotent)."""
+    global _split_table_checked
+    db_key = str(db2_path)
+    if db_key in _split_table_checked:
+        return
+    try:
+        from src.portfolio.split_schema import ensure_split_tables
+        from src.utilities.price_provenance import ensure_price_provenance_columns
+
+        migration_conn = sqlite3.connect(db2_path)
+        try:
+            ensure_split_tables(conn=migration_conn)
+            ensure_price_provenance_columns(migration_conn, "Stock_Prices")
+            migration_conn.commit()
+        finally:
+            migration_conn.close()
+        _split_table_checked.add(db_key)
+    except Exception:
+        logger.warning("Could not ensure Stock_Splits table", exc_info=True)
+
+
+def _load_split_factors(
+    conn2: sqlite3.Connection,
+    ticker: str,
+) -> list[tuple[str, float]]:
+    """Return [(split_date, cumulative_factor), ...] for confirmed splits.
+
+    cumulative_factor is the multiplier to apply to a price from BEFORE that
+    split date to bring it to a post-split basis.  For example, after a
+    2:1 split on 2024-03-15, prices on or before 2024-03-14 need to be
+    divided by 2.  The factor for those dates is 0.5.
+
+    Returns an empty list if the ticker has no confirmed split events.  The
+    caller decides whether a row needs this factor from its own
+    ``price_basis``; provider-adjusted rows are never transformed a second
+    time, but the events are still needed to reconstruct an as-traded ledger
+    quote.
+    """
+    try:
+        split_columns = table_columns(conn2, "Stock_Splits")
+        basis_clause = "AND COALESCE(price_basis, 'raw') = 'raw'" \
+            if "price_basis" in split_columns else ""
+        superseded_clause = "AND COALESCE(superseded_by, 0) = 0" \
+            if "superseded_by" in split_columns else ""
+        method_select = "detection_method" if "detection_method" in split_columns else "NULL"
+        id_select = "id" if "id" in split_columns else "NULL"
+        method_order = (
+            "CASE WHEN detection_method = 'provider' THEN 0 "
+            "WHEN detection_method = 'manual' THEN 1 ELSE 2 END"
+            if "detection_method" in split_columns else "0"
+        )
+        id_order = "id DESC" if "id" in split_columns else "rowid DESC"
+        rows = conn2.execute(
+            "SELECT split_date, ratio_from, ratio_to, "
+            f"{method_select}, {id_select} FROM Stock_Splits "
+            "WHERE ticker = ? AND confirmation = 'confirmed' "
+            f"{basis_clause} {superseded_clause} "
+            f"ORDER BY split_date ASC, {method_order}, {id_order}",
+            (ticker,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    if not rows:
+        return []
+
+    seen_dates: set[str] = set()
+    splits: list[tuple[str, float]] = []
+    for split_date, ratio_from, ratio_to, _method, _event_id in rows:
+        date_text = str(split_date)[:10]
+        if date_text in seen_dates:
+            continue
+        seen_dates.add(date_text)
+        try:
+            ratio = float(ratio_to) / float(ratio_from)
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        if ratio > 0:
+            splits.append((date_text, ratio))
+    factors: list[tuple[str, float]] = []
+    cumulative: float = 1.0
+    for split_date, ratio in reversed(splits):
+        cumulative /= ratio
+        factors.append((split_date, cumulative))
+    factors.reverse()
+    return factors
+
+
+def _get_adjusted_price(
+    conn2: sqlite3.Connection,
+    ticker: str,
+    date_str: str,
+) -> float | None:
+    """Look up a ticker's **split-adjusted** price for a given date.
+
+    Uses the same forward-fill logic as :func:`_get_price`, then applies
+    cumulative split adjustments so all prices are on a current-share basis.
+
+    The comparison uses the **actual price source date** (not the query date)
+    to determine whether a split adjustment is needed.  This correctly handles
+    forward-fill where the most recent price may predate a split even though
+    the query date is after it.
+    """
+    # Do the lookup ourselves so we know the source date of the price
+    columns = table_columns(conn2, "Stock_Prices")
+    basis_sql = ", Price_Basis" if "Price_Basis" in columns else ""
+    currency_order = ", Currency" if "Currency" in columns else ""
+    row = conn2.execute(
+        f"SELECT Date, Price{basis_sql} FROM Stock_Prices "
+        f"WHERE Ticker = ? AND Date = ? ORDER BY Date{currency_order} LIMIT 1",
+        (ticker, date_str),
+    ).fetchone()
+    if row:
+        price_date = row[0]
+        raw = row[1]
+    else:
+        # Forward-fill: most recent price on or before target date
+        row = conn2.execute(
+            f"SELECT Date, Price{basis_sql} FROM Stock_Prices "
+            f"WHERE Ticker = ? AND Date <= ? ORDER BY Date DESC{currency_order} LIMIT 1",
+            (ticker, date_str),
+        ).fetchone()
+        if row is None:
+            return None
+        price_date = row[0]
+        raw = row[1]
+    basis = (str(row[2]).strip().lower() if "Price_Basis" in columns and row[2] else "raw")
+    if basis != "raw":
+        # ``unknown`` is deliberately not adjusted.  Applying a split to a
+        # legacy/provider-adjusted row without evidence is worse than leaving
+        # the row unadjusted; callers can surface the provenance for review.
+        return raw
+
+    cache_key = (id(conn2), ticker)
+    if cache_key not in _split_factor_cache:
+        _split_factor_cache[cache_key] = _load_split_factors(conn2, ticker)
+
+    factors = _split_factor_cache[cache_key]
+    if not factors:
+        return raw
+
+    # Apply the cumulative factor for the most recent split whose date
+    # is AFTER the actual price source date (i.e., the price is pre-split
+    # and needs to be adjusted down to a post-split basis).
+    for split_date, cum_factor in factors:
+        if split_date > price_date:
+            return raw * cum_factor
+
+    return raw
+
+
+def _invalidate_split_cache(ticker: str | None = None) -> None:
+    """Clear the split-factor cache so the next lookup reloads from DB."""
+    global _split_factor_cache
+    if ticker:
+        _split_factor_cache = {
+            key: value for key, value in _split_factor_cache.items()
+            if key[1] != ticker
+        }
+    else:
+        _split_factor_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +245,142 @@ def _get_price(
     return None
 
 
+def _get_as_traded_price(
+    conn2: sqlite3.Connection,
+    ticker: str,
+    date_str: str,
+) -> float | None:
+    """Return a quote on the ledger's as-traded share basis.
+
+    Yahoo's daily historical close is already split-adjusted.  Portfolio
+    quantities are changed on the effective split date, so pre-split holdings
+    need the inverse factor when an adjusted provider row is used.  Raw rows
+    and rows with unknown basis are returned unchanged; unknown data is never
+    silently transformed.
+    """
+    columns = table_columns(conn2, "Stock_Prices")
+    basis_sql = ", Price_Basis" if "Price_Basis" in columns else ""
+    currency_order = ", Currency" if "Currency" in columns else ""
+    row = conn2.execute(
+        f"SELECT Date, Price{basis_sql} FROM Stock_Prices "
+        f"WHERE Ticker = ? AND Date = ? ORDER BY Date{currency_order} LIMIT 1",
+        (ticker, date_str),
+    ).fetchone()
+    if row is None:
+        row = conn2.execute(
+            f"SELECT Date, Price{basis_sql} FROM Stock_Prices "
+            f"WHERE Ticker = ? AND Date <= ? ORDER BY Date DESC{currency_order} LIMIT 1",
+            (ticker, date_str),
+        ).fetchone()
+    if row is None:
+        return None
+
+    price_date = str(row[0])[:10]
+    price = row[1]
+    if price is None:
+        return None
+    basis = (
+        str(row[2] or "raw").strip().lower()
+        if "Price_Basis" in columns else "raw"
+    )
+    if basis != "adjusted":
+        return price
+
+    cache_key = (id(conn2), ticker)
+    if cache_key not in _split_factor_cache:
+        _split_factor_cache[cache_key] = _load_split_factors(conn2, ticker)
+    for split_date, cumulative_factor in _split_factor_cache[cache_key]:
+        if split_date > price_date and cumulative_factor:
+            return price / cumulative_factor
+    return price
+
+
+def _load_confirmed_split_events(
+    conn2: sqlite3.Connection,
+) -> dict[str, list[tuple[str, float]]]:
+    """Load confirmed split multipliers grouped by ticker.
+
+    The portfolio ledger applies these actions to quantities/cost bases.  This
+    is separate from price adjustment: a split must not be applied to both the
+    number of shares and an already-adjusted quote.
+    """
+    columns = table_columns(conn2, "Stock_Splits")
+    if not columns:
+        return {}
+    basis_clause = "AND COALESCE(price_basis, 'raw') = 'raw'" \
+        if "price_basis" in columns else ""
+    superseded_clause = "AND COALESCE(superseded_by, 0) = 0" \
+        if "superseded_by" in columns else ""
+    method_select = "detection_method" if "detection_method" in columns else "NULL"
+    id_select = "id" if "id" in columns else "NULL"
+    method_order = (
+        "CASE WHEN detection_method = 'provider' THEN 0 "
+        "WHEN detection_method = 'manual' THEN 1 ELSE 2 END"
+        if "detection_method" in columns else "0"
+    )
+    id_order = "id DESC" if "id" in columns else "rowid DESC"
+    try:
+        rows = conn2.execute(
+            "SELECT ticker, split_date, ratio_from, ratio_to, "
+            f"{method_select}, {id_select} FROM Stock_Splits "
+            "WHERE confirmation = 'confirmed' "
+            f"{basis_clause} {superseded_clause} "
+            f"ORDER BY ticker, split_date, {method_order}, {id_order}",
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    events: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    seen_events: set[tuple[str, str]] = set()
+    for ticker, split_date, ratio_from, ratio_to, _method, _event_id in rows:
+        event_key = (str(ticker), str(split_date)[:10])
+        if event_key in seen_events:
+            continue
+        seen_events.add(event_key)
+        try:
+            multiplier = float(ratio_to) / float(ratio_from)
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        if multiplier > 0:
+            events[str(ticker)].append((str(split_date), multiplier))
+    return events
+
+
+def _apply_split_actions(
+    holdings: dict[tuple[str, str], dict],
+    events: dict[str, list[tuple[str, float]]],
+    date_str: str,
+) -> None:
+    """Apply split actions effective on *date_str* to open holdings."""
+    for (symbol, asset_category), holding in holdings.items():
+        if holding.get("quantity", 0) == 0:
+            continue
+        event_rows = events.get(symbol, [])
+        # Options are keyed by their contract symbol, but their split action is
+        # declared against the underlying ticker.
+        if not event_rows:
+            event_rows = events.get(holding.get("underlying") or "", [])
+        for split_date, multiplier in event_rows:
+            if split_date != date_str:
+                continue
+            if asset_category == "OPT" or holding.get("is_option"):
+                if holding.get("strike") is not None:
+                    holding["strike"] = holding["strike"] / multiplier
+                holding["multiplier"] = (holding.get("multiplier") or 1) * multiplier
+            else:
+                holding["quantity"] *= multiplier
+                total_cost = holding.get("total_cost")
+                if holding["quantity"] and total_cost is not None:
+                    holding["avg_cost"] = total_cost / holding["quantity"]
+            # A holding is priced after actions below; stale values from the
+            # prior day must not leak into the split day.
+            holding["market_price"] = None
+            holding["market_value"] = None
+            logger.info(
+                "Applied %s:%s split to %s on %s",
+                multiplier, 1, symbol, date_str,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -94,7 +405,6 @@ def build_portfolio_state(
     Returns:
         ``{'daily_rows': N, 'holdings_count': N}``
     """
-    import sys, os
 
     db3_path = db3_path or get_db3()
     db2_path = db2_path or get_db2()
@@ -102,6 +412,8 @@ def build_portfolio_state(
     create_tables(db3_path)
 
     conn3 = connect_write(db3_path)
+    # Ensure Stock_Splits table exists for split-adjusted price lookups
+    _ensure_split_table_exists(db2_path)
     conn2 = connect_read(db2_path)
 
     try:
@@ -143,6 +455,7 @@ def build_portfolio_state(
         cumulative_return = 1.0
         prev_total_value = 0.0
         fx_rates: dict[str, float] = {}  # currency → latest fxRateToBase
+        split_events = _load_confirmed_split_events(conn2)
         txn_index = 0
         daily_rows = 0
         hh_rows = 0
@@ -152,6 +465,11 @@ def build_portfolio_state(
             date_str = current_date.isoformat()
             daily_dividend = 0.0
             daily_inflow = 0.0
+
+            # Apply corporate actions before trades and valuation for the
+            # effective date. Quantities/cost bases then match as-traded
+            # prices without double-adjusting either side.
+            _apply_split_actions(holdings, split_events, date_str)
 
             # --- Apply all transactions for this day ---
             while txn_index < len(transactions):
@@ -177,9 +495,7 @@ def build_portfolio_state(
             # --- Price current holdings ---
             stock_value_native = 0.0
             option_value_native = 0.0
-            total_value_native = 0.0
-
-            for key, h in holdings.items():
+            for _key, h in holdings.items():
                 if h["quantity"] == 0:
                     continue
 
@@ -196,7 +512,6 @@ def build_portfolio_state(
                         stock_value_native += value
 
             # Convert to base currency
-            fx_stock = fx_rates.get("stock_total", 1.0)  # rough; per-currency below
             # For proper multi-currency: sum (value * fx_rate[currency])
             stock_value_base = 0.0
             option_value_base = 0.0
@@ -242,7 +557,7 @@ def build_portfolio_state(
             daily_rows += 1
 
             # Store Holdings_History — store both native and base-currency values
-            for key, h in holdings.items():
+            for _key, h in holdings.items():
                 if h["quantity"] != 0:
                     mv_native = h.get("market_value")
                     cur_rate = fx_rates.get(h["currency"], 1.0)
@@ -268,7 +583,6 @@ def build_portfolio_state(
 
         # --- Store current holdings ---
         # Filter out expired options (expiry < today).
-        today = Date.today().isoformat()
         for h in holdings.values():
             if abs(h["quantity"]) <= 0:
                 continue
@@ -388,8 +702,6 @@ def _apply_transaction(
             }
 
         h = holdings[key]
-        old_qty = h["quantity"]
-
         if txn.get("buy_sell") == "BUY":
             h["quantity"] += qty
             # Update cost basis
@@ -466,13 +778,16 @@ def _price_holding(
 ) -> float | None:
     """Price a single holding for a given date.
 
-    Stocks: lookup from Stock_Prices in db2; falls back to average cost.
-    Options: compute using binomial tree with underlying price from db2.
+    Stocks use the quote on the same (as-traded) basis as the ledger quantity.
+    Split actions are applied to holdings above, so using a split-adjusted
+    quote here would double-adjust the position.  Options use the same raw
+    underlying convention; their strike/multiplier are adjusted with the
+    contract action where available.
     """
     if h.get("is_option"):
         # Need underlying price, strike, T, r, sigma
         underlying = h.get("underlying") or h["symbol"][:h["symbol"].index(" ")] if " " in h["symbol"] else h["symbol"]
-        S = _get_price(conn2, underlying, date_str)
+        S = _get_as_traded_price(conn2, underlying, date_str)
         if S is None:
             return None
         K = h.get("strike") or 0
@@ -487,7 +802,7 @@ def _price_holding(
         opt_type = "put" if h.get("put_call") == "P" else "call"
         return _op.binomial_tree(opt_type, S, K, T, 0.05, 0.20)
     else:
-        price = _get_price(conn2, h["symbol"], date_str)
+        price = _get_as_traded_price(conn2, h["symbol"], date_str)
         if price is not None:
             return price
         # Fall back to average cost if no market price available
@@ -833,7 +1148,6 @@ def _compute_position_stats(
                 cost_basis_display -= qty_sell * avg_cost_display
 
                 # Compute realized P&L for this sale
-                proceeds = abs(trade_money) if trade_money < 0 else trade_money
                 # trade_money for sells is negative (money out), proceeds = -trade_money
                 actual_proceeds = -trade_money if trade_money < 0 else trade_money
                 cost_of_sold = qty_sell * avg_cost_native
@@ -905,9 +1219,8 @@ def get_holding_performance(
     scenarios via ``_compute_position_stats``.
     """
     import numpy as np
-    from src.portfolio.currency import (
-        get_rate_at_date_any, get_fx_series, get_rate_at_date,
-    )
+
+    from src.portfolio.currency import get_rate_at_date_any
     db3_path = db3_path or get_db3()
     db2_path = db2_path or get_db2()
     conn = connect_read(db3_path)
@@ -1008,7 +1321,6 @@ def get_holding_performance(
     conn.close()
 
     values = [h["market_value"] or 0 for h in hist]
-    values_native = [h["market_value_native"] or 0 for h in hist]
     first_val = next((i for i, v in enumerate(values) if v > 0), None)
     daily_returns: list[float] = []
     if first_val is not None:
@@ -1115,11 +1427,11 @@ def get_all_holdings_performance(
     Industry lookups are batched.  ~10× faster than calling
     ``get_holding_performance`` per symbol.
     """
-    import numpy as np
     from collections import defaultdict
-    from src.portfolio.currency import (
-        get_fx_series,
-    )
+
+    import numpy as np
+
+    from src.portfolio.currency import get_fx_series
     db3_path = db3_path or get_db3()
     db2_path = db2_path or get_db2()
 

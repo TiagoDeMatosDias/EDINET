@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import numpy as np
@@ -122,6 +123,60 @@ class TestCalculateMetrics:
         )
         assert result["start_date"] == "2024-01-05"
         assert result["end_date"] == "2024-01-15"
+
+    def test_drawdown_ignores_withdrawals(
+        self,
+        tmp_path: Path,
+        market_db_path: str,
+    ) -> None:
+        path = tmp_path / "flow-adjusted-drawdown.db"
+        create_tables(str(path))
+        with sqlite3.connect(path) as conn:
+            conn.executemany(
+                "INSERT INTO Portfolio_Daily "
+                "(date, total_value, daily_return, cumulative_return, net_inflow) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    ("2024-01-01", 100.0, 0.0, 0.0, 100.0),
+                    ("2024-01-02", 50.0, 0.0, 0.0, -50.0),
+                    ("2024-01-03", 45.0, -0.1, -0.1, 0.0),
+                ],
+            )
+
+        result = calculate_metrics(str(path), db2_path=market_db_path, risk_free_rate=0.0)
+
+        assert np.isclose(result["max_drawdown"], -0.1)
+        assert result["max_dd_peak_date"] == "2024-01-01"
+        assert result["max_dd_trough_date"] == "2024-01-03"
+
+    def test_date_range_rebases_inception_return(
+        self,
+        tmp_path: Path,
+        market_db_path: str,
+    ) -> None:
+        path = tmp_path / "range-return.db"
+        create_tables(str(path))
+        with sqlite3.connect(path) as conn:
+            conn.executemany(
+                "INSERT INTO Portfolio_Daily "
+                "(date, total_value, daily_return, cumulative_return, net_inflow) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    ("2024-01-01", 100.0, 0.0, 0.0, 100.0),
+                    ("2024-01-02", 110.0, 0.1, 0.1, 0.0),
+                    ("2024-01-03", 121.0, 0.1, 0.21, 0.0),
+                ],
+            )
+
+        result = calculate_metrics(
+            str(path),
+            db2_path=market_db_path,
+            start_date="2024-01-02",
+            end_date="2024-01-03",
+            risk_free_rate=0.0,
+        )
+
+        assert np.isclose(result["total_return"], 0.1)
 
     def test_empty_database_returns_minimal_result(
         self,

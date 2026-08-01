@@ -453,6 +453,31 @@ def test_get_security_overview_uses_ratio_fallbacks(security_db):
     assert pytest.approx(valuation["DividendsYield"], rel=1e-4) == (20.0 / 1100.0)
 
 
+def test_get_security_overview_adjusts_report_per_share_values_after_split(security_db):
+    from src.portfolio.split_schema import ensure_split_tables
+
+    conn = sqlite3.connect(security_db)
+    ensure_split_tables(conn=conn)
+    conn.execute(
+        "INSERT INTO Stock_Splits "
+        "(ticker, split_date, ratio_from, ratio_to, confirmation, price_basis) "
+        "VALUES (?, ?, ?, ?, 'confirmed', 'raw')",
+        ("1001", "2024-06-01", 1, 2),
+    )
+    conn.execute(
+        "INSERT INTO Stock_Prices VALUES (?, ?, ?, ?)",
+        ("2025-01-01", "1001", "JPY", 600),
+    )
+    conn.commit()
+    conn.close()
+
+    valuation = get_security_overview(security_db, "E00001")["valuation_latest"]
+    assert valuation["MarketCap"] == pytest.approx(120_000_000_000.0)
+    assert valuation["PERatio"] == pytest.approx(120.0)
+    assert valuation["PriceToBook"] == pytest.approx(600 / 32.5)
+    assert valuation["DividendsYield"] == pytest.approx(10 / 600)
+
+
 def test_get_security_overview_prefers_latest_english_filing_description_when_available(security_db):
     overview = get_security_overview(security_db, "E00001")
     company = overview["company"]

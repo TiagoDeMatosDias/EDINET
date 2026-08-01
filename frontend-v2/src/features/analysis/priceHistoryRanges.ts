@@ -6,6 +6,15 @@ export type PriceHistoryRow = {
   trade_date?: string
   Price?: number
   price?: number
+  source_price?: number
+  raw_price?: number
+  price_basis?: 'raw' | 'adjusted' | 'unknown' | string
+  provider?: string | null
+  source_id?: string | null
+  source_revision?: string | null
+  retrieved_at?: string | null
+  split_adjustment_factor?: number | null
+  adjusted_price?: number | null
 }
 
 export const PRICE_RANGE_OPTIONS: Array<{ key: PriceRangeKey; label: string }> = [

@@ -1,6 +1,6 @@
 # Frontend Architecture
 
-Updated: 2026-07-30
+Updated: 2026-07-31
 
 ## Overview
 
@@ -27,7 +27,7 @@ flowchart LR
 | `/screen` | Company screening |
 | `/analyze` and `/analyze/:companyCode` | Company search and analysis |
 | `/backtest` (`/backtesting` alias) | Manual, CSV, and rolling-screen backtests |
-| `/portfolio` | Portfolio overview, holdings, transactions, and performance |
+| `/portfolio` | Portfolio overview, holdings, performance, income, and activity with drill-down panels |
 | `/pipeline` | Data-pipeline recipes and advanced step builder |
 | `/filings` | Retained EDINET type-1 filing and XBRL explorer |
 | `/compare` | Bounded multi-company comparison |
@@ -62,7 +62,8 @@ frontend-v2/
 │   ├── App.tsx              # lazy route definitions
 │   ├── main.tsx             # providers and browser entry point
 │   ├── styles.css           # design tokens and shared layout
-│   └── features.css         # feature-specific responsive rules
+│   ├── features.css         # feature-specific responsive rules
+│   └── portfolio.css        # bounded portfolio charts, ledgers, analytics, and drawers
 ├── index.html
 ├── vite.config.ts
 └── package.json
@@ -101,10 +102,11 @@ The layout is desktop-first but has a 390 px mobile treatment:
 - Pipeline execution state is server-owned. Submission returns `202` plus a job ID; TanStack Query polls `/api/jobs/{job_id}`, stops at a terminal state, and retrieves bounded output separately. Reloading restores persisted jobs from the API rather than assuming a held request is still alive.
 - The API clients in `src/api/` are the only shared network layer. `apiStream` parses the existing SSE format for rolling-backtest progress and cancellation. `AuthProvider` gates account mode; access tokens are kept in memory and refresh cookies are never exposed to JavaScript or persisted in browser storage.
 - Existing Python services and API contracts remain authoritative; the frontend does not access databases directly.
+- Portfolio keeps only the overview queries eager. Income and advanced-performance datasets load when their tab or detail drawer needs them; range and display-currency choices are query-key inputs, and changing a range presents an explicit loading state instead of stale statistics.
 
 ## Feature behavior
 
-- Screening preserves legacy saved definitions and supports full expressions on both sides of a comparison. Rule expressions and derived output fields share metric, literal-value, arithmetic-operator, and parenthesis tokens; validated parentheses provide explicit PEMDAS grouping while legacy numerator/denominator ratios remain editable.
+- Screening preserves legacy saved definitions and supports full expressions on both sides of a comparison. Rule expressions and derived output fields share metric, literal-value, arithmetic-operator, and parenthesis tokens; validated parentheses provide explicit PEMDAS grouping while legacy numerator/denominator ratios remain editable. Corporate-action rules expose `Stock_Splits` split/action dates as date inputs (including date-valued expression tokens) and a configurable `No recent split` rule for action, status, and date direction.
 - Analysis supports company search, overview metrics, price history, multi-metric financial-history charts and dense tables, price refresh, peer-screen handoff, and backtest handoff.
 - Analysis also lists archived company XBRL reports and links to the Filing Explorer. Filings presents sanitized narrative sections, structured facts, and archive metadata without rendering submitted active content. Filing translation preserves the Japanese source, requests one complete English document at a time, and displays explicit retryable errors instead of partial output or a per-section request fan-out.
 - Comparison reuses the shared company picker, supports 2–12 companies, and starts with standard snapshot metrics. Its metric picker exposes searchable statement tables and columns, removes metrics with individual X controls, and sends validated `Table.Column` references for arbitrary numeric comparisons.
@@ -112,7 +114,7 @@ The layout is desktop-first but has a 390 px mobile treatment:
 - Marketing owns the public homepage and informational pricing page. Auth owns login, registration, account settings, personal tokens, users/invitations/resets, and the administrator-controlled 15–128 character password minimum.
 - Research, comparison, and authenticated portfolio/report slices use owner-scoped API contracts; the frontend never sends complete result payloads for report generation.
 - Backtesting supports manual portfolios, CSV sets, and point-in-time rolling screens with cadence, durations, weighting, progress, cancellation, saved results, and downloads.
-- Portfolio supports XML imports, rebuilds, currency selection, activity, holdings, transactions, performance, and company-analysis handoff.
+- Portfolio is organized into Overview, Holdings, Performance, Income, and Activity. Six headline metrics and every section action open an accessible side drawer; holdings and individual transactions have row-level drill-downs, and holdings can hand off to company analysis. The workspace includes allocation and currency concentration, risk and tail-loss statistics, return heatmaps and distributions, contribution leaders, dividend tax/net/yield and payer trends, formatted multi-currency ledgers, filters, and 50-row activity pagination. Chart canvases live in explicit height/width frames so dashboard cards do not overflow at wide desktop resolutions.
 - Pipeline supports recipes, dynamic step discovery, ordering, overwrite flags, generated configuration fields, persisted job history, cooperative cancellation, per-step progress, and safe terminal output.
 
 ## API contract checks

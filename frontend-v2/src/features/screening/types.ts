@@ -15,8 +15,11 @@ export interface Criterion {
   value?: string | number | null
   value2?: string | number | null
   values?: Array<string | number>
-  field_type?: string
+  field_type?: 'num' | 'text' | 'percent' | 'date' | string
   comparison_mode: string
+  split_action?: 'exclude' | 'include' | string
+  split_status?: 'confirmed' | 'rejected' | 'pending' | 'any' | string
+  split_date_operator?: 'on_or_after' | 'on_or_before' | string
   compare_table?: string
   compare_column?: string
   offset?: number | null
@@ -45,4 +48,3 @@ export interface SavedScreen {
   ranking_algorithm?: string
   ranking_rules?: Array<Record<string, unknown>>
 }
-

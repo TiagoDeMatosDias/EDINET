@@ -420,3 +420,116 @@ def create_docs_market_database(path: str | Path) -> Path:
             )
         conn.commit()
     return target.resolve()
+
+
+def add_split_test_data(path: str | Path) -> Path:
+    """Add Stock_Splits and split-price data to an existing market database.
+
+    Creates a 2:1 forward split for ticker ``AAA`` on 2024-06-15 (price
+    drops from 2000 to 1000).  Also adds ShareMetrics data so the split
+    can be cross-validated, and a data-artifact scenario for ticker
+    ``BBB`` (50% drop but no matching share count change).
+
+    Returns *path* for chaining.
+    """
+    target = Path(path)
+    with sqlite3.connect(target) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS Stock_Splits (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker            TEXT NOT NULL,
+                split_date        TEXT NOT NULL,
+                ratio_from        REAL NOT NULL,
+                ratio_to          REAL NOT NULL,
+                detection_method  TEXT NOT NULL DEFAULT 'price_heuristic',
+                confirmation      TEXT NOT NULL DEFAULT 'pending',
+                confirmed_by      TEXT,
+                source_detail     TEXT,
+                share_count_before REAL,
+                share_count_after  REAL,
+                share_count_ratio  REAL,
+                price_basis       TEXT NOT NULL DEFAULT 'raw',
+                created_at        TEXT DEFAULT (datetime('now')),
+                updated_at        TEXT DEFAULT (datetime('now'))
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_splits_ticker_date
+                ON Stock_Splits(ticker, split_date);
+            """
+        )
+
+        # Add issued-shares column for cross-validation tests
+        try:
+            conn.execute(
+                'ALTER TABLE ShareMetrics ADD COLUMN '
+                '"Number of issued shares as of filing date" REAL'
+            )
+        except sqlite3.OperationalError:
+            pass
+
+        # Replace AAA price data: insert a 50% drop on 2024-06-15
+        # (simulating a 2:1 split)
+        conn.execute("DELETE FROM Stock_Prices WHERE Ticker = 'AAA'")
+        start = date(2020, 1, 1)
+        end = date(2025, 12, 31)
+        current = start
+        aaa_rows: list[tuple[str, str, str, float]] = []
+        while current <= end:
+            if current.weekday() < 5:
+                date_text = current.isoformat()
+                if date_text < "2024-06-15":
+                    price = 95.0 + (current - start).days * 0.01
+                else:
+                    pre_price = 95.0 + (date(2024, 6, 14) - start).days * 0.01
+                    post_base = pre_price / 2.0
+                    days_after = (current - date(2024, 6, 15)).days
+                    price = post_base + days_after * 0.005
+                aaa_rows.append((date_text, "AAA", "USD", round(price, 4)))
+            current += timedelta(days=1)
+        conn.executemany(
+            "INSERT OR REPLACE INTO Stock_Prices VALUES (?, ?, ?, ?)", aaa_rows
+        )
+
+        # Insert confirmed 2:1 split
+        conn.execute(
+            "INSERT OR IGNORE INTO Stock_Splits "
+            "(ticker, split_date, ratio_from, ratio_to, detection_method, "
+            "confirmation, confirmed_by, source_detail, "
+            "share_count_before, share_count_after, share_count_ratio) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "AAA", "2024-06-15", 1, 2, "manual",
+                "confirmed", "manual",
+                "Test fixture: 2:1 forward split",
+                5_000_000, 10_000_000, 2.0,
+            ),
+        )
+
+        # Seed ShareMetrics with matching share counts for AAA
+        for doc_id, comp_code, period_end in conn.execute(
+            "SELECT docID, Company_Code, periodEnd FROM FinancialStatements "
+            "WHERE Company_Code = 'E00001'"
+        ).fetchall():
+            year = int(str(period_end)[:4])
+            shares_val = 10_000_000 if year >= 2025 else 5_000_000
+            conn.execute(
+                'UPDATE ShareMetrics SET '
+                '"Number of issued shares as of filing date" = ? '
+                "WHERE docID = ?",
+                (shares_val, doc_id),
+            )
+
+        # Seed ShareMetrics for BBB (E00002) — no split, shares stable
+        for doc_id, comp_code, period_end in conn.execute(
+            "SELECT docID, Company_Code, periodEnd FROM FinancialStatements "
+            "WHERE Company_Code = 'E00002'"
+        ).fetchall():
+            conn.execute(
+                'UPDATE ShareMetrics SET '
+                '"Number of issued shares as of filing date" = ? '
+                "WHERE docID = ?",
+                (8_000_000, doc_id),
+            )
+
+        conn.commit()
+    return target.resolve()

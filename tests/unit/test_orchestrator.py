@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from config import Config
@@ -443,6 +444,195 @@ class TestUpdateStockPricesStep:
             Company_Table="CompanyInfo",
             prices_table="Stock_Prices",
         )
+
+    def test_forwards_overwrite_when_enabled(self):
+        from src.orchestrator.update_stock_prices.update_stock_prices import run_update_stock_prices
+
+        config = Config.from_dict({})
+
+        with (
+            patch(
+                "src.orchestrator.update_stock_prices.update_stock_prices.get_db2",
+                return_value="prices.db",
+            ),
+            patch(
+                "src.orchestrator.update_stock_prices.update_stock_prices.update_all_stock_prices"
+            ) as mock_update,
+        ):
+            run_update_stock_prices(config, overwrite=True)
+
+        mock_update.assert_called_once_with(
+            "prices.db",
+            Company_Table="CompanyInfo",
+            prices_table="Stock_Prices",
+            overwrite=True,
+        )
+
+    def test_overwrite_replaces_selected_tickers(self, tmp_path):
+        from src.orchestrator.update_stock_prices.update_stock_prices import update_all_stock_prices
+
+        db_path = tmp_path / "prices.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE Stock_Prices "
+            "(Date TEXT, Ticker TEXT, Currency TEXT, Price REAL)"
+        )
+        conn.executemany(
+            "INSERT INTO Stock_Prices VALUES (?, ?, ?, ?)",
+            [
+                ("2025-01-01", "10010", "JPY", 100.0),
+                ("2025-01-01", "72030", "JPY", 200.0),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        def fake_load(ticker, prices_table, connection):
+            connection.execute(
+                f"INSERT INTO [{prices_table}] "
+                "(Date, Ticker, Currency, Price) VALUES (?, ?, ?, ?)",
+                ("2026-01-01", ticker, "JPY", 999.0),
+            )
+            return True
+
+        with patch(
+            "src.orchestrator.update_stock_prices.update_stock_prices.stockprice_api.load_ticker_data",
+            side_effect=fake_load,
+        ) as mock_load:
+            update_all_stock_prices(str(db_path), overwrite=True)
+
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT Date, Ticker, Price FROM Stock_Prices ORDER BY Ticker"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert rows == [
+            ("2026-01-01", "10010", 999.0),
+            ("2026-01-01", "72030", 999.0),
+        ]
+        assert {call.args[0] for call in mock_load.call_args_list} == {"10010", "72030"}
+
+    def test_overwrite_keeps_savepoint_when_loader_appends_rows(self, tmp_path):
+        """The loader must not commit away the overwrite savepoint."""
+        from src.orchestrator.update_stock_prices.update_stock_prices import update_all_stock_prices
+
+        db_path = tmp_path / "prices.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE Stock_Prices "
+            "(Date TEXT, Ticker TEXT, Currency TEXT, Price REAL)"
+        )
+        conn.execute(
+            "INSERT INTO Stock_Prices VALUES (?, ?, ?, ?)",
+            ("2025-01-01", "10010", "JPY", 100.0),
+        )
+        conn.commit()
+        conn.close()
+
+        def fake_load(ticker, prices_table, connection):
+            frame = pd.DataFrame({"Date": ["2026-01-01"], "Close": [999.0]})
+            from src.utilities.stock_prices import _append_price_rows
+
+            _append_price_rows(connection, prices_table, ticker, frame, "JPY")
+            return True
+
+        with patch(
+            "src.orchestrator.update_stock_prices.update_stock_prices.stockprice_api.load_ticker_data",
+            side_effect=fake_load,
+        ):
+            update_all_stock_prices(str(db_path), overwrite=True)
+
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT Date, Ticker, Price FROM Stock_Prices"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert rows == [("2026-01-01", "10010", 999.0)]
+
+    def test_overwrite_rolls_back_when_reload_fails(self, tmp_path):
+        from src.orchestrator.update_stock_prices.update_stock_prices import update_all_stock_prices
+
+        db_path = tmp_path / "prices.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE Stock_Prices "
+            "(Date TEXT, Ticker TEXT, Currency TEXT, Price REAL)"
+        )
+        conn.execute(
+            "INSERT INTO Stock_Prices VALUES (?, ?, ?, ?)",
+            ("2025-01-01", "10010", "JPY", 100.0),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch(
+            "src.orchestrator.update_stock_prices.update_stock_prices.stockprice_api.load_ticker_data",
+            return_value=False,
+        ):
+            update_all_stock_prices(str(db_path), overwrite=True)
+
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute("SELECT Date, Ticker, Price FROM Stock_Prices").fetchall()
+        finally:
+            conn.close()
+        assert rows == [("2025-01-01", "10010", 100.0)]
+
+    def test_update_continues_after_one_ticker_provider_failure(self, tmp_path):
+        from src.orchestrator.update_stock_prices.update_stock_prices import update_all_stock_prices
+
+        db_path = tmp_path / "prices.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE Stock_Prices "
+            "(Date TEXT, Ticker TEXT, Currency TEXT, Price REAL)"
+        )
+        conn.executemany(
+            "INSERT INTO Stock_Prices VALUES (?, ?, ?, ?)",
+            [
+                ("2025-01-01", "10010", "JPY", 100.0),
+                ("2025-01-01", "72030", "JPY", 200.0),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        def fake_load(ticker, prices_table, connection):
+            if ticker == "10010":
+                return False
+            connection.execute(
+                f"INSERT INTO [{prices_table}] "
+                "(Date, Ticker, Currency, Price) VALUES (?, ?, ?, ?)",
+                ("2026-01-01", ticker, "JPY", 999.0),
+            )
+            return True
+
+        with patch(
+            "src.orchestrator.update_stock_prices.update_stock_prices.stockprice_api.load_ticker_data",
+            side_effect=fake_load,
+        ) as mock_load:
+            update_all_stock_prices(str(db_path))
+
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT Date, Ticker, Price FROM Stock_Prices ORDER BY Ticker, Date"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert rows == [
+            ("2025-01-01", "10010", 100.0),
+            ("2025-01-01", "72030", 200.0),
+            ("2026-01-01", "72030", 999.0),
+        ]
+        assert [call.args[0] for call in mock_load.call_args_list] == ["10010", "72030"]
 
 
 class TestGetTickersFromPrices:

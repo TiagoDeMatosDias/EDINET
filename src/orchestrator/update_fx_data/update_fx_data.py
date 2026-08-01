@@ -9,6 +9,8 @@ import requests
 from src.orchestrator.common import StepDefinition
 from src.orchestrator.common.db_config import get_db2
 from src.utilities import stock_prices
+from src.utilities.price_provenance import source_id as build_source_id
+from src.utilities.price_provenance import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -392,6 +394,17 @@ def _insert_new_pairs(
         skipped = before_count - len(df)
         if skipped:
             logger.info("Skipped %d existing %s pairs.", skipped, label)
+
+        retrieved_at = utc_now()
+        df["Price_Basis"] = "raw"
+        df["Provider"] = label
+        df["Source_Id"] = [
+            build_source_id(label, ticker, row_date)
+            for ticker, row_date in zip(df["Ticker"], df["Date"], strict=True)
+        ]
+        df["Source_Revision"] = "download-v1"
+        df["Adjustment_Factor"] = None
+        df["Retrieved_At"] = retrieved_at
 
         df.to_sql(prices_table, conn, if_exists="append", index=False)
         conn.commit()
