@@ -138,6 +138,41 @@ class TestGenerateFinancialStatementsService(unittest.TestCase):
         self.assertEqual(income_row, ("DOC1", 1000.0, 60.0))
         self.assertEqual(balance_row, ("DOC1", 250.0))
 
+    def test_falls_back_to_nonconsolidated_statement_contexts(self):
+        self._insert_source_rows(
+            [
+                ("jppfs_cor:NetSales", "CurrentYearDuration", "1000", "DOC1", "E00001", "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31"),
+                ("jppfs_cor:NetSales", "CurrentYearDuration_NonConsolidatedMember", "900", "DOC1", "E00001", "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31"),
+                ("jppfs_cor:CashAndDeposits", "CurrentYearInstant_NonConsolidatedMember", "250", "DOC1", "E00001", "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31"),
+                ("jppfs_cor:OperatingCashflow", "CurrentYearDuration_NonConsolidatedMember", "40", "DOC1", "E00001", "120", "2024-05-10T09:00:00", "2024-01-01", "2024-12-31"),
+            ]
+        )
+
+        result = financial_statement_services.generate_financial_statements(
+            source_database=self.source_db,
+            target_database=self.target_db,
+            granularity_level=1,
+            overwrite=False,
+        )
+
+        conn = sqlite3.connect(self.target_db)
+        try:
+            rows = conn.execute(
+                """
+                SELECT i.[Net Sales], b.[Cash and Deposits], c.[Operating Cashflow]
+                FROM IncomeStatement i
+                JOIN BalanceSheet b ON b.docID = i.docID
+                JOIN CashflowStatement c ON c.docID = i.docID
+                WHERE i.docID = ?
+                """,
+                ("DOC1",),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(result["documents_processed"], 1)
+        self.assertEqual(rows, (1000.0, 250.0, 40.0))
+
     def test_appends_new_documents_and_adds_new_taxonomy_columns(self):
         self._insert_source_rows(
             [

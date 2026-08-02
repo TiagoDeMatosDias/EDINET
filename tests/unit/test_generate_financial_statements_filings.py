@@ -27,6 +27,22 @@ _XBRL = b"""<?xml version='1.0'?>
   <jp:CashAndDeposits contextRef='CurrentYearInstant' unitRef='JPY'>250</jp:CashAndDeposits>
 </xbrli:xbrl>"""
 
+_NON_CONSOLIDATED_XBRL = b"""<?xml version='1.0'?>
+<xbrli:xbrl xmlns:xbrli='http://www.xbrl.org/2003/instance'
+ xmlns:jp='https://example.test/jppfs'>
+  <xbrli:context id='CurrentYearDuration_NonConsolidatedMember'>
+    <xbrli:entity><xbrli:identifier scheme='x'>E12345</xbrli:identifier></xbrli:entity>
+    <xbrli:period><xbrli:startDate>2024-04-01</xbrli:startDate><xbrli:endDate>2025-03-31</xbrli:endDate></xbrli:period>
+  </xbrli:context>
+  <xbrli:context id='CurrentYearInstant_NonConsolidatedMember'>
+    <xbrli:entity><xbrli:identifier scheme='x'>E12345</xbrli:identifier></xbrli:entity>
+    <xbrli:period><xbrli:instant>2025-03-31</xbrli:instant></xbrli:period>
+  </xbrli:context>
+  <xbrli:unit id='JPY'><xbrli:measure>iso4217:JPY</xbrli:measure></xbrli:unit>
+  <jp:NetSales contextRef='CurrentYearDuration_NonConsolidatedMember' unitRef='JPY'>900</jp:NetSales>
+  <jp:CashAndDeposits contextRef='CurrentYearInstant_NonConsolidatedMember' unitRef='JPY'>250</jp:CashAndDeposits>
+</xbrli:xbrl>"""
+
 
 def _zip_bytes(content: bytes) -> bytes:
     output = io.BytesIO()
@@ -134,6 +150,44 @@ def test_filings_source_generates_standardized_statements(tmp_path):
     )
     assert income_row == ("S100FILINGS", 1000.0)
     assert balance_row == ("S100FILINGS", 250.0)
+
+
+def test_filings_source_falls_back_to_non_consolidated_contexts(tmp_path):
+    filings_path = tmp_path / "Filings.db"
+    target_path = tmp_path / "Standardized.db"
+    catalog = FilingCatalog(filings_path)
+    ingest_content(
+        _zip_bytes(_NON_CONSOLIDATED_XBRL),
+        "S100NONCON",
+        catalog,
+        {
+            "edinet_code": "E12345",
+            "submitted_at": "2025-06-01T09:00:00",
+            "period_start": "2024-04-01",
+            "period_end": "2025-03-31",
+            "doc_type_code": "120",
+        },
+    )
+    _create_taxonomy(target_path)
+
+    result = generate_financial_statements(
+        source_database=str(filings_path),
+        target_database=str(target_path),
+        granularity_level=1,
+        source_mode="filings",
+    )
+
+    with sqlite3.connect(target_path) as conn:
+        income_row = conn.execute(
+            'SELECT docID, [Net Sales] FROM IncomeStatement'
+        ).fetchone()
+        balance_row = conn.execute(
+            'SELECT docID, [Cash and Deposits] FROM BalanceSheet'
+        ).fetchone()
+
+    assert result["documents_processed"] == 1
+    assert income_row == ("S100NONCON", 900.0)
+    assert balance_row == ("S100NONCON", 250.0)
 
 
 def test_handler_selects_filings_database_for_filings_mode(monkeypatch, tmp_path):

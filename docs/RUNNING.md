@@ -328,7 +328,7 @@ Runtime notes:
 - `FinancialStatements` contains only filing metadata: `docID`, `edinetCode`, `docTypeCode`, `submitDateTime`, `periodStart`, `periodEnd`, and `release_id`.
 - `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, and `ShareMetrics` contain `docID` plus taxonomy-label columns only.
 - `ShareMetrics` materializes selected share-count, dividend-per-share, and related summary concepts as flat level-`0` columns.
-- The step reads family-specific contexts and applies deterministic context priority before loading each table.
+- The step prefers consolidated family contexts and falls back to matching non-consolidated contexts when a consolidated value is absent, using deterministic context priority before loading each table.
 - Pending filings are processed in internal pandas-backed batches of 1000 docIDs, with vectorized release resolution, release-aware concept filtering, and bulk SQLite writes per batch.
 
 ---

@@ -34,14 +34,17 @@ _STATEMENT_TABLES = ("IncomeStatement", "BalanceSheet", "CashflowStatement", "Sh
 _STATEMENT_CONTEXT_IDS = {
     "IncomeStatement": (
         "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember",
         "FilingDateInstant",
     ),
     "BalanceSheet": (
         "CurrentYearInstant",
+        "CurrentYearInstant_NonConsolidatedMember",
         "FilingDateInstant",
     ),
     "CashflowStatement": (
         "CurrentYearDuration",
+        "CurrentYearDuration_NonConsolidatedMember",
         "FilingDateInstant",
     ),
     "ShareMetrics": (
