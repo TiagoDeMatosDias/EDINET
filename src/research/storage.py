@@ -135,6 +135,14 @@ class ResearchStore:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY(user_id, edinet_code, tag)
                 );
+                CREATE TABLE IF NOT EXISTS legacy_company_tags (
+                    edinet_code TEXT NOT NULL,
+                    tag TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(edinet_code, tag)
+                );
+                CREATE INDEX IF NOT EXISTS idx_legacy_company_tags_tag
+                    ON legacy_company_tags(tag);
                 CREATE TABLE IF NOT EXISTS tag_definitions (
                     user_id TEXT NOT NULL,
                     tag TEXT NOT NULL,
@@ -160,6 +168,21 @@ class ResearchStore:
                     summary_json TEXT,
                     artifact_relpath TEXT
                 );
+                CREATE TABLE IF NOT EXISTS recent_work (
+                    work_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    dedupe_key TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    subtitle TEXT,
+                    href TEXT NOT NULL,
+                    details_json TEXT,
+                    occurred_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_recent_work_owner
+                    ON recent_work(user_id, occurred_at DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_recent_work_dedupe
+                    ON recent_work(user_id, kind, dedupe_key);
                 """
             )
             event_columns = {
@@ -695,6 +718,138 @@ class ResearchStore:
                        )
                        ORDER BY tag, created_at""",
                     (user_id, user_id),
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def list_all_company_tags(self, user_id: str) -> list[dict[str, Any]]:
+        """Return every company/tag membership owned by *user_id*.
+
+        ``list_all_tags`` intentionally returns tag definitions for the tag
+        management UI.  Screening needs the company membership as well, so it
+        must use this method rather than assuming an ``edinet_code`` field is
+        present on tag definitions.
+        """
+        conn = self._connection()
+        try:
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT user_id, edinet_code, tag, created_at "
+                    "FROM company_tags WHERE user_id = ? "
+                    "ORDER BY edinet_code, tag",
+                    (user_id,),
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def preserve_legacy_company_tags(self, rows: list[tuple[str, str]]) -> int:
+        """Keep unowned tags from the rebuildable legacy database for claim."""
+        cleaned = [
+            (str(code).strip(), str(tag).strip(), _timestamp())
+            for code, tag in rows
+            if str(code).strip() and str(tag).strip()
+        ]
+        if not cleaned:
+            return 0
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO legacy_company_tags(edinet_code, tag, created_at) VALUES (?, ?, ?)",
+                cleaned,
+            )
+        return len(cleaned)
+
+    def claim_legacy_company_tags(self, user_id: str, tag_names: list[str]) -> int:
+        """Claim legacy rows whose labels already exist in the user's tags."""
+        cleaned_tags = sorted({str(tag).strip() for tag in tag_names if str(tag).strip()})
+        if not user_id or not cleaned_tags:
+            return 0
+        placeholders = ", ".join("?" for _ in cleaned_tags)
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            rows = conn.execute(
+                f"SELECT edinet_code, tag, created_at FROM legacy_company_tags WHERE tag IN ({placeholders})",
+                cleaned_tags,
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "INSERT OR IGNORE INTO tag_definitions(user_id, tag, created_at) VALUES (?, ?, ?)",
+                    (user_id, row["tag"], row["created_at"]),
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO company_tags(user_id, edinet_code, tag, created_at) VALUES (?, ?, ?, ?)",
+                    (user_id, row["edinet_code"], row["tag"], row["created_at"]),
+                )
+            return len(rows)
+
+    # -- recent workspace activity --
+
+    def record_recent_work(
+        self,
+        user_id: str,
+        kind: str,
+        dedupe_key: str,
+        title: str,
+        subtitle: str | None,
+        href: str,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Upsert one recent-work item while keeping the activity owner-scoped."""
+        cleaned_kind = kind.strip()
+        cleaned_key = dedupe_key.strip()
+        if not user_id or not cleaned_kind or not cleaned_key:
+            raise ValueError("user_id, kind, and dedupe_key are required")
+        now = _timestamp()
+        import json
+
+        item = {
+            "work_id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "kind": cleaned_kind,
+            "dedupe_key": cleaned_key,
+            "title": title.strip() or cleaned_kind.title(),
+            "subtitle": subtitle.strip() if subtitle else None,
+            "href": href,
+            "details_json": json.dumps(details or {}, ensure_ascii=False, separators=(",", ":")),
+            "occurred_at": now,
+        }
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            conn.execute(
+                "DELETE FROM recent_work WHERE user_id = ? AND kind = ? AND dedupe_key = ?",
+                (user_id, cleaned_kind, cleaned_key),
+            )
+            conn.execute(
+                """INSERT INTO recent_work
+                   (work_id, user_id, kind, dedupe_key, title, subtitle, href, details_json, occurred_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tuple(item[key] for key in (
+                    "work_id", "user_id", "kind", "dedupe_key", "title",
+                    "subtitle", "href", "details_json", "occurred_at",
+                )),
+            )
+            conn.execute(
+                """DELETE FROM recent_work
+                   WHERE user_id = ? AND work_id NOT IN (
+                     SELECT work_id FROM recent_work
+                     WHERE user_id = ? ORDER BY occurred_at DESC LIMIT 100
+                   )""",
+                (user_id, user_id),
+            )
+        return item
+
+    def list_recent_work(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        bounded_limit = min(max(int(limit), 1), 100)
+        conn = self._connection()
+        try:
+            return [
+                dict(row)
+                for row in conn.execute(
+                    """SELECT work_id, user_id, kind, title, subtitle, href,
+                              details_json, occurred_at
+                       FROM recent_work WHERE user_id = ?
+                       ORDER BY occurred_at DESC LIMIT ?""",
+                    (user_id, bounded_limit),
                 ).fetchall()
             ]
         finally:

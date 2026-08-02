@@ -1,9 +1,9 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, type ReactNode } from 'react'
 import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 
 import { AppShell } from './components/AppShell'
 import { LoadingState } from './components/Feedback'
-import { AuthProvider } from './features/auth/AuthProvider'
+import { AuthProvider, useAuth } from './features/auth/AuthProvider'
 
 const OverviewPage = lazy(() => import('./features/overview/OverviewPage'))
 const HomePage = lazy(() => import('./features/marketing/HomePage'))
@@ -29,6 +29,13 @@ function WorkspaceLayout() {
   )
 }
 
+function AdminOnlyPage({ children }: { children: ReactNode }) {
+  const auth = useAuth()
+  if (auth.loading) return <LoadingState label="Checking admin access" />
+  if (auth.user?.role !== 'admin') return <Navigate replace to="/overview" />
+  return children
+}
+
 export function App() {
   return (
     <AuthProvider>
@@ -48,7 +55,7 @@ export function App() {
             <Route path="/analyze/:companyCode" element={<AnalysisPage />} />
             <Route path="/backtest" element={<BacktestingPage />} />
             <Route path="/portfolio" element={<PortfolioPage />} />
-            <Route path="/pipeline" element={<PipelinePage />} />
+            <Route path="/pipeline" element={<AdminOnlyPage><PipelinePage /></AdminOnlyPage>} />
             <Route path="/filings" element={<FilingsPage />} />
             <Route path="/filings/:docId" element={<FilingViewerPage />} />
             <Route path="/compare" element={<ComparisonPage />} />

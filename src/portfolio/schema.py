@@ -209,8 +209,22 @@ CREATE TABLE IF NOT EXISTS Portfolio_Metrics (
 );
 """
 
+_DDL_SCREENING_RESULTS = """
+CREATE TABLE IF NOT EXISTS Screening_Results (
+    user_id              TEXT PRIMARY KEY,
+    result_json          TEXT NOT NULL,
+    definition_json      TEXT NOT NULL,
+    row_count            INTEGER NOT NULL DEFAULT 0,
+    requested_at         TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_screening_results_updated
+    ON Screening_Results(updated_at DESC);
+"""
+
 _ALL_DDL = [_DDL_TRANSACTIONS, _DDL_PORTFOLIO_DAILY, _DDL_HOLDINGS,
-            _DDL_HOLDINGS_HISTORY, _DDL_METRICS]
+            _DDL_HOLDINGS_HISTORY, _DDL_METRICS, _DDL_SCREENING_RESULTS]
 
 
 # ---------------------------------------------------------------------------
@@ -437,12 +451,18 @@ def _migration_5(conn: sqlite3.Connection) -> None:
         conn.execute(f'DROP TABLE "{old_table}"')
 
 
+def _migration_6(conn: sqlite3.Connection) -> None:
+    """Add the per-user cached result of the most recent screen."""
+    _execute_ddl(conn, _DDL_SCREENING_RESULTS)
+
+
 _MIGRATIONS = (
     (1, _migration_1),
     (2, _migration_2),
     (3, _migration_3),
     (4, _migration_4),
     (5, _migration_5),
+    (6, _migration_6),
 )
 
 

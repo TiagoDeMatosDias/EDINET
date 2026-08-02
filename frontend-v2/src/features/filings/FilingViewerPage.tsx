@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Download, FileText, Globe, ShieldAlert, Table2, Tags } from 'lucide-react'
 
@@ -230,6 +230,9 @@ function collectPeriodsFromRows(stmts: Map<string, StmtRow[]>): string[] {
 export default function FilingViewerPage() {
   const { docId } = useParams<{ docId: string }>()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const returnToAnalysis = Boolean(searchParams.get('company'))
+  const analysisHref = returnToAnalysis ? `/analyze/${encodeURIComponent(searchParams.get('company') ?? '')}` : ''
   const queryClient = useQueryClient()
   const [tab, setTab] = useState<Tab>('original')
   const [selectedHtm, setSelectedHtm] = useState<string | null>(null)
@@ -371,6 +374,7 @@ export default function FilingViewerPage() {
     <div className="filing-viewer-page">
       <header className="filing-viewer-header">
         <button className="button button--ghost" onClick={() => navigate('/filings')}><ArrowLeft size={16} /> Back</button>
+        {returnToAnalysis && <Link className="button button--secondary" to={analysisHref}><ArrowLeft size={16} /> Return to Analysis</Link>}
         <div className="filing-viewer-title">
           <h1>{filing?.submitter_name || filing?.edinet_code || docId}</h1>
           <div className="filing-meta">

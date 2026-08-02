@@ -260,6 +260,12 @@ def list_saved_screens(request: Request) -> dict[str, Any]:
     return {"screens": store.list_saved_screens(_user(request).user_id)}
 
 
+@router.get("/recent-work")
+def list_recent_work(request: Request, limit: int = 50) -> dict[str, Any]:
+    user = _user(request)
+    return {"items": store.list_recent_work(user.user_id, limit)}
+
+
 @router.post("/screens", status_code=status.HTTP_201_CREATED)
 def create_saved_screen(request: Request, payload: SavedScreenRequest) -> dict[str, Any]:
     try:

@@ -14,6 +14,7 @@ import { BacktestResults } from './BacktestResults'
 type Holding = { id: string; ticker: string; mode: 'weight' | 'shares' | 'value'; value: number }
 type BacktestSummary = Record<string, unknown>
 type SavedBacktest = { id: string; created: string; has_zip: boolean }
+type BacktestResultPayload = { id: string; status: string; summary?: BacktestSummary; aggregate?: BacktestSummary; chart_data?: Record<string, unknown>; per_company?: Array<Record<string, unknown>> }
 
 function isoDate(offsetYears = 0) {
   const date = new Date()
@@ -32,6 +33,7 @@ export default function BacktestingPage() {
   const [params] = useSearchParams()
   const initialSymbol = params.get('symbol') ?? ''
   const source = params.get('source')
+  const resultParam = params.get('result') ?? ''
   const [mode, setMode] = useState<'manual' | 'screen' | 'csv'>(source === 'screen' ? 'screen' : 'manual')
   const [holdings, setHoldings] = useState<Holding[]>([{ id: crypto.randomUUID(), ticker: initialSymbol, mode: 'weight', value: 100 }])
   const [startDate, setStartDate] = useState(isoDate(-10))
@@ -51,6 +53,11 @@ export default function BacktestingPage() {
   const db = useQuery({ queryKey: ['backtesting-db'], queryFn: () => apiRequest<{ db_path: string }>('/api/backtesting/db-path') })
   const currencies = useQuery({ queryKey: ['backtesting-currencies'], queryFn: () => apiRequest<{ currencies: Array<{ code?: string } | string> }>('/api/backtesting/base-currencies') })
   const saved = useQuery({ queryKey: ['saved-backtests'], queryFn: () => apiRequest<{ backtests: SavedBacktest[] }>('/api/backtesting/list') })
+  const loadedResult = useQuery({
+    queryKey: ['backtest-result', resultParam],
+    enabled: Boolean(resultParam),
+    queryFn: () => apiRequest<BacktestResultPayload>(`/api/backtesting/result/${encodeURIComponent(resultParam)}`),
+  })
   const run = useMutation({ mutationFn: async () => {
     if (mode === 'csv') return apiPost<{ id: string; aggregate: BacktestSummary }>('/api/backtesting/run-from-csv', { db_path: db.data?.db_path ?? '', csv_content: csvContent, benchmark_ticker: benchmark, benchmark_mode: 'ticker', base_currency: baseCurrency, durations, initial_capital: capital, risk_free_rate: 0 })
     if (mode === 'screen') {
@@ -87,15 +94,18 @@ export default function BacktestingPage() {
     const portfolio = Object.fromEntries(holdings.filter(item => item.ticker.trim()).map(item => [item.ticker.trim(), { mode: item.mode, value: item.value }]))
     return apiPost<{ id: string; summary: BacktestSummary }>('/api/backtesting/run', { db_path: db.data?.db_path ?? '', portfolio, start_date: startDate, end_date: endDate, benchmark_ticker: benchmark, benchmark_mode: 'ticker', base_currency: baseCurrency, initial_capital: capital, risk_free_rate: 0 })
   }, onSuccess: () => saved.refetch() })
-  const summary = resultSummary(run.data)
-  const resultId = run.data && typeof run.data === 'object' && 'id' in run.data ? String(run.data.id ?? '') : ''
+  const displayedResult = run.data ?? loadedResult.data
+  const summary = resultSummary(displayedResult)
+  const resultId = displayedResult && typeof displayedResult === 'object' && 'id' in displayedResult ? String(displayedResult.id ?? '') : resultParam
   const currencyCodes = (currencies.data?.currencies ?? []).map(item => typeof item === 'string' ? item : item.code ?? '').filter(Boolean)
-  const savedColumns = useMemo<ColumnDef<SavedBacktest>[]>(() => [{ accessorKey: 'created', header: 'Created' }, { accessorKey: 'id', header: 'ID' }, { id: 'download', header: '', cell: ({ row }) => row.original.has_zip ? <a className="button button--ghost" href={`/api/backtesting/download/${encodeURIComponent(row.original.id)}`}><Download />Download</a> : <span className="muted">Preparing</span> }], [])
+  const savedColumns = useMemo<ColumnDef<SavedBacktest>[]>(() => [{ accessorKey: 'created', header: 'Created' }, { accessorKey: 'id', header: 'ID' }, { id: 'view', header: '', cell: ({ row }) => <a className="button button--ghost" href={`/backtest?result=${encodeURIComponent(row.original.id)}`}>Review</a> }, { id: 'download', header: '', cell: ({ row }) => row.original.has_zip ? <a className="button button--ghost" href={`/api/backtesting/download/${encodeURIComponent(row.original.id)}`}><Download />Download</a> : <span className="muted">Preparing</span> }], [])
 
   return <div className="stack dense-page backtesting-workspace">
     <PageHeader eyebrow="Strategy research" title="Backtest an investment idea" description="Define the universe first, then portfolio construction, period, and benchmark. Inputs from Screening or Company Analysis arrive preselected." actions={run.isPending && mode === 'screen' ? <button className="button button--danger" onClick={() => abortRef.current?.abort()}><CircleStop />Cancel rolling backtest</button> : <button className="button button--primary" disabled={run.isPending || db.isLoading} onClick={() => run.mutate()}><FlaskConical />{run.isPending ? 'Running…' : 'Run backtest'}</button>} />
     <div className="step-tabs"><button className={mode === 'manual' ? 'active' : ''} onClick={() => setMode('manual')}>Manual portfolio</button><button className={mode === 'screen' ? 'active' : ''} onClick={() => setMode('screen')}>Saved screen</button><button className={mode === 'csv' ? 'active' : ''} onClick={() => setMode('csv')}>CSV set</button></div>
-    {run.data && <BacktestResults data={run.data} resultId={resultId} />}
+    {loadedResult.isLoading && !run.data && <Card><LoadingState label="Loading saved backtest" /></Card>}
+    {loadedResult.error && !run.data && <ErrorState error={loadedResult.error} />}
+    {displayedResult && <BacktestResults data={displayedResult} resultId={resultId} />}
     <details className="backtest-setup" open={!summary}><summary>Backtest setup</summary><div className="two-column">
       <Card title="1. Universe and portfolio" description={mode === 'manual' ? 'Add tickers and choose how each allocation is expressed.' : mode === 'screen' ? 'The current Screening draft is attached to this backtest.' : 'Upload or paste a yearly portfolio CSV.'}>
         {mode === 'manual' && <div className="stack">{holdings.map((holding, index) => <div className="holding-row" key={holding.id}><Field label={`Ticker ${index + 1}`}><input className="input" list="ticker-options" value={holding.ticker} onChange={event => setHoldings(items => items.map(item => item.id === holding.id ? { ...item, ticker: event.target.value } : item))} placeholder="6201" /></Field><Field label="Allocation type"><select className="select" value={holding.mode} onChange={event => setHoldings(items => items.map(item => item.id === holding.id ? { ...item, mode: event.target.value as Holding['mode'] } : item))}><option value="weight">Weight (%)</option><option value="shares">Shares</option><option value="value">Value</option></select></Field><Field label="Amount"><input className="input" type="number" value={holding.value} onChange={event => setHoldings(items => items.map(item => item.id === holding.id ? { ...item, value: Number(event.target.value) } : item))} /></Field><button className="icon-button rule-remove" aria-label={`Remove ticker ${index + 1}`} onClick={() => setHoldings(items => items.filter(item => item.id !== holding.id))}><Trash2 /></button></div>)}<button className="button button--secondary" onClick={() => setHoldings(items => [...items, { id: crypto.randomUUID(), ticker: '', mode: 'weight', value: 0 }])}><Plus />Add ticker</button></div>}

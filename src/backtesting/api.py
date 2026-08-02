@@ -110,6 +110,32 @@ def _backtest_directory(backtest_id: str, *, require_existing: bool) -> Path:
     return candidate
 
 
+def _record_recent_backtest(
+    http_request: Request | None,
+    backtest_id: str,
+    *,
+    title: str = "Backtest",
+    subtitle: str | None = None,
+) -> None:
+    user = getattr(getattr(http_request, "state", None), "user", None)
+    if user is None or not hasattr(user, "user_id"):
+        return
+    try:
+        from src.research.runtime import store as research_store
+
+        research_store.record_recent_work(
+            user.user_id,
+            "backtest",
+            f"backtest:{backtest_id}",
+            f"{title} · {backtest_id}",
+            subtitle,
+            f"/backtest?result={backtest_id}",
+            {"backtest_id": backtest_id},
+        )
+    except Exception as exc:  # noqa: BLE001 - activity history is best effort
+        logger.info("Could not record recent backtest %s: %s", backtest_id, exc)
+
+
 def _enforce_export_size(content: bytes) -> bytes:
     if len(content) > _APP_SETTINGS.max_export_bytes:
         raise HTTPException(413, "Generated export exceeds the configured size limit")
@@ -303,8 +329,41 @@ def download_backtest(backtest_id: str):
     )
 
 
+@router.get("/result/{backtest_id}")
+def get_backtest_result(backtest_id: str) -> dict[str, Any]:
+    """Load the lightweight result payload used by the Backtest workspace."""
+    result_path = _backtest_directory(backtest_id, require_existing=True) / "result.json"
+    if not result_path.is_file() or result_path.is_symlink():
+        raise HTTPException(status_code=404, detail="Backtest result not found.")
+    try:
+        stored = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="Backtest result could not be read.") from exc
+    if isinstance(stored, dict) and "metrics" in stored:
+        return {
+            "id": backtest_id,
+            "status": "complete",
+            "summary": build_summary(stored),
+            "chart_data": stored.get("chart_data", {}),
+            "per_company": stored.get("per_company", []),
+            "yearly_returns": stored.get("yearly_returns", []),
+            "dividends_by_year": stored.get("dividends_by_year", []),
+        }
+    if isinstance(stored, dict):
+        return {
+            "id": backtest_id,
+            "status": "complete",
+            "aggregate": stored.get("aggregate", {}),
+            "config": stored.get("config", {}),
+        }
+    raise HTTPException(status_code=500, detail="Backtest result has an invalid format.")
+
+
 @router.post("/run")
-async def run_backtest(request: BacktestRunRequest = Body(...)) -> dict:
+async def run_backtest(
+    request: BacktestRunRequest = Body(...),
+    http_request: Request = None,
+) -> dict:
     """Run a single backtest.  Results are saved to disk; only a summary
     and the download path are returned to the client."""
     db = _resolve_db(request.db_path)
@@ -396,6 +455,13 @@ async def run_backtest(request: BacktestRunRequest = Body(...)) -> dict:
 
     await asyncio.to_thread(_save_and_zip)
 
+    _record_recent_backtest(
+        http_request,
+        ts,
+        title="Backtest",
+        subtitle=f"{request.start_date} to {request.end_date}",
+    )
+
     return {
         "id": ts,
         "status": "complete",
@@ -409,7 +475,10 @@ async def run_backtest(request: BacktestRunRequest = Body(...)) -> dict:
 
 
 @router.post("/run-from-csv")
-async def run_from_csv(request: CSVBacktestRequest = Body(...)) -> dict:
+async def run_from_csv(
+    request: CSVBacktestRequest = Body(...),
+    http_request: Request = None,
+) -> dict:
     """Run a backtest set from an uploaded CSV content string."""
     db = _resolve_db(request.db_path)
 
@@ -482,6 +551,13 @@ async def run_from_csv(request: CSVBacktestRequest = Body(...)) -> dict:
     out_dir.mkdir(parents=True, exist_ok=False)
     (out_dir / "result.json").write_bytes(result_bytes)
     (out_dir / "backtest.zip").write_bytes(zip_bytes)
+
+    _record_recent_backtest(
+        http_request,
+        ts,
+        title="CSV backtest",
+        subtitle=", ".join(request.durations) if request.durations else "Configured periods",
+    )
 
     return {
         "id": ts,
@@ -623,6 +699,19 @@ async def run_rolling(
                 backtest_id = saved_path.split("/")[-1] if "/" in saved_path else saved_path.split("\\")[-1]
                 agg = final_result.get("aggregate", {})
                 cfg = final_result.get("config", {})
+                # Keep a small, navigable result alongside the ZIP.  The ZIP
+                # remains the full artifact; this file is only for the
+                # workspace's recent-history links.
+                Path(saved_path, "result.json").write_text(
+                    json.dumps({"aggregate": agg, "config": cfg}, default=str),
+                    encoding="utf-8",
+                )
+                _record_recent_backtest(
+                    http_request,
+                    backtest_id,
+                    title="Rolling screen backtest",
+                    subtitle=f"{cfg.get('cadence', request.cadence)} cadence",
+                )
                 yield f"data: {json.dumps({'type': 'result', 'id': backtest_id, 'path': backtest_id, 'aggregate': agg, 'config': cfg})}\n\n"
             except ExportSizeLimitExceeded as exc:
                 limit_mib = exc.limit_bytes // (1024 * 1024)

@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import src.screening.screening as screening_module
 from src.screening import (
     DISCOVERED_SCREENING_MODULES,
     build_screening_query,
@@ -1415,6 +1416,53 @@ def test_full_expression_matches_user_scenario(sample_db):
     # Gamma: 3100*0.5=1550 < 2400 ✓
     assert len(df2) == 3
     assert set(df2["CompanyName"]) == {"Alpha Corp", "Beta Co", "Gamma Ltd"}
+
+
+def test_company_tag_expression_treats_scalar_tag_as_equality(sample_db):
+    """Legacy expression-editor defaults must still match categorical tags."""
+    with sqlite3.connect(sample_db) as conn:
+        conn.execute(
+            "CREATE TABLE Company_Tags (edinetCode TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY(edinetCode, tag))"
+        )
+        conn.execute("INSERT INTO Company_Tags VALUES (?, ?)", ("E00001", "Favorite"))
+
+    result = run_screening(
+        sample_db,
+        criteria=[{
+            "comparison_mode": "full_expression",
+            "operator": ">",
+            "left_side": [{"type": "column", "table": "Company_Tags", "column": "tag"}],
+            "right_side": [{"type": "tag", "value": "Favorite"}],
+        }],
+        columns=["CompanyInfo.Company_Code"],
+        period="2024",
+    )
+
+    assert result["Company_Code"].tolist() == ["E00001"]
+
+
+def test_populate_user_tags_claims_matching_legacy_rows(tmp_path, monkeypatch):
+    """Legacy global tags are claimed only by a user who already owns the label."""
+    from src.research import runtime
+    from src.research.storage import ResearchStore
+
+    research_store = ResearchStore(tmp_path / "research.db")
+    research_store.create_tag("user-a", "Favorite")
+    database = tmp_path / "standardized.db"
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "CREATE TABLE Company_Tags (edinetCode TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY(edinetCode, tag))"
+        )
+        conn.execute("INSERT INTO Company_Tags VALUES (?, ?)", ("E00001", "Favorite"))
+    monkeypatch.setattr(runtime, "store", research_store)
+
+    screening_module.populate_user_tags(str(database), "user-a")
+
+    members = research_store.list_company_tags("user-a", "E00001")
+    assert len(members) == 1
+    assert members[0]["tag"] == "Favorite"
+    with sqlite3.connect(database) as conn:
+        assert conn.execute("SELECT edinetCode, tag FROM Company_Tags").fetchall() == [("E00001", "Favorite")]
 
 
 def test_full_expression_simple():

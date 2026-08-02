@@ -11,10 +11,11 @@ import re
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from src import security_analysis as _security
+from src.auth.models import AuthenticatedUser
 from src.orchestrator.common.db_config import get_db2
 from src.orchestrator.common.sqlite import connect_read
 from src.web_app.security import (
@@ -97,6 +98,7 @@ def search_securities(
 def get_overview(
     company_code: str = Query(default="", description="Company code"),
     ticker: str = Query(default="", description="Ticker (when no company_code)"),
+    request: Request = None,
 ) -> dict:
     """Company summary with metrics computed from the actual DB tables."""
     code = company_code.strip()
@@ -106,6 +108,7 @@ def get_overview(
     try:
         db = _resolve_db()
         result = _security.get_security_overview(db, company_code=code, ticker=tkr)
+        resolved_code = code or str(result.get("company", {}).get("company_code") or tkr)
         try:
             # Keep the Analyze overview and comparison snapshot on the same
             # populated-record contract.  The latest filing row can be
@@ -114,7 +117,6 @@ def get_overview(
             from src.comparison.api import _enrich_overview
             from src.comparison.service import flatten_overview
 
-            resolved_code = code or str(result.get("company", {}).get("company_code") or tkr)
             result = _enrich_overview(db, resolved_code, result)
             result["metrics"] = flatten_overview(result)
         except Exception as exc:
@@ -125,6 +127,40 @@ def get_overview(
                 "ReturnOnAssets", "ReturnOnEquity", "CurrentRatio",
                 "SharesOutstanding",
             )}
+        company = dict(result.get("company") or {})
+        try:
+            from src.security_analysis.company_descriptions import get_or_fetch_description
+
+            company["yahoo_description"] = get_or_fetch_description(
+                db,
+                resolved_code or None,
+                str(company.get("ticker") or tkr or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 - profile enrichment is optional
+            logger.info("Yahoo description enrichment failed for %s: %s", resolved_code or tkr, exc)
+            company["yahoo_description"] = ""
+        result["company"] = company
+        user = getattr(request.state, "user", None) if request is not None else None
+        if isinstance(user, AuthenticatedUser) and resolved_code:
+            try:
+                from src.research.runtime import store as research_store
+
+                research_store.record_recent_work(
+                    user.user_id,
+                    "company",
+                    f"company:{resolved_code}",
+                    str(company.get("company_name") or company.get("ticker") or resolved_code),
+                    " · ".join(
+                        value for value in (
+                            str(company.get("ticker") or "").strip(),
+                            resolved_code,
+                        ) if value
+                    ),
+                    f"/analyze/{resolved_code}",
+                    {"company_code": resolved_code, "ticker": company.get("ticker")},
+                )
+            except Exception as exc:  # noqa: BLE001 - history must not break analysis
+                logger.info("Could not record recent company view for %s: %s", resolved_code, exc)
         return result
     except HTTPException: raise
     except ValueError as e:

@@ -30,7 +30,11 @@ export function normalizeCriterion(raw: Partial<Criterion>): Criterion {
     return { ...base, operator: raw.operator || '>', comparison_mode: 'fixed', value: raw.value ?? '', value2: raw.value2 ?? '', field_type: 'date' }
   }
   if (raw.comparison_mode === 'full_expression') {
-    return { ...base, operator: raw.operator || '>', comparison_mode: 'full_expression', left_side: raw.left_side ?? [], right_side: raw.right_side ?? [] }
+    const leftSide = raw.left_side ?? []
+    const usesCompanyTags = leftSide.some(token => token.type === 'column' && token.table === 'Company_Tags')
+    const rawOperator = raw.operator || '>'
+    const operator = usesCompanyTags && !['=', '!=', 'IN'].includes(rawOperator) ? '=' : rawOperator
+    return { ...base, operator, comparison_mode: 'full_expression', left_side: leftSide, right_side: raw.right_side ?? [] }
   }
   if (raw.operator === 'IN' || raw.comparison_mode === 'in') {
     return { ...base, operator: 'IN', comparison_mode: 'in', values: raw.values ?? [] }

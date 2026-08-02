@@ -98,11 +98,34 @@ def filing_coverage() -> dict[str, Any]:
 
 
 @router.get("/{doc_id}")
-def get_filing(doc_id: str) -> dict[str, Any]:
+def get_filing(request: Request, doc_id: str) -> dict[str, Any]:
     row = catalog.get_filing(doc_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Filing not found")
-    return {"filing": _record(row), "artifacts": [_record(item) for item in catalog.list_artifacts(doc_id)]}
+    filing = _record(row)
+    user = getattr(request.state, "user", None)
+    if isinstance(user, AuthenticatedUser):
+        try:
+            from src.research.runtime import store as research_store
+
+            research_store.record_recent_work(
+                user.user_id,
+                "filing",
+                f"filing:{doc_id}",
+                str(filing.get("submitter_name") or filing.get("edinet_code") or doc_id),
+                " · ".join(
+                    value for value in (
+                        str(filing.get("period_end") or "").strip(),
+                        str(filing.get("form_code") or "XBRL").strip(),
+                        doc_id,
+                    ) if value
+                ),
+                f"/filings/{doc_id}",
+                {"doc_id": doc_id, "edinet_code": filing.get("edinet_code")},
+            )
+        except Exception as exc:  # noqa: BLE001 - activity history is best effort
+            logger.info("Could not record recent filing view for %s: %s", doc_id, exc)
+    return {"filing": filing, "artifacts": [_record(item) for item in catalog.list_artifacts(doc_id)]}
 
 
 @router.get("/{doc_id}/facts")

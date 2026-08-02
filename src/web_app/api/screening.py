@@ -7,6 +7,8 @@ The frontend never touches the database directly.
 from __future__ import annotations
 
 import io
+import hashlib
+import json
 import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -242,6 +244,50 @@ def _df_to_json(df: pd.DataFrame) -> dict:
     }
 
 
+def _screening_definition(payload: ScreeningRunRequest) -> dict[str, Any]:
+    """Return the serialisable screen definition stored with a result."""
+    return {
+        "criteria": _criteria_to_dicts(payload.criteria),
+        "columns": list(payload.columns),
+        "computed_columns": _computed_column_specs(payload.computed_columns),
+        "screening_date": payload.screening_date,
+        "period": payload.period,
+        "ranking_algorithm": payload.ranking_algorithm,
+        "ranking_rules": _ranking_rules_to_dicts(payload.ranking_rules),
+        "sort_by": payload.sort_by,
+        "sort_order": payload.sort_order,
+    }
+
+
+def _persist_screening_result(
+    user: AuthenticatedUser,
+    payload: ScreeningRunRequest,
+    result: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Persist a user's last result and add it to the recent-work stream."""
+    try:
+        from src.portfolio.screening_results import replace_last_screening_result
+
+        definition = _screening_definition(payload)
+        stored = replace_last_screening_result(user.user_id, result, definition)
+        fingerprint = hashlib.sha256(
+            json.dumps(definition, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+        ).hexdigest()[:24]
+        _research_store.record_recent_work(
+            user.user_id,
+            "screen",
+            f"definition:{fingerprint}",
+            f"Screen · {result.get('row_count', 0):,} matches",
+            f"As of {payload.screening_date or 'latest available data'}",
+            "/screen",
+            {"row_count": result.get("row_count", 0), "definition": definition},
+        )
+        return stored
+    except Exception as exc:  # noqa: BLE001 - a cache failure must not discard a completed screen
+        logger.warning("Could not persist latest screening result for %s: %s", user.user_id, exc, exc_info=True)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -452,6 +498,10 @@ def run_screening_endpoint(
         result = _df_to_json(df)
         result["error"] = None
         result["sql_display"] = sql_display
+        if isinstance(user, AuthenticatedUser):
+            stored = _persist_screening_result(user, payload, result)
+            if stored:
+                result["last_run_at"] = stored["updated_at"]
         logger.info("screening/run result serialised (%.2fs)", _t.monotonic() - _t1)
         logger.info("screening/run DONE rows=%d total=%.2fs",
                     result["row_count"], _t.monotonic() - _t0)
@@ -475,6 +525,19 @@ def _require_user(request: Request) -> AuthenticatedUser:
     if not isinstance(user, AuthenticatedUser):
         raise HTTPException(status_code=401, detail="Account authentication is required")
     return user
+
+
+@router.get("/last-result")
+def get_last_result(request: Request) -> dict[str, Any]:
+    """Return the authenticated user's cached screening result, if present."""
+    user = _require_user(request)
+    try:
+        from src.portfolio.screening_results import get_last_screening_result
+
+        return {"result": get_last_screening_result(user.user_id)}
+    except Exception as exc:  # noqa: BLE001 - an empty cache is still a valid state
+        logger.warning("Could not load latest screening result for %s: %s", user.user_id, exc)
+        return {"result": None}
 
 
 @router.get("/saved")

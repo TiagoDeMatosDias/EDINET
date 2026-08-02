@@ -1,10 +1,11 @@
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { ArrowDown, ArrowUp, Plus, X } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowUp, Plus, X } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import { apiPost, apiRequest } from '../../api/client'
 import type { SecuritySearchResult } from '../../api/types'
-import { CompanyPicker } from '../../components/CompanyPicker'
+import { CompanyPicker, searchCompanies } from '../../components/CompanyPicker'
 import { EmptyState, LoadingState } from '../../components/Feedback'
 import { Card, PageHeader } from '../../components/Page'
 
@@ -215,13 +216,35 @@ function CommonSizeTable({ title, companies, field, rows }: { title: string; com
 }
 
 export default function ComparisonPage() {
+  const [params] = useSearchParams()
+  const fromScreen = params.get('source') === 'screen'
+  const initialCodes = useMemo(() => [...new Set((params.get('companies') ?? '').split(',').map(code => code.trim()).filter(Boolean))].slice(0, 12), [params])
   const [companies, setCompanies] = useState<SecuritySearchResult[]>([])
+  const [hydrating, setHydrating] = useState(Boolean(initialCodes.length))
   const [selectedMetrics, setSelectedMetrics] = useState(DEFAULT_METRICS)
   const [showPercentiles, setShowPercentiles] = useState(false)
   const metricCatalog = useQuery({
     queryKey: ['comparison-metrics'],
     queryFn: () => apiRequest<MetricCatalogResponse>('/api/comparison/metrics'),
   })
+  useEffect(() => {
+    if (!initialCodes.length) return
+    let cancelled = false
+    void Promise.all(initialCodes.map(async code => {
+      const response = await searchCompanies(code, 8)
+      return response.results.find(company => company.company_code === code) ?? null
+    })).then(results => {
+      if (cancelled) return
+      setCompanies(results.filter((company): company is SecuritySearchResult => Boolean(company)))
+      setHydrating(false)
+    }).catch(() => {
+      if (!cancelled) {
+        setCompanies([])
+        setHydrating(false)
+      }
+    })
+    return () => { cancelled = true }
+  }, [initialCodes])
   const compare = useMutation({
     mutationFn: (selection: { companies: SecuritySearchResult[]; metrics: string[] }) => apiPost<ComparisonResponse>('/api/comparison/snapshot', {
       company_codes: selection.companies.map(company => company.company_code),
@@ -232,11 +255,12 @@ export default function ComparisonPage() {
   const result = compare.data
   return (
     <div className="stack dense-page">
-      <PageHeader eyebrow="Company research" title="Compare companies" description="Select two to twelve companies by name, ticker, EDINET code, industry, or market." />
+      <PageHeader eyebrow="Company research" title="Compare companies" description="Select two to twelve companies by name, ticker, EDINET code, industry, or market." actions={fromScreen && <Link className="button button--ghost" to="/screen"><ArrowLeft />Return to Screening</Link>} />
+      {initialCodes.length > 0 && <p className="callout callout--success">Screen matches were preloaded. Remove or reorder companies before comparing.</p>}
       <Card title="Company set" description="The same company search used by analysis, filings, and research is used here.">
         <CompanySet companies={companies} onChange={setCompanies} />
         <div className="button-row comparison-actions">
-          <button className="button button--primary" disabled={compare.isPending || companies.length < 2 || !selectedMetrics.length} onClick={run}>{compare.isPending ? 'Comparing…' : 'Compare'}</button>
+          <button className="button button--primary" disabled={hydrating || compare.isPending || companies.length < 2 || !selectedMetrics.length} onClick={run}>{hydrating ? 'Loading screen matches…' : compare.isPending ? 'Comparing…' : 'Compare'}</button>
           {companies.length > 0 && <button className="button button--ghost" onClick={() => { setCompanies([]); compare.reset() }}>Clear</button>}
           <label className="inline-toggle"><input type="checkbox" checked={showPercentiles} onChange={event => setShowPercentiles(event.target.checked)} />Show peer percentiles</label>
         </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 
@@ -46,11 +46,23 @@ export default function FilingsPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const initialCode = searchParams.get('company') ?? ''
+  const initialDoc = searchParams.get('doc') ?? ''
   const [selected, setSelected] = useState<SecuritySearchResult | null>(
     initialCode ? { company_code: initialCode, ticker: '', company_name: initialCode } : null,
   )
   const [searchedCode, setSearchedCode] = useState(initialCode)
   const hasSearch = Boolean(searchedCode.trim())
+
+  useEffect(() => {
+    if (!initialDoc) return
+    const returnParams = new URLSearchParams()
+    const from = searchParams.get('from')
+    const company = searchParams.get('company')
+    if (from) returnParams.set('from', from)
+    if (company) returnParams.set('company', company)
+    const suffix = returnParams.toString() ? `?${returnParams.toString()}` : ''
+    navigate(`/filings/${encodeURIComponent(initialDoc)}${suffix}`, { replace: true })
+  }, [initialDoc, navigate, searchParams])
 
   const coverage = useQuery({
     queryKey: ['filing-coverage'],
@@ -100,7 +112,15 @@ export default function FilingsPage() {
                 <button
                   key={f.doc_id}
                   className="filing-row"
-                  onClick={() => navigate(`/filings/${encodeURIComponent(f.doc_id)}`)}
+                  onClick={() => {
+                    const returnParams = new URLSearchParams()
+                    const from = searchParams.get('from')
+                    const company = searchParams.get('company')
+                    if (from) returnParams.set('from', from)
+                    if (company) returnParams.set('company', company)
+                    const suffix = returnParams.toString() ? `?${returnParams.toString()}` : ''
+                    navigate(`/filings/${encodeURIComponent(f.doc_id)}${suffix}`)
+                  }}
                 >
                   <span>
                     <strong>{f.submitter_name || f.edinet_code || 'Unknown'}</strong>

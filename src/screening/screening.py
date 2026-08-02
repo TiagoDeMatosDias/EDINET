@@ -1294,6 +1294,16 @@ def build_screening_query(
                 code_col = _safe_identifier(_company_code_col)
                 if op in ("BETWEEN", "LIKE", "IS", "IS NOT"):
                     raise ValueError(f"Company_Tags does not support operator {op!r} in full_expression mode")
+                # Tags are categorical values. Older saved screens were
+                # created with the expression editor's numeric default (`>`)
+                # and therefore compared `Favorite > Favorite`, matching
+                # nothing. Preserve those screens by treating scalar tag
+                # expressions as equality checks.
+                tag_op = op
+                if op in ("<", ">", "<=", ">=") and all(
+                    token.get("type") in ("value", "tag") for token in right_tokens
+                ):
+                    tag_op = "="
                 if op == "IN":
                     values = _expression_values(right_tokens)
                     if not values:
@@ -1311,7 +1321,7 @@ def build_screening_query(
                     where_parts.append(
                         f"EXISTS (SELECT 1 FROM Company_Tags ct"
                         f" WHERE ct.edinetCode = c.[{code_col}]"
-                        f" AND ct.[{tag_col}] {op} ({right_sql}))"
+                        f" AND ct.[{tag_col}] {tag_op} ({right_sql}))"
                     )
                     params.extend(right_params)
                 continue
@@ -1386,6 +1396,41 @@ def _ensure_company_tags_table(db_path: str) -> None:
         )
 
 
+def _read_legacy_company_tags(db_path: str) -> list[tuple[str, str]]:
+    """Read legacy global tags before the shared compatibility table is reset."""
+    try:
+        conn = connect_read(db_path)
+    except (OSError, sqlite3.DatabaseError):
+        return []
+    try:
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND lower(name) = 'company_tags'"
+        ).fetchone()
+        if table is None:
+            return []
+        table_name = str(table[0])
+        columns = {
+            str(row[1]).lower(): str(row[1])
+            for row in conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()
+        }
+        code_column = columns.get("edinetcode") or columns.get("edinet_code") or columns.get("company_code")
+        tag_column = columns.get("tag")
+        if not code_column or not tag_column:
+            return []
+        rows = conn.execute(
+            f'SELECT "{code_column}", "{tag_column}" FROM "{table_name}"'
+        ).fetchall()
+        return [
+            (str(row[0]).strip(), str(row[1]).strip())
+            for row in rows
+            if str(row[0]).strip() and str(row[1]).strip()
+        ]
+    except (OSError, sqlite3.DatabaseError):
+        return []
+    finally:
+        conn.close()
+
+
 def populate_user_tags(db_path: str, owner_user_id: str) -> None:
     """Populate Company_Tags in *db_path* with tags from research.db for one user.
 
@@ -1399,14 +1444,35 @@ def populate_user_tags(db_path: str, owner_user_id: str) -> None:
         from src.research.runtime import store as _store
     except Exception:
         return
-    user_tags = _store.list_all_tags(owner_user_id)
-    if not user_tags:
-        return
+    try:
+        legacy_tags = _read_legacy_company_tags(db_path)
+        _store.preserve_legacy_company_tags(legacy_tags)
+        user_tag_names = [
+            str(row["tag"])
+            for row in _store.list_all_tags(owner_user_id)
+            if str(row.get("tag", "")).strip()
+        ]
+        _store.claim_legacy_company_tags(owner_user_id, user_tag_names)
+    except Exception as exc:  # noqa: BLE001 - legacy data must not block screening
+        logger.info("Could not claim legacy company tags for %s: %s", owner_user_id, exc)
+    _ensure_company_tags_table(db_path)
     with transaction(db_path) as conn:
+        # Company_Tags is a per-query compatibility table in the shared
+        # standardized database.  Always clear it first, including when the
+        # current owner has no tags, so stale memberships cannot leak into a
+        # later screen.
         conn.execute("DELETE FROM Company_Tags")
+        user_tags = _store.list_all_company_tags(owner_user_id)
         conn.executemany(
             "INSERT OR IGNORE INTO Company_Tags (edinetCode, tag) VALUES (?, ?)",
-            [(t["edinet_code"], t["tag"]) for t in user_tags],
+            [
+                (
+                    t.get("company_code") or t.get("edinet_code"),
+                    t["tag"],
+                )
+                for t in user_tags
+                if t.get("company_code") or t.get("edinet_code")
+            ],
         )
 
 

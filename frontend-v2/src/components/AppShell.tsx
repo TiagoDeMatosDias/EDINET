@@ -13,16 +13,19 @@ const navigation = [
   { to: '/analyze', label: 'Analyze', icon: Building2 },
   { to: '/backtest', label: 'Backtest', icon: BarChart3 },
   { to: '/portfolio', label: 'Portfolio', icon: BriefcaseBusiness },
-  { to: '/pipeline', label: 'Data pipeline', icon: Workflow },
   { to: '/filings', label: 'Filings', icon: FileText },
   { to: '/compare', label: 'Compare', icon: GitCompare },
   { to: '/research', label: 'Research', icon: StickyNote },
 ]
+const pipelineNavigation = { to: '/pipeline', label: 'Data pipeline', icon: Workflow }
 
 function Navigation({ onNavigate }: { onNavigate?: () => void }) {
   const auth = useAuth()
+  const items = auth.user?.role === 'admin'
+    ? [...navigation.slice(0, 5), pipelineNavigation, ...navigation.slice(5)]
+    : navigation
   return <nav className="primary-nav" aria-label="Primary navigation">
-    {navigation.map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/overview'} onClick={onNavigate}><Icon aria-hidden="true" /><span>{item.label}</span></NavLink> })}
+    {items.map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/overview'} onClick={onNavigate}><Icon aria-hidden="true" /><span>{item.label}</span></NavLink> })}
     {auth.user && <NavLink to="/account" end onClick={onNavigate}><Settings aria-hidden="true" /><span>Account</span></NavLink>}
     {auth.user?.role === 'admin' && <NavLink to="/admin" end onClick={onNavigate}><Shield aria-hidden="true" /><span>Admin</span></NavLink>}
   </nav>
@@ -89,6 +92,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false)
   const health = useHealth()
   const location = useLocation()
+  const auth = useAuth()
+  const mobileNavigation = navigation.slice(0, 5)
 
   return <div className={collapsed ? 'app-shell app-shell--collapsed' : 'app-shell'}>
     <aside className={mobileOpen ? 'sidebar sidebar--open' : 'sidebar'}>
@@ -98,9 +103,9 @@ export function AppShell({ children }: { children: ReactNode }) {
     </aside>
     {mobileOpen && <button className="backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
     <div className="app-content">
-      <header className="topbar"><button className="icon-button mobile-only" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button><GlobalCompanySearch /><div className="topbar-actions"><div className={health.isError ? 'health health--error' : 'health'}>{health.isError ? <CircleX /> : <CircleCheck />}<span>{health.isError ? 'Backend unavailable' : health.data?.jobs_active ? `${health.data.jobs_active} job active` : 'Data service ready'}</span></div><AuthSection /></div></header>
+      <header className="topbar"><button className="icon-button mobile-only" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button><GlobalCompanySearch /><div className="topbar-actions"><div className={health.isError ? 'health health--error' : 'health'}>{health.isError ? <CircleX /> : <CircleCheck />}<span>{health.isError ? 'Backend unavailable' : auth.user?.role === 'admin' && health.data?.jobs_active ? `${health.data.jobs_active} job active` : 'Data service ready'}</span></div><AuthSection /></div></header>
       <main id="main-content" key={location.pathname}>{children}</main>
-      <nav className="mobile-nav" aria-label="Mobile primary navigation">{navigation.slice(0, 5).map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/overview'}><Icon /><span>{item.label}</span></NavLink> })}</nav>
+      <nav className="mobile-nav" aria-label="Mobile primary navigation">{mobileNavigation.map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/overview'}><Icon /><span>{item.label}</span></NavLink> })}</nav>
     </div>
   </div>
 }

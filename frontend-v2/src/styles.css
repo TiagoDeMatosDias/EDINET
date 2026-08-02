@@ -131,6 +131,19 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .two-column { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, .8fr); gap: 18px; }
 .stack { display: flex; flex-direction: column; gap: 18px; }
+.section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.section-heading h2 { margin: 0; font-size: 1.35rem; letter-spacing: -.025em; }
+.recent-work-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.recent-work-grid .card { min-width: 0; }
+.recent-work-list { display: flex; flex-direction: column; }
+.recent-work-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border); color: var(--text); text-decoration: none; }
+.recent-work-item:last-child { border-bottom: 0; }
+.recent-work-item:hover strong { color: var(--primary); }
+.recent-work-item > span:first-child { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.recent-work-item > span:last-child { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; color: var(--muted); }
+.recent-work-item strong, .recent-work-item small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-work-item small { color: var(--muted); font-size: .72rem; }
+.recent-work-item svg { width: 14px; }
 .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
 .metric { min-width: 0; display: flex; flex-direction: column; gap: 5px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .metric > span { color: var(--muted); font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .035em; }
@@ -378,6 +391,7 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
   #main-content { padding: 24px 15px 86px; }
   .page-header { flex-direction: column; gap: 16px; }
   .card-grid { grid-template-columns: 1fr; }
+  .recent-work-grid { grid-template-columns: 1fr; }
   .metric-grid { grid-template-columns: 1fr 1fr; }
   .comparison-metric-picker-header { align-items: flex-start; flex-direction: column; }
   .comparison-metric-picker-fields { grid-template-columns: 1fr; }

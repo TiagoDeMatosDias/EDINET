@@ -11,6 +11,8 @@
 .search-results span, .step-library span, .pipeline-step > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .search-results small, .step-library small, .pipeline-step small { color: var(--muted); }
 .company-description { max-width: 80ch; margin: 0; color: var(--text); line-height: 1.65; }
+.company-description-block { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
+.company-description-block > strong { color: var(--muted); font-size: .72rem; letter-spacing: .04em; text-transform: uppercase; }
 .chart-frame { height: 320px; }
 .step-tabs { display: flex; gap: 6px; padding: 4px; overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); width: fit-content; max-width: 100%; }
 .step-tabs button { min-height: 34px; padding: 6px 12px; border: 0; border-radius: 7px; color: var(--muted); background: transparent; white-space: nowrap; cursor: pointer; }

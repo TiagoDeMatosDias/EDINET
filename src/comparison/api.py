@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.comparison.service import (
@@ -267,11 +268,32 @@ def peers(company_code: str, limit: int = Query(default=10, ge=1, le=50)) -> dic
 
 
 @router.post("/snapshot")
-def snapshot(payload: ComparisonRequest) -> dict[str, Any]:
+def snapshot(payload: ComparisonRequest, request: Request = None) -> dict[str, Any]:
     codes = _codes(payload.company_codes)
     db = _resolve_db()
     metrics = _selected_metrics(payload.metrics, _metric_catalog(db))
     rows, missing = _snapshot_rows(db, codes, metrics)
+    user = getattr(request.state, "user", None) if request is not None else None
+    if user is not None and hasattr(user, "user_id"):
+        try:
+            from src.research.runtime import store as research_store
+
+            labels = [
+                str(row.get("company", {}).get("company_name") or row.get("company_code"))
+                for row in rows
+            ]
+            code_query = ",".join(codes)
+            research_store.record_recent_work(
+                user.user_id,
+                "comparison",
+                f"comparison:{code_query}:{','.join(metrics)}",
+                "Comparison · " + " vs ".join(labels[:4]),
+                f"{len(rows)} companies · {len(metrics)} metrics",
+                f"/compare?companies={quote(code_query, safe=',')}",
+                {"company_codes": codes, "metrics": metrics},
+            )
+        except Exception as exc:  # noqa: BLE001 - activity history is best effort
+            _LOGGER.info("Could not record recent comparison: %s", exc)
     return {
         "companies": rows,
         "requested": codes,
