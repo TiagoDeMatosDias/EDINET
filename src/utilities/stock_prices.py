@@ -1,5 +1,6 @@
 import logging
 import random
+import re
 import sqlite3
 import time
 from collections.abc import Callable
@@ -21,6 +22,15 @@ from src.utilities.price_provenance import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _quote_identifier(identifier: str) -> str:
+    """Quote a caller-provided SQLite identifier."""
+    value = str(identifier)
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        raise ValueError(f"Unsafe SQLite identifier: {identifier!r}")
+    return f'"{value}"'
+
 
 _STOOQ_DOWNLOAD_ENDPOINT = "https://stooq.com/q/d/l/"
 
@@ -114,6 +124,16 @@ def _mark_provider_cooldown(provider: str, seconds: float) -> None:
 
 def _clear_provider_cooldown(provider: str) -> None:
     _PROVIDER_COOLDOWNS.pop(provider, None)
+
+
+def primary_cooldown_remaining() -> float:
+    """Return seconds until the final fallback provider accepts requests.
+
+    Yahoo is the last resort for every ticker; when it is cooling down the
+    remaining batch cannot be refreshed, so callers can stop early instead of
+    repeating the same failing requests per ticker.
+    """
+    return _provider_cooldown_remaining(_YAHOO_PROVIDER_NAME)
 
 
 def _reset_provider_cooldowns() -> None:
@@ -281,16 +301,29 @@ def _request_with_retries(
 
 
 def _provider_symbol_for_ticker(ticker: str) -> str:
-    """Map stored ticker values to the symbol expected by Yahoo Finance."""
+    """Map stored ticker values to the symbol expected by Yahoo Finance.
+
+    Japanese codes are stored in EDINET's five-character form (``43960``,
+    ``302A0``) or with an explicit ``.T``/``.jp`` suffix; all three must map
+    to Yahoo's ``4396.T`` / ``302A.T`` form.  Non-Japanese symbols that carry
+    a real dot (``BRK.B``, ``SXR8.DE``) are preserved as-is.
+    """
     clean_ticker = str(ticker).strip()
     if not clean_ticker:
         return clean_ticker
-    if clean_ticker.lower().endswith(".jp"):
-        return clean_ticker[:-3] + ".T"
+    lowered = clean_ticker.lower()
+    if lowered.endswith(".jp"):
+        clean_ticker = clean_ticker[:-3]
+    elif lowered.endswith(".t"):
+        clean_ticker = clean_ticker[:-2]
     if "." in clean_ticker:
         return clean_ticker
+    if len(clean_ticker) >= 5 and clean_ticker[:4].isalnum() and clean_ticker.endswith("0"):
+        return clean_ticker[:4] + ".T"
     if len(clean_ticker) >= 4 and clean_ticker[:4].isdigit():
         return clean_ticker[:4] + ".T"
+    if lowered.endswith(".t"):
+        return clean_ticker + ".T"
     return clean_ticker
 
 
@@ -299,12 +332,20 @@ def _stooq_symbol_for_ticker(ticker: str) -> str:
     clean_ticker = str(ticker).strip().lower()
     if not clean_ticker:
         return clean_ticker
-    if clean_ticker.endswith(".jp"):
-        return clean_ticker
+    had_jp_suffix = clean_ticker.endswith(".jp")
+    had_t_suffix = clean_ticker.endswith(".t")
+    if had_jp_suffix:
+        clean_ticker = clean_ticker[:-3]
+    elif had_t_suffix:
+        clean_ticker = clean_ticker[:-2]
     if "." in clean_ticker:
         return clean_ticker
+    if len(clean_ticker) >= 5 and clean_ticker[:4].isalnum() and clean_ticker.endswith("0"):
+        return clean_ticker[:4] + ".jp"
     if len(clean_ticker) >= 4 and clean_ticker[:4].isdigit():
         return clean_ticker[:4] + ".jp"
+    if had_jp_suffix or had_t_suffix:
+        return clean_ticker + ".jp"
     return clean_ticker
 
 
@@ -324,7 +365,9 @@ def _jpx_symbol_for_ticker(ticker: str) -> str | None:
         clean_ticker = clean_ticker[:-2]
     if len(clean_ticker) == 4 and clean_ticker.isdigit():
         return clean_ticker
-    if len(clean_ticker) == 5 and clean_ticker.isdigit() and clean_ticker.endswith("0"):
+    # JPX Growth codes are four alphanumeric characters (e.g. ``302A``);
+    # EDINET stores them with a trailing zero, just like numeric codes.
+    if len(clean_ticker) == 5 and clean_ticker.endswith("0") and clean_ticker[:4].isalnum():
         return clean_ticker[:4]
     return None
 
@@ -375,46 +418,48 @@ def _parse_jpx_history(html: str, start_date: str | None = None) -> pd.DataFrame
 
 
 def _fetch_jpx_history(provider_ticker: str, start_date: str | None = None) -> pd.DataFrame:
-    """Fetch JPX's split-adjusted historical closing-price table.
-
-    The public quote page exposes the most recent 50 trading sessions.  It is
-    therefore used for current/incremental updates; older backfills continue
-    through the existing Stooq/Yahoo fallback chain.  JPX rejects a direct
-    historical-page request unless it follows the quote site's normal
-    search/detail navigation, so keep one session and establish that
-    referrer chain before reading the table.
-    """
+    """Fetch JPX's split-adjusted historical closing-price table."""
     session = requests.Session()
     search_url = f"{_JPX_QUOTE_ENDPOINT}?F=stock_search"
-    session.get(
-        search_url,
-        headers=_JPX_HEADERS,
-        timeout=30,
-    ).raise_for_status()
+    try:
+        _request_with_retries(
+            _JPX_PROVIDER_NAME,
+            session.get,
+            search_url,
+            headers=_JPX_HEADERS,
+            timeout=30,
+        )
 
-    detail_url = (
-        f"{_JPX_QUOTE_ENDPOINT}?f=stock_detail&"
-        f"qcode={provider_ticker}"
-    )
-    session.get(
-        _JPX_QUOTE_ENDPOINT,
-        params={"f": "stock_detail", "qcode": provider_ticker},
-        headers={**_JPX_HEADERS, "Referer": search_url},
-        timeout=30,
-    ).raise_for_status()
+        detail_url = (
+            f"{_JPX_QUOTE_ENDPOINT}?f=stock_detail&"
+            f"qcode={provider_ticker}"
+        )
+        _request_with_retries(
+            _JPX_PROVIDER_NAME,
+            session.get,
+            _JPX_QUOTE_ENDPOINT,
+            params={"f": "stock_detail", "qcode": provider_ticker},
+            headers={**_JPX_HEADERS, "Referer": search_url},
+            timeout=30,
+        )
 
-    response = session.get(
-        _JPX_QUOTE_ENDPOINT,
-        params={
-            "f": "stock_detail",
-            "disptype": "historical",
-            "qcode": provider_ticker,
-        },
-        headers={**_JPX_HEADERS, "Referer": detail_url},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return _parse_jpx_history(response.text, start_date=start_date)
+        response = _request_with_retries(
+            _JPX_PROVIDER_NAME,
+            session.get,
+            _JPX_QUOTE_ENDPOINT,
+            params={
+                "f": "stock_detail",
+                "disptype": "historical",
+                "qcode": provider_ticker,
+            },
+            headers={**_JPX_HEADERS, "Referer": detail_url},
+            timeout=30,
+        )
+        return _parse_jpx_history(response.text, start_date=start_date)
+    finally:
+        close = getattr(session, "close", None)
+        if close is not None:
+            close()
 
 
 def _flatten_history_column_name(column_name) -> str:
@@ -441,10 +486,16 @@ def _find_history_column(columns, required_tokens, excluded_tokens=None):
 
 
 def _validate_stooq_response(response: requests.Response) -> None:
-    """Treat Stooq's successful rate-limit text response as retryable."""
+    """Treat Stooq's successful rate-limit/bot-wall text responses as retryable."""
     lowered_text = response.text.lower()
     if "write to www@stooq.com" in lowered_text or "exceeded the daily hits limit" in lowered_text:
         raise _ProviderRateLimitError("Stooq returned a daily-hit limit response")
+    # Stooq sometimes answers with a JavaScript-verification page instead of
+    # CSV.  Reading it as CSV yields garbage columns and a hard failure, so
+    # detect it here and treat it like a rate limit (retry then cooldown).
+    head = lowered_text.lstrip()
+    if head.startswith("<!doctype html") or "<html" in head[:500]:
+        raise _ProviderRateLimitError("Stooq returned a bot-verification page")
 
 
 def _fetch_stooq_history(provider_ticker: str, start_date: str | None = None) -> pd.DataFrame:
@@ -598,12 +649,24 @@ def _fetch_yahoo_history(
             return _parse_yahoo_chart_payload(response.json())
         except _ProviderRateLimitError as exc:
             last_error = exc
+        except requests.HTTPError as exc:
+            last_error = exc
+            if exc.response is not None and exc.response.status_code == 404:
+                # Unknown symbol — a permanent error, not a transient one.
+                # Do not try the second host or mark a cooldown: a bad ticker
+                # must not make Yahoo unavailable for every other ticker.
+                break
         except _PROVIDER_ERRORS as exc:
             last_error = exc
 
     if isinstance(last_error, _ProviderRateLimitError):
         _mark_provider_cooldown(_YAHOO_PROVIDER_NAME, _PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS)
         raise last_error
+    if isinstance(last_error, requests.HTTPError):
+        # Permanent client errors (e.g. 404) never cool the provider down.
+        raise RuntimeError(
+            f"Failed to fetch Yahoo Finance history for {provider_ticker}: {last_error}"
+        ) from last_error
     _mark_provider_cooldown(_YAHOO_PROVIDER_NAME, _PROVIDER_FAILURE_COOLDOWN_SECONDS)
     raise RuntimeError(
         f"Failed to fetch Yahoo Finance history for {provider_ticker}: {last_error}"
@@ -686,16 +749,13 @@ def _jpx_history_has_requested_coverage(
 def _load_provider_history(
     ticker: str,
     start_date: str | None = None,
-    *,
-    jpx_only: bool = False,
 ) -> tuple[str, pd.DataFrame, list[dict]]:
-    """Load normalized history using JPX and optional fallback providers.
+    """Load normalized history, preferring JPX and falling back on failure.
 
-    ``jpx_only`` is used for Japanese tickers with a recent cached price. In
-    that case, a JPX failure is returned without contacting Stooq or Yahoo.
-    Older or incomplete histories continue through the fallback chain.
+    Recent Japanese tickers still prefer JPX, but a transient JPX failure must
+    not turn a refresh into a hard failure when another provider can supply
+    the requested range.
     """
-    # Check if ticker looks like a european ETF needing suffix.
     _looks_eu = (
         ticker.isalpha() and len(ticker) <= 6 and "." not in ticker
         and not ticker[:4].isdigit() and not ticker.lower().endswith(".jp")
@@ -713,25 +773,24 @@ def _load_provider_history(
                 _JPX_SOURCE_REVISION,
             )
         )
-    if not jpx_only:
-        providers.extend(
-            [
-                (
-                    _STOOQ_PROVIDER_NAME,
-                    _fetch_stooq_history,
-                    _stooq_symbol_for_ticker(ticker),
-                    "unknown",
-                    "stooq-csv-v1",
-                ),
-                (
-                    _YAHOO_PROVIDER_NAME,
-                    _fetch_yahoo_history,
-                    _provider_symbol_for_ticker(ticker),
-                    "adjusted",
-                    "chart-events-v1",
-                ),
-            ]
-        )
+    providers.extend(
+        [
+            (
+                _STOOQ_PROVIDER_NAME,
+                _fetch_stooq_history,
+                _stooq_symbol_for_ticker(ticker),
+                "unknown",
+                "stooq-csv-v1",
+            ),
+            (
+                _YAHOO_PROVIDER_NAME,
+                _fetch_yahoo_history,
+                _provider_symbol_for_ticker(ticker),
+                "adjusted",
+                "chart-events-v1",
+            ),
+        ]
+    )
     last_error = None
 
     for provider_name, fetcher, provider_ticker, price_basis, source_revision in providers:
@@ -778,7 +837,7 @@ def _load_provider_history(
             )
 
     # European ETF suffix fallback.
-    if not jpx_only and _looks_eu:
+    if _looks_eu:
         _EU_SUFFIXES = [".DE", ".L", ".MI", ".AS", ".PA", ".SW"]
         for suffix in _EU_SUFFIXES:
             suffixed = ticker + suffix
@@ -818,39 +877,39 @@ def _load_provider_history(
 
 
 def _create_prices_table(conn, table_name):
-    """Create the stock prices table if it doesn't exist.
-
-    Also ensures a composite index on (Date, Ticker) exists for fast lookups.
-
-    Args:
-        conn (sqlite3.Connection): Database connection
-        table_name (str): Name of the table to create
-    """
-    # Do not use pandas ``to_sql`` here.  Its sqlite3 adapter commits when it
-    # finishes, which would implicitly close a caller-owned SAVEPOINT during
-    # an overwrite update.  Explicit DDL keeps transaction ownership with the
-    # caller and is equivalent to the four-column table pandas created here.
-    quoted_table = '"' + str(table_name).replace('"', '""') + '"'
+    """Create or migrate the stock prices table and its indexes."""
+    quoted_table = _quote_identifier(table_name)
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {quoted_table} ("
         '"Date" TEXT, "Ticker" TEXT, "Currency" TEXT, "Price" REAL)'
     )
-    # Migrate existing installations as well as newly-created tables.  Rows
-    # already present are marked ``unknown`` by the migration; callers can
-    # promote them only after their source convention has been verified.
     ensure_price_provenance_columns(conn, table_name)
-    logger.debug(f"Stock prices table '{table_name}' is ready")
 
-    # Ensure a composite index on (Date, Ticker) for query performance
-    idx_name = f"ix_{table_name}_Date_Ticker"
+    # Keep the newest row for each natural price key before adding the
+    # uniqueness guarantee. This repairs legacy duplicates created by
+    # overlapping provider ranges.
     conn.execute(
-        f"CREATE INDEX IF NOT EXISTS [{idx_name}] ON [{table_name}] (Date, Ticker)"
+        f"DELETE FROM {quoted_table} WHERE rowid NOT IN ("
+        f"SELECT MAX(rowid) FROM {quoted_table} "
+        "GROUP BY Date, Ticker, Currency)"
+    )
+
+    index_name = f"ix_{table_name}_Date_Ticker"
+    ticker_index_name = f"ix_{table_name}_Ticker_Date_Currency"
+    unique_index_name = f"ux_{table_name}_Ticker_Date_Currency"
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS {_quote_identifier(index_name)} "
+        f"ON {quoted_table} (Date, Ticker)"
     )
     conn.execute(
-        f"CREATE INDEX IF NOT EXISTS [ix_{table_name}_Ticker_Date_Currency] "
-        f"ON [{table_name}] (Ticker, Date, Currency)"
+        f"CREATE INDEX IF NOT EXISTS {_quote_identifier(ticker_index_name)} "
+        f"ON {quoted_table} (Ticker, Date, Currency)"
     )
-    logger.debug(f"Index '{idx_name}' on ({table_name}.Date, {table_name}.Ticker) is ready")
+    conn.execute(
+        f"CREATE UNIQUE INDEX IF NOT EXISTS {_quote_identifier(unique_index_name)} "
+        f"ON {quoted_table} (Ticker, Date, Currency)"
+    )
+    logger.debug("Stock prices table '%s' is ready", table_name)
 
 
 # If the last cached price and the first newly-fetched price differ by more
@@ -946,16 +1005,20 @@ def _append_price_rows(
             value = value.item()
         return value
 
-    quoted_table = '"' + str(prices_table).replace('"', '""') + '"'
-    quoted_columns = ", ".join(
-        '"' + str(column).replace('"', '""') + '"' for column in ordered
-    )
+    quoted_table = _quote_identifier(prices_table)
+    quoted_columns = ", ".join(_quote_identifier(column) for column in ordered)
     placeholders = ", ".join("?" for _ in ordered)
     rows = [
         tuple(_sqlite_value(value) for value in row)
         for row in out_data.itertuples(index=False, name=None)
     ]
     if rows:
+        key_rows = {(row[0], row[1], row[2]) for row in rows}
+        conn.executemany(
+            f"DELETE FROM {quoted_table} "
+            "WHERE Date = ? AND Ticker = ? AND Currency = ?",
+            key_rows,
+        )
         conn.executemany(
             f"INSERT INTO {quoted_table} ({quoted_columns}) VALUES ({placeholders})",
             rows,
@@ -972,13 +1035,13 @@ def _replace_ticker_rows(
     """Delete all cached rows for *ticker* and store the provider's full series.
 
     **Caution:** prefer :func:`_adjust_cached_rows_to_provider_basis`, which
-    reconciles a mixed basis in place and preserves granularity.  This
-    wholesale replace should only be used when a consistent full series is
-    available at full granularity.
-
-    Returns the number of rows stored.
+    reconciles a mixed basis in place and preserves granularity. This wholesale
+    replace should only be used when a consistent full series is available.
     """
-    conn.execute(f"DELETE FROM {prices_table} WHERE Ticker = ?", (ticker,))
+    conn.execute(
+        f"DELETE FROM {_quote_identifier(prices_table)} WHERE Ticker = ?",
+        (ticker,),
+    )
     _append_price_rows(conn, prices_table, ticker, full_df, currency)
     return len(full_df)
 
@@ -1049,7 +1112,7 @@ def _restore_stored_rows_to_raw(
     if not splits:
         return 0
     rows = conn.execute(
-        f"SELECT Date, Price FROM {prices_table} "
+        f"SELECT Date, Price FROM {_quote_identifier(prices_table)} "
         "WHERE Ticker = ? AND Date >= ?",
         (ticker, from_date),
     ).fetchall()
@@ -1058,7 +1121,7 @@ def _restore_stored_rows_to_raw(
         factor = _split_restore_factor(splits, str(date_val)[:10])
         if abs(factor - 1.0) > 1e-9:
             conn.execute(
-                f"UPDATE {prices_table} SET Price = Price * ? "
+                f"UPDATE {_quote_identifier(prices_table)} SET Price = Price * ? "
                 "WHERE Ticker = ? AND Date = ?",
                 (factor, ticker, date_val),
             )
@@ -1230,7 +1293,7 @@ def reconcile_ticker_price_basis(
 
         # Locate the price boundary at the mis-dated split date
         price_rows = conn.execute(
-            f"SELECT Date, Price FROM {prices_table} "
+            f"SELECT Date, Price FROM {_quote_identifier(prices_table)} "
             "WHERE Ticker = ? AND Date <= ? ORDER BY Date DESC LIMIT 2",
             (ticker, h_date),
         ).fetchall()
@@ -1306,32 +1369,19 @@ def _invalidate_split_cache_for(ticker: str) -> None:
 def load_ticker_data(ticker, prices_table, conn, currency: str = "JPY") -> bool:
     """Download and store historical price data for a single ticker.
 
-    Japanese tickers with a cached price newer than 30 days use only JPX for
-    the refresh. Older Japanese histories use the JPX/Stooq/Yahoo chain so
-    missing historical data can be backfilled.
-
-    **Provider basis handling:** A boundary discontinuity is retained as a
-    diagnostic with the source basis instead of being silently rewritten. A
-    provider event records the authoritative date; a separate reconciliation
-    job can repair legacy mixed-basis rows after review.
-
-    Args:
-        ticker (str): The company ticker symbol (e.g. ``'7203'``).
-        prices_table (str): Name of the SQLite table where prices are stored.
-        conn (sqlite3.Connection): Active database connection.
-
-    Returns:
-        bool: ``True`` if data was fetched successfully or was already
-        up to date, ``False`` if the upstream provider request failed.
+    Japanese tickers prefer JPX for recent updates and fall back to Stooq/Yahoo
+    when JPX is unavailable or cannot cover the requested range.
     """
     try:
         ensure_price_provenance_columns(conn, prices_table)
-        last_date_query = f"SELECT MAX(Date) AS Last_Date FROM {prices_table} WHERE Ticker = ?"
+        quoted_table = _quote_identifier(prices_table)
+        last_date_query = (
+            f"SELECT MAX(Date) AS Last_Date FROM {quoted_table} WHERE Ticker = ?"
+        )
         df_last_date = pd.read_sql_query(last_date_query, conn, params=(ticker,))
         start_date = None
         has_prior_data = False
         last_cached_price = None
-        jpx_only = False
 
         if df_last_date["Last_Date"][0] is not None:
             has_prior_data = True
@@ -1339,22 +1389,20 @@ def load_ticker_data(ticker, prices_table, conn, currency: str = "JPY") -> bool:
             last_timestamp = pd.to_datetime(last_date)
             today = pd.Timestamp.today().normalize()
             days_diff = (today - last_timestamp.normalize()).days
-            jpx_symbol = _jpx_symbol_for_ticker(ticker)
-            if jpx_symbol and days_diff < _RECENT_PRICE_WINDOW_DAYS:
-                jpx_only = True
+            if _jpx_symbol_for_ticker(ticker) and days_diff < _RECENT_PRICE_WINDOW_DAYS:
                 start_date = last_timestamp.strftime("%Y-%m-%d")
                 logger.info(
-                    "Using JPX only for recent ticker %s; cached price is %s days old",
+                    "Preferring JPX for recent ticker %s; cached price is %s days old",
                     ticker,
                     days_diff,
                 )
             elif days_diff <= 5:
-                logger.debug(f"Data for ticker {ticker} is already up to date.")
+                logger.debug("Data for ticker %s is already up to date.", ticker)
                 return True
             else:
                 start_date = (last_timestamp + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
             row = conn.execute(
-                f"SELECT Price FROM {prices_table} "
+                f"SELECT Price FROM {quoted_table} "
                 "WHERE Ticker = ? ORDER BY Date DESC LIMIT 1",
                 (ticker,),
             ).fetchone()
@@ -1362,7 +1410,7 @@ def load_ticker_data(ticker, prices_table, conn, currency: str = "JPY") -> bool:
                 last_cached_price = row[0]
 
         provider_name, out_data, split_events = _load_provider_history(
-            ticker, start_date=start_date, jpx_only=jpx_only,
+            ticker, start_date=start_date,
         )
         if out_data.empty:
             logger.warning("No data found for ticker %s after querying %s.", ticker, provider_name)
@@ -1433,6 +1481,18 @@ def load_ticker_data(ticker, prices_table, conn, currency: str = "JPY") -> bool:
 
         return True
 
-    except Exception as e:
-        logger.error(f"Failed to fetch data for ticker {ticker}: {e}", exc_info=True)
+    except _ProviderRateLimitError as exc:
+        # The provider asked us to slow down; this is expected during a batch
+        # and needs no traceback.  The cooldown governs the retry timing.
+        logger.warning("Provider rate limit while updating ticker %s: %s", ticker, exc)
+        return False
+    except RuntimeError as exc:
+        # All providers failed or returned unusable data — routine for
+        # delisted/unknown tickers.  Log the cause, not a full traceback.
+        logger.warning("Failed to fetch data for ticker %s: %s", ticker, exc)
+        return False
+    except Exception as exc:
+        logger.error(
+            "Unexpected failure updating ticker %s: %s", ticker, exc, exc_info=True
+        )
         return False

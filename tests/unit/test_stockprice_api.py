@@ -147,6 +147,32 @@ class TestImportStockPricesCsv(unittest.TestCase):
         self.assertIsNone(_jpx_symbol_for_ticker("12345"))
         self.assertIsNone(_jpx_symbol_for_ticker("SPY"))
 
+    def test_provider_symbols_normalize_japanese_ticker_forms(self):
+        from src.utilities.stock_prices import (
+            _provider_symbol_for_ticker,
+            _stooq_symbol_for_ticker,
+        )
+
+        # EDINET 5-digit form, suffixed 5-digit form, and 4-digit form must
+        # all reach Yahoo as the 4-digit .T symbol.
+        for stored in ("43960", "43960.T", "43960.jp", "4396", "4396.T"):
+            self.assertEqual(_provider_symbol_for_ticker(stored), "4396.T")
+        for stored in ("43960", "43960.T", "43960.jp", "4396", "4396.T", "4396.jp"):
+            self.assertEqual(_stooq_symbol_for_ticker(stored), "4396.jp")
+
+        # JPX Growth codes are four alphanumeric characters stored with a
+        # trailing zero; they must map to the 4-char JPX/Yahoo form.
+        self.assertEqual(_provider_symbol_for_ticker("302A0"), "302A.T")
+        self.assertEqual(_stooq_symbol_for_ticker("302A0"), "302a.jp")
+        self.assertEqual(_jpx_symbol_for_ticker("302A0"), "302A")
+        self.assertEqual(_provider_symbol_for_ticker("302A.T"), "302A.T")
+
+        # Symbols with real dots are preserved untouched.
+        self.assertEqual(_provider_symbol_for_ticker("BRK.B"), "BRK.B")
+        self.assertEqual(_provider_symbol_for_ticker("SXR8.DE"), "SXR8.DE")
+        self.assertEqual(_stooq_symbol_for_ticker("SXR8.DE"), "sxr8.de")
+        self.assertEqual(_provider_symbol_for_ticker("SXR8"), "SXR8")
+
     def test_parse_jpx_historical_table(self):
         html = """
         <table id="historical">
@@ -286,6 +312,66 @@ class TestImportStockPricesCsv(unittest.TestCase):
         finally:
             _reset_provider_cooldowns()
 
+    def test_stooq_bot_verification_page_is_treated_as_rate_limit(self):
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+            text = (
+                "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+                "<noscript>This site requires JavaScript to verify your browser."
+                "</noscript></head></html>"
+            )
+
+            @staticmethod
+            def raise_for_status():
+                return None
+
+        request_fn = Mock(return_value=FakeResponse())
+        _reset_provider_cooldowns()
+        try:
+            with patch("src.utilities.stock_prices.requests.get", request_fn), patch(
+                "src.utilities.stock_prices.time.sleep"
+            ):
+                with self.assertRaises(_ProviderRateLimitError):
+                    _fetch_stooq_history("4396.jp")
+
+            self.assertEqual(request_fn.call_count, 3)
+        finally:
+            _reset_provider_cooldowns()
+
+    def test_yahoo_404_does_not_mark_provider_cooldown(self):
+        class FakeResponse:
+            def __init__(self, status_code):
+                self.status_code = status_code
+                self.headers = {}
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise requests.HTTPError(
+                        f"HTTP {self.status_code}", response=self
+                    )
+
+        request_fn = Mock(return_value=FakeResponse(404))
+        _reset_provider_cooldowns()
+        try:
+            with patch("src.utilities.stock_prices.requests.get", request_fn):
+                with self.assertRaises(RuntimeError):
+                    _fetch_yahoo_history("43960.T")
+
+            # Only one host is tried for a permanent 404, and no cooldown
+            # is recorded, so other tickers can still use Yahoo.
+            self.assertEqual(request_fn.call_count, 1)
+            self.assertEqual(
+                _request_with_retries(
+                    "Yahoo Finance chart",
+                    Mock(return_value=FakeResponse(200)),
+                    "https://example.test",
+                ).status_code,
+                200,
+            )
+        finally:
+            _reset_provider_cooldowns()
+
     def test_yahoo_tries_second_chart_host_after_transient_failure(self):
         class FakeResponse:
             def __init__(self, status_code, payload=None):
@@ -395,6 +481,42 @@ class TestImportStockPricesCsv(unittest.TestCase):
         fetch_stooq.assert_not_called()
         fetch_yahoo.assert_not_called()
 
+    def test_recent_jpx_update_replaces_overlapping_dates(self):
+        db_path = os.path.join(self.tmpdir.name, "recent-jpx-idempotent.db")
+        last_date = (
+            pd.Timestamp.today().normalize() - pd.Timedelta(days=10)
+        ).strftime("%Y-%m-%d")
+        today = pd.Timestamp.today().strftime("%Y-%m-%d")
+        history = pd.DataFrame(
+            {
+                "Date": [last_date, today],
+                "Close": [810.0, 825.5],
+            }
+        )
+
+        conn = sqlite3.connect(db_path)
+        try:
+            _create_prices_table(conn, "stock_prices")
+            conn.execute(
+                "INSERT INTO stock_prices(Date, Ticker, Currency, Price) "
+                "VALUES (?, ?, ?, ?)",
+                (last_date, "13010", "JPY", 800.0),
+            )
+            with patch(
+                "src.utilities.stock_prices._fetch_jpx_history",
+                return_value=history,
+            ):
+                self.assertTrue(load_ticker_data("13010", "stock_prices", conn))
+            conn.commit()
+            rows = conn.execute(
+                "SELECT Date, Price FROM stock_prices "
+                "WHERE Ticker = ? ORDER BY Date",
+                ("13010",),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertEqual(rows, [(last_date, 810.0), (today, 825.5)])
     def test_older_japanese_price_keeps_fallback_providers(self):
         db_path = os.path.join(self.tmpdir.name, "older-fallback.db")
         last_date = (pd.Timestamp.today().normalize() - pd.Timedelta(days=60)).strftime("%Y-%m-%d")

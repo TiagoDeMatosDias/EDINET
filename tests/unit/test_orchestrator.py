@@ -487,7 +487,7 @@ class TestUpdateStockPricesStep:
         conn.commit()
         conn.close()
 
-        def fake_load(ticker, prices_table, connection):
+        def fake_load(ticker, prices_table, connection, currency="JPY"):
             connection.execute(
                 f"INSERT INTO [{prices_table}] "
                 "(Date, Ticker, Currency, Price) VALUES (?, ?, ?, ?)",
@@ -532,7 +532,7 @@ class TestUpdateStockPricesStep:
         conn.commit()
         conn.close()
 
-        def fake_load(ticker, prices_table, connection):
+        def fake_load(ticker, prices_table, connection, currency="JPY"):
             frame = pd.DataFrame({"Date": ["2026-01-01"], "Close": [999.0]})
             from src.utilities.stock_prices import _append_price_rows
 
@@ -603,7 +603,7 @@ class TestUpdateStockPricesStep:
         conn.commit()
         conn.close()
 
-        def fake_load(ticker, prices_table, connection):
+        def fake_load(ticker, prices_table, connection, currency="JPY"):
             if ticker == "10010":
                 return False
             connection.execute(
@@ -616,8 +616,12 @@ class TestUpdateStockPricesStep:
         with patch(
             "src.orchestrator.update_stock_prices.update_stock_prices.stockprice_api.load_ticker_data",
             side_effect=fake_load,
-        ) as mock_load:
+        ) as mock_load, patch(
+            "src.orchestrator.update_stock_prices.update_stock_prices.random.shuffle"
+        ) as shuffle:
             update_all_stock_prices(str(db_path))
+
+        shuffle.assert_called_once()
 
         conn = sqlite3.connect(db_path)
         try:
@@ -720,7 +724,7 @@ class TestGetTickersFromPrices:
         finally:
             conn.close()
 
-    def test_trims_whitespace_from_tickers(self):
+    def test_trims_and_deduplicates_tickers(self):
         from src.orchestrator.update_stock_prices.update_stock_prices import get_tickers_from_prices
 
         conn = sqlite3.connect(":memory:")
@@ -732,7 +736,7 @@ class TestGetTickersFromPrices:
             )
             conn.commit()
             result = get_tickers_from_prices(conn, table_name="CompanyInfo")
-            assert sorted(result) == [" 7203 ", "7203"]
+            assert result == ["7203"]
         finally:
             conn.close()
 
