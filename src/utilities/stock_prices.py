@@ -1,3 +1,4 @@
+import json
 import logging
 import random
 import re
@@ -10,7 +11,6 @@ from io import StringIO
 
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 
 from src.utilities.price_provenance import (
     ensure_price_provenance_columns,
@@ -35,17 +35,19 @@ def _quote_identifier(identifier: str) -> str:
 _STOOQ_DOWNLOAD_ENDPOINT = "https://stooq.com/q/d/l/"
 
 _JPX_QUOTE_ENDPOINT = "https://quote.jpx.co.jp/jpxhp/main/index.aspx"
+_JPX_DATA_ENDPOINT = "https://quote.jpx.co.jp/jpxhp/jcgi/wrap/qjsonp.aspx"
 _JPX_PROVIDER_NAME = "JPX quote"
 _JPX_SOURCE_REVISION = "quote-jpx-historical-v1"
-_JPX_MAX_HISTORY_ROWS = 50
+# The stock-detail JSON endpoint serves the latest 360 trading sessions.
+_JPX_MAX_HISTORY_ROWS = 360
 _RECENT_PRICE_WINDOW_DAYS = 30
 _STOOQ_PROVIDER_NAME = "Stooq"
 _YAHOO_PROVIDER_NAME = "Yahoo Finance chart"
 
 _JPX_HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "application/json, text/plain, */*",
     "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
-    "Referer": "https://quote.jpx.co.jp/jpxhp/main/index.aspx?F=stock_search",
+    "Referer": "https://quote.jpx.co.jp/jpxhp/main/index.aspx",
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0 Safari/537.36",
 }
@@ -384,24 +386,39 @@ def _parse_jpx_number(value: str) -> float | None:
         return None
 
 
-def _parse_jpx_history(html: str, start_date: str | None = None) -> pd.DataFrame:
-    """Parse the JPX ``#historical`` HTML table into ``Date``/``Close``."""
-    soup = BeautifulSoup(html or "", "html.parser")
-    table = soup.find("table", id="historical")
-    if table is None:
-        raise RuntimeError("JPX historical table was not present in the response")
+def _parse_jpx_history(payload: str, start_date: str | None = None) -> pd.DataFrame:
+    """Parse the JPX stock-detail JSON payload into ``Date``/``Close``.
+
+    The detail page loads its ``#historical`` table client-side from
+    ``qjsonp.aspx``, which answers with ``section1.data.<code>/T.A_HISTDAYL``:
+    comma-separated ``date,open,high,low,close,volume`` rows in ascending
+    date order.
+    """
+    try:
+        document = json.loads(payload or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("JPX quote returned a non-JSON response") from exc
+
+    status = int(document.get("status", -1) or 0)
+    if status != 0:
+        raise RuntimeError(
+            f"JPX quote returned status {document.get('status')}: "
+            f"{document.get('error')}"
+        )
+
+    daily_lines = ""
+    for entry in ((document.get("section1") or {}).get("data") or {}).values():
+        daily_lines = str(entry.get("A_HISTDAYL") or "")
+        if daily_lines.strip():
+            break
 
     rows: list[dict[str, object]] = []
-    for table_row in table.find_all("tr"):
-        cells = table_row.find_all("td")
-        if len(cells) < 5:
+    for line in daily_lines.splitlines():
+        fields = [field.strip() for field in line.split(",")]
+        if len(fields) < 5:
             continue
-        date_value = table_row.get("data-value") or cells[0].get_text(" ", strip=True)
-        if len(date_value) == 8 and date_value.isdigit():
-            date = pd.to_datetime(date_value, format="%Y%m%d", errors="coerce")
-        else:
-            date = pd.to_datetime(date_value, errors="coerce")
-        close = _parse_jpx_number(cells[4].get_text(" ", strip=True))
+        date = pd.to_datetime(fields[0], format="%Y/%m/%d", errors="coerce")
+        close = _parse_jpx_number(fields[4])
         if pd.isna(date) or close is None:
             continue
         rows.append({"Date": date.strftime("%Y-%m-%d"), "Close": close})
@@ -417,49 +434,40 @@ def _parse_jpx_history(html: str, start_date: str | None = None) -> pd.DataFrame
     return history
 
 
-def _fetch_jpx_history(provider_ticker: str, start_date: str | None = None) -> pd.DataFrame:
-    """Fetch JPX's split-adjusted historical closing-price table."""
-    session = requests.Session()
-    search_url = f"{_JPX_QUOTE_ENDPOINT}?F=stock_search"
+def _validate_jpx_response(response: requests.Response) -> None:
+    """Treat JPX's in-JSON error statuses as retryable provider failures.
+
+    The data endpoint answers HTTP 200 with ``{"status": 503, ...}`` when the
+    Referer is missing or the request is otherwise rejected, so the retry
+    helper must inspect the payload, not just the HTTP status.
+    """
     try:
-        _request_with_retries(
-            _JPX_PROVIDER_NAME,
-            session.get,
-            search_url,
-            headers=_JPX_HEADERS,
-            timeout=30,
+        document = json.loads(response.text or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("JPX quote returned a non-JSON response") from exc
+    status = int(document.get("status", -1) or 0)
+    if status != 0:
+        raise _ProviderRateLimitError(
+            f"JPX quote returned status {status}: {document.get('error')}"
         )
 
-        detail_url = (
-            f"{_JPX_QUOTE_ENDPOINT}?f=stock_detail&"
-            f"qcode={provider_ticker}"
-        )
-        _request_with_retries(
-            _JPX_PROVIDER_NAME,
-            session.get,
-            _JPX_QUOTE_ENDPOINT,
-            params={"f": "stock_detail", "qcode": provider_ticker},
-            headers={**_JPX_HEADERS, "Referer": search_url},
-            timeout=30,
-        )
 
-        response = _request_with_retries(
-            _JPX_PROVIDER_NAME,
-            session.get,
-            _JPX_QUOTE_ENDPOINT,
-            params={
-                "f": "stock_detail",
-                "disptype": "historical",
-                "qcode": provider_ticker,
-            },
-            headers={**_JPX_HEADERS, "Referer": detail_url},
-            timeout=30,
-        )
-        return _parse_jpx_history(response.text, start_date=start_date)
-    finally:
-        close = getattr(session, "close", None)
-        if close is not None:
-            close()
+def _fetch_jpx_history(provider_ticker: str, start_date: str | None = None) -> pd.DataFrame:
+    """Fetch JPX's split-adjusted historical closing prices from its JSON API."""
+    detail_url = (
+        f"{_JPX_QUOTE_ENDPOINT}?f=stock_detail&disptype=historical"
+        f"&qcode={provider_ticker}"
+    )
+    response = _request_with_retries(
+        _JPX_PROVIDER_NAME,
+        requests.get,
+        _JPX_DATA_ENDPOINT,
+        response_validator=_validate_jpx_response,
+        params={"F": "ctl/stock_detail", "qcode": provider_ticker},
+        headers={**_JPX_HEADERS, "Referer": detail_url},
+        timeout=30,
+    )
+    return _parse_jpx_history(response.text, start_date=start_date)
 
 
 def _flatten_history_column_name(column_name) -> str:
@@ -588,11 +596,21 @@ def _parse_yahoo_chart_payload(payload: dict) -> tuple[pd.DataFrame, list[dict]]
     if not results:
         return pd.DataFrame(columns=["Date", "Close"]), []
 
-    result = results[0]
+    result = (results or [None])[0]
+    if result is None:
+        return pd.DataFrame(columns=["Date", "Close"]), []
+
+    # Yahoo silently downgrades long windows to weekly/monthly bars even when
+    # ``interval=1d`` is requested; storing those as daily rows corrupts the
+    # series, so reject any payload that is not genuinely daily.
+    granularity = str((result.get("meta") or {}).get("dataGranularity") or "1d")
+    if granularity != "1d":
+        raise _ProviderCoverageError(
+            f"Yahoo Finance returned {granularity} bars instead of daily data"
+        )
+
     timestamps = result.get("timestamp") or []
     quotes = result.get("indicators", {}).get("quote") or []
-    if not timestamps or not quotes:
-        return pd.DataFrame(columns=["Date", "Close"]), []
 
     close_values = quotes[0].get("close") or []
     row_count = min(len(timestamps), len(close_values))
@@ -627,11 +645,13 @@ def _fetch_yahoo_history(
     }
     if start_date:
         start_ts = int(pd.Timestamp(start_date).timestamp())
-        end_ts = int((pd.Timestamp.utcnow().normalize() + pd.Timedelta(days=1)).timestamp())
-        params["period1"] = start_ts
-        params["period2"] = end_ts
     else:
-        params["range"] = "max"
+        # Full-history backfill must use explicit periods: ``range=max``
+        # makes Yahoo answer with monthly bars instead of daily ones.
+        start_ts = 0
+    end_ts = int((pd.Timestamp.utcnow().normalize() + pd.Timedelta(days=1)).timestamp())
+    params["period1"] = start_ts
+    params["period2"] = end_ts
 
     last_error = None
     for endpoint in _YAHOO_CHART_ENDPOINTS:
@@ -728,11 +748,12 @@ def _jpx_history_has_requested_coverage(
     history: pd.DataFrame,
     start_date: str | None,
 ) -> bool:
-    """Return whether the bounded JPX page can satisfy the requested range."""
+    """Return whether the bounded JPX endpoint can satisfy the requested range."""
     if history.empty:
         return False
     if start_date is None:
-        # The detail page intentionally exposes only the latest 50 sessions.
+        # The JSON endpoint intentionally exposes only the latest
+        # ``_JPX_MAX_HISTORY_ROWS`` sessions.
         # Do not make a first-time ticker update silently lose older history.
         return len(history) < _JPX_MAX_HISTORY_ROWS
     requested = pd.Timestamp(start_date)
@@ -742,8 +763,42 @@ def _jpx_history_has_requested_coverage(
     # ``start_date`` is the calendar day after the last cached row and may be
     # a weekend or a market holiday.  Allow the first returned trading day to
     # be a short non-trading gap, but reject an older request that fell outside
-    # the page's 50-session window.
+    # the endpoint's bounded session window.
     return (earliest - requested).days <= 14
+
+
+def _reject_degenerate_history(history: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """Reject provider histories that cannot be honest daily data.
+
+    Two failure modes corrupt analytics that assume one close per trading
+    day: providers answering a daily request with weekly/monthly bars (sparse
+    row density), and weekend-dated rows for markets that never trade on
+    weekends (Japanese codes).  Sparse histories raise a coverage error so
+    the provider chain can try the next source; stray weekend rows for a
+    Japanese code are dropped with a warning.
+    """
+    if history.empty:
+        return history
+    dates = pd.to_datetime(history["Date"])
+    if _jpx_symbol_for_ticker(ticker):
+        weekend_mask = (dates.dt.dayofweek >= 5).to_numpy()
+        if weekend_mask.any():
+            logger.warning(
+                "Dropping %d weekend-dated row(s) for %s", int(weekend_mask.sum()), ticker,
+            )
+            history = history[~weekend_mask].reset_index(drop=True)
+            if history.empty:
+                raise _ProviderCoverageError(
+                    f"{ticker} returned only weekend-dated rows"
+                )
+            dates = pd.to_datetime(history["Date"])
+    span_days = (dates.max() - dates.min()).days
+    span_years = span_days / 365.25
+    if span_years > 1.0 and len(history) < 100 * span_years:
+        raise _ProviderCoverageError(
+            f"sparse history for {ticker}: {len(history)} rows over {span_years:.1f}y"
+        )
+    return history
 
 
 def _load_provider_history(
@@ -801,6 +856,7 @@ def _load_provider_history(
             else:
                 split_events = []
             normalized = _normalise_price_history(raw_history)
+            normalized = _reject_degenerate_history(normalized, ticker)
             if provider_name == _JPX_PROVIDER_NAME and not _jpx_history_has_requested_coverage(
                 normalized, start_date
             ):
@@ -857,6 +913,7 @@ def _load_provider_history(
                         ticker, suffixed, provider_name, p_tkr,
                     )
                     normalized = _normalise_price_history(raw_history)
+                    normalized = _reject_degenerate_history(normalized, ticker)
                     normalized = _annotate_provider_history(
                         normalized,
                         provider_name + f" (as {suffixed})",

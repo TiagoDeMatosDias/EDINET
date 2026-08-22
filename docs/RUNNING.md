@@ -249,11 +249,12 @@ Date,Ticker,Currency,Price
 ---
 
 ### `update_stock_prices`
-Fetches daily share prices from the JPX quote historical page for Japanese
-tickers, with Stooq and Yahoo Finance chart fallbacks. JPX's public detail page
-exposes the latest 50 trading sessions and already reflects stock splits in its
-historical closes; initial or older backfills fall through to a provider with
-broader coverage rather than silently truncating history.
+Fetches daily share prices from the JPX quote JSON endpoint for Japanese
+tickers, with Stooq and Yahoo Finance chart fallbacks. The JPX stock-detail
+page loads its historical table client-side from ``qjsonp.aspx``, which serves
+the latest 360 trading sessions of split-adjusted closes; initial or older
+backfills fall through to a provider with broader coverage rather than
+silently truncating history.
 
 Stooq and Yahoo requests use bounded retries with exponential backoff and
 jitter for transient transport/HTTP failures, honor `Retry-After` when present,

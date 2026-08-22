@@ -289,14 +289,17 @@ Responsibility: Shared stock price provider access and persistence helpers used 
 	- Calls/Dependencies: `_load_provider_history`, `pd.read_sql_query`, `_append_price_rows`, `logger`.
 
 - `def _load_provider_history(ticker: str, start_date: str | None = None) -> tuple[str, pd.DataFrame, list[dict]]`
-	- Purpose: Try the JPX quote historical page first for Japanese tickers, then Stooq and Yahoo Finance chart fallbacks; normalize the returned price history and authoritative provider split events. JPX's 50-session page is used for incremental coverage and is skipped when it would truncate an initial/older backfill.
+	- Purpose: Try the JPX quote JSON endpoint first for Japanese tickers, then Stooq and Yahoo Finance chart fallbacks; normalize the returned price history and authoritative provider split events. JPX's 360-session window is used for incremental coverage and is skipped when it would truncate an initial/older backfill.
 	- Calls/Dependencies: `_fetch_jpx_history`, `_fetch_stooq_history`, `_fetch_yahoo_history`, `_normalise_price_history`.
 
 - `def _request_with_retries(provider, request_fn, url, *, response_validator=None, cooldown_on_failure=True, **kwargs) -> requests.Response`
 	- Purpose: Apply bounded retry/backoff handling to transient provider failures, honor `Retry-After`, detect rate-limit responses, and cool down blocked providers between ticker requests.
 
 - `def _fetch_jpx_history(provider_ticker: str, start_date: str | None = None) -> pd.DataFrame`
-	- Purpose: Establish JPX's search/detail navigation referrer chain, then fetch and parse its split-adjusted `#historical` closing-price table for the latest 50 trading sessions.
+	- Purpose: Fetch JPX's `qjsonp.aspx` stock-detail JSON (Referer-gated) and parse its split-adjusted `A_HISTDAYL` closing prices for the latest 360 trading sessions; in-JSON error statuses are retried with backoff.
+
+- `def _validate_jpx_response(response) -> None`
+	- Purpose: Treat JPX's HTTP-200 `{"status": !=0}` error payloads as retryable provider failures so `_request_with_retries` applies backoff and cooldown.
 
 - `def _create_prices_table(conn, table_name) -> None`
 	- Purpose: Ensure the destination stock-prices table exists, migrate row-level provenance columns, and create lookup indexes.

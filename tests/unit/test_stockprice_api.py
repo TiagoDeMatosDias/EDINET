@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import tempfile
@@ -173,18 +174,24 @@ class TestImportStockPricesCsv(unittest.TestCase):
         self.assertEqual(_stooq_symbol_for_ticker("SXR8.DE"), "sxr8.de")
         self.assertEqual(_provider_symbol_for_ticker("SXR8"), "SXR8")
 
-    def test_parse_jpx_historical_table(self):
-        html = """
-        <table id="historical">
-          <tr><th>日付</th><th>始値</th><th>高値</th><th>安値</th><th>終値</th><th>売買高</th></tr>
-          <tr data-value="20260629"><td>2026/06/29</td><td>3,875.0</td><td>4,580.0</td>
-              <td>3,730.0</td><td>4,580.0</td><td>9,613,400</td></tr>
-          <tr data-value="20260626"><td>2026/06/26</td><td>3,988.0</td><td>4,016.0</td>
-              <td>3,776.0</td><td>3,926.0</td><td>7,342,500</td></tr>
-        </table>
-        """
+    def test_parse_jpx_history_payload(self):
+        payload = json.dumps(
+            {
+                "status": 0,
+                "section1": {
+                    "data": {
+                        "4979/T": {
+                            "A_HISTDAYL": (
+                                "2026/06/26,3988.0,4016.0,3776.0,3926.0,7342500,\n"
+                                "2026/06/29,3875.0,4580.0,3730.0,4580.0,9613400,\n"
+                            )
+                        }
+                    }
+                },
+            }
+        )
 
-        result = _parse_jpx_history(html)
+        result = _parse_jpx_history(payload)
 
         self.assertEqual(
             result.to_dict("records"),
@@ -194,50 +201,119 @@ class TestImportStockPricesCsv(unittest.TestCase):
             ],
         )
 
-    def test_fetch_jpx_history_establishes_navigation_referrers(self):
-        html = """
-        <table id="historical">
-          <tr><th>日付</th><th>始値</th><th>高値</th><th>安値</th><th>終値</th></tr>
-          <tr data-value="20260629"><td>2026/06/29</td><td>3,875</td><td>4,580</td>
-              <td>3,730</td><td>4,580</td></tr>
-        </table>
-        """
+    def test_parse_jpx_history_rejects_error_status(self):
+        payload = json.dumps({"status": 503, "error": "リファラー："})
+
+        with self.assertRaises(RuntimeError):
+            _parse_jpx_history(payload)
+
+    def test_fetch_jpx_history_requests_json_endpoint_with_referer(self):
+        payload = json.dumps(
+            {
+                "status": 0,
+                "section1": {
+                    "data": {
+                        "3110/T": {
+                            "A_HISTDAYL": "2026/06/29,3875,4580,3730,4580,100,\n"
+                        }
+                    }
+                },
+            }
+        )
 
         class FakeResponse:
-            text = html
+            text = payload
 
             def raise_for_status(self):
                 return None
 
-        class FakeSession:
-            def __init__(self):
-                self.calls = []
+        request_fn = Mock(return_value=FakeResponse())
+        _reset_provider_cooldowns()
+        try:
+            with patch("src.utilities.stock_prices.requests.get", request_fn):
+                result = _fetch_jpx_history("3110")
+        finally:
+            _reset_provider_cooldowns()
 
-            def get(self, url, **kwargs):
-                self.calls.append((url, kwargs))
-                return FakeResponse()
-
-        session = FakeSession()
-        with patch("src.utilities.stock_prices.requests.Session", return_value=session):
-            result = _fetch_jpx_history("3110")
-
+        self.assertEqual(result.to_dict("records"), [{"Date": "2026-06-29", "Close": 4580.0}])
+        self.assertEqual(request_fn.call_count, 1)
+        url = request_fn.call_args.args[0]
+        self.assertEqual(url, "https://quote.jpx.co.jp/jpxhp/jcgi/wrap/qjsonp.aspx")
+        kwargs = request_fn.call_args.kwargs
+        self.assertEqual(kwargs["params"], {"F": "ctl/stock_detail", "qcode": "3110"})
         self.assertEqual(
-            result.to_dict("records"),
-            [{"Date": "2026-06-29", "Close": 4580.0}],
+            kwargs["headers"]["Referer"],
+            "https://quote.jpx.co.jp/jpxhp/main/index.aspx"
+            "?f=stock_detail&disptype=historical&qcode=3110",
         )
-        self.assertEqual(len(session.calls), 3)
-        search_url, _search_kwargs = session.calls[0]
-        self.assertIn("F=stock_search", search_url)
-        detail_url, detail_kwargs = session.calls[1]
-        self.assertEqual(detail_kwargs["params"], {"f": "stock_detail", "qcode": "3110"})
-        self.assertEqual(detail_kwargs["headers"]["Referer"], search_url)
-        self.assertEqual(session.calls[2][1]["params"], {
-            "f": "stock_detail", "disptype": "historical", "qcode": "3110",
-        })
-        self.assertEqual(
-            session.calls[2][1]["headers"]["Referer"],
-            detail_url + "?f=stock_detail&qcode=3110",
+
+    def test_degenerate_history_gate(self):
+        from src.utilities.stock_prices import _reject_degenerate_history
+
+        # Monthly bars over multiple years are rejected as sparse.
+        monthly = pd.DataFrame(
+            {
+                "Date": pd.date_range("2020-01-01", periods=60, freq="MS"),
+                "Close": [100.0] * 60,
+            }
         )
+        with self.assertRaises(Exception):
+            _reject_degenerate_history(monthly, "72030")
+
+        # Weekend-dated rows for a Japanese code are dropped; the rest stays.
+        daily = pd.DataFrame(
+            {
+                "Date": ["2026-08-20", "2026-08-21", "2026-08-22"],
+                "Close": [100.0, 101.0, 102.0],
+            }
+        )
+        cleaned = _reject_degenerate_history(daily, "72030")
+        self.assertEqual(cleaned["Date"].tolist(), ["2026-08-20", "2026-08-21"])
+
+        # Weekend rows for a non-Japanese symbol pass through untouched.
+        us = _reject_degenerate_history(daily, "AAPL")
+        self.assertEqual(len(us), 3)
+
+        # Dense business-day histories are accepted unchanged.
+        dense = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=300, freq="B"),
+                "Close": [100.0] * 300,
+            }
+        )
+        self.assertEqual(len(_reject_degenerate_history(dense, "AAPL")), 300)
+
+    def test_jpx_error_payload_is_retried(self):
+        error_payload = json.dumps({"status": 503, "error": "リファラー："})
+        ok_payload = json.dumps(
+            {"status": 0, "section1": {"data": {"3110/T": {"A_HISTDAYL": ""}}}}
+        )
+
+        class FakeResponse:
+            def __init__(self, text):
+                self.text = text
+                self.status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+        from src.utilities.stock_prices import _validate_jpx_response
+
+        request_fn = Mock(
+            side_effect=[FakeResponse(error_payload), FakeResponse(ok_payload)]
+        )
+        _reset_provider_cooldowns()
+        try:
+            with patch("src.utilities.stock_prices.time.sleep") as sleep:
+                response = _request_with_retries(
+                    "test-jpx", request_fn, "https://example.test",
+                    response_validator=_validate_jpx_response,
+                )
+            self.assertEqual(request_fn.call_count, 2)
+            sleep.assert_called_once()
+            self.assertEqual(json.loads(response.text)["status"], 0)
+        finally:
+            _reset_provider_cooldowns()
 
     def test_provider_request_retries_transient_http_failures(self):
         class FakeResponse:
@@ -454,9 +530,12 @@ class TestImportStockPricesCsv(unittest.TestCase):
     def test_recent_japanese_price_uses_only_jpx(self):
         db_path = os.path.join(self.tmpdir.name, "recent-jpx.db")
         last_date = (pd.Timestamp.today().normalize() - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+        friday = (pd.Timestamp.today().normalize() - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        while pd.Timestamp(friday).dayofweek >= 5:
+            friday = (pd.Timestamp(friday) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
         history = pd.DataFrame(
             {
-                "Date": [last_date, pd.Timestamp.today().strftime("%Y-%m-%d")],
+                "Date": [last_date, friday],
                 "Close": [810.0, 825.5],
             }
         )
@@ -486,10 +565,12 @@ class TestImportStockPricesCsv(unittest.TestCase):
         last_date = (
             pd.Timestamp.today().normalize() - pd.Timedelta(days=10)
         ).strftime("%Y-%m-%d")
-        today = pd.Timestamp.today().strftime("%Y-%m-%d")
+        friday = (pd.Timestamp.today().normalize() - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        while pd.Timestamp(friday).dayofweek >= 5:
+            friday = (pd.Timestamp(friday) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
         history = pd.DataFrame(
             {
-                "Date": [last_date, today],
+                "Date": [last_date, friday],
                 "Close": [810.0, 825.5],
             }
         )
@@ -516,12 +597,15 @@ class TestImportStockPricesCsv(unittest.TestCase):
         finally:
             conn.close()
 
-        self.assertEqual(rows, [(last_date, 810.0), (today, 825.5)])
+        self.assertEqual(rows, [(last_date, 810.0), (friday, 825.5)])
     def test_older_japanese_price_keeps_fallback_providers(self):
         db_path = os.path.join(self.tmpdir.name, "older-fallback.db")
         last_date = (pd.Timestamp.today().normalize() - pd.Timedelta(days=60)).strftime("%Y-%m-%d")
+        friday = (pd.Timestamp.today().normalize() - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        while pd.Timestamp(friday).dayofweek >= 5:
+            friday = (pd.Timestamp(friday) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
         history = pd.DataFrame(
-            {"Date": [pd.Timestamp.today().strftime("%Y-%m-%d")], "Close": [825.5]}
+            {"Date": [friday], "Close": [825.5]}
         )
 
         with patch(
@@ -557,8 +641,8 @@ class TestImportStockPricesCsv(unittest.TestCase):
         db_path = os.path.join(self.tmpdir.name, "jpx-limited.db")
         jpx_history = pd.DataFrame(
             {
-                "Date": pd.date_range("2026-01-01", periods=50, freq="D"),
-                "Close": [float(index) for index in range(50)],
+                "Date": pd.date_range("2019-01-01", periods=360, freq="B"),
+                "Close": [float(index) for index in range(360)],
             }
         )
         fallback_history = pd.DataFrame(

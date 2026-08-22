@@ -5,7 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
-- Stock-price updates now use the JPX quote historical page as the primary source for Japanese tickers, preserve its split-adjusted basis and source revision, and fall back to Stooq/Yahoo when JPX's 50-session window cannot cover the requested range.
+- Price ingestion now rejects degenerate provider histories for every source: sparse multi-year responses (weekly/monthly bars posing as daily) fail over to the next provider, and weekend-dated rows for Japanese codes are dropped.
+- Yahoo Finance backfills now send explicit `period1`/`period2` instead of `range=max` (which made Yahoo return monthly bars) and reject any payload whose `dataGranularity` is not `1d`, so full daily history lands in one request per ticker.
+- JPX price fetches now call the `qjsonp.aspx` stock-detail JSON endpoint that the redesigned quote page loads client-side; the old server-rendered historical table is empty, which made every Japanese ticker fall back to Stooq/Yahoo. In-JSON error statuses are retried with backoff and honor the provider cooldown.
+- Stock-price updates now use the JPX quote historical page as the primary source for Japanese tickers, preserve its split-adjusted basis and source revision, and fall back to Stooq/Yahoo when JPX's 360-session window cannot cover the requested range.
 - The stock-price update step now honors `overwrite` by replacing each selected ticker's cached history transactionally; failed or empty replacements retain the prior rows.
 - Stooq/Yahoo price requests now use bounded retry/backoff, `Retry-After` handling, alternate Yahoo chart hosts, and process-local provider cooldowns after rate limiting or repeated transient failures.
 - Bulk price updates continue with the remaining tickers after an individual provider failure instead of aborting the run at the first failed ticker.
