@@ -1,4 +1,5 @@
 import logging
+import random
 import sqlite3
 
 from src.orchestrator.common import StepDefinition
@@ -133,6 +134,8 @@ def update_all_stock_prices(
         if not tickers:
             tickers = get_tickers_from_prices(conn, table_name=Company_Table)
 
+        random.shuffle(tickers)
+        logger.info("Randomized stock-price update order for %s tickers", len(tickers))
         logger.info("Found %s tickers to update stock prices for", len(tickers))
 
         if overwrite:

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from uuid import uuid4
 
 from src.orchestrator.common.sqlite import (
     DEFAULT_BUSY_TIMEOUT_MS,
@@ -53,6 +55,23 @@ ON pipeline_jobs(created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_pipeline_jobs_status
 ON pipeline_jobs(status);
+"""
+
+_MIGRATION_3 = """
+CREATE TABLE IF NOT EXISTS pipeline_schedules (
+    schedule_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    frequency TEXT NOT NULL CHECK (frequency IN ('daily', 'weekly', 'monthly')),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    steps_json TEXT NOT NULL,
+    config_json TEXT NOT NULL,
+    last_run_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_schedules_enabled
+ON pipeline_schedules(enabled);
 """
 
 
@@ -103,6 +122,13 @@ class JobStore:
                 conn.execute(
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (2, utc_now()),
+                )
+                version = 2
+            if version < 3:
+                conn.executescript(_MIGRATION_3)
+                conn.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (3, utc_now()),
                 )
 
     @staticmethod
@@ -330,6 +356,121 @@ class JobStore:
                 (cutoff,),
             ).fetchall()
         return [str(row["job_id"]) for row in rows]
+
+    @staticmethod
+    def _schedule_row(row: sqlite3.Row) -> dict[str, Any]:
+        schedule = dict(row)
+        schedule["enabled"] = bool(schedule["enabled"])
+        schedule["steps"] = json.loads(schedule.pop("steps_json"))
+        schedule["config"] = json.loads(schedule.pop("config_json"))
+        return schedule
+
+    def list_schedules(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+        query = "SELECT * FROM pipeline_schedules"
+        if enabled_only:
+            query += " WHERE enabled = 1"
+        query += " ORDER BY name COLLATE NOCASE"
+        with self._connect() as conn:
+            rows = conn.execute(query).fetchall()
+        return [self._schedule_row(row) for row in rows]
+
+    def get_schedule(self, schedule_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM pipeline_schedules WHERE schedule_id = ?",
+                (schedule_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(schedule_id)
+        return self._schedule_row(row)
+
+    def create_schedule(
+        self,
+        *,
+        name: str,
+        frequency: str,
+        enabled: bool,
+        steps: list[dict[str, Any]],
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        schedule_id = str(uuid4())
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO pipeline_schedules("
+                "schedule_id, name, frequency, enabled, steps_json, config_json, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    schedule_id,
+                    name,
+                    frequency,
+                    int(enabled),
+                    json.dumps(steps, separators=(",", ":")),
+                    json.dumps(config, separators=(",", ":")),
+                    now,
+                    now,
+                ),
+            )
+        return self.get_schedule(schedule_id)
+
+    def update_schedule(self, schedule_id: str, **changes: Any) -> dict[str, Any]:
+        allowed = {"name", "frequency", "enabled", "steps", "config"}
+        unknown = set(changes) - allowed
+        if unknown:
+            raise ValueError(f"Unknown schedule fields: {sorted(unknown)}")
+        if not changes:
+            return self.get_schedule(schedule_id)
+        assignments: list[str] = []
+        values: list[Any] = []
+        for field, value in changes.items():
+            column = f"{field}_json" if field in {"steps", "config"} else field
+            if field == "enabled":
+                value = int(bool(value))
+            elif field in {"steps", "config"}:
+                value = json.dumps(value, separators=(",", ":"))
+            assignments.append(f"{column} = ?")
+            values.append(value)
+        assignments.append("updated_at = ?")
+        values.extend([utc_now(), schedule_id])
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE pipeline_schedules SET "
+                + ", ".join(assignments)
+                + " WHERE schedule_id = ?",
+                values,
+            )
+        if cursor.rowcount != 1:
+            raise KeyError(schedule_id)
+        return self.get_schedule(schedule_id)
+
+    def delete_schedule(self, schedule_id: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM pipeline_schedules WHERE schedule_id = ?",
+                (schedule_id,),
+            )
+        return cursor.rowcount == 1
+
+    def mark_schedule_run(self, schedule_id: str, run_at: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE pipeline_schedules SET last_run_at = ?, updated_at = ? "
+                "WHERE schedule_id = ?",
+                (run_at, run_at, schedule_id),
+            )
+
+    def reset_schedule_run(self, schedule_id: str) -> dict[str, Any]:
+        """Clear the last-run watermark so the schedule is immediately due."""
+        updated_at = utc_now()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE pipeline_schedules SET last_run_at = NULL, updated_at = ? "
+                "WHERE schedule_id = ?",
+                (updated_at, schedule_id),
+            )
+        if cursor.rowcount != 1:
+            raise KeyError(schedule_id)
+        return self.get_schedule(schedule_id)
 
     def delete_jobs(self, job_ids: Iterable[str]) -> int:
         """Delete specific jobs and their cascading step records."""

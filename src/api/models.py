@@ -31,6 +31,50 @@ class PipelineConfig(BaseModel):
         description="Configuration parameters for the pipeline run",
     )
 
+ScheduleFrequency = Literal["daily", "weekly", "monthly"]
+
+
+class PipelineScheduleRequest(BaseModel):
+    """Validated persisted pipeline schedule configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    frequency: ScheduleFrequency
+    enabled: bool = True
+    steps: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class PipelineSchedulePatch(BaseModel):
+    """Editable schedule controls."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    frequency: ScheduleFrequency | None = None
+    enabled: bool | None = None
+    steps: list[dict[str, Any]] | None = Field(default=None, min_length=1, max_length=100)
+    config: dict[str, Any] | None = None
+
+
+class PipelineScheduleResponse(PipelineScheduleRequest):
+    """Persisted schedule returned to administrators."""
+
+    schedule_id: str
+    last_run_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PipelineScheduleStatusResponse(BaseModel):
+    """Scheduler state exposed to administrators."""
+
+    checked_at: datetime
+    next_check_at: datetime
+    active_pipeline: bool
+    triggered_job_ids: list[str] = Field(default_factory=list)
+
 
 class JobStepStatus(BaseModel):
     """Persisted state for one ordered pipeline step."""

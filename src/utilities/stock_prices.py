@@ -28,6 +28,7 @@ _JPX_QUOTE_ENDPOINT = "https://quote.jpx.co.jp/jpxhp/main/index.aspx"
 _JPX_PROVIDER_NAME = "JPX quote"
 _JPX_SOURCE_REVISION = "quote-jpx-historical-v1"
 _JPX_MAX_HISTORY_ROWS = 50
+_RECENT_PRICE_WINDOW_DAYS = 30
 _STOOQ_PROVIDER_NAME = "Stooq"
 _YAHOO_PROVIDER_NAME = "Yahoo Finance chart"
 
@@ -685,19 +686,16 @@ def _jpx_history_has_requested_coverage(
 def _load_provider_history(
     ticker: str,
     start_date: str | None = None,
+    *,
+    jpx_only: bool = False,
 ) -> tuple[str, pd.DataFrame, list[dict]]:
-    """Load normalized history using JPX first and existing fallbacks.
+    """Load normalized history using JPX and optional fallback providers.
 
-    JPX is used for Japanese incremental updates.  Its public detail page is
-    capped at 50 trading sessions, so an initial/full request or a request
-    with an older start date falls through to Stooq/Yahoo rather than silently
-    truncating the stored history.  European UCITS ETFs still try common
-    exchange suffixes (.DE, .L, .MI, .AS, .PA) when the bare ticker fails.
-
-    Returns ``(provider_name, price_df, split_events)``.  *split_events* is a
-    list of authoritative split dicts (currently supplied by Yahoo only).
+    ``jpx_only`` is used for Japanese tickers with a recent cached price. In
+    that case, a JPX failure is returned without contacting Stooq or Yahoo.
+    Older or incomplete histories continue through the fallback chain.
     """
-    # Check if ticker looks like a european ETF needing suffix
+    # Check if ticker looks like a european ETF needing suffix.
     _looks_eu = (
         ticker.isalpha() and len(ticker) <= 6 and "." not in ticker
         and not ticker[:4].isdigit() and not ticker.lower().endswith(".jp")
@@ -715,24 +713,25 @@ def _load_provider_history(
                 _JPX_SOURCE_REVISION,
             )
         )
-    providers.extend(
-        [
-            (
-                _STOOQ_PROVIDER_NAME,
-                _fetch_stooq_history,
-                _stooq_symbol_for_ticker(ticker),
-                "unknown",
-                "stooq-csv-v1",
-            ),
-            (
-                _YAHOO_PROVIDER_NAME,
-                _fetch_yahoo_history,
-                _provider_symbol_for_ticker(ticker),
-                "adjusted",
-                "chart-events-v1",
-            ),
-        ]
-    )
+    if not jpx_only:
+        providers.extend(
+            [
+                (
+                    _STOOQ_PROVIDER_NAME,
+                    _fetch_stooq_history,
+                    _stooq_symbol_for_ticker(ticker),
+                    "unknown",
+                    "stooq-csv-v1",
+                ),
+                (
+                    _YAHOO_PROVIDER_NAME,
+                    _fetch_yahoo_history,
+                    _provider_symbol_for_ticker(ticker),
+                    "adjusted",
+                    "chart-events-v1",
+                ),
+            ]
+        )
     last_error = None
 
     for provider_name, fetcher, provider_ticker, price_basis, source_revision in providers:
@@ -747,7 +746,7 @@ def _load_provider_history(
                 normalized, start_date
             ):
                 raise _ProviderCoverageError(
-                    "JPX historical page is limited to the latest 50 sessions"
+                    "JPX historical page was not sufficient for the requested range"
                 )
             normalized = _annotate_provider_history(
                 normalized,
@@ -778,8 +777,8 @@ def _load_provider_history(
                 provider_name, ticker, provider_ticker, exc,
             )
 
-    # European ETF suffix fallback
-    if _looks_eu:
+    # European ETF suffix fallback.
+    if not jpx_only and _looks_eu:
         _EU_SUFFIXES = [".DE", ".L", ".MI", ".AS", ".PA", ".SW"]
         for suffix in _EU_SUFFIXES:
             suffixed = ticker + suffix
@@ -1307,11 +1306,9 @@ def _invalidate_split_cache_for(ticker: str) -> None:
 def load_ticker_data(ticker, prices_table, conn, currency: str = "JPY") -> bool:
     """Download and store historical price data for a single ticker.
 
-    Fetches price data for the given ticker, starting from the last date
-    already stored in ``prices_table``. Japanese tickers try JPX first, then
-    Stooq and Yahoo Finance chart fallbacks; provider requests use bounded
-    retries and cooldowns for transient failures and rate limits. If the data
-    is already up to date (within 5 days), the function returns early.
+    Japanese tickers with a cached price newer than 30 days use only JPX for
+    the refresh. Older Japanese histories use the JPX/Stooq/Yahoo chain so
+    missing historical data can be backfilled.
 
     **Provider basis handling:** A boundary discontinuity is retained as a
     diagnostic with the source basis instead of being silently rewritten. A
@@ -1334,16 +1331,28 @@ def load_ticker_data(ticker, prices_table, conn, currency: str = "JPY") -> bool:
         start_date = None
         has_prior_data = False
         last_cached_price = None
+        jpx_only = False
 
         if df_last_date["Last_Date"][0] is not None:
             has_prior_data = True
             last_date = df_last_date["Last_Date"][0]
-            today = pd.Timestamp.today().strftime("%Y-%m-%d")
-            days_diff = (pd.to_datetime(today) - pd.to_datetime(last_date)).days
-            if days_diff <= 5:
+            last_timestamp = pd.to_datetime(last_date)
+            today = pd.Timestamp.today().normalize()
+            days_diff = (today - last_timestamp.normalize()).days
+            jpx_symbol = _jpx_symbol_for_ticker(ticker)
+            if jpx_symbol and days_diff < _RECENT_PRICE_WINDOW_DAYS:
+                jpx_only = True
+                start_date = last_timestamp.strftime("%Y-%m-%d")
+                logger.info(
+                    "Using JPX only for recent ticker %s; cached price is %s days old",
+                    ticker,
+                    days_diff,
+                )
+            elif days_diff <= 5:
                 logger.debug(f"Data for ticker {ticker} is already up to date.")
                 return True
-            start_date = (pd.to_datetime(last_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                start_date = (last_timestamp + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
             row = conn.execute(
                 f"SELECT Price FROM {prices_table} "
                 "WHERE Ticker = ? ORDER BY Date DESC LIMIT 1",
@@ -1353,7 +1362,7 @@ def load_ticker_data(ticker, prices_table, conn, currency: str = "JPY") -> bool:
                 last_cached_price = row[0]
 
         provider_name, out_data, split_events = _load_provider_history(
-            ticker, start_date=start_date,
+            ticker, start_date=start_date, jpx_only=jpx_only,
         )
         if out_data.empty:
             logger.warning("No data found for ticker %s after querying %s.", ticker, provider_name)

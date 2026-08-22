@@ -32,7 +32,76 @@ interface AuthSettings {
   password_min_length: number
 }
 
-type AdminTab = 'users' | 'audit' | 'settings'
+type SavedSetup = {
+  name: string
+  steps: Array<{ name: string; overwrite?: boolean }>
+  config: Record<string, unknown>
+}
+
+type PipelineSchedule = {
+  schedule_id: string
+  name: string
+  frequency: 'daily' | 'weekly' | 'monthly'
+  enabled: boolean
+  steps: Array<{ name: string; overwrite?: boolean }>
+  config: Record<string, unknown>
+  last_run_at: string | null
+}
+
+type PipelineSchedulerStatus = {
+  checked_at: string
+  next_check_at: string
+  active_pipeline: boolean
+  triggered_job_ids: string[]
+}
+
+const SETUPS_KEY = 'shade.pipeline.setups'
+
+function isSavedStep(value: unknown): value is { name: string; overwrite?: boolean } {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !('name' in value)) return false
+  return typeof value.name === 'string'
+}
+
+function readSavedSetups(): SavedSetup[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(SETUPS_KEY) ?? '[]')
+    if (!Array.isArray(parsed)) return []
+    const setups: SavedSetup[] = []
+    for (const value of parsed) {
+      if (!value || typeof value !== 'object' || Array.isArray(value) || !('name' in value) || !('steps' in value)) continue
+      if (typeof value.name !== 'string' || !Array.isArray(value.steps)) continue
+      const config = 'config' in value && value.config && typeof value.config === 'object' && !Array.isArray(value.config)
+        ? value.config
+        : {}
+      setups.push({ name: value.name, steps: value.steps.filter(isSavedStep), config })
+    }
+    return setups
+  } catch {
+    return []
+  }
+}
+
+function pipelineConfig(setup: SavedSetup): Record<string, unknown> {
+  const nested: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(setup.config)) {
+    const dot = key.indexOf('.')
+    if (dot < 0) {
+      nested[key] = value
+      continue
+    }
+    const stepKey = key.slice(0, dot)
+    const fieldKey = key.slice(dot + 1)
+    const current = nested[stepKey]
+    const stepConfig = current && typeof current === 'object' && !Array.isArray(current) ? current : {}
+    nested[stepKey] = { ...stepConfig, [fieldKey]: value }
+  }
+  return nested
+}
+function parseFrequency(value: string): PipelineSchedule['frequency'] {
+  if (value === 'weekly' || value === 'monthly') return value
+  return 'daily'
+}
+type AdminTab = 'users' | 'audit' | 'settings' | 'schedules'
 
 export default function AdminPage() {
   const [tab, setTab] = useState<AdminTab>('users')
@@ -42,19 +111,141 @@ export default function AdminPage() {
       <PageHeader
         eyebrow="Administration"
         title="Account management"
-        description="Manage users, roles, and review the authentication audit log."
+        description="Manage users, roles, pipeline schedules, and the authentication audit log."
       />
       <div className="card">
         <div className="tabs-bar">
           <button className={tab === 'users' ? 'tab tab--active' : 'tab'} onClick={() => setTab('users')}>Users</button>
+          <button className={tab === 'schedules' ? 'tab tab--active' : 'tab'} onClick={() => setTab('schedules')}>Pipeline schedules</button>
           <button className={tab === 'audit' ? 'tab tab--active' : 'tab'} onClick={() => setTab('audit')}>Audit log</button>
           <button className={tab === 'settings' ? 'tab tab--active' : 'tab'} onClick={() => setTab('settings')}>Settings</button>
         </div>
         <div className="card-body">
           {tab === 'users' && <UsersSection />}
+          {tab === 'schedules' && <SchedulesSection />}
           {tab === 'audit' && <AuditSection />}
           {tab === 'settings' && <SettingsSection />}
         </div>
+      </div>
+    </div>
+  )
+}
+
+function SchedulesSection() {
+  const client = useQueryClient()
+  const setups = readSavedSetups()
+  const [setupName, setSetupName] = useState(setups[0]?.name ?? '')
+  const [scheduleName, setScheduleName] = useState(setups[0]?.name ?? '')
+  const [frequency, setFrequency] = useState<PipelineSchedule['frequency']>('daily')
+  const [enabled, setEnabled] = useState(true)
+  const [message, setMessage] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const schedules = useQuery({
+    queryKey: ['admin-pipeline-schedules'],
+    queryFn: () => apiRequest<PipelineSchedule[]>('/api/admin/pipeline-schedules'),
+    refetchInterval: 60_000,
+  })
+  const schedulerStatus = useQuery({
+    queryKey: ['admin-pipeline-scheduler-status'],
+    queryFn: () => apiRequest<PipelineSchedulerStatus>('/api/admin/pipeline-schedules/status'),
+    refetchInterval: 30_000,
+  })
+  const checkNow = useMutation({
+    mutationFn: () => apiRequest<PipelineSchedulerStatus>('/api/admin/pipeline-schedules/check', { method: 'POST' }),
+    onSuccess: result => {
+      client.setQueryData(['admin-pipeline-scheduler-status'], result)
+      void client.invalidateQueries({ queryKey: ['admin-pipeline-schedules'] })
+      setMessage(result.triggered_job_ids.length ? `Triggered ${result.triggered_job_ids.length} scheduled pipeline.` : 'Check complete. No schedule was due.')
+      setError(null)
+    },
+    onError: (err: Error) => {
+      setError(err.message)
+      setMessage(null)
+    },
+  })
+  const create = useMutation({
+    mutationFn: () => {
+      const setup = setups.find(item => item.name === setupName)
+      if (!setup) throw new Error('Choose a saved pipeline sequence first.')
+      return apiRequest<PipelineSchedule>('/api/admin/pipeline-schedules', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: scheduleName.trim() || setup.name,
+          frequency,
+          enabled,
+          steps: setup.steps.map(step => ({ name: step.name, overwrite: Boolean(step.overwrite) })),
+          config: pipelineConfig(setup),
+        }),
+      })
+    },
+    onSuccess: () => {
+      setMessage('Pipeline schedule saved.')
+      setError(null)
+      void client.invalidateQueries({ queryKey: ['admin-pipeline-schedules'] })
+    },
+    onError: (err: Error) => {
+      setError(err.message)
+      setMessage(null)
+    },
+  })
+  const update = useMutation({
+    mutationFn: ({ scheduleId, changes }: { scheduleId: string; changes: Partial<Pick<PipelineSchedule, 'enabled' | 'frequency'>> }) =>
+      apiRequest<PipelineSchedule>(`/api/admin/pipeline-schedules/${encodeURIComponent(scheduleId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(changes),
+      }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ['admin-pipeline-schedules'] }),
+    onError: (err: Error) => setError(err.message),
+  })
+  const remove = useMutation({
+    mutationFn: (scheduleId: string) => apiRequest<void>(`/api/admin/pipeline-schedules/${encodeURIComponent(scheduleId)}`, { method: 'DELETE' }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ['admin-pipeline-schedules'] }),
+    onError: (err: Error) => setError(err.message),
+  })
+  const resetLastRun = useMutation({
+    mutationFn: (scheduleId: string) => apiRequest<PipelineSchedule>(`/api/admin/pipeline-schedules/${encodeURIComponent(scheduleId)}/reset-last-run`, { method: 'POST' }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['admin-pipeline-schedules'] })
+      setMessage('Last run time reset. The schedule is due on the next check.')
+      setError(null)
+    },
+    onError: (err: Error) => setError(err.message),
+  })
+
+  return (
+    <div className="stack">
+      <div>
+        <h3>Automatic pipeline runs</h3>
+        <p className="text-muted">Select a saved sequence and interval. Enabled schedules are checked every five minutes. A check never starts a pipeline while another pipeline is pending or running.</p>
+        <div className="button-row">
+          <span className="text-muted">Next automatic check: {schedulerStatus.data?.next_check_at ? new Date(schedulerStatus.data.next_check_at).toLocaleString() : 'Loading…'}</span>
+          <button className="button button--secondary" onClick={() => checkNow.mutate()} disabled={checkNow.isPending}>{checkNow.isPending ? 'Checking…' : 'Check now'}</button>
+        </div>
+        {schedulerStatus.data && <small className="text-muted">{schedulerStatus.data.active_pipeline ? 'A pipeline is currently active; automatic execution is paused.' : 'Pipeline queue is idle.'}</small>}
+      </div>
+      {setups.length === 0 && <p className="callout callout--warning">Save a pipeline sequence on the Data pipeline page before creating a schedule.</p>}
+      <div className="field-row">
+        <label className="field-label">Saved sequence<select className="select" value={setupName} onChange={event => { setSetupName(event.target.value); if (!scheduleName) setScheduleName(event.target.value) }} disabled={!setups.length}>{setups.map(setup => <option key={setup.name} value={setup.name}>{setup.name}</option>)}</select></label>
+        <label className="field-label">Schedule name<input className="input" value={scheduleName} onChange={event => setScheduleName(event.target.value)} placeholder="Daily data refresh" /></label>
+        <label className="field-label">Run interval<select className="select" value={frequency} onChange={event => setFrequency(parseFrequency(event.target.value))}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label>
+      </div>
+      <label className="check"><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} />Enable automatic run</label>
+      {message && <p className="form-success">{message}</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <button className="button button--primary" disabled={create.isPending || !setups.length} onClick={() => create.mutate()}>Save schedule</button>
+      <div className="stack">
+        <h3>Configured schedules</h3>
+        {schedules.isLoading && <LoadingState label="Loading pipeline schedules" />}
+        {!schedules.isLoading && !schedules.data?.length && <p className="text-muted">No automatic pipeline schedules configured.</p>}
+        {schedules.data?.map(schedule => (
+          <div className="pipeline-schedule-row" key={schedule.schedule_id}>
+            <div><strong>{schedule.name}</strong><small>{schedule.frequency} · {schedule.last_run_at ? `Last run ${new Date(schedule.last_run_at).toLocaleString()}` : 'Not run yet'}</small></div>
+            <label className="check"><input type="checkbox" checked={schedule.enabled} onChange={event => update.mutate({ scheduleId: schedule.schedule_id, changes: { enabled: event.target.checked } })} />Enabled</label>
+            <select className="select compact" value={schedule.frequency} onChange={event => update.mutate({ scheduleId: schedule.schedule_id, changes: { frequency: parseFrequency(event.target.value) } })}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select>
+            <button className="button button--ghost" onClick={() => remove.mutate(schedule.schedule_id)} disabled={remove.isPending}>Delete</button>
+            <button className="button button--ghost" onClick={() => resetLastRun.mutate(schedule.schedule_id)} disabled={resetLastRun.isPending}>Reset last run</button>
+          </div>
+        ))}
       </div>
     </div>
   )

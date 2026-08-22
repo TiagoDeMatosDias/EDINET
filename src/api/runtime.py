@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.orchestrator.common.db_config import get_pipeline_jobs_db
-from src.pipeline_jobs import JobStore, PipelineJobManager
+from src.pipeline_jobs import JobStore, PipelineJobManager, PipelineScheduler
 from src.web_app.security import AppSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +25,12 @@ job_manager = PipelineJobManager(
     job_store,
     workspace_root=SETTINGS.job_workspace_root,
 )
-
+scheduler = PipelineScheduler(
+    job_store,
+    job_manager,
+    input_roots=PIPELINE_INPUT_ROOTS,
+    max_upload_bytes=SETTINGS.max_upload_bytes,
+)
 
 def cleanup_completed_jobs(max_age_hours: int | None = None) -> None:
     """Remove terminal jobs and workspaces older than the retention window."""

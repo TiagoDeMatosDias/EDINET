@@ -365,6 +365,72 @@ class TestImportStockPricesCsv(unittest.TestCase):
             ],
         )
 
+    def test_recent_japanese_price_uses_only_jpx(self):
+        db_path = os.path.join(self.tmpdir.name, "recent-jpx.db")
+        last_date = (pd.Timestamp.today().normalize() - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+        history = pd.DataFrame(
+            {
+                "Date": [last_date, pd.Timestamp.today().strftime("%Y-%m-%d")],
+                "Close": [810.0, 825.5],
+            }
+        )
+
+        with patch("src.utilities.stock_prices._fetch_jpx_history", return_value=history) as fetch_jpx, patch(
+            "src.utilities.stock_prices._fetch_stooq_history"
+        ) as fetch_stooq, patch("src.utilities.stock_prices._fetch_yahoo_history") as fetch_yahoo:
+            conn = sqlite3.connect(db_path)
+            try:
+                _create_prices_table(conn, "stock_prices")
+                conn.execute(
+                    "INSERT INTO stock_prices(Date, Ticker, Currency, Price) VALUES (?, ?, ?, ?)",
+                    (last_date, "13010", "JPY", 800.0),
+                )
+                ok = load_ticker_data("13010", "stock_prices", conn)
+            finally:
+                conn.close()
+
+        self.assertTrue(ok)
+        self.assertEqual(fetch_jpx.call_args.args, ("1301",))
+        self.assertEqual(fetch_jpx.call_args.kwargs, {"start_date": last_date})
+        fetch_stooq.assert_not_called()
+        fetch_yahoo.assert_not_called()
+
+    def test_older_japanese_price_keeps_fallback_providers(self):
+        db_path = os.path.join(self.tmpdir.name, "older-fallback.db")
+        last_date = (pd.Timestamp.today().normalize() - pd.Timedelta(days=60)).strftime("%Y-%m-%d")
+        history = pd.DataFrame(
+            {"Date": [pd.Timestamp.today().strftime("%Y-%m-%d")], "Close": [825.5]}
+        )
+
+        with patch(
+            "src.utilities.stock_prices._fetch_jpx_history",
+            side_effect=RuntimeError("historical gap"),
+        ) as fetch_jpx, patch(
+            "src.utilities.stock_prices._fetch_stooq_history",
+            return_value=history,
+        ) as fetch_stooq, patch(
+            "src.utilities.stock_prices._fetch_yahoo_history"
+        ) as fetch_yahoo:
+            conn = sqlite3.connect(db_path)
+            try:
+                _create_prices_table(conn, "stock_prices")
+                conn.execute(
+                    "INSERT INTO stock_prices(Date, Ticker, Currency, Price) VALUES (?, ?, ?, ?)",
+                    (last_date, "13010", "JPY", 800.0),
+                )
+                ok = load_ticker_data("13010", "stock_prices", conn)
+            finally:
+                conn.close()
+
+        self.assertTrue(ok)
+        self.assertEqual(fetch_jpx.call_args.args, ("1301",))
+        self.assertEqual(fetch_stooq.call_args.args, ("1301.jp",))
+        self.assertEqual(
+            fetch_stooq.call_args.kwargs,
+            {"start_date": (pd.Timestamp(last_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")},
+        )
+        fetch_yahoo.assert_not_called()
+
     def test_jpx_limited_initial_history_falls_back_to_broad_provider(self):
         db_path = os.path.join(self.tmpdir.name, "jpx-limited.db")
         jpx_history = pd.DataFrame(

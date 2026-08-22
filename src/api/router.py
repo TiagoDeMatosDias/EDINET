@@ -11,6 +11,7 @@ from src.version import __version__
 from . import runtime
 from .job_routes import router as job_router
 from .pipeline_routes import router as pipeline_router
+from .schedule_routes import router as schedule_router
 from .system_routes import router as system_router
 
 
@@ -21,9 +22,13 @@ def cleanup_completed_jobs(max_age_hours: int | None = None) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Apply bounded retained-job cleanup when the API starts."""
+    """Apply cleanup and run automatic pipeline schedules while the API lives."""
     cleanup_completed_jobs()
-    yield
+    runtime.scheduler.start()
+    try:
+        yield
+    finally:
+        runtime.scheduler.stop()
 
 
 app = FastAPI(
@@ -33,7 +38,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-for api_router in (system_router, pipeline_router, job_router):
+for api_router in (system_router, pipeline_router, schedule_router, job_router):
     app.include_router(api_router)
 
 

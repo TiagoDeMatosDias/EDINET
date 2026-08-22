@@ -37,3 +37,6 @@ agents.md
 docs/Agent/*
 docs/images/*
 !docs/images/*.png
+
+
+edinet_workstation*

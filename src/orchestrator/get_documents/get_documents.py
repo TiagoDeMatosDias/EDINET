@@ -1,23 +1,53 @@
 import logging
+import sqlite3
+from datetime import date
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common.db_config import get_db1
-from src.orchestrator.common.edinet import Edinet, EDINET_BASE_URL
+from src.orchestrator.common.edinet import EDINET_BASE_URL, Edinet
 
 logger = logging.getLogger(__name__)
+
+
+def _latest_document_date(db_path: str) -> str | None:
+    """Return the latest submitted-document calendar date from DocumentList."""
+    connection = sqlite3.connect(db_path)
+    try:
+        row = connection.execute(
+            "SELECT MAX(substr(submitDateTime, 1, 10)) FROM DocumentList"
+        ).fetchone()
+    except sqlite3.Error:
+        logger.info("No existing DocumentList date available at %s", db_path)
+        return None
+    finally:
+        connection.close()
+
+    value = row[0] if row else None
+    if not value:
+        return None
+    candidate = str(value)
+    try:
+        date.fromisoformat(candidate)
+    except ValueError:
+        logger.warning("Ignoring invalid latest DocumentList date %r", candidate)
+        return None
+    return candidate
 
 
 def run_get_documents(config, overwrite=False, context=None):
     logger.info("Getting all documents with metadata...")
     step_cfg = config.get("get_documents_config", {})
+    db_path = get_db1()
+    start_date = step_cfg.get("startDate") or _latest_document_date(db_path) or "2015-01-01"
+    end_date = step_cfg.get("endDate") or date.today().isoformat()
 
     edinet = Edinet(
         base_url=EDINET_BASE_URL,
         api_key=config.get("API_KEY"),
-        db_path=get_db1(),
+        db_path=db_path,
         doc_list_table="DocumentList",
     )
-    args = (step_cfg.get("startDate"), step_cfg.get("endDate"))
+    args = (start_date, end_date)
     if context is None:
         edinet.get_All_documents_withMetadata(*args)
     else:
