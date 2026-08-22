@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Install Python requirements",
+      "type": "process",
+      "command": "${command:python.interpreterPath}",
+      "args": ["-m", "pip", "install", "-e", ".[dev]"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Install frontend requirements",
+      "type": "shell",
+      "command": "npm ci",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend-v2"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Build frontend",
+      "type": "shell",
+      "command": "npm run build",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend-v2"
+      },
+      "dependsOn": ["Install frontend requirements"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Install project requirements",
+      "dependsOn": [
+        "Install Python requirements",
+        "Build frontend"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    }
+  ]
+}
