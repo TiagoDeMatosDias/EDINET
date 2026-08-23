@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Added a `check_tdnet_splits` pipeline step that captures Japanese stock-split and share-consolidation announcements from the TSE timely-disclosure service (TDnet) into a new `Tdnet_Disclosures` event table; splits are not EDINET-reportable events, and TDnet only serves a rolling ~30-day window, so scheduled runs keep the event history complete and idempotent.
+
 ### Fixed
 - Price ingestion now rejects degenerate provider histories for every source: sparse multi-year responses (weekly/monthly bars posing as daily) fail over to the next provider, and weekend-dated rows for Japanese codes are dropped.
 - Yahoo Finance backfills now send explicit `period1`/`period2` instead of `range=max` (which made Yahoo return monthly bars) and reject any payload whose `dataGranularity` is not `1d`, so full daily history lands in one request per ticker.

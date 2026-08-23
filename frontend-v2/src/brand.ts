@@ -1,7 +1,7 @@
 export const BRAND_COLORS = {
   midnight: '#18206F',
   indigo: '#17255A',
-  paper: '#F5E2C8',
+  paper: '#fbf4ea',
   coral: '#D88373',
   signal: '#BD1E1E',
 } as const

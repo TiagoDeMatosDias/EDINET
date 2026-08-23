@@ -105,6 +105,60 @@ def test_residual_japanese_is_retranslated_before_caching(tmp_path, monkeypatch)
     assert _translation_count(catalog) == 1
 
 
+def test_glossary_is_applied_before_the_model_to_shield_oov_kanji(monkeypatch):
+    """Argos cannot emit some kanji (e.g. 組); the glossary must replace such
+    compounds before the neural model tokenizes them."""
+    calls: list[str] = []
+    monkeypatch.setattr(translation, "_try_load_argos", lambda **_kwargs: True)
+
+    def leaky_model(text: str) -> str:
+        calls.append(text)
+        if not translation._needs_translation(text):
+            return text
+        if "改組" in text:  # the model's output vocabulary lacks 組
+            return "The group structure was re組ed last year"
+        if len(text.strip()) <= 2:  # isolated kanji queries come back untouched
+            return text
+        return "The group structure was reorganized last year"
+
+    monkeypatch.setattr(translation, "_argos_translate", leaky_model)
+
+    source = "当社は昨年グループ経営体制を改組した。"
+    assert translation._needs_translation(translation._dict_translate(source))
+
+    translated = translation.translate_batch([source])[source]
+
+    assert not any("改組" in call for call in calls)
+    assert translated == "The group structure was reorganized last year"
+
+
+def test_contextual_kanji_leak_is_recovered_by_fine_grained_decomposition(monkeypatch):
+    """The same kanji translates cleanly in short input but leaks inside long
+    sentences; escalating decomposition must rescue the residual."""
+    monkeypatch.setattr(translation, "_try_load_argos", lambda **_kwargs: True)
+    calls: list[str] = []
+
+    def context_sensitive_model(text: str) -> str:
+        calls.append(text)
+        if not translation._needs_translation(text):
+            return text
+        if text.strip() == "理":
+            return "理"  # the model's output vocabulary lacks 理
+        if len(text) > 20:
+            return "The auditor judged that the理 outweighs the public interest."
+        return "Reporting disadvantages exceed the public interest"
+
+    monkeypatch.setattr(translation, "_argos_translate", context_sensitive_model)
+
+    source = "監査人は、不利益が利益を上回るため、記載しない。" * 5
+    assert translation._needs_translation(translation._dict_translate(source))
+
+    translated = translation.translate_batch([source])[source]
+
+    assert not translation._needs_translation(translated)
+    assert any(call == "不利益が利益を上回るため、" for call in calls)
+
+
 def test_incomplete_output_is_rejected_and_never_cached(tmp_path, monkeypatch):
     catalog = FilingCatalog(tmp_path / "Filings.db")
     monkeypatch.setattr(translation, "_try_load_argos", lambda **_kwargs: True)

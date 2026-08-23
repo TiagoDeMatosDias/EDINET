@@ -277,6 +277,33 @@ ticker, so a failed or empty download restores that ticker's previous rows.
 
 ---
 
+### `check_tdnet_splits`
+Captures Japanese stock-split and share-consolidation announcements from
+TDnet, the TSE timely-disclosure service. Splits are not EDINET-reportable
+events (verified against 企業内容等の開示に関する内閣府令 — no filing trigger
+exists), so TDnet is the authoritative regulator-mandated venue. TDnet only
+serves a rolling ~30-day window, so schedule this step daily or weekly; every
+matched disclosure is stored as an event row in `Tdnet_Disclosures`
+(Standardized.db) keyed by a stable disclosure id, making reruns idempotent.
+
+Titles do not carry the split ratio or effective date, and pure split notices
+have no XBRL attachment, so this step captures the event itself (ticker,
+company, announcement time, title, PDF/XBRL links); ratio/date confirmation
+stays with the Yahoo provider events and price heuristics in
+`detect_splits`.
+
+```json
+"check_tdnet_splits_config": {
+  "lookback_days": 7,
+  "keywords": "株式分割,株式併合"
+}
+```
+
+- `lookback_days` — calendar days to search back (default 7 for daily runs; use 30 for weekly; maximum 30).
+- `keywords` — comma-separated Japanese title keywords identifying split (`株式分割`) or consolidation/reverse-split (`株式併合`) announcements.
+
+---
+
 ### `parse_taxonomy`
 Syncs EDINET taxonomy releases into normalized taxonomy tables, or imports a local XSD file for offline use.
 

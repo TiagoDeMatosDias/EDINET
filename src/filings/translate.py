@@ -262,6 +262,7 @@ _JP_EN_GLOSSARY: dict[str, str] = {
     "数": "Number",
     "単元": "Unit",
     "株式": "Stock",
+    "改組": "Reorganization",
     "新株予約権": "Share Options",
 }
 
@@ -279,7 +280,7 @@ _CJK_RE = re.compile(f"[{_CJK_CHAR_CLASS}]")
 _CJK_RUN_RE = re.compile(f"[{_CJK_CHAR_CLASS}]+")
 _CHUNK_BOUNDARIES = "\n。！？!?；;、, "
 _MAX_TRANSLATION_CHARS = 600
-_MAX_REPAIR_DEPTH = 2
+_DECOMPOSITION_RANKS = ("\n。！？!?；;", "、,,")
 _TRANSLATABLE_ATTRIBUTES = ("alt", "aria-label", "placeholder", "title", "value")
 
 
@@ -320,6 +321,19 @@ def _split_translation_chunks(text: str, max_chars: int) -> list[str]:
         chunks.append(text[start:end])
         start = end
     return chunks
+
+
+def _decompose(text: str, boundaries: str) -> list[str]:
+    """Split text after each boundary character, keeping every character."""
+    pieces: list[str] = []
+    start = 0
+    for index, character in enumerate(text):
+        if character in boundaries:
+            pieces.append(text[start : index + 1])
+            start = index + 1
+    if start < len(text):
+        pieces.append(text[start:])
+    return pieces
 
 
 def _call_argos(text: str) -> str:
@@ -370,30 +384,38 @@ def _translate_short_text_with_context(text: str) -> str:
 def _translate_chunk(text: str, *, depth: int = 0) -> str:
     if not _needs_translation(text):
         return text
-
     glossary_translation = _dict_translate(text)
     if _is_complete_translation(text, glossary_translation):
         return glossary_translation
 
-    candidate = _dict_translate(_call_argos(text))
+    # Pre-apply the glossary so compounds whose kanji are missing from the
+    # neural model's output vocabulary (e.g. 改組) survive its tokenization.
+    candidate = _dict_translate(_call_argos(glossary_translation))
     if _needs_translation(candidate):
         candidate = _repair_residual_japanese(candidate)
     if _is_complete_translation(text, candidate):
         return candidate
-
 
     if len(text) <= 80:
         contextual = _translate_short_text_with_context(text)
         if contextual:
             return contextual
 
-    if depth < _MAX_REPAIR_DEPTH and len(text) > 1:
-        retry_size = max(8, min(240, len(text) // 2))
-        chunks = _split_translation_chunks(text, retry_size)
-        if len(chunks) > 1:
-            translated = "".join(
-                _translate_chunk(chunk, depth=depth + 1) for chunk in chunks
-            )
+    # Escalating decomposition: retry successively finer units (sentences,
+    # then clauses) so each region gets an independent tokenization context.
+    # The neural model's tokenizer leaks individual kanji only for some
+    # segmentations of the same text, and smaller units translate cleanly.
+    if len(text) > 1 and depth < len(_DECOMPOSITION_RANKS):
+        for rank in range(depth, len(_DECOMPOSITION_RANKS)):
+            pieces = _decompose(text, _DECOMPOSITION_RANKS[rank])
+            if len(pieces) <= 1:
+                continue
+            try:
+                translated = "".join(
+                    _translate_chunk(piece, depth=rank + 1) for piece in pieces
+                )
+            except IncompleteTranslationError:
+                continue
             if _is_complete_translation(text, translated):
                 return translated
 
