@@ -66,7 +66,7 @@ def _screening_history_path() -> str:
 class ScreeningCriterion(BaseModel):
     table: str = Field(default="", description="Table name (e.g. CompanyInfo, PerShare). Not used for full_expression mode.")
     column: str = Field(default="", description="Column name within the table. Not used for full_expression mode.")
-    operator: str = Field(..., description="Operator: >, >=, <, <=, =, !=, BETWEEN, IN, LIKE")
+    operator: str | None = Field(default=None, description="Operator: >, >=, <, <=, =, !=, BETWEEN, IN, LIKE. Not used for recent_split mode.")
     value: Any = Field(default=None, description="Comparison value (required for fixed/LIKE mode)")
     value2: Any = Field(default=None, description="Second value for BETWEEN operator")
     values: list[Any] | None = Field(default=None, description="Value list for IN operator")
@@ -86,6 +86,16 @@ class ScreeningCriterion(BaseModel):
     split_date_operator: Literal["on_or_after", "on_or_before"] = Field(
         default="on_or_after",
         description="For recent_split: compare split_date on or after/before the cutoff",
+    )
+    split_window_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=3650,
+        description=(
+            "For recent_split: match splits within the last N days, counted "
+            "back from the as-of date (or today). Takes precedence over the "
+            "absolute cutoff in value/split_date_operator."
+        ),
     )
     compare_table: str | None = Field(default=None, description="Comparison table (column mode)")
     compare_column: str | None = Field(default=None, description="Comparison column (column mode)")
@@ -204,6 +214,8 @@ def _criteria_to_dicts(criteria: list[ScreeningCriterion]) -> list[dict]:
                 split_status=c.split_status,
                 split_date_operator=c.split_date_operator,
             )
+            if c.split_window_days is not None:
+                d["split_window_days"] = c.split_window_days
         if c.value2 is not None:
             d["value2"] = c.value2
         if c.values is not None:
@@ -421,7 +433,7 @@ def run_screening_endpoint(
     http_request: Request,
     payload: ScreeningRunRequest = Body(...),
 ) -> dict:
-    """Run a screening query and return results with the generated SQL."""
+    """Run a screening query and return the matching rows."""
     import time as _t
     _t0 = _t.monotonic()
     logger.info("screening/run START db=%s criteria=%d cols=%d",
@@ -461,22 +473,6 @@ def run_screening_endpoint(
         logger.info("screening/run metrics loaded: %d tables (%.2fs)",
                     len(available), _t.monotonic() - _t1)
 
-        _t1 = _t.monotonic()
-        ranking_columns = ranking_dicts if payload.ranking_algorithm != "none" else None
-        query_columns, col_aliases, _ = _screening._build_query_column_plan(
-            all_columns, ranking_columns
-        )
-        display_sql, display_params = _screening.build_screening_query(
-            criteria_dicts,
-            query_columns,
-            payload.period,
-            screening_date=payload.screening_date,
-            available_metrics=available,
-            column_aliases=col_aliases,
-            computed_columns=computed_specs,
-        )
-        sql_display = _screening._interpolate_sql(display_sql, display_params)
-        logger.info("screening/run SQL built (%.2fs)", _t.monotonic() - _t1)
 
         _t1 = _t.monotonic()
         df = _screening.run_screening(
@@ -497,7 +493,6 @@ def run_screening_endpoint(
         _t1 = _t.monotonic()
         result = _df_to_json(df)
         result["error"] = None
-        result["sql_display"] = sql_display
         if isinstance(user, AuthenticatedUser):
             stored = _persist_screening_result(user, payload, result)
             if stored:
@@ -534,7 +529,12 @@ def get_last_result(request: Request) -> dict[str, Any]:
     try:
         from src.portfolio.screening_results import get_last_screening_result
 
-        return {"result": get_last_screening_result(user.user_id)}
+        stored = get_last_screening_result(user.user_id)
+        # Results cached before the API stopped exposing the generated SQL
+        # may still embed it; it is internal and must not reach clients.
+        if isinstance(stored, dict) and isinstance(stored.get("result"), dict):
+            stored["result"].pop("sql_display", None)
+        return {"result": stored}
     except Exception as exc:  # noqa: BLE001 - an empty cache is still a valid state
         logger.warning("Could not load latest screening result for %s: %s", user.user_id, exc)
         return {"result": None}

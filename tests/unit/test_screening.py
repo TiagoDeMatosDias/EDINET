@@ -6,6 +6,7 @@ so no external files are required.
 
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -372,6 +373,107 @@ def test_build_screening_query_recent_split_supports_status_action_and_date_dire
     assert "date(ss.[split_date]) <= date(?)" in sql
     assert params == ["2024-11-01"]
 
+
+
+def test_build_screening_query_recent_split_window_uses_as_of_anchor():
+    criteria = [{
+        "comparison_mode": "recent_split",
+        "split_window_days": 365,
+    }]
+    sql, params = build_screening_query(
+        criteria,
+        ["CompanyInfo.Company_Code"],
+        screening_date="2024-12-01",
+    )
+
+    assert "NOT EXISTS (SELECT 1 FROM Stock_Splits ss" in sql
+    assert "date(ss.[split_date]) >= date(?)" in sql
+    assert "date(ss.[split_date]) <= date(?)" in sql
+    # FS subquery caps (2) + window start + window end
+    assert params == ["2024-12-01", "2024-12-01", "2023-12-02", "2024-12-01"]
+
+
+def test_build_screening_query_recent_split_window_defaults_to_today():
+    criteria = [{
+        "comparison_mode": "recent_split",
+        "split_window_days": 30,
+        "split_action": "include",
+        "split_status": "any",
+    }]
+    sql, params = build_screening_query(criteria, ["CompanyInfo.Company_Code"])
+
+    assert "EXISTS (SELECT 1 FROM Stock_Splits ss" in sql
+    assert "NOT EXISTS" not in sql
+    assert "confirmation" not in sql
+    expected_start = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
+    expected_end = datetime.now(timezone.utc).date().isoformat()
+    assert params == [expected_start, expected_end]
+
+
+def test_build_screening_query_recent_split_rejects_invalid_window():
+    criteria = [{
+        "comparison_mode": "recent_split",
+        "split_window_days": 0,
+    }]
+    with pytest.raises(ValueError, match="split_window_days"):
+        build_screening_query(criteria, ["CompanyInfo.Company_Code"])
+
+
+def test_build_screening_query_raw_split_filter_matches_event_semantics():
+    criteria = [{
+        "table": "Stock_Splits",
+        "column": "split_date",
+        "operator": ">=",
+        "value": "2024-11-01",
+    }]
+    sql, params = build_screening_query(
+        criteria,
+        ["CompanyInfo.Company_Code"],
+        screening_date="2024-12-01",
+    )
+
+    # Raw split filters share split-event semantics: confirmed-only and
+    # capped at the as-of date.
+    assert "ss.[confirmation] = 'confirmed'" in sql
+    assert params == ["2024-12-01", "2024-12-01", "2024-12-01", "2024-12-01", "2024-11-01"]
+
+
+def test_build_screening_query_raw_split_filter_supports_any_status():
+    criteria = [{
+        "table": "Stock_Splits",
+        "column": "ratio_from",
+        "operator": ">",
+        "value": 2,
+        "split_status": "any",
+    }]
+    sql, params = build_screening_query(criteria, ["CompanyInfo.Company_Code"])
+
+    # No WHERE-level status injection; the display join's confirmed-only
+    # filter uses the ss_latest alias and does not affect EXISTS matching.
+    assert "ss.[confirmation]" not in sql
+    assert "date(ss.[split_date])" not in sql
+    assert params == [2]
+
+
+def test_build_screening_query_raw_split_confirmation_column_skips_status_injection():
+    criteria = [{
+        "table": "Stock_Splits",
+        "column": "confirmation",
+        "operator": "=",
+        "value": "pending",
+    }]
+    sql, params = build_screening_query(
+        criteria,
+        ["CompanyInfo.Company_Code"],
+        screening_date="2024-12-01",
+    )
+
+    # The user's own confirmation criterion must not get a second,
+    # contradictory injected status condition.
+    assert "ss.[confirmation] = 'confirmed'" not in sql
+    assert params == [
+        "2024-12-01", "2024-12-01", "2024-12-01", "2024-12-01", "pending",
+    ]
 
 def test_run_screening_stock_split_date_filter_links_through_company_ticker(sample_db):
     with sqlite3.connect(sample_db) as conn:

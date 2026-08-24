@@ -14,11 +14,20 @@ function DecimalHarness() {
   return <CriterionEditor criterion={criterion} catalog={{ Stock_Prices: ['Price'] }} tagNames={[]} index={0} onChange={setCriterion} onRemove={() => undefined} />
 }
 
-function RecentSplitHarness() {
+function RecentSplitHarness(initial?: Partial<Criterion>) {
   const [criterion, setCriterion] = useState<Criterion>({
-    id: 'split', comparison_mode: 'recent_split', operator: '=', value: '', field_type: 'date',
+    id: 'split', comparison_mode: 'recent_split', value: '', field_type: 'date',
+    split_action: 'exclude', split_status: 'confirmed', split_window_days: 365, split_date_operator: 'on_or_after',
+    ...initial,
   })
   return <CriterionEditor criterion={criterion} catalog={{ Stock_Splits: ['split_date'] }} tagNames={[]} index={0} onChange={setCriterion} onRemove={() => undefined} />
+}
+
+function FilterHarness() {
+  const [criterion, setCriterion] = useState<Criterion>({
+    id: 'filter', table: 'Stock_Prices', column: 'Price', operator: '>', value: 0, comparison_mode: 'fixed',
+  })
+  return <CriterionEditor criterion={criterion} catalog={{ Stock_Prices: ['Price'], Stock_Splits: ['split_date'] }} tagNames={[]} index={0} onChange={setCriterion} onRemove={() => undefined} />
 }
 
 function SplitDateHarness() {
@@ -55,27 +64,43 @@ describe('CriterionEditor decimal values', () => {
     expect(scoped.getByLabelText('Open parenthesis')).toHaveTextContent('(')
     expect(scoped.getByLabelText('Close parenthesis')).toHaveTextContent(')')
   })
-  it('renders a date picker for the recent-split exclusion', () => {
+  it('renders a 365-day window by default for the split event rule', () => {
     const view = render(<RecentSplitHarness />)
     const scoped = within(view.container)
 
     expect(scoped.getByRole('combobox', { name: 'Rule type' })).toHaveValue('recent_split')
+    expect(scoped.getByRole('spinbutton', { name: 'Split window days' })).toHaveValue(365)
+  })
+  it('renders a date picker in exact cutoff mode', () => {
+    const view = render(<RecentSplitHarness />)
+    const scoped = within(view.container)
+
+    fireEvent.click(scoped.getByRole('button', { name: 'Advanced' }))
+    fireEvent.change(scoped.getByRole('combobox', { name: 'Split date mode' }), { target: { value: 'exact' } })
+
     expect(scoped.getByLabelText('Recent split cutoff date')).toHaveAttribute('type', 'date')
   })
   it('supports split action, confirmation status, and date direction', () => {
     const view = render(<RecentSplitHarness />)
     const scoped = within(view.container)
     const action = scoped.getByRole('combobox', { name: 'Split match action' })
-    const status = scoped.getByRole('combobox', { name: 'Split confirmation status' })
-    const dateComparison = scoped.getByRole('combobox', { name: 'Split date comparison' })
 
+    fireEvent.click(scoped.getByRole('button', { name: 'Advanced' }))
     fireEvent.change(action, { target: { value: 'include' } })
-    fireEvent.change(status, { target: { value: 'pending' } })
-    fireEvent.change(dateComparison, { target: { value: 'on_or_before' } })
+    fireEvent.change(scoped.getByRole('combobox', { name: 'Split confirmation status' }), { target: { value: 'pending' } })
+    fireEvent.change(scoped.getByRole('combobox', { name: 'Split date mode' }), { target: { value: 'exact' } })
+    fireEvent.change(scoped.getByRole('combobox', { name: 'Split date comparison' }), { target: { value: 'on_or_before' } })
 
     expect(action).toHaveValue('include')
-    expect(status).toHaveValue('pending')
-    expect(dateComparison).toHaveValue('on_or_before')
+    expect(scoped.getByRole('combobox', { name: 'Split confirmation status' })).toHaveValue('pending')
+    expect(scoped.getByRole('combobox', { name: 'Split date comparison' })).toHaveValue('on_or_before')
+  })
+  it('steers filter rules away from Stock_Splits metrics', () => {
+    const view = render(<FilterHarness />)
+    const scoped = within(view.container)
+    const tableSelect = scoped.getByRole('combobox', { name: 'Rule metric table' }) as HTMLSelectElement
+
+    expect([...tableSelect.options].map(option => option.value)).not.toContain('Stock_Splits')
   })
   it('renders date inputs for Stock_Splits date fields', () => {
     const view = render(<SplitDateHarness />)

@@ -252,10 +252,8 @@ def test_run_screening_basic(test_db_path):
     data = resp.json()
     assert data["row_count"] >= 1
     assert "Company_Code" in data["columns"] or "Company_Name" in data["columns"]
-    # SQL display should be included
-    assert "sql_display" in data
-    assert "SELECT" in data["sql_display"]
-    assert "FROM" in data["sql_display"]
+    # The generated SQL is an internal detail and must not reach clients.
+    assert "sql_display" not in data
 
 
 def test_run_screening_with_criteria(test_db_path):
@@ -340,6 +338,35 @@ def test_run_screening_recent_split_options_are_forwarded(test_db_path):
     assert resp.status_code == 200
     data = resp.json()
     assert {row[0] for row in data["rows"]} == {"6758.T"}
+
+
+def test_run_screening_recent_split_window_is_forwarded(test_db_path):
+    with sqlite3.connect(test_db_path) as conn:
+        conn.execute(
+            "CREATE TABLE Stock_Splits ("
+            "ticker TEXT, split_date TEXT, ratio_from REAL, ratio_to REAL, "
+            "confirmation TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO Stock_Splits VALUES (?, ?, ?, ?, ?)",
+            ("6758.T", "2024-11-15", 1, 2, "confirmed"),
+        )
+
+    resp = client.post("/api/screening/run", json={
+        "db_path": test_db_path,
+        "criteria": [{
+            "comparison_mode": "recent_split",
+            "split_window_days": 365,
+        }],
+        "columns": ["CompanyInfo.Company_Ticker"],
+        "screening_date": "2024-12-01",
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # Window start = 2024-12-01 minus 365 days = 2023-12-02; the confirmed
+    # 2024-11-15 split falls inside it, so the company is excluded.
+    assert "6758.T" not in {row[0] for row in data["rows"]}
 
 
 def test_run_screening_with_column_compare_and_offset(test_db_path):

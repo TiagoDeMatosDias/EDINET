@@ -10,7 +10,7 @@ import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
 import { Card, Field, PageHeader } from '../../components/Page';
 import { serializeComputedColumn, serializeCriterion } from './criterion-values';
 import { CriterionEditor, ExpressionTokenList } from './ExpressionEditorDense';
-import { newExpressionCriterion, normalizeCriterion } from './expression-model';
+import { newExpressionCriterion, newRuleCriterion, normalizeCriterion } from './expression-model'
 
 import type { ComputedColumn, Criterion, ExpressionToken, MetricCatalog, SavedScreen } from './types';
 type ResultRow = Record<string, unknown>;
@@ -85,6 +85,26 @@ export function DerivedColumns({ value, catalog, onChange }: {
         <button className="button button--ghost" type="button" onClick={() => onChange([...value, defaultComputed(catalog)])}><Plus />Derived field</button>
     </div>;
 }
+const RULE_TEMPLATES: Array<{ kind: string; label: string; hint: string }> = [
+    { kind: 'recent_split', label: 'Split event', hint: 'Exclude or include companies with recent splits' },
+    { kind: 'fixed', label: 'Filter', hint: 'Compare one metric to a value' },
+    { kind: 'between', label: 'Between', hint: 'Metric inside a range' },
+    { kind: 'like', label: 'Text contains', hint: 'Match text with wildcards' },
+    { kind: 'in', label: 'One of', hint: 'Match one of several values' },
+    { kind: 'full_expression', label: 'Expression', hint: 'Arithmetic on both sides' },
+]
+function AddRuleMenu({ onAdd }: { onAdd: (kind: string) => void }) {
+    const [open, setOpen] = useState(false);
+    return <div className="add-rule-menu">
+        <button type="button" className="button button--secondary" aria-expanded={open} onClick={() => setOpen(value => !value)}><Plus />Rule</button>
+        {open && <>
+            <div className="menu-overlay" onClick={() => setOpen(false)} />
+            <div className="add-rule-menu__items" role="menu">
+                {RULE_TEMPLATES.map(template => <button key={template.kind} type="button" role="menuitem" title={template.hint} onClick={() => { onAdd(template.kind); setOpen(false) }}>{template.label}</button>)}
+            </div>
+        </>}
+    </div>;
+}
 function buildColumns(result: ScreeningResult | undefined, navigate: ReturnType<typeof useNavigate>) {
     const columns: ColumnDef<ResultRow>[] = (result?.columns ?? []).map(column => ({ accessorKey: column, header: column.split('.').at(-1) ?? column, cell: info => String(info.getValue() ?? '—') }));
     columns.push({ id: 'action', header: '', cell: ({ row }) => { const code = row.original.EdinetCode ?? row.original['CompanyInfo.EdinetCode']; return <button className="button button--ghost" disabled={!code} onClick={() => navigate(`/analyze/${encodeURIComponent(String(code))}?from=screen`)}>Analyze</button>; } });
@@ -150,7 +170,7 @@ export default function ScreeningWorkspaceDense() {
     if (db.isError || metrics.isError)
         return <ErrorState error={db.error ?? metrics.error}/>;
     return <div className="stack dense-page screening-workspace screening-workspace--max"><PageHeader eyebrow="Company discovery" title="Screen companies" description="Build full expressions from table-first metric selectors." actions={<button className="button button--primary" onClick={() => run.mutate()} disabled={run.isPending}><FlaskConical />{run.isPending ? 'Running…' : 'Run screen'}</button>}/><div className="screen-toolbar"><Field label="Saved screen"><div className="inline-control"><select className="select" value={selectedSaved} onChange={event => void loadSaved(event.target.value)}><option value="">New screen</option>{saved.data?.screenings.map(name => <option key={name}>{name}</option>)}</select><button className="button button--danger" type="button" disabled={!selectedSaved || removeSaved.isPending} onClick={deleteSavedScreen}><Trash2 />Delete</button></div></Field><Field label="Save as"><div className="inline-control"><input className="input" value={saveName} onChange={event => setSaveName(event.target.value)} placeholder="Screen name"/><button className="button button--secondary" disabled={!saveName.trim()} onClick={() => save.mutate()}><Save />Save</button></div></Field><Field label="As-of date"><input className="input" type="date" value={screeningDate} onChange={event => setScreeningDate(event.target.value)}/></Field><span className="toolbar-summary">{criteria.length} rules · {columns.length} columns · {computed.length} derived</span></div><div className={'screen-builder-grid screen-builder-grid--dense' + (rulesCollapsed ? ' is-rules-collapsed' : '')}>
-<Card title={'Rules (' + criteria.length + ')'} actions={<div className="button-row"><button className="button button--secondary rules-collapse" aria-expanded={!rulesCollapsed} aria-controls="screening-rules" onClick={() => setRulesCollapsed(value => !value)}>{rulesCollapsed ? <ChevronDown /> : <ChevronUp />}{rulesCollapsed ? 'Show rules' : 'Minimize'}</button>{!rulesCollapsed && <button className="button button--secondary" onClick={() => setCriteria(items => [...items, newExpressionCriterion()])}><Plus />Rule</button>}</div>}><div id="screening-rules" className="criteria-list">{criteria.map((criterion, index) => <CriterionEditor key={criterion.id} criterion={criterion} catalog={catalog} tagNames={tagNames} index={index} onChange={next => setCriteria(items => items.map((item, itemIndex) => itemIndex === index ? next : item))} onRemove={() => setCriteria(items => items.filter(item => item.id !== criterion.id))}/>)}</div></Card>
+<Card title={'Rules (' + criteria.length + ')'} actions={<div className="button-row"><button className="button button--secondary rules-collapse" aria-expanded={!rulesCollapsed} aria-controls="screening-rules" onClick={() => setRulesCollapsed(value => !value)}>{rulesCollapsed ? <ChevronDown /> : <ChevronUp />}{rulesCollapsed ? 'Show rules' : 'Minimize'}</button>{!rulesCollapsed && <AddRuleMenu onAdd={kind => setCriteria(items => [...items, newRuleCriterion(kind)])} />}</div>}><div id="screening-rules" className="criteria-list">{criteria.map((criterion, index) => <CriterionEditor key={criterion.id} criterion={criterion} catalog={catalog} tagNames={tagNames} index={index} onChange={next => setCriteria(items => items.map((item, itemIndex) => itemIndex === index ? next : item))} onRemove={() => setCriteria(items => items.filter(item => item.id !== criterion.id))}/>)}</div></Card>
 <div className="screen-side"><Card title="Screen output" actions={<div className="segmented"><button className={optionsTab === 'columns' ? 'active' : ''} onClick={() => setOptionsTab('columns')}>Columns ({columns.length})</button><button className={optionsTab === 'derived' ? 'active' : ''} onClick={() => setOptionsTab('derived')}>Derived ({computed.length})</button></div>}>{optionsTab === 'columns' ? <ResultColumnPicker catalog={catalog} selected={columns} onChange={setColumns}/> : <DerivedColumns value={computed} catalog={catalog} onChange={setComputed}/>}</Card></div>
 </div><Card className="results-card results-card--large" title={displayedResult ? `${displayedResult.row_count.toLocaleString()} matching companies` : 'Results'} actions={displayedResult && <div className="button-row"><button className="button button--secondary" onClick={() => void exportResults()}><Download />CSV</button><button className="button button--secondary" disabled={compareCodes.length < 2} onClick={() => navigate(compareHref)}><GitCompare />{compareCodes.length > 12 ? 'Compare first 12 matches' : 'Compare matches'}</button><button className="button button--primary" onClick={() => navigate('/backtest?source=screen')}><FlaskConical />Rolling backtest</button></div>}>{run.isPending ? <LoadingState label="Running screen"/> : run.isError ? <ErrorState error={run.error}/> : lastResult.isLoading && !displayedResult ? <LoadingState label="Loading your last screen"/> : !displayedResult ? <EmptyState title="No results yet" description="Load or build a screen, then run it."/> : <DataTable data={resultRows(displayedResult)} columns={tableColumns} dense/>}</Card></div>;
 }

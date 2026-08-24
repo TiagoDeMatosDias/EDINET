@@ -120,5 +120,4 @@ export interface ScreeningResult {
   columns: string[]
   rows: unknown[][]
   row_count: number
-  sql_display?: string
 }

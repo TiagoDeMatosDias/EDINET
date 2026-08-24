@@ -11,7 +11,7 @@ export interface Criterion {
   id: string
   table?: string
   column?: string
-  operator: string
+  operator?: string
   value?: string | number | null
   value2?: string | number | null
   values?: Array<string | number>
@@ -20,6 +20,7 @@ export interface Criterion {
   split_action?: 'exclude' | 'include' | string
   split_status?: 'confirmed' | 'rejected' | 'pending' | 'any' | string
   split_date_operator?: 'on_or_after' | 'on_or_before' | string
+  split_window_days?: number | null
   compare_table?: string
   compare_column?: string
   offset?: number | null

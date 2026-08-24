@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizeCriterion } from './expression-model'
+import { newRecentSplitCriterion, normalizeCriterion } from './expression-model'
 
 describe('normalizeCriterion', () => {
   it('preserves saved full-expression operands', () => {
@@ -32,6 +32,8 @@ describe('normalizeCriterion', () => {
     expect(criterion.split_action).toBe('exclude')
     expect(criterion.split_status).toBe('confirmed')
     expect(criterion.split_date_operator).toBe('on_or_after')
+    expect(criterion.split_window_days).toBeNull()
+    expect(criterion.field_type).toBe('date')
   })
 
   it('preserves configurable recent-split options', () => {
@@ -43,6 +45,15 @@ describe('normalizeCriterion', () => {
     expect(criterion.split_action).toBe('include')
     expect(criterion.split_status).toBe('pending')
     expect(criterion.split_date_operator).toBe('on_or_before')
+  })
+
+  it('preserves a valid relative split window and drops invalid ones', () => {
+    expect(normalizeCriterion({ comparison_mode: 'recent_split', split_window_days: 90 }).split_window_days).toBe(90)
+    expect(normalizeCriterion({ comparison_mode: 'recent_split', split_window_days: 0 }).split_window_days).toBeNull()
+  })
+
+  it('defaults new split rules to a 365-day window', () => {
+    expect(newRecentSplitCriterion().split_window_days).toBe(365)
   })
 
   it('keeps saved Stock_Splits date filters as date-input rules', () => {

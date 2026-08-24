@@ -8,6 +8,10 @@ All notable changes to this project will be documented in this file.
 
 - Added a `check_tdnet_splits` pipeline step that captures Japanese stock-split and share-consolidation announcements from the TSE timely-disclosure service (TDnet) into a new `Tdnet_Disclosures` event table; splits are not EDINET-reportable events, and TDnet only serves a rolling ~30-day window, so scheduled runs keep the event history complete and idempotent.
 
+### Changed
+
+- Screening now has one set of split-event semantics across every rule shape: raw `Stock_Splits` filters match confirmed events by default and never look past the as-of date (point-in-time screens and rolling backtests can no longer see future splits), the expression join projects the latest confirmed split as of the screening date, and the rule formerly labelled `No recent split` is now `Split event` with a relative window (default 365 days anchored on the as-of date or today), an Advanced panel for confirmation status and exact cutoffs, and intent-named `+ Rule` templates. The screening API no longer returns the generated SQL (`sql_display` was removed from run responses and is stripped from cached results), keeping query internals server-side.
+
 ### Fixed
 - Price ingestion now rejects degenerate provider histories for every source: sparse multi-year responses (weekly/monthly bars posing as daily) fail over to the next provider, and weekend-dated rows for Japanese codes are dropped.
 - Yahoo Finance backfills now send explicit `period1`/`period2` instead of `range=max` (which made Yahoo return monthly bars) and reject any payload whose `dataGranularity` is not `1d`, so full daily history lands in one request per ticker.

@@ -11,7 +11,7 @@ import math
 import os
 import re
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -240,21 +240,46 @@ def _stock_split_ticker_match(split_alias: str, company_ticker_ref: str) -> str:
 def _stock_split_filter_sql(
     criterion: dict,
     company_ticker_ref: str,
+    screening_date: str | None,
     params: list,
 ) -> str:
-    """Build an EXISTS predicate for a Stock_Splits criterion."""
+    """Build an EXISTS predicate for a Stock_Splits criterion.
+
+    Raw split filters share the split-event semantics: they match confirmed
+    events by default (``split_status`` opts into pending/rejected/any) and
+    never see splits effective after the as-of date.
+    """
     operator = OPERATOR_MAP[criterion["operator"]]
     column = _safe_identifier(str(criterion.get("column", "")))
+    status = str(criterion.get("split_status") or "confirmed").strip().lower()
+    if status not in RECENT_SPLIT_STATUSES:
+        raise ValueError(
+            "split_status must be 'confirmed', 'rejected', 'pending', or 'any'"
+        )
     match = _stock_split_ticker_match("ss", company_ticker_ref)
     base = f"FROM Stock_Splits ss WHERE {match}"
+    # A criterion on the confirmation column itself must not inject a
+    # contradictory status condition.
+    extra_conditions: list[str] = []
+    if status != "any" and column.lower() != "confirmation":
+        # The value is restricted to the allow-list above before interpolation.
+        extra_conditions.append(f"ss.[confirmation] = '{status}'")
+    extra_params: list = []
+    if screening_date:
+        extra_conditions.append("date(ss.[split_date]) <= date(?)")
+        extra_params.append(screening_date)
+    extra_sql = (" AND " + " AND ".join(extra_conditions)) if extra_conditions else ""
 
     if operator == "IS":
+        params.extend(extra_params)
+        params.extend(extra_params)
         return (
-            f"(NOT EXISTS (SELECT 1 {base}) OR EXISTS "
-            f"(SELECT 1 {base} AND ss.[{column}] IS NULL))"
+            f"(NOT EXISTS (SELECT 1 {base}{extra_sql}) OR EXISTS "
+            f"(SELECT 1 {base}{extra_sql} AND ss.[{column}] IS NULL))"
         )
     if operator == "IS NOT":
-        return f"EXISTS (SELECT 1 {base} AND ss.[{column}] IS NOT NULL)"
+        params.extend(extra_params)
+        return f"EXISTS (SELECT 1 {base}{extra_sql} AND ss.[{column}] IS NOT NULL)"
     if operator == "IN":
         values = criterion.get("values")
         if not values or not isinstance(values, list):
@@ -264,10 +289,12 @@ def _stock_split_filter_sql(
         if column.lower() in STOCK_SPLIT_DATE_COLUMNS:
             values = [_validate_date_filter(value, "Stock split date") for value in values]
         placeholders = ", ".join("?" for _ in values)
+        params.extend(extra_params)
         params.extend(values)
         date_expr = f"date(ss.[{column}])" if column.lower() in STOCK_SPLIT_DATE_COLUMNS else f"ss.[{column}]"
         condition = f"{date_expr} IN ({placeholders})"
     elif operator == "LIKE":
+        params.extend(extra_params)
         params.append(str(criterion.get("value", "")))
         condition = f"ss.[{column}] LIKE ?"
     elif operator == "BETWEEN":
@@ -277,6 +304,7 @@ def _stock_split_filter_sql(
         if date_column:
             first = _validate_date_filter(first, "Stock split date")
             second = _validate_date_filter(second, "Stock split date")
+        params.extend(extra_params)
         params.extend([first, second])
         date_expr = f"date(ss.[{column}])" if date_column else f"ss.[{column}]"
         condition = f"{date_expr} BETWEEN ? AND ?"
@@ -285,10 +313,34 @@ def _stock_split_filter_sql(
         date_column = column.lower() in STOCK_SPLIT_DATE_COLUMNS
         if date_column:
             value = _validate_date_filter(value, "Stock split date")
+        params.extend(extra_params)
         params.append(value)
         date_expr = f"date(ss.[{column}])" if date_column else f"ss.[{column}]"
         condition = f"{date_expr} {operator} date(?)" if date_column else f"{date_expr} {operator} ?"
-    return f"EXISTS (SELECT 1 {base} AND {condition})"
+    return f"EXISTS (SELECT 1 {base}{extra_sql} AND {condition})"
+
+
+def _utc_today() -> str:
+    """Return today's UTC date as an ISO string (relative-window anchor)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _shift_iso_date(value: str, days: int) -> str:
+    """Return *value* shifted by *days* as an ISO date string."""
+    return (date.fromisoformat(value) + timedelta(days=days)).isoformat()
+
+
+def _validate_split_window_days(raw: object) -> int | None:
+    """Validate an optional relative split window expressed in days."""
+    if raw is None or raw == "":
+        return None
+    try:
+        window_days = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("split_window_days must be a positive number of days") from exc
+    if window_days < 1:
+        raise ValueError("split_window_days must be a positive number of days")
+    return window_days
 
 
 def _recent_split_filter_sql(
@@ -297,7 +349,13 @@ def _recent_split_filter_sql(
     screening_date: str | None,
     params: list,
 ) -> str:
-    """Build the configurable include/exclude split-event predicate."""
+    """Build the configurable include/exclude split-event predicate.
+
+    Two matching modes:
+      * relative window — ``split_window_days`` counts back from the as-of
+        date (or today), so saved screens keep their meaning over time;
+      * absolute cutoff — ``value`` compared via ``split_date_operator``.
+    """
     action = str(criterion.get("split_action") or "exclude").strip().lower()
     status = str(criterion.get("split_status") or "confirmed").strip().lower()
     date_operator = str(
@@ -314,18 +372,29 @@ def _recent_split_filter_sql(
             "split_date_operator must be 'on_or_after' or 'on_or_before'"
         )
 
-    cutoff = _validate_date_filter(criterion.get("value"), "Recent split cutoff")
+    window_days = _validate_split_window_days(criterion.get("split_window_days"))
+    if window_days is not None:
+        anchor = screening_date or _utc_today()
+        cutoff = _shift_iso_date(anchor, -window_days)
+        date_op = ">="
+    else:
+        cutoff = _validate_date_filter(criterion.get("value"), "Recent split cutoff")
+        date_op = ">=" if date_operator == "on_or_after" else "<="
+
     match = _stock_split_ticker_match("ss", company_ticker_ref)
     conditions = [match]
     if status != "any":
         # The value is restricted to the allow-list above before interpolation.
         conditions.append(f"ss.[confirmation] = '{status}'")
-    date_op = ">=" if date_operator == "on_or_after" else "<="
     conditions.append(f"date(ss.[split_date]) {date_op} date(?)")
     params.append(cutoff)
-    if screening_date:
+    # Relative windows are bounded by their anchor; absolute cutoffs are
+    # bounded by the as-of date so point-in-time screens never see future
+    # split events.
+    upper_bound = anchor if window_days is not None else screening_date
+    if upper_bound:
         conditions.append("date(ss.[split_date]) <= date(?)")
-        params.append(screening_date)
+        params.append(upper_bound)
 
     exists_sql = (
         "EXISTS (SELECT 1 FROM Stock_Splits ss WHERE "
@@ -849,7 +918,8 @@ def build_screening_query(
         for crit in criteria:
             comparison_mode = crit.get("comparison_mode")
             if comparison_mode == "recent_split":
-                _validate_date_filter(crit.get("value"), "Recent split cutoff")
+                if crit.get("split_window_days") in (None, ""):
+                    _validate_date_filter(crit.get("value"), "Recent split cutoff")
                 continue
             if comparison_mode == "full_expression":
                 # Validate all column tokens in left_side and right_side
@@ -1118,13 +1188,19 @@ def build_screening_query(
         # Keep one latest confirmed action row available for expressions or
         # computed columns while criteria themselves use EXISTS semantics.
         split_partition = "REPLACE(REPLACE(UPPER(ss_latest.[ticker]), '.T', ''), '.JP', '')"
+        split_cap_sql = ""
+        if screening_date:
+            # Point-in-time screens must not see splits effective later than
+            # the as-of date.
+            split_cap_sql = " AND date(ss_latest.[split_date]) <= date(?)"
+            params.append(screening_date)
         join_clauses.append(
             "LEFT JOIN (SELECT * FROM ("
             "SELECT ss_latest.*, ROW_NUMBER() OVER ("
             f"PARTITION BY {split_partition} "
             "ORDER BY date(ss_latest.[split_date]) DESC, ss_latest.rowid DESC"
             ") AS _screening_split_rank FROM Stock_Splits ss_latest "
-            "WHERE ss_latest.[confirmation] = 'confirmed'"
+            "WHERE ss_latest.[confirmation] = 'confirmed'" + split_cap_sql +
             ") WHERE _screening_split_rank = 1) ss "
             f"ON {_stock_split_ticker_match('ss', _company_ticker_ref)}"
         )
@@ -1174,7 +1250,7 @@ def build_screening_query(
 
             if table == "Stock_Splits":
                 where_parts.append(
-                    _stock_split_filter_sql(crit, _company_ticker_ref, params)
+                    _stock_split_filter_sql(crit, _company_ticker_ref, screening_date, params)
                 )
                 continue
 

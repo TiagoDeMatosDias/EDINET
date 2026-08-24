@@ -15,13 +15,15 @@ export function splitMetricRef(ref: string) {
 export function normalizeCriterion(raw: Partial<Criterion>): Criterion {
   const base = { ...raw, id: raw.id || crypto.randomUUID() }
   if (raw.comparison_mode === 'recent_split') {
+    const windowDays = Number(raw.split_window_days)
     return {
       ...base,
-      operator: raw.operator || '=',
       comparison_mode: 'recent_split',
       value: raw.value ?? '',
+      field_type: 'date',
       split_action: raw.split_action === 'include' ? 'include' : 'exclude',
       split_status: ['confirmed', 'rejected', 'pending', 'any'].includes(raw.split_status ?? '') ? raw.split_status : 'confirmed',
+      split_window_days: Number.isFinite(windowDays) && windowDays >= 1 ? windowDays : null,
       split_date_operator: raw.split_date_operator === 'on_or_before' ? 'on_or_before' : 'on_or_after',
     }
   }
@@ -58,15 +60,17 @@ export function normalizeCriterion(raw: Partial<Criterion>): Criterion {
   return { ...base, operator: raw.operator || '>', comparison_mode: 'full_expression', left_side: left, right_side: right }
 }
 
+export const DEFAULT_SPLIT_WINDOW_DAYS = 365
+
 export function newRecentSplitCriterion(): Criterion {
   return {
     id: crypto.randomUUID(),
-    operator: '=',
     comparison_mode: 'recent_split',
     value: '',
     field_type: 'date',
     split_action: 'exclude',
     split_status: 'confirmed',
+    split_window_days: DEFAULT_SPLIT_WINDOW_DAYS,
     split_date_operator: 'on_or_after',
   }
 }
@@ -78,4 +82,14 @@ export function newExpressionCriterion(): Criterion {
     left_side: [{ type: 'column', table: 'Stock_Prices', column: 'Price' }],
     right_side: [{ type: 'value', value: 0 }],
   })
+}
+
+export function newRuleCriterion(kind: string): Criterion {
+  if (kind === 'recent_split') return newRecentSplitCriterion()
+  if (kind === 'full_expression') return newExpressionCriterion()
+  if (kind === 'like') return { id: crypto.randomUUID(), table: 'CompanyInfo', column: 'Company_Industry', operator: 'LIKE', value: '%', comparison_mode: 'like' }
+  if (kind === 'in') return { id: crypto.randomUUID(), table: 'CompanyInfo', column: 'Company_Industry', operator: 'IN', values: [''], comparison_mode: 'in' }
+  if (kind === 'between') return { id: crypto.randomUUID(), table: 'Stock_Prices', column: 'Price', operator: 'BETWEEN', value: 0, value2: 1000, comparison_mode: 'fixed' }
+  if (kind === 'fixed') return { id: crypto.randomUUID(), table: 'Stock_Prices', column: 'Price', operator: '>', value: 0, comparison_mode: 'fixed' }
+  return newExpressionCriterion()
 }

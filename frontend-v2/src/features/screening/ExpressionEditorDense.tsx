@@ -1,6 +1,7 @@
 import { X } from 'lucide-react'
+import { useState } from 'react'
 
-import { newExpressionCriterion, newRecentSplitCriterion } from './expression-model'
+import { newRuleCriterion } from './expression-model'
 import { MetricSelect } from './MetricSelect'
 import type { Criterion, ExpressionToken, MetricCatalog } from './types'
 
@@ -18,7 +19,8 @@ function Token({ token, catalog, tagNames, valueType, onChange, onRemove }: { to
   </span>
 }
 
-export function ExpressionTokenList({ value, catalog, tagNames, valueType, onChange, label }: { value: ExpressionToken[]; catalog: MetricCatalog; tagNames: string[]; valueType?: 'date'; onChange: (tokens: ExpressionToken[]) => void; label: string }) {
+export function ExpressionTokenList({ value, catalog, tagNames, valueType, onChange, label, hideStockSplits }: { value: ExpressionToken[]; catalog: MetricCatalog; tagNames: string[]; valueType?: 'date'; onChange: (tokens: ExpressionToken[]) => void; label: string; hideStockSplits?: boolean }) {
+  const visibleCatalog = hideStockSplits ? ruleMetricCatalog(catalog, value.some(token => token.type === 'column' && token.table === 'Stock_Splits')) : catalog
   const replace = (index: number, token: ExpressionToken) => onChange(value.map((item, itemIndex) => itemIndex === index ? token : item))
   const append = (kind: string) => {
     if (kind === 'column') onChange([...value, { type: 'column', table: '', column: '' }])
@@ -31,7 +33,7 @@ export function ExpressionTokenList({ value, catalog, tagNames, valueType, onCha
   return <div className="expression-side">
     <span className="expression-label">{label}</span>
     <div className="expression-tokens">
-      {value.map((token, index) => <Token key={`${index}-${token.type}`} token={token} catalog={catalog} tagNames={tagNames} valueType={valueType} onChange={next => replace(index, next)} onRemove={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))} />)}
+      {value.map((token, index) => <Token key={`${index}-${token.type}`} token={token} catalog={visibleCatalog} tagNames={tagNames} valueType={valueType} onChange={next => replace(index, next)} onRemove={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))} />)}
       <select className="expression-add-select" value="" onChange={event => append(event.target.value)} aria-label={`Add ${label.toLowerCase()} expression token`}>
         <option value="">+ Add</option>
         <option value="column">Metric</option>
@@ -48,10 +50,9 @@ export function ExpressionTokenList({ value, catalog, tagNames, valueType, onCha
 const SIMPLE_COMPARISONS = ['>', '>=', '<', '<=', '=', '!=', 'BETWEEN', 'IN', 'LIKE', 'IS', 'IS NOT']
 
 function changeKind(criterion: Criterion, kind: string): Criterion {
-  if (kind === 'recent_split') return { ...newRecentSplitCriterion(), id: criterion.id }
-  if (kind === 'full_expression') return { ...newExpressionCriterion(), id: criterion.id }
-  if (kind === 'like') return { id: criterion.id, table: 'CompanyInfo', column: 'Company_Industry', operator: 'LIKE', value: '%', comparison_mode: 'like' }
-  if (kind === 'in') return { id: criterion.id, table: 'CompanyInfo', column: 'Company_Industry', operator: 'IN', values: [''], comparison_mode: 'in' }
+  if (kind === 'recent_split' || kind === 'full_expression' || kind === 'like' || kind === 'in') {
+    return { ...newRuleCriterion(kind), id: criterion.id }
+  }
   if (kind === 'between') {
     return {
       ...criterion,
@@ -85,6 +86,11 @@ function containsStockSplitDate(tokens: ExpressionToken[] | undefined) {
   return tokens?.some(token => token.type === 'column' && token.table === 'Stock_Splits' && ['split_date', 'announced_at', 'ex_date', 'effective_date', 'record_date'].includes(token.column)) ?? false
 }
 
+function ruleMetricCatalog(catalog: MetricCatalog, keepStockSplits: boolean): MetricCatalog {
+  if (keepStockSplits || !catalog.Stock_Splits) return catalog
+  return Object.fromEntries(Object.entries(catalog).filter(([table]) => table !== 'Stock_Splits'))
+}
+
 function SimpleCriterion({ criterion, catalog, onChange }: { criterion: Criterion; catalog: MetricCatalog; onChange: (next: Criterion) => void }) {
   const dateMetric = isDateMetric(criterion)
   const inputType = dateMetric ? 'date' : criterion.field_type === 'num' ? 'number' : 'text'
@@ -93,34 +99,64 @@ function SimpleCriterion({ criterion, catalog, onChange }: { criterion: Criterio
   const tagOperators = ['=', '!=', 'IN', 'LIKE']
   const comparisonOptions = criterion.table === 'Company_Tags' ? tagOperators : SIMPLE_COMPARISONS
   const onMetricChange = (table: string, column: string) => {
-    const operator = table === 'Company_Tags' && !tagOperators.includes(criterion.operator) ? '=' : criterion.operator
+    const operator = table === 'Company_Tags' && !tagOperators.includes(criterion.operator ?? '') ? '=' : criterion.operator
     onChange({ ...criterion, table, column, operator, field_type: table === 'Stock_Splits' && column.endsWith('_date') ? 'date' : criterion.field_type === 'date' ? 'text' : criterion.field_type })
   }
-  return <div className="simple-rule"><MetricSelect catalog={catalog} table={criterion.table ?? ''} column={criterion.column ?? ''} label="Rule metric" onChange={onMetricChange} /><select className="comparison-select" value={criterion.operator} onChange={event => onChange({ ...criterion, operator: event.target.value })} aria-label="Rule comparison">{comparisonOptions.map(operator => <option key={operator}>{operator}</option>)}</select>{criterion.operator === 'IN' && <input className="input" value={(criterion.values ?? []).join(', ')} onChange={event => onChange({ ...criterion, values: event.target.value.split(',') })} placeholder="Value 1, Value 2" />}{criterion.operator === 'LIKE' && <input className="input" value={String(criterion.value ?? '')} onChange={event => onChange({ ...criterion, value: event.target.value })} placeholder="%text%" />}{criterion.operator !== 'IN' && criterion.operator !== 'LIKE' && criterion.operator !== 'IS' && criterion.operator !== 'IS NOT' && criterion.operator === 'BETWEEN' && <>{input('value', dateMetric ? 'Start date' : 'Minimum value')}<span>and</span>{input('value2', dateMetric ? 'End date' : 'Maximum value')}</>}{criterion.operator !== 'IN' && criterion.operator !== 'LIKE' && criterion.operator !== 'IS' && criterion.operator !== 'BETWEEN' && criterion.operator !== 'IS NOT' && input('value', dateMetric ? 'Filter date' : 'Filter value')}</div>
+  return <div className="simple-rule"><MetricSelect catalog={ruleMetricCatalog(catalog, criterion.table === 'Stock_Splits')} table={criterion.table ?? ''} column={criterion.column ?? ''} label="Rule metric" onChange={onMetricChange} /><select className="comparison-select" value={criterion.operator} onChange={event => onChange({ ...criterion, operator: event.target.value })} aria-label="Rule comparison">{comparisonOptions.map(operator => <option key={operator}>{operator}</option>)}</select>{criterion.operator === 'IN' && <input className="input" value={(criterion.values ?? []).join(', ')} onChange={event => onChange({ ...criterion, values: event.target.value.split(',') })} placeholder="Value 1, Value 2" />}{criterion.operator === 'LIKE' && <input className="input" value={String(criterion.value ?? '')} onChange={event => onChange({ ...criterion, value: event.target.value })} placeholder="%text%" />}{criterion.operator !== 'IN' && criterion.operator !== 'LIKE' && criterion.operator !== 'IS' && criterion.operator !== 'IS NOT' && criterion.operator === 'BETWEEN' && <>{input('value', dateMetric ? 'Start date' : 'Minimum value')}<span>and</span>{input('value2', dateMetric ? 'End date' : 'Maximum value')}</>}{criterion.operator !== 'IN' && criterion.operator !== 'LIKE' && criterion.operator !== 'IS' && criterion.operator !== 'BETWEEN' && criterion.operator !== 'IS NOT' && input('value', dateMetric ? 'Filter date' : 'Filter value')}</div>
 }
 
+const SPLIT_STATUS_OPTIONS: Array<{ value: string; label: string; hint: string }> = [
+  { value: 'confirmed', label: 'Confirmed', hint: 'Verified against share counts — safe to filter on' },
+  { value: 'pending', label: 'Pending', hint: 'Detected by price heuristics, not yet verified' },
+  { value: 'rejected', label: 'Rejected', hint: 'Detection false positive' },
+  { value: 'any', label: 'Any', hint: 'Ignore verification status' },
+]
+
 function RecentSplitCriterion({ criterion, onChange }: { criterion: Criterion; onChange: (next: Criterion) => void }) {
+  const [advanced, setAdvanced] = useState(false)
   const action = criterion.split_action === 'include' ? 'include' : 'exclude'
-  const status = ['confirmed', 'rejected', 'pending', 'any'].includes(criterion.split_status ?? '') ? criterion.split_status : 'confirmed'
+  const status = SPLIT_STATUS_OPTIONS.some(option => option.value === criterion.split_status) ? criterion.split_status : 'confirmed'
   const dateOperator = criterion.split_date_operator === 'on_or_before' ? 'on_or_before' : 'on_or_after'
-  return <div className="simple-rule recent-split-rule">
-    <select className="input" aria-label="Split match action" value={action} onChange={event => onChange({ ...criterion, split_action: event.target.value })}>
-      <option value="exclude">Exclude</option>
-      <option value="include">Include</option>
-    </select>
-    <span>companies with a</span>
-    <select className="input" aria-label="Split confirmation status" value={status} onChange={event => onChange({ ...criterion, split_status: event.target.value })}>
-      <option value="confirmed">Confirmed</option>
-      <option value="rejected">Rejected</option>
-      <option value="pending">Pending</option>
-      <option value="any">Any</option>
-    </select>
-    <span>split</span>
-    <select className="input" aria-label="Split date comparison" value={dateOperator} onChange={event => onChange({ ...criterion, split_date_operator: event.target.value })}>
-      <option value="on_or_after">on or after</option>
-      <option value="on_or_before">on or before</option>
-    </select>
-    <input className="input" type="date" aria-label="Recent split cutoff date" value={String(criterion.value ?? '')} onChange={event => onChange({ ...criterion, value: event.target.value, field_type: 'date' })} />
+  const rawWindow = Number(criterion.split_window_days)
+  const windowed = Number.isFinite(rawWindow) && rawWindow >= 1
+  const windowDays = windowed ? rawWindow : 365
+  const setWindowDays = (raw: string) => {
+    const days = Math.floor(Number(raw))
+    onChange({ ...criterion, split_window_days: Number.isFinite(days) && days >= 1 ? days : null })
+  }
+  return <div className="recent-split">
+    <div className="simple-rule recent-split-rule">
+      <select className="input" aria-label="Split match action" value={action} onChange={event => onChange({ ...criterion, split_action: event.target.value })}>
+        <option value="exclude">Exclude</option>
+        <option value="include">Include</option>
+      </select>
+      <span>companies with a split</span>
+      {windowed ? <>
+        <span>within the last</span>
+        <input className="input" type="number" min={1} aria-label="Split window days" title="Counted back from the as-of date, or today when no as-of date is set" value={windowDays} onChange={event => setWindowDays(event.target.value)} />
+        <span>days</span>
+      </> : <>
+        <select className="input" aria-label="Split date comparison" value={dateOperator} onChange={event => onChange({ ...criterion, split_date_operator: event.target.value })}>
+          <option value="on_or_after">on or after</option>
+          <option value="on_or_before">on or before</option>
+        </select>
+        <input className="input" type="date" aria-label="Recent split cutoff date" value={String(criterion.value ?? '')} onChange={event => onChange({ ...criterion, value: event.target.value, field_type: 'date' })} />
+      </>}
+      <button type="button" className="button button--ghost recent-split-toggle" aria-expanded={advanced} onClick={() => setAdvanced(value => !value)}>Advanced</button>
+    </div>
+    {advanced && <div className="recent-split-advanced">
+      <label>Split status
+        <select className="input" aria-label="Split confirmation status" value={status} onChange={event => onChange({ ...criterion, split_status: event.target.value })}>
+          {SPLIT_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value} title={option.hint}>{option.label}</option>)}
+        </select>
+      </label>
+      <label>Date match
+        <select className="input" aria-label="Split date mode" value={windowed ? 'window' : 'exact'} onChange={event => onChange({ ...criterion, split_window_days: event.target.value === 'window' ? 365 : null })}>
+          <option value="window">Within a window of the as-of date</option>
+          <option value="exact">Exact cutoff date</option>
+        </select>
+      </label>
+    </div>}
   </div>
 }
 
@@ -142,8 +178,8 @@ export function CriterionEditor({ criterion, catalog, tagNames, index, onChange,
   const comparisonOptions = usesCompanyTags ? ['=', '!=', 'IN'] : COMPARISONS
   const updateLeft = (left_side: ExpressionToken[]) => {
     const nextUsesCompanyTags = left_side.some(token => token.type === 'column' && token.table === 'Company_Tags')
-    const operator = nextUsesCompanyTags && !['=', '!=', 'IN'].includes(criterion.operator) ? '=' : criterion.operator
+    const operator = nextUsesCompanyTags && !['=', '!=', 'IN'].includes(criterion.operator ?? '') ? '=' : criterion.operator
     onChange({ ...criterion, left_side, operator })
   }
-  return <div className="criterion-editor"><div className="criterion-toolbar"><span>{index + 1}</span><select value={kind} aria-label="Rule type" onChange={event => onChange(changeKind(criterion, event.target.value))}><option value="full_expression">Expression</option><option value="recent_split">No recent split</option><option value="fixed">Filter</option><option value="like">Text contains</option><option value="in">One of</option><option value="between">Between</option></select><button className="icon-button" type="button" onClick={onRemove} aria-label={`Remove rule ${index + 1}`}><X /></button></div>{recentSplit ? <RecentSplitCriterion criterion={criterion} onChange={onChange} /> : expression ? <div className="expression-rule"><ExpressionTokenList label="Left" value={criterion.left_side ?? []} catalog={catalog} tagNames={tagNames} valueType={rightDateExpression ? 'date' : undefined} onChange={updateLeft} /><select className="comparison-select" value={criterion.operator} onChange={event => onChange({ ...criterion, operator: event.target.value })}>{comparisonOptions.map(operator => <option key={operator}>{operator}</option>)}</select><ExpressionTokenList label="Right" value={criterion.right_side ?? []} catalog={catalog} tagNames={tagNames} valueType={leftDateExpression ? 'date' : undefined} onChange={right_side => onChange({ ...criterion, right_side })} /></div> : <SimpleCriterion criterion={criterion} catalog={catalog} onChange={onChange} />}</div>
+  return <div className="criterion-editor"><div className="criterion-toolbar"><span>{index + 1}</span><select value={kind} aria-label="Rule type" onChange={event => onChange(changeKind(criterion, event.target.value))}><option value="recent_split">Split event</option><option value="fixed">Filter</option><option value="between">Between</option><option value="like">Text contains</option><option value="in">One of</option><option value="full_expression">Expression</option></select><button className="icon-button" type="button" onClick={onRemove} aria-label={`Remove rule ${index + 1}`}><X /></button></div>{recentSplit ? <RecentSplitCriterion criterion={criterion} onChange={onChange} /> : expression ? <div className="expression-rule"><ExpressionTokenList label="Left" value={criterion.left_side ?? []} catalog={catalog} tagNames={tagNames} valueType={rightDateExpression ? 'date' : undefined} hideStockSplits onChange={updateLeft} /><select className="comparison-select" value={criterion.operator} onChange={event => onChange({ ...criterion, operator: event.target.value })}>{comparisonOptions.map(operator => <option key={operator}>{operator}</option>)}</select><ExpressionTokenList label="Right" value={criterion.right_side ?? []} catalog={catalog} tagNames={tagNames} valueType={leftDateExpression ? 'date' : undefined} hideStockSplits onChange={right_side => onChange({ ...criterion, right_side })} /></div> : <SimpleCriterion criterion={criterion} catalog={catalog} onChange={onChange} />}</div>
 }
