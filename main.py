@@ -24,6 +24,7 @@ def _run_web(
 
     from src.utilities.logger import setup_logging
     from src.web_app.security import AppSettings
+    from src.web_app.tls import provision_tls
 
     settings = AppSettings.from_env(
         host=host,
@@ -42,8 +43,10 @@ def _run_web(
     if getattr(sys, "frozen", False):
         reload = False
 
+    cert_path, key_path = provision_tls(host=settings.host)
+
     logger.info(
-        "Starting web workstation on http://%s:%s",
+        "Starting web workstation on https://%s:%s",
         settings.host,
         settings.port,
     )
@@ -53,6 +56,8 @@ def _run_web(
         host=settings.host,
         port=settings.port,
         reload=reload,
+        ssl_certfile=cert_path,
+        ssl_keyfile=key_path,
     )
 
 
@@ -78,8 +83,9 @@ def _parse_args() -> argparse.Namespace:
         "--allow-remote",
         action="store_true",
         help=(
-            "Allow a non-loopback bind. Requires EDINET_AUTH_MODE=accounts, "
-            "EDINET_TRUSTED_HOSTS, and an HTTPS deployment."
+            "Allow a non-loopback bind. Requires EDINET_AUTH_MODE=accounts "
+            "and EDINET_TRUSTED_HOSTS. HTTPS is always served with the "
+            "certificate in data/certs/ (auto-generated when missing)."
         ),
     )
     parser.add_argument(

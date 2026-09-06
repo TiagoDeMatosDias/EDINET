@@ -10,6 +10,7 @@ import shutil
 import signal
 import socket
 import sqlite3
+import ssl
 import subprocess
 import sys
 import time
@@ -168,6 +169,9 @@ def smoke_test(timeout: int) -> None:
         cwd=str(STAGING_DIR),
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
     )
+    # The app serves TLS with a self-signed certificate from data/certs/ next
+    # to the executable; skip verification, this is a loopback smoke test.
+    context = ssl._create_unverified_context()
     deadline = time.monotonic() + timeout
     try:
         while time.monotonic() < deadline:
@@ -175,8 +179,9 @@ def smoke_test(timeout: int) -> None:
                 raise RuntimeError("Packaged application exited during smoke test")
             try:
                 with urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/health",
+                    f"https://127.0.0.1:{port}/health",
                     timeout=2,
+                    context=context,
                 ) as response:
                     health = json.load(response)
                 if health.get("version") == __version__:
@@ -187,8 +192,9 @@ def smoke_test(timeout: int) -> None:
             raise RuntimeError(f"Packaged application did not start within {timeout}s")
         for path in ("/", "/api/steps"):
             with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}{path}",
+                f"https://127.0.0.1:{port}{path}",
                 timeout=5,
+                context=context,
             ) as response:
                 if response.status != 200:
                     raise RuntimeError(f"Smoke request failed: {path}")

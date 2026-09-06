@@ -14,7 +14,7 @@ del /s /q *.pyc 2>nul
 echo.
 echo Starting server...
 echo Look for: "Portfolio API router explicitly registered"
-echo Then test: http://127.0.0.1:8000/portfolio
+echo Then test: https://127.0.0.1:8000/portfolio
 echo.
 
 python -m src.web_app.server

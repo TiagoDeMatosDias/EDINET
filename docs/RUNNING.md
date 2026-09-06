@@ -33,9 +33,15 @@ Launch the local workstation:
 .\.venv3\Scripts\python.exe main.py --no-reload
 ```
 
-Open `http://127.0.0.1:8000`.
+Open `https://127.0.0.1:8000`.
 
-Remote binding requires explicit opt-in, account authentication, HTTPS at the deployment boundary, and trusted hosts:
+### TLS certificates
+
+The workstation always serves HTTPS. On startup it reuses the first certificate/key pair found in `data/certs/` and, when the folder holds no usable pair, generates a self-signed one there so HTTPS works immediately and later startups reuse the same certificate. Supported pair names, in lookup order: `cert.pem`+`key.pem`, `fullchain.pem`+`privkey.pem` (Let's Encrypt layout), `tls.crt`+`tls.key`, and `server.crt`+`server.key`. The directory can be moved with `EDINET_CERT_DIR`; when running the packaged Windows executable it lives in `data/certs/` next to the executable.
+
+The generated certificate is self-signed (ten-year validity, SANs for `localhost`, `127.0.0.1`, `::1`, and the configured bind host), so browsers warn on the first visit. Accept the warning once per machine, or trust `data/certs/cert.pem` in the operating system's root store. A certificate/key pair that exists but is unreadable or mismatched stops startup with a clear error rather than being overwritten; delete or replace those files to recover.
+
+Remote binding requires explicit opt-in, account authentication, and trusted hosts. TLS is served by the application itself; remote clients must trust the certificate in `data/certs/`, so a CA-issued certificate should be placed there for production access:
 
 ```powershell
 $env:EDINET_AUTH_MODE = "accounts"
@@ -50,7 +56,7 @@ Account mode and open registration are the defaults. The first successful regist
 
 Administrators can change the minimum password length under `/admin` → Security settings. The accepted range is 15–128 characters, and the stored policy applies to registration, invitations, resets, password changes, and administrator-created credentials. The public `/pricing` page currently advertises €10 per month or €100 per year; it is informational and does not enable billing or subscription enforcement.
 
-For frontend development, keep FastAPI running on port 8000 and start Vite in another terminal:
+For frontend development, keep FastAPI serving HTTPS on port 8000 and start Vite in another terminal (the dev proxy targets `https://127.0.0.1:8000` with certificate verification disabled for the self-signed certificate):
 
 ```bash
 cd frontend-v2

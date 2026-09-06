@@ -16,10 +16,11 @@ def test_launcher_rejects_remote_bind_without_opt_in(monkeypatch):
         launcher._run_web(host="0.0.0.0", allow_remote=False)
 
 
-def test_launcher_propagates_validated_remote_settings(monkeypatch):
+def test_launcher_propagates_validated_remote_settings(monkeypatch, tmp_path):
     captured = {}
     monkeypatch.setenv("EDINET_AUTH_MODE", "accounts")
     monkeypatch.setenv("EDINET_TRUSTED_HOSTS", "research.example")
+    monkeypatch.setenv("EDINET_CERT_DIR", str(tmp_path))
     monkeypatch.setattr(
         uvicorn,
         "run",
@@ -38,4 +39,8 @@ def test_launcher_propagates_validated_remote_settings(monkeypatch):
         "host": "0.0.0.0",
         "port": 8123,
         "reload": False,
+        "ssl_certfile": tmp_path / "cert.pem",
+        "ssl_keyfile": tmp_path / "key.pem",
     }
+    assert (tmp_path / "cert.pem").is_file()
+    assert (tmp_path / "key.pem").is_file()

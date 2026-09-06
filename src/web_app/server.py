@@ -184,11 +184,18 @@ _assert_unique_method_paths()
 def main() -> None:
     import uvicorn
 
+    from src.web_app.tls import provision_tls
+
+    cert_path, key_path = provision_tls(host=SETTINGS.host)
+    # Pass the app object: this module may already be running as ``__main__``,
+    # and importing it again by string would re-register every route.
     uvicorn.run(
-        "src.web_app.server:app",
+        app,
         host=SETTINGS.host,
         port=SETTINGS.port,
         reload=False,
+        ssl_certfile=cert_path,
+        ssl_keyfile=key_path,
     )
 
 

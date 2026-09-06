@@ -2,7 +2,7 @@
 
 Shade Research is a local-first company research workstation. It combines source filings and XBRL—including EDINET—standardized financial statements, company search, screening, comparison, backtesting, portfolio analysis, and private research state in one FastAPI and React application.
 
-The public homepage is served at `http://127.0.0.1:8000/`; the signed-in or local workspace starts at `/overview`. The pricing page currently presents one informational tier at €10 per month or €100 per year. Payment processing and subscription enforcement are not implemented.
+The public homepage is served at `https://127.0.0.1:8000/`; the signed-in or local workspace starts at `/overview`. The server always speaks HTTPS using a certificate from `data/certs/`, generating a self-signed one on first start when the folder is empty. The pricing page currently presents one informational tier at €10 per month or €100 per year. Payment processing and subscription enforcement are not implemented.
 
 ## Current capabilities
 
@@ -38,7 +38,7 @@ Set-Location ..
 .\.venv3\Scripts\python.exe main.py --no-reload
 ```
 
-Open `http://127.0.0.1:8000`.
+Open `https://127.0.0.1:8000`. The first HTTPS request shows a certificate warning because the certificate is self-signed; accept it once, or add `data/certs/cert.pem` to the operating system's trusted root store. To serve a real certificate instead, place a certificate/key pair in `data/certs/` (supported pairs: `cert.pem`+`key.pem`, `fullchain.pem`+`privkey.pem`, `tls.crt`+`tls.key`, `server.crt`+`server.key`).
 
 Account mode and open registration are the defaults. The first registered account becomes the administrator. Set `EDINET_AUTH_MODE=disabled` only for unrestricted loopback compatibility.
 
@@ -51,7 +51,7 @@ API_KEY=<your-edinet-api-token>
 
 On a clean start, the server creates the configured Base, Standardized, Portfolio, auth, research, pipeline-job, and filing databases if they do not exist. Use the Pipeline workspace to populate market and filing data.
 
-For frontend development, keep FastAPI on port 8000 and run `npm run dev` from `frontend-v2/`. See [Running the Application](docs/RUNNING.md) for account mode, remote binding, storage, pipeline configuration, and recovery commands.
+For frontend development, keep FastAPI serving HTTPS on port 8000 and run `npm run dev` from `frontend-v2/`; the Vite dev proxy targets `https://127.0.0.1:8000` without verifying the self-signed certificate. See [Running the Application](docs/RUNNING.md) for account mode, remote binding, storage, pipeline configuration, and recovery commands.
 
 ## Routes
 
