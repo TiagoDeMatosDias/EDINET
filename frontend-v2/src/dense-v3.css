@@ -50,10 +50,14 @@
 .selection-actions { display: flex; align-items: center; gap: 4px; margin-bottom: 5px; font-size: .7rem; }
 .selection-actions span { margin-right: 3px; color: var(--muted); }
 .selection-actions button, .table-pager button { min-height: 25px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); background: var(--surface); cursor: pointer; font-size: .68rem; }
+.selection-actions .export-csv { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; color: var(--primary); font-weight: 700; }
+.selection-actions .export-csv svg { width: 11px; height: 11px; flex: 0 0 auto; }
+.selection-actions .export-csv:disabled { color: var(--muted); opacity: .55; cursor: not-allowed; }
 .financial-table-wrap { width: 100%; overflow: visible; }
 .financial-data-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: .62rem; }
 .financial-data-table .financial-metric-col { width: 27%; }
 .financial-data-table th, .financial-data-table td { height: 24px; padding: 3px 4px; border: 1px solid var(--border); overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.financial-data-table tbody td { white-space: normal; overflow-wrap: anywhere; }
 .financial-data-table thead th { color: var(--muted); background: var(--surface-subtle); font-weight: 800; }
 .financial-data-table th:first-child { text-align: left; }
 .financial-data-table tbody th { display: flex; align-items: center; justify-content: space-between; gap: 4px; }

@@ -1,10 +1,12 @@
-import { ArrowDown, ArrowUp } from 'lucide-react'
+import { ArrowDown, ArrowUp, Download } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Line } from 'react-chartjs-2'
 
 import type { HistoryMetric, HistoryTable, SecurityHistory } from '../../api/types'
 import { BRAND_CHART_COLORS } from '../../brand'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
+import { downloadTextFile } from './downloads'
+import { formatGranularNumber } from './numberFormat'
 
 const COLORS = [...BRAND_CHART_COLORS]
 const INCOME_STATEMENT_DEFAULTS = [
@@ -16,6 +18,20 @@ export type FinancialUnit = { scale: number; label: string }
 
 function finiteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
+}
+
+export function csvCell(value: string): string {
+  return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value
+}
+
+export function selectedMetricsCsv(metrics: HistoryMetric[], periods: string[], selected: string[]): string {
+  const chosen = metrics.filter(metric => selected.includes(metric.field))
+  const lines = [['field', 'display_name', ...periods].map(csvCell).join(',')]
+  for (const metric of chosen) {
+    const cells = [metric.field, metric.display_name, ...metric.values.map(value => value == null ? '' : String(value))]
+    lines.push(cells.map(csvCell).join(','))
+  }
+  return lines.join('\r\n')
 }
 
 function numericMetrics(metrics: HistoryMetric[]) {
@@ -55,8 +71,11 @@ function orderedRows(table: HistoryTable, search: string, order: string, manual:
 
 function formatValue(value: unknown, compact: boolean, unit: FinancialUnit) {
   if (!finiteNumber(value)) return String(value ?? '—')
-  const scaled = compact ? value / unit.scale : value
-  return scaled.toLocaleString(undefined, { maximumFractionDigits: compact ? 2 : 0 })
+  if (!compact) {
+    // Zero-width spaces after the thousands separators let long values wrap at group boundaries.
+    return formatGranularNumber(value).replace(/,/g, ',\u200B')
+  }
+  return (value / unit.scale).toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
 
 type TableProps = {
@@ -82,7 +101,7 @@ function SelectedChart({ metrics, periods, selected, compact, unit }: { metrics:
   return <Line data={{ labels: periods, datasets }} options={{ responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { position: 'bottom', labels: { boxWidth: 9, usePointStyle: true, font: { size: 10 } } } }, scales: { x: { grid: { display: false } }, y: { position: 'right', title: { display: compact, text: unit.label }, ticks: { callback: value => Number(value).toLocaleString() } } } }} />
 }
 
-export function FinancialHistoryWorkspace({ history, isLoading, error, retry }: { history?: SecurityHistory; isLoading: boolean; error: unknown; retry: () => void }) {
+export function FinancialHistoryWorkspace({ history, isLoading, error, retry, downloadPrefix }: { history?: SecurityHistory; isLoading: boolean; error: unknown; retry: () => void; downloadPrefix?: string }) {
   const [source, setSource] = useState('')
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<string[] | null>(null)
@@ -97,9 +116,15 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry }: 
   const active = (selected === null ? defaults : selected).filter(field => numeric.some(metric => metric.field === field))
   const complete = completeMetricFields(numeric, history?.periods ?? [])
   const unit = chooseFinancialUnit(numeric)
+  const exportCsv = () => {
+    if (!table || !active.length) return
+    const prefix = downloadPrefix?.trim() ? downloadPrefix.trim() : 'financial-history'
+    const csv = selectedMetricsCsv(table.metrics, history?.periods ?? [], active)
+    downloadTextFile(`${prefix}-${sourceKey}-metrics.csv`, csv, 'text/csv;charset=utf-8')
+  }
   const move = (field: string, delta: number) => { const fields = manualOrders[sourceKey] ?? (table?.metrics ?? []).map(metric => metric.field); const index = fields.indexOf(field); const next = [...fields]; const target = Math.max(0, Math.min(fields.length - 1, index + delta)); [next[index], next[target]] = [next[target], next[index]]; setManualOrders(current => ({ ...current, [sourceKey]: next })); setOrder('manual') }
   if (isLoading) return <LoadingState label="Loading financial history" />
   if (error) return <ErrorState error={error} retry={retry} />
   if (!table) return <EmptyState title="No financial history" description="No compatible statement tables were found." />
-  return <div className="financial-workspace financial-workspace--unified"><div className="financial-toolbar financial-toolbar--unified"><select className="select" value={sourceKey} onChange={event => { setSource(event.target.value); setSelected(null) }}>{Object.entries(tables).map(([key, value]) => <option key={key} value={key}>{value.display_name}</option>)}</select><input className="input" value={search} onChange={event => setSearch(event.target.value)} placeholder="Filter metrics by name or field" /><select className="select" aria-label="Metric order" value={order} onChange={event => setOrder(event.target.value)}><option value="source">Source order</option><option value="alpha">A–Z</option><option value="coverage">Most Data</option><option value="manual">Manual order</option></select><div className="segmented"><button className={!compact ? 'active' : ''} onClick={() => setCompact(false)}>Raw</button><button className={compact ? 'active' : ''} onClick={() => setCompact(true)}>Compact · {unit.label}</button></div></div><div className="selection-actions"><span>{active.length} selected</span><button onClick={() => setSelected(defaults)}>Default</button><button onClick={() => setSelected(numeric.map(metric => metric.field))}>All</button><button onClick={() => setSelected([])}>None</button><button onClick={() => setSelected(complete)}>Complete data ({complete.length})</button></div><div className="financial-history-split"><FinancialTable table={table} periods={history?.periods ?? []} search={search} order={order} compact={compact} unit={unit} manual={manualOrders[sourceKey] ?? []} selected={active} onMove={move} onSelect={setSelected} /><section className="financial-chart-panel"><strong>Selected metrics</strong><div className="financial-chart financial-chart--unified"><SelectedChart metrics={numeric} periods={history?.periods ?? []} selected={active} compact={compact} unit={unit} /></div></section></div></div>
+  return <div className="financial-workspace financial-workspace--unified"><div className="financial-toolbar financial-toolbar--unified"><select className="select" value={sourceKey} onChange={event => { setSource(event.target.value); setSelected(null) }}>{Object.entries(tables).map(([key, value]) => <option key={key} value={key}>{value.display_name}</option>)}</select><input className="input" value={search} onChange={event => setSearch(event.target.value)} placeholder="Filter metrics by name or field" /><select className="select" aria-label="Metric order" value={order} onChange={event => setOrder(event.target.value)}><option value="source">Source order</option><option value="alpha">A–Z</option><option value="coverage">Most Data</option><option value="manual">Manual order</option></select><div className="segmented"><button className={!compact ? 'active' : ''} onClick={() => setCompact(false)}>Raw</button><button className={compact ? 'active' : ''} onClick={() => setCompact(true)}>Compact · {unit.label}</button></div></div><div className="selection-actions"><span>{active.length} selected</span><button onClick={() => setSelected(defaults)}>Default</button><button onClick={() => setSelected(numeric.map(metric => metric.field))}>All</button><button onClick={() => setSelected([])}>None</button><button onClick={() => setSelected(complete)}>Complete data ({complete.length})</button><button className="export-csv" disabled={!active.length} onClick={exportCsv} title="Download the selected metrics as CSV (raw statement values)"><Download size={12} />Export CSV</button></div><div className="financial-history-split"><FinancialTable table={table} periods={history?.periods ?? []} search={search} order={order} compact={compact} unit={unit} manual={manualOrders[sourceKey] ?? []} selected={active} onMove={move} onSelect={setSelected} /><section className="financial-chart-panel"><strong>Selected metrics</strong><div className="financial-chart financial-chart--unified"><SelectedChart metrics={numeric} periods={history?.periods ?? []} selected={active} compact={compact} unit={unit} /></div></section></div></div>
 }

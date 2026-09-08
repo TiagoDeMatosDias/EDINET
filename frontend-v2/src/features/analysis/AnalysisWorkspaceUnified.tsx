@@ -1,16 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CategoryScale, Chart as ChartJS, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip } from 'chart.js'
-import { ArrowLeft, BarChart3, ExternalLink, Plus, RefreshCw, X } from 'lucide-react'
+import { ArrowLeft, BarChart3, Download, ExternalLink, Plus, RefreshCw, X } from 'lucide-react'
 import { useState } from 'react'
 import { Line } from 'react-chartjs-2'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 
-import { apiPost, apiRequest, queryString } from '../../api/client'
+import { apiPost, apiRequest, authenticatedFetch, queryString } from '../../api/client'
 import type { SecurityHistory, SecurityOverview } from '../../api/types'
 import { BRAND_COLORS } from '../../brand'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
 import { Card, Metric, PageHeader } from '../../components/Page'
+import { downloadBlob, downloadTextFile, safeFileName } from './downloads'
 import { FinancialHistoryWorkspace } from './FinancialHistoryWorkspace'
+import { buildCompanyReport } from './markdownReport'
 import { filterPriceHistory, PRICE_RANGE_OPTIONS, type PriceHistoryRow, type PriceRangeKey } from './priceHistoryRanges'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Legend, Tooltip)
@@ -74,7 +76,29 @@ function PriceChart({ ticker }: { ticker: string }) {
 
 function FilingSummaryCard({ companyCode }: { companyCode: string }) {
   const filings = useQuery({ queryKey: ['company-filings', companyCode], queryFn: () => apiRequest<{ filings: FilingSummary[] }>(`/api/filings/company/${encodeURIComponent(companyCode)}`) })
-  return <Card title="XBRL filings" description="Retained EDINET type-1 reports for this company.">{filings.isLoading && <LoadingState label="Loading filings" />}{filings.data?.filings.slice(0, 8).map(filing => <Link className="filing-row" key={filing.doc_id} to={`/filings/${encodeURIComponent(filing.doc_id)}?from=analysis&company=${encodeURIComponent(companyCode)}`}><span><strong>{filing.period_end || 'Period unavailable'}</strong><small>{filing.doc_id}</small></span><span><small>{filing.submitted_at || 'Submission unavailable'} · {filing.status}</small></span></Link>)}{filings.data && !filings.data.filings.length && <EmptyState title="No archived XBRL reports" description="Type-1 filing packages will appear after acquisition." />}<Link className="button button--ghost" to={`/filings?company=${encodeURIComponent(companyCode)}&from=analysis`}>Open Filing Explorer</Link></Card>
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState('')
+  const exportAll = async () => {
+    setExporting(true)
+    setExportError('')
+    try {
+      const response = await authenticatedFetch(`/api/filings/company/${encodeURIComponent(companyCode)}/export`)
+      if (!response.ok) throw new Error(response.status === 404 ? 'No filing archives are available to export.' : `Export failed (${response.status})`)
+      const blob = await response.blob()
+      downloadBlob(`${safeFileName(companyCode)}-filings.zip`, blob)
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'Export failed')
+    } finally {
+      setExporting(false)
+    }
+  }
+  return <Card
+    title="XBRL filings"
+    description="Retained EDINET type-1 reports for this company."
+    actions={filings.data && filings.data.filings.length > 0
+      ? <button className="button button--secondary" disabled={exporting} onClick={() => void exportAll()} title="Download a ZIP containing every retained filing archive"><Download />{exporting ? 'Preparing…' : 'Export all filings'}</button>
+      : undefined}
+  >{filings.isLoading && <LoadingState label="Loading filings" />}{filings.data?.filings.slice(0, 8).map(filing => <Link className="filing-row" key={filing.doc_id} to={`/filings/${encodeURIComponent(filing.doc_id)}?from=analysis&company=${encodeURIComponent(companyCode)}`}><span><strong>{filing.period_end || 'Period unavailable'}</strong><small>{filing.doc_id}</small></span><span><small>{filing.submitted_at || 'Submission unavailable'} · {filing.status}</small></span></Link>)}{filings.data && !filings.data.filings.length && <EmptyState title="No archived XBRL reports" description="Type-1 filing packages will appear after acquisition." />}{exportError && <p className="form-error" role="alert" style={{ margin: '8px 0 0' }}>{exportError}</p>}<Link className="button button--ghost" to={`/filings?company=${encodeURIComponent(companyCode)}&from=analysis`}>Open Filing Explorer</Link></Card>
 }
 
 function SnapshotMetrics({ metrics }: { metrics: Record<string, number | null> }) {
@@ -117,5 +141,22 @@ export default function AnalysisWorkspaceUnified() {
   if (overview.isError) return <ErrorState error={overview.error} retry={() => overview.refetch()} />
   const metricKeys = [['LatestPrice', 'Price'], ['MarketCap', 'Market cap'], ['PERatio', 'P/E'], ['PriceToBook', 'P/B'], ['PriceToSales', 'P/S'], ['ReturnOnEquity', 'ROE'], ['ReturnOnAssets', 'ROA'], ['DividendsYield', 'Dividend'], ['CurrentRatio', 'Current ratio'], ['DebtToEquity', 'Debt/equity'], ['OperatingMargin', 'Operating margin'], ['PayoutRatio', 'Payout']]
   const yahooSymbol = yahooFinanceSymbol(ticker)
-  return <div className="stack dense-page analysis-workspace"><PageHeader eyebrow="Company analysis" title={name} description={[ticker, canonicalCode, company.industry, company.market].filter(Boolean).join(' · ')} actions={<div className="button-row">{params.get('from') === 'screen' && <Link className="button button--ghost" to="/screen"><ArrowLeft />Return to Screening</Link>}{yahooSymbol && <a className="button button--secondary" href={`https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`} target="_blank" rel="noreferrer"><ExternalLink />Yahoo Finance</a>}<Link className="button button--primary" to={`/backtest?symbol=${ticker}`}><BarChart3 />Backtest</Link></div>} /><div className="metric-strip analysis-metric-strip">{metricKeys.map(([key, label]) => <Metric key={key} label={label} value={formatOverview(key, metrics[key])} detail={key === 'LatestPrice' ? <button className="text-button" onClick={() => updatePrice.mutate()}><RefreshCw />Refresh</button> : undefined} />)}</div><div className="analysis-top-grid"><Card title="Price history"><PriceChart ticker={ticker} /></Card><Card title="Company snapshot"><dl className="company-facts"><div><dt>Industry</dt><dd>{String(company.industry ?? '—')}</dd></div><div><dt>Market</dt><dd>{String(company.market ?? '—')}</dd></div><div><dt>Code</dt><dd>{canonicalCode || '—'}</dd></div><div><dt>Ticker</dt><dd>{ticker || '—'}</dd></div></dl>{metricPeriod && <p className="company-snapshot-period">Financial metrics: {metricPeriod}</p>}<SnapshotMetrics metrics={metrics} /><div className="company-tags"><div className="tag-list">{(tags.data?.tags ?? []).map(tag => <span className="tag" key={tag}>{tag}<button className="icon-button" onClick={() => removeTag.mutate(tag)} aria-label={`Remove tag ${tag}`}><X /></button></span>)}</div><div className="tag-add"><input className="input" placeholder="Add tag…" value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newTag.trim()) { addTag.mutate(newTag.trim()); setNewTag('') } }} /><button className="button button--ghost" disabled={!newTag.trim() || !canonicalCode} onClick={() => { addTag.mutate(newTag.trim()); setNewTag('') }} aria-label="Add tag"><Plus /></button></div></div><div className="company-description-block"><strong>Business description</strong><p className="company-description company-description--compact">{String(company.yahoo_description || company.description_summary || company.description || 'No business description available.')}</p></div></Card></div><Card className="analysis-history-card" title="Financial history" description="Select metrics in the table to chart them alongside the underlying values."><FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} /></Card>{canonicalCode && <FilingSummaryCard companyCode={canonicalCode} />}</div>
+  const reportDescription = [company.yahoo_description, company.description_summary, company.description].find(value => value != null && String(value).trim())
+  const downloadReport = () => {
+    if (!history.data) return
+    downloadTextFile(`${safeFileName(name)}-report.md`, buildCompanyReport({
+      name,
+      ticker,
+      companyCode: canonicalCode || undefined,
+      industry: company.industry ? String(company.industry) : undefined,
+      market: company.market ? String(company.market) : undefined,
+      description: reportDescription ? String(reportDescription).slice(0, 4000) : undefined,
+      snapshotPeriod: metricPeriod || undefined,
+      snapshotGroups: SNAPSHOT_GROUPS,
+      metrics,
+      formatSnapshotMetric: formatOverview,
+      history: history.data,
+    }), 'text/markdown;charset=utf-8')
+  }
+  return <div className="stack dense-page analysis-workspace"><PageHeader eyebrow="Company analysis" title={name} description={[ticker, canonicalCode, company.industry, company.market].filter(Boolean).join(' · ')} actions={<div className="button-row">{params.get('from') === 'screen' && <Link className="button button--ghost" to="/screen"><ArrowLeft />Return to Screening</Link>}<button className="button button--secondary" disabled={!history.data} onClick={downloadReport} title={history.data ? 'Download a markdown report with the snapshot and financial history' : 'Financial history is still loading'}><Download />Export report</button>{yahooSymbol && <a className="button button--secondary" href={`https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`} target="_blank" rel="noreferrer"><ExternalLink />Yahoo Finance</a>}<Link className="button button--primary" to={`/backtest?symbol=${ticker}`}><BarChart3 />Backtest</Link></div>} /><div className="metric-strip analysis-metric-strip">{metricKeys.map(([key, label]) => <Metric key={key} label={label} value={formatOverview(key, metrics[key])} detail={key === 'LatestPrice' ? <button className="text-button" onClick={() => updatePrice.mutate()}><RefreshCw />Refresh</button> : undefined} />)}</div><div className="analysis-top-grid"><Card title="Price history"><PriceChart ticker={ticker} /></Card><Card title="Company snapshot"><dl className="company-facts"><div><dt>Industry</dt><dd>{String(company.industry ?? '—')}</dd></div><div><dt>Market</dt><dd>{String(company.market ?? '—')}</dd></div><div><dt>Code</dt><dd>{canonicalCode || '—'}</dd></div><div><dt>Ticker</dt><dd>{ticker || '—'}</dd></div></dl>{metricPeriod && <p className="company-snapshot-period">Financial metrics: {metricPeriod}</p>}<SnapshotMetrics metrics={metrics} /><div className="company-tags"><div className="tag-list">{(tags.data?.tags ?? []).map(tag => <span className="tag" key={tag}>{tag}<button className="icon-button" onClick={() => removeTag.mutate(tag)} aria-label={`Remove tag ${tag}`}><X /></button></span>)}</div><div className="tag-add"><input className="input" placeholder="Add tag…" value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newTag.trim()) { addTag.mutate(newTag.trim()); setNewTag('') } }} /><button className="button button--ghost" disabled={!newTag.trim() || !canonicalCode} onClick={() => { addTag.mutate(newTag.trim()); setNewTag('') }} aria-label="Add tag"><Plus /></button></div></div><div className="company-description-block"><strong>Business description</strong><p className="company-description company-description--compact">{String(company.yahoo_description || company.description_summary || company.description || 'No business description available.')}</p></div></Card></div><Card className="analysis-history-card" title="Financial history" description="Select metrics in the table to chart them alongside the underlying values."><FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} downloadPrefix={canonicalCode || ticker} /></Card>{canonicalCode && <FilingSummaryCard companyCode={canonicalCode} />}</div>
 }

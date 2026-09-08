@@ -279,3 +279,81 @@ def test_inline_xbrl_fact_is_normalized():
     parsed = XbrlParser().parse(inline, "S1", "A1")
     assert parsed.facts[0].concept == "Revenue"
     assert parsed.facts[0].numeric_value == 12_000
+
+
+def _filing_row(doc_id: str, company: str, content: bytes | None) -> dict:
+    return {
+        "doc_id": doc_id,
+        "edinet_code": company,
+        "submitter_name": "テスト会社",
+        "period_start": "2024-04-01",
+        "period_end": "2025-03-31",
+        "submitted_at": f"2025-06-01T00:00:{doc_id[-1]}Z",
+        "form_code": "030000",
+        "doc_type_code": "1",
+        "xbrl_flag": "1",
+        "csv_flag": "0",
+        "archive_path": "",
+        "archive_content": content,
+        "archive_sha256": "digest",
+        "archive_size": len(content) if content else 0,
+        "status": "parsed",
+        "parse_error": None,
+        "created_at": "2025-06-01T00:00:00Z",
+        "updated_at": "2025-06-01T00:00:00Z",
+    }
+
+
+def test_build_filings_bundle_combines_retained_archives(tmp_path):
+    from src.filings import api as filings_api
+
+    catalog = FilingCatalog(tmp_path / "Filings.db")
+    catalog.upsert_filing(_filing_row("S100ONE", "E12345", _zip_bytes(("PublicDoc/a.txt", b"one"))))
+    catalog.upsert_filing(_filing_row("S100TWO", "E12345", _zip_bytes(("PublicDoc/b.txt", b"two"))))
+    catalog.upsert_filing(_filing_row("S100SKIP", "E12345", None))
+    catalog.upsert_filing(_filing_row("S100OTHER", "E99999", _zip_bytes(("PublicDoc/c.txt", b"other"))))
+
+    destination = tmp_path / "bundle.zip"
+    summary = filings_api.build_filings_bundle(catalog, "E12345", destination)
+    assert summary == {"filings": 3, "bundled": 2, "skipped": 1}
+
+    with zipfile.ZipFile(destination) as bundle:
+        names = bundle.namelist()
+        assert "S100ONE.zip" in names
+        assert "S100TWO.zip" in names
+        assert "S100SKIP.zip" not in names
+        assert "S100OTHER.zip" not in names
+        assert "manifest.csv" in names
+        for name in ("S100ONE.zip", "S100TWO.zip"):
+            inner = zipfile.ZipFile(io.BytesIO(bundle.read(name)))
+            assert inner.namelist()[0] == "PublicDoc/a.txt" or inner.namelist()[0] == "PublicDoc/b.txt"
+        manifest = bundle.read("manifest.csv").decode("utf-8-sig")
+    manifest_lines = manifest.splitlines()
+    assert manifest_lines[0].startswith("doc_id,period_end,submitted_at")
+    by_doc = {line.split(",")[0]: line for line in manifest_lines[1:]}
+    assert by_doc["S100ONE"].endswith(",1")
+    assert by_doc["S100SKIP"].endswith(",0")
+
+
+def test_build_filings_bundle_rejects_unknown_company(tmp_path):
+    from fastapi import HTTPException
+
+    from src.filings import api as filings_api
+
+    catalog = FilingCatalog(tmp_path / "Filings.db")
+    with pytest.raises(HTTPException) as exc_info:
+        filings_api.build_filings_bundle(catalog, "E99999", tmp_path / "bundle.zip")
+    assert exc_info.value.status_code == 404
+
+
+def test_export_company_filings_requires_authentication():
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from src.filings import api as filings_api
+
+    request = SimpleNamespace(state=SimpleNamespace(user=None))
+    with pytest.raises(HTTPException) as exc_info:
+        filings_api.export_company_filings(request, "E12345")
+    assert exc_info.value.status_code == 401

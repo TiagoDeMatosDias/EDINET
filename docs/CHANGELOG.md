@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Company Analysis exports: the selected financial-history metrics download as a raw-value CSV, an `Export report` action in the page header downloads a markdown report combining the company snapshot and full statement history, and `Export all filings` downloads one ZIP containing every retained filing archive for the company (each as `<doc_id>.zip` plus a `manifest.csv`).
 - The web workstation now serves HTTPS on its configured port, terminating TLS itself. Startup reuses the first certificate/key pair found in `data/certs/` (`cert.pem`+`key.pem`, `fullchain.pem`+`privkey.pem`, `tls.crt`+`tls.key`, or `server.crt`+`server.key`; override the directory with `EDINET_CERT_DIR`) and, when none exists, generates a persistent self-signed pair there covering `localhost`, `127.0.0.1`, `::1`, and the bind host. A mismatched or unreadable existing pair stops startup with a clear error instead of being overwritten.
 - Added a `check_tdnet_splits` pipeline step that captures Japanese stock-split and share-consolidation announcements from the TSE timely-disclosure service (TDnet) into a new `Tdnet_Disclosures` event table; splits are not EDINET-reportable events, and TDnet only serves a rolling ~30-day window, so scheduled runs keep the event history complete and idempotent.
 
@@ -14,6 +15,8 @@ All notable changes to this project will be documented in this file.
 - Screening now has one set of split-event semantics across every rule shape: raw `Stock_Splits` filters match confirmed events by default and never look past the as-of date (point-in-time screens and rolling backtests can no longer see future splits), the expression join projects the latest confirmed split as of the screening date, and the rule formerly labelled `No recent split` is now `Split event` with a relative window (default 365 days anchored on the as-of date or today), an Advanced panel for confirmation status and exact cutoffs, and intent-named `+ Rule` templates. The screening API no longer returns the generated SQL (`sql_display` was removed from run responses and is stripped from cached results), keeping query internals server-side.
 
 ### Fixed
+
+- Financial history no longer rounds raw values to whole numbers: Raw view renders every stored number at full precision (thousands-separated, wrapping at group boundaries), matching the granularity of the CSV export and markdown report.
 - `python -m src.web_app.server` starts again instead of failing with duplicate-route registration; the module passes the already-built app object to uvicorn rather than re-importing itself by string.
 - Price ingestion now rejects degenerate provider histories for every source: sparse multi-year responses (weekly/monthly bars posing as daily) fail over to the next provider, and weekend-dated rows for Japanese codes are dropped.
 - Yahoo Finance backfills now send explicit `period1`/`period2` instead of `range=max` (which made Yahoo return monthly bars) and reject any payload whose `dataGranularity` is not `1d`, so full daily history lands in one request per ticker.

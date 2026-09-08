@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import os
+import re
+import sqlite3
+import tempfile
+import zipfile
 from html import escape
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.background import BackgroundTask
 
 from src.auth.models import AuthenticatedUser
 from src.orchestrator.common.db_config import get_db1
@@ -17,6 +25,7 @@ from src.orchestrator.common.sqlite import connect_read
 
 from .acquisition import EdinetAcquisitionError, EdinetDownloadClient
 from .archive import ArchiveMemberNotFoundError, UnsafeArchiveError
+from .catalog import FilingCatalog
 from .runtime import catalog
 from .translate import (
     TRANSLATOR_VERSION,
@@ -81,6 +90,92 @@ def list_company_filings(edinet_code: str, limit: int = 100, offset: int = 0) ->
         raise HTTPException(status_code=400, detail="EDINET code is required")
     rows = catalog.list_company(edinet_code.strip(), limit, offset)
     return {"filings": [_record(row) for row in rows], "limit": min(max(limit, 1), 500), "offset": max(offset, 0)}
+
+
+def build_filings_bundle(
+    target_catalog: FilingCatalog,
+    edinet_code: str,
+    destination: str | Path,
+) -> dict[str, Any]:
+    """Write every retained filing archive for one company into a ZIP file.
+
+    The bundle contains each original filing package as ``<doc_id>.zip`` plus a
+    ``manifest.csv`` that lists every examined filing and whether its archive was
+    included.  Returns ``{"filings", "bundled", "skipped"}`` counters.
+    """
+    filings: list[sqlite3.Row] = []
+    offset = 0
+    while True:
+        page = target_catalog.list_company(edinet_code, 500, offset)
+        filings.extend(page)
+        if len(page) < 500:
+            break
+        offset += len(page)
+    if not filings:
+        raise HTTPException(status_code=404, detail="No filings found for this company")
+
+    bundled = 0
+    skipped = 0
+    manifest: list[tuple[str, str, str, str, str, str, str, str]] = []
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as bundle:
+        for row in filings:
+            doc_id = str(row["doc_id"] or "").strip()
+            if not doc_id:
+                skipped += 1
+                continue
+            content = target_catalog.get_archive_content(doc_id)
+            manifest.append((
+                doc_id,
+                str(row["period_end"] or ""),
+                str(row["submitted_at"] or ""),
+                str(row["form_code"] or ""),
+                str(row["doc_type_code"] or ""),
+                str(row["status"] or ""),
+                "" if row["archive_size"] is None else str(row["archive_size"]),
+                "1" if content else "0",
+            ))
+            if not content:
+                skipped += 1
+                continue
+            bundled += 1
+            member_name = re.sub(r"[^A-Za-z0-9_.-]", "_", doc_id)
+            # The retained filing package is already a ZIP; store it verbatim.
+            bundle.writestr(f"{member_name}.zip", content, compress_type=zipfile.ZIP_STORED)
+        stream = io.StringIO()
+        writer = csv.writer(stream)
+        writer.writerow(("doc_id", "period_end", "submitted_at", "form_code", "doc_type_code", "status", "archive_size", "included"))
+        writer.writerows(manifest)
+        # utf-8-sig so spreadsheet applications decode the manifest correctly.
+        bundle.writestr("manifest.csv", "\ufeff" + stream.getvalue())
+    return {"filings": len(filings), "bundled": bundled, "skipped": skipped}
+
+
+@router.get("/company/{edinet_code}/export")
+def export_company_filings(request: Request, edinet_code: str) -> Response:
+    """Download a single ZIP containing every retained filing archive for a company."""
+    if not isinstance(getattr(request.state, "user", None), AuthenticatedUser):
+        raise HTTPException(status_code=401, detail="Account authentication is required")
+    code = edinet_code.strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="EDINET code is required")
+    fd, tmp_path = tempfile.mkstemp(prefix=f"edinet-filings-{code}-", suffix=".zip")
+    os.close(fd)
+    try:
+        summary = build_filings_bundle(catalog, code, tmp_path)
+        if summary["bundled"] == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="No retained filing archives are available for this company",
+            )
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
+    return FileResponse(
+        tmp_path,
+        media_type="application/zip",
+        filename=f"{code}-filings.zip",
+        background=BackgroundTask(os.unlink, tmp_path),
+    )
 
 
 @router.get("")
