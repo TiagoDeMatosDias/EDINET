@@ -505,7 +505,7 @@ Responsibility: Owner-scoped portfolio return, risk, drawdown, dividend, inflati
 
 ### [frontend-v2/](../frontend-v2/)
 
-Responsibility: Primary React/TypeScript/Vite workspace — application shell (AppShell), feature routes (Overview, Screening, Analysis, Backtesting, Portfolio, Pipeline), shared components (BrandLockup, DataTable, Feedback, GlobalCompanySearch), shared brand/chart tokens, responsive styles, API clients, and Vitest coverage.
+Responsibility: Primary React/TypeScript/Vite workspace — application shell (AppShell), feature routes (Overview, Screening, Analysis, Backtesting, Portfolio, Pipeline), shared components (BrandLockup, DataTable, Feedback, GlobalCompanySearch), shared brand tokens and the global Chart.js theme (`brand.ts`, `chartTheme.ts`), self-hosted fonts, responsive styles, API clients, and Vitest coverage.
 
 ### [frontend-v2/src/features/portfolio/PortfolioWorkspace.tsx](../frontend-v2/src/features/portfolio/PortfolioWorkspace.tsx)
 

@@ -17,7 +17,7 @@ import { buildCompanyReport } from './markdownReport'
 import { filterPriceHistory, PRICE_RANGE_OPTIONS, type PriceHistoryRow, type PriceRangeKey } from './priceHistoryRanges'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Legend, Tooltip)
-const PRICE_COLOR = BRAND_COLORS.midnight
+const PRICE_COLOR = BRAND_COLORS.ink
 const SNAPSHOT_GROUPS: Array<{ title: string; metrics: Array<[string, string]> }> = [
   { title: 'Market', metrics: [['LatestPrice', 'Price'], ['MarketCap', 'Market cap']] },
   { title: 'Valuation', metrics: [['PERatio', 'P/E'], ['PriceToBook', 'P/B'], ['PriceToSales', 'P/S'], ['EnterpriseValueToSales', 'EV/Sales'], ['DividendsYield', 'Dividend yield'], ['PayoutRatio', 'Payout ratio']] },
@@ -69,7 +69,7 @@ function PriceChart({ ticker }: { ticker: string }) {
   const providerLabels = [...new Set(visible.map(row => row.provider).filter(Boolean))]
   const data = {
     labels: visible.map(row => row.trade_date ?? row.Date ?? row.date ?? ''),
-    datasets: [{ data: visible.map(row => row.Price ?? row.price ?? null), borderColor: PRICE_COLOR, backgroundColor: `${BRAND_COLORS.midnight}18`, fill: true, pointRadius: 0, tension: .2 }],
+    datasets: [{ data: visible.map(row => row.Price ?? row.price ?? null), borderColor: PRICE_COLOR, fill: false, pointRadius: 0, tension: .2 }],
   }
   const options = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false }, ticks: { autoSkip: true, maxTicksLimit: 9, maxRotation: 0 } }, y: { position: 'right' as const } } }
   return <div className="price-history-workspace"><div className="price-range-toolbar"><div className="price-range-buttons" role="group" aria-label="Price history range">{PRICE_RANGE_OPTIONS.map(option => <button key={option.key} type="button" className={range === option.key ? 'active' : ''} aria-pressed={range === option.key} onClick={() => setRange(option.key)}>{option.label}</button>)}</div><span>{visible.length.toLocaleString()} prices</span>{basisLabels.length > 0 && <span title="Price basis recorded with each source row">Basis: {basisLabels.join(', ')}</span>}{providerLabels.length > 0 && <span title="Price provider recorded with each source row">Source: {providerLabels.join(', ')}</span>}</div><div className="price-chart"><Line data={data} options={options} /></div></div>

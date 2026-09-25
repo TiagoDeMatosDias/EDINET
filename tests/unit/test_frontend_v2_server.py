@@ -57,7 +57,7 @@ def test_canonical_brand_mark_is_served() -> None:
     response = client.get("/brand-assets/shade-mark.svg")
     assert response.status_code == 200
     assert "image/svg+xml" in response.headers.get("content-type", "")
-    assert b"Shade Research signal ring mark" in response.content
+    assert b"<title id=\"title\">Shade Research mark</title>" in response.content
 
 
 def test_unknown_api_route_is_not_served_as_spa() -> None:

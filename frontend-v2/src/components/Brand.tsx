@@ -1,4 +1,5 @@
-export const BRAND_MARK_URL = '/brand-assets/shade-mark.svg'
+// Bump the version whenever the mark changes: brand assets keep stable paths and browsers cache them hard.
+export const BRAND_MARK_URL = '/brand-assets/shade-mark.svg?v=2'
 
 interface BrandLockupProps {
   className?: string
@@ -28,11 +29,8 @@ export function BrandLockup({
     >
       <img className="brand-lockup__mark" src={BRAND_MARK_URL} alt="" aria-hidden="true" />
       <span className="brand-lockup__copy" aria-hidden="true">
-        <span className="brand-lockup__name">
-          <strong className="brand-lockup__shade">Shade</strong>
-          <strong className="brand-lockup__research">Research</strong>
-        </span>
-        {showTagline && <small className="brand-lockup__tagline">Value in context.</small>}
+        <span className="brand-lockup__name">Shade Research</span>
+        {showTagline && <small className="brand-lockup__tagline">Value in context</small>}
       </span>
     </span>
   )

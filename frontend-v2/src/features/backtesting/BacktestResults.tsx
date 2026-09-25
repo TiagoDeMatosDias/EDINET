@@ -23,7 +23,7 @@ function ResultMetrics({ summary }: { summary: Record<string, unknown> }) {
 }
 
 function ReturnChart({ rows }: { rows: Point[] }) {
-  const data = { labels: rows.map(row => row.date), datasets: [{ label: 'Portfolio', data: rows.map(row => row.portfolio == null ? null : row.portfolio * 100), borderColor: BRAND_COLORS.midnight, backgroundColor: `${BRAND_COLORS.midnight}18`, fill: true, pointRadius: 0 }, { label: 'Benchmark', data: rows.map(row => row.benchmark == null ? null : row.benchmark * 100), borderColor: SEMANTIC_CHART_COLORS.neutral, pointRadius: 0 }] }
+  const data = { labels: rows.map(row => row.date), datasets: [{ label: 'Portfolio', data: rows.map(row => row.portfolio == null ? null : row.portfolio * 100), borderColor: BRAND_COLORS.ink, fill: false, pointRadius: 0 }, { label: 'Benchmark', data: rows.map(row => row.benchmark == null ? null : row.benchmark * 100), borderColor: SEMANTIC_CHART_COLORS.neutral, pointRadius: 0 }] }
   return <Line data={data} options={{ responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { position: 'bottom' } }, scales: { x: { display: false }, y: { position: 'right', ticks: { callback: value => `${value}%` } } } }} />
 }
 
@@ -34,7 +34,7 @@ function DrawdownChart({ rows }: { rows: Point[] }) {
 
 function DecompositionChart({ rows }: { rows: Point[] }) {
   const sampled = rows.filter((_, index) => index % Math.max(1, Math.floor(rows.length / 80)) === 0 || index === rows.length - 1)
-  const data = { labels: sampled.map(row => row.date), datasets: [{ label: 'Price', data: sampled.map(row => (row.price_only ?? 0) * 100), backgroundColor: `${BRAND_COLORS.midnight}aa` }, { label: 'Dividend', data: sampled.map(row => (row.dividend_only ?? 0) * 100), backgroundColor: `${BRAND_COLORS.coral}cc` }] }
+  const data = { labels: sampled.map(row => row.date), datasets: [{ label: 'Price', data: sampled.map(row => (row.price_only ?? 0) * 100), backgroundColor: `${BRAND_COLORS.indigo}cc` }, { label: 'Dividend', data: sampled.map(row => (row.dividend_only ?? 0) * 100), backgroundColor: `${BRAND_COLORS.ochre}cc` }] }
   return <Bar data={data} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } }, scales: { x: { display: false }, y: { position: 'right', ticks: { callback: value => `${value}%` } } } }} />
 }
 

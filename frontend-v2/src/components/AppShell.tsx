@@ -97,7 +97,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return <div className={collapsed ? 'app-shell app-shell--collapsed' : 'app-shell'}>
     <aside className={mobileOpen ? 'sidebar sidebar--open' : 'sidebar'}>
-      <div className="brand"><BrandLockup tone="dark" showTagline /><button className="icon-button mobile-only" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
+      <div className="brand"><BrandLockup showTagline /><button className="icon-button mobile-only" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
       <Navigation onNavigate={() => setMobileOpen(false)} />
       <button className="sidebar-collapse desktop-only" onClick={() => setCollapsed(value => !value)}><PanelLeftClose aria-hidden="true" /><span>{collapsed ? 'Expand' : 'Collapse'}</span></button>
     </aside>

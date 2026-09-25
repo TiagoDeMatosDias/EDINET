@@ -1,6 +1,6 @@
 # Shade Research User Guide
 
-Updated: 2026-07-30
+Updated: 2026-09-25
 
 Shade Research is a browser-based workspace for researching companies from source filings through standardized financial analysis, comparison, screening, backtesting, and portfolio review. EDINET and its XBRL disclosures are one supported source, not the limit of the product identity.
 

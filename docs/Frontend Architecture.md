@@ -1,6 +1,6 @@
 # Frontend Architecture
 
-Updated: 2026-07-31
+Updated: 2026-09-25
 
 ## Overview
 
@@ -60,9 +60,13 @@ frontend-v2/
 │   ├── hooks/
 │   ├── test/
 │   ├── App.tsx              # lazy route definitions
-│   ├── main.tsx             # providers and browser entry point
+│   ├── main.tsx             # providers, self-hosted fonts, and browser entry point
+│   ├── brand.ts             # palette, chart series colours, and font stacks for TypeScript
+│   ├── chartTheme.ts        # global Chart.js defaults (ticks, grid, tooltips, line weight)
 │   ├── styles.css           # design tokens and shared layout
 │   ├── features.css         # feature-specific responsive rules
+│   ├── dense.css            # high-density workspace layout
+│   ├── dense-v3.css         # maximum-density analysis, screening, and backtest overrides
 │   └── portfolio.css        # bounded portfolio charts, ledgers, analytics, and drawers
 ├── index.html
 ├── vite.config.ts
@@ -80,17 +84,53 @@ src/web_app/
 
 ## Brand system
 
-Production brand files live only in `assets/brand/`. FastAPI exposes that directory at `/brand-assets`, while `BrandLockup` in `frontend-v2/src/components/Brand.tsx` supplies the responsive wordmark used by marketing, authentication, loading, and workspace layouts. Shared CSS tokens define the approved indigo, midnight, paper, coral, and signal-red palette; chart colors come from `frontend-v2/src/brand.ts`. Draft boards under `docs/Feature Development/rebrand/` are design history and are not runtime inputs.
+Production brand files live only in `assets/brand/`: the sun-over-ridge mark, the horizontal lockup, and the generated application icons (see [`assets/brand/README.md`](../assets/brand/README.md)). FastAPI exposes that directory at `/brand-assets`, while `BrandLockup` in `frontend-v2/src/components/Brand.tsx` pairs the mark with the `SHADE RESEARCH` wordmark in marketing, authentication, loading, and workspace layouts. Draft boards under `docs/Feature Development/rebrand/` are design history and are not runtime inputs.
+
+Brand files keep stable paths, and browsers cache them aggressively (favicons especially). Whenever a file in `assets/brand/` changes, bump the `?v=` query on its references in `frontend-v2/index.html` and on `BRAND_MARK_URL` in `Brand.tsx`.
+
+### Visual language
+
+The interface is ink on paper with one vermilion accent. `styles.css` defines the tokens on `:root`; features consume the semantic tokens (`--text`, `--muted`, `--border`, `--surface`, `--primary`, `--success`, `--danger`), never raw colours.
+
+| Token | Value | Use |
+|---|---|---|
+| `--paper` / `--bg` | `#F3F0E8` | Page ground |
+| `--surface` | `#F7F5EF` | Cards, inputs, and popovers |
+| `--surface-subtle` | `#EAE5D9` | The only tint: hover, selection, grouped rows |
+| `--border` / `--border-strong` | `#DDD7CA` / `#C9C2B2` | 1 px hairline rules |
+| `--ink` / `--text` / `--primary` | `#1C1B19` | Text and the primary action |
+| `--stone` / `--muted` | `#6B675F` | Secondary text and labels |
+| `--indigo` / `--success` | `#2B3A55` | Data ink and gains |
+| `--vermilion` / `--danger` / `--brand-accent` | `#B0301F` | The mark, the active state, and losses |
+
+Rules the stylesheets follow:
+
+- Separation comes from space and 1 px hairlines. `--shadow` is `none`; only floating popovers use `--shadow-pop`.
+- Corners are `--radius` (2 px). Pills are reserved for status dots and progress bars.
+- Font weights stay at 400–500; hierarchy comes from size and typeface, not bold.
+- Vermilion marks a single thing at a time: the active navigation tick, the selected tab or range underline, the kicker rule, or a loss.
+- Gains and losses always carry a sign as well as a colour.
+
+Typography is self-hosted through `@fontsource` packages imported in `main.tsx`, so the workstation needs no external font requests:
+
+| Face | Token | Use |
+|---|---|---|
+| Shippori Mincho | `--font-display` | Page titles, section headings, and Japanese filing text |
+| Zen Kaku Gothic New | `--font-sans` | Interface text and labels; also renders Japanese company names |
+| IBM Plex Mono | `--font-mono` | Figures: metrics, `.numeric` table cells, statement values, and chart ticks |
+| Jost | `--font-wordmark` | The wordmark only |
+
+Charts take their series colours from `BRAND_CHART_COLORS` and `SEMANTIC_CHART_COLORS` in `brand.ts`. `chartTheme.ts` sets the global Chart.js defaults: stone ticks in the figure face, hairline grid, a 1.5 px line, ink tooltips, and extra auto-skip padding so wide monospaced labels do not collide. It registers the line/bar elements and the tooltip/legend plugins before theming them, because their defaults do not exist until registration, and it re-renders existing charts once the figure face has loaded. Price, portfolio-value, and backtest lines are drawn unfilled.
 
 ## Application shell
 
-`AppShell` owns the persistent desktop sidebar, mobile navigation, global company search, and backend-health indicator for signed-in workspace routes. The homepage, pricing, login, and registration routes use standalone public layouts. Routes are lazy-loaded so charting and feature code do not inflate the initial bundle.
+`AppShell` owns the persistent desktop sidebar, mobile navigation, global company search, and backend-health indicator for signed-in workspace routes. The sidebar is a light rail on the page ground: text labels with a vermilion tick on the active route, and icons only when the rail is collapsed. The header search is an underlined field rather than a filled box. The homepage, pricing, login, and registration routes use standalone public layouts. Routes are lazy-loaded so charting and feature code do not inflate the initial bundle.
 
 The layout is desktop-first but has a 390 px mobile treatment:
 
 - persistent sidebar becomes a drawer;
 - a five-item bottom navigation keeps the main journeys reachable;
-- grids and rule builders collapse to one column;
+- grids and rule builders collapse to one column (the Analysis metric strip shows 12 figures in one row above 1500 px, two rows of six below, and four columns under 1100 px);
 - tables scroll within their own region.
 
 ## Data and state

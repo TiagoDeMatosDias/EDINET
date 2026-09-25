@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- New visual identity and interface language: a sun-over-ridge mark and widely tracked `SHADE RESEARCH` wordmark replace the signal ring, and the workstation moves to ink on paper with a single vermilion accent — a light navigation rail with a vermilion active tick, hairline rules instead of shadows, 2 px corners, Shippori Mincho titles, Zen Kaku Gothic New interface text, and IBM Plex Mono figures (fonts are self-hosted). Gains chart in indigo and losses in vermilion. Price, value, and backtest charts draw a thin unfilled line, and the Analysis metric strip wraps to two rows of six below 1500 px. The public homepage shows the mark in place of the product mock-up. Brand-asset links carry a `?v=` version so browsers replace cached copies of the old mark and favicon.
 - `pyproject.toml` lists direct dependencies only; transitive pins moved to the generated `constraints.txt` (install with `-c constraints.txt`). The unused `patsy` dependency was removed.
 - Page routes are served by the single SPA fallback instead of twenty duplicate handlers, and database bootstrap runs at server startup rather than at import.
 - Route handlers no longer wrap unexpected errors in their own 500 responses; the application-wide handler logs them with a traceback and correlation id.
