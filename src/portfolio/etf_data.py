@@ -10,6 +10,7 @@ Preferred over generic Stooq/Yahoo fallback because it:
 from __future__ import annotations
 
 import logging
+
 import pandas as pd
 import requests
 
@@ -111,7 +112,6 @@ def fetch_etf_history(
             "events": "div,splits",
         }
         if start_date:
-            import time
             start_ts = int(pd.Timestamp(start_date).timestamp())
             end_ts = int((pd.Timestamp.utcnow().normalize()
                          + pd.Timedelta(days=1)).timestamp())

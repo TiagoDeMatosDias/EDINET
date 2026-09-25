@@ -506,7 +506,7 @@ def add_split_test_data(path: str | Path) -> Path:
         )
 
         # Seed ShareMetrics with matching share counts for AAA
-        for doc_id, comp_code, period_end in conn.execute(
+        for doc_id, _comp_code, period_end in conn.execute(
             "SELECT docID, Company_Code, periodEnd FROM FinancialStatements "
             "WHERE Company_Code = 'E00001'"
         ).fetchall():
@@ -520,7 +520,7 @@ def add_split_test_data(path: str | Path) -> Path:
             )
 
         # Seed ShareMetrics for BBB (E00002) — no split, shares stable
-        for doc_id, comp_code, period_end in conn.execute(
+        for doc_id, _comp_code, _period_end in conn.execute(
             "SELECT docID, Company_Code, periodEnd FROM FinancialStatements "
             "WHERE Company_Code = 'E00002'"
         ).fetchall():

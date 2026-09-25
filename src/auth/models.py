@@ -13,6 +13,9 @@ class AuthenticatedUser:
     email: str | None
     role: str
     status: str
+    # ``None`` for interactive sessions (full access); the granted scopes for
+    # a personal API token.
+    scopes: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)

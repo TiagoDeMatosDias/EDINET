@@ -30,9 +30,9 @@ def run_detect_splits(config, overwrite=False, context=None):
     """
     # Lazy imports: this module is auto-discovered by the orchestrator step
     # registry, which can run while src.portfolio is still partially imported.
+    from src.portfolio.portfolio_state import _invalidate_split_cache
     from src.portfolio.split_detection import run_split_detection
     from src.portfolio.split_schema import ensure_split_tables
-    from src.portfolio.portfolio_state import _invalidate_split_cache
 
     db2_path = get_db2()
 

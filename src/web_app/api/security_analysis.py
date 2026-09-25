@@ -11,10 +11,11 @@ import re
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from src import security_analysis as _security
+from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
 from src.orchestrator.common.db_config import get_db2
 from src.orchestrator.common.sqlite import connect_read
@@ -46,20 +47,20 @@ def _resolve_db() -> str:
 
 
 def _safe_float(value: Any) -> float | None:
-    if value is None: return None
-    try: return float(str(value).replace(",", "").strip())
-    except (TypeError, ValueError): return None
+    if value is None:
+        return None
+    try:
+        return float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def _safe_str(value: Any) -> str:
     """Return a normalised string for display and matching."""
     if value is None:
         return ""
-    try:
-        if isinstance(value, float) and value != value:  # NaN
-            return ""
-    except Exception:
-        pass
+    if isinstance(value, float) and value != value:  # NaN
+        return ""
     return str(value).strip()
 
 
@@ -68,7 +69,7 @@ def _safe_str(value: Any) -> str:
 # ---------------------------------------------------------------------------
 
 class UpdatePriceRequest(BaseModel):
-    ticker: str = Field(..., description="Ticker to refresh")
+    ticker: str = Field(..., max_length=32, description="Ticker to refresh")
 
 
 # ---------------------------------------------------------------------------
@@ -81,13 +82,9 @@ def search_securities(
     limit: int = Query(default=25),
 ) -> dict:
     query = q.strip()
-    if not query: return {"results": []}
-    try:
-        return {"results": _security.search_securities(_resolve_db(), query, limit=limit)}
-    except HTTPException: raise
-    except Exception as e:
-        logger.error("Search failed: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    if not query:
+        return {"results": []}
+    return {"results": _security.search_securities(_resolve_db(), query, limit=limit)}
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +116,7 @@ def get_overview(
 
             result = _enrich_overview(db, resolved_code, result)
             result["metrics"] = flatten_overview(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - metrics enrichment is optional
             logger.warning("Metrics computation failed for %s: %s", code or tkr, exc)
             result["metrics"] = {k: None for k in (
                 "LatestPrice", "MarketCap", "PERatio", "PriceToBook",
@@ -162,12 +159,8 @@ def get_overview(
             except Exception as exc:  # noqa: BLE001 - history must not break analysis
                 logger.info("Could not record recent company view for %s: %s", resolved_code, exc)
         return result
-    except HTTPException: raise
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error("Overview failed: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 def _compute_metrics(db: str, code: str, market: dict, company: dict) -> dict:
@@ -277,7 +270,8 @@ def _find_doc_with_data(conn, tables, code, table_names):
 
     for tname in table_names:
         actual = tables.get(tname.lower())
-        if not actual: continue
+        if not actual:
+            continue
         rows = conn.execute(
             f'SELECT fs.docID FROM FinancialStatements fs '
             f'JOIN "{actual}" m ON m.docID = fs.docID '
@@ -291,7 +285,8 @@ def _find_doc_with_data(conn, tables, code, table_names):
             if mrow:
                 nn = sum(1 for k in mrow.keys()
                          if k.lower() != "docid" and mrow[k] is not None)
-                if nn > 0: return r["docID"]
+                if nn > 0:
+                    return r["docID"]
     # Fallback: latest docID
     r = conn.execute(
         f"SELECT docID FROM FinancialStatements "
@@ -302,14 +297,16 @@ def _find_doc_with_data(conn, tables, code, table_names):
 
 def _query_row(conn, tables, tname, doc_id):
     actual = tables.get(tname.lower())
-    if not actual or not doc_id: return {}
+    if not actual or not doc_id:
+        return {}
     r = conn.execute(f'SELECT * FROM "{actual}" WHERE docID=?', (doc_id,)).fetchone()
     return dict(r) if r else {}
 
 
 def _col(row, name):
     """Get a column value from a row dict by exact name."""
-    if not row: return None
+    if not row:
+        return None
     return _safe_float(row.get(name))
 
 
@@ -377,14 +374,9 @@ def get_price_history(
 ) -> dict:
     if not ticker.strip():
         raise HTTPException(status_code=400, detail="ticker is required")
-    try:
-        return {"prices": _security.get_security_price_history(
-            _resolve_db(), ticker.strip(), start_date, end_date,
-            adjusted=adjusted)}
-    except HTTPException: raise
-    except Exception as e:
-        logger.error("Price history failed: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"prices": _security.get_security_price_history(
+        _resolve_db(), ticker.strip(), start_date, end_date,
+        adjusted=adjusted)}
 
 
 # ---------------------------------------------------------------------------
@@ -392,15 +384,14 @@ def get_price_history(
 # ---------------------------------------------------------------------------
 
 @router.post("/update-price")
-def update_price(request: UpdatePriceRequest = Body(...)) -> dict:
+def update_price(
+    request: UpdatePriceRequest = Body(...),
+    _operator: AuthenticatedUser = Depends(require_operator),  # noqa: B008
+) -> dict:
+    """Refresh one ticker from the price provider (writes shared market data)."""
     if not request.ticker.strip():
         raise HTTPException(status_code=400, detail="ticker is required")
-    try:
-        return _security.update_security_price(_resolve_db(), request.ticker.strip())
-    except HTTPException: raise
-    except Exception as e:
-        logger.error("Update price failed: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    return _security.update_security_price(_resolve_db(), request.ticker.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -460,12 +451,15 @@ def get_history(
 
         tables_out = {}
         for key, rows in statements.items():
-            if key in ("periods", "records"): continue
-            if not rows or not isinstance(rows, list) or not len(rows): continue
+            if key in ("periods", "records"):
+                continue
+            if not rows or not isinstance(rows, list) or not len(rows):
+                continue
             metrics = []
             for row in rows:
                 f = row.get("field", row.get("record_field", ""))
-                if not f: continue
+                if not f:
+                    continue
                 metrics.append({
                     "field": f,
                     "display_name": row.get("metric", f),
@@ -477,12 +471,8 @@ def get_history(
                     "metrics": metrics,
                 }
         return {"periods": statements.get("periods", []), "tables": tables_out}
-    except HTTPException: raise
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error("History failed: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -525,13 +515,8 @@ def get_taxonomy_tree(
             )
         finally:
             conn.close()
-    except HTTPException:
-        raise
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error("Taxonomy tree failed: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 def _build_taxonomy_tree_response(
@@ -694,7 +679,7 @@ def _build_tree_from_taxonomy(
     # Build concept → column mapping (handles disambiguated column names)
     concept_to_col = _build_concept_column_map(conn, data_columns) if data_columns else {}
 
-    for (parent, _label_lower, lvl), variants in groups.items():
+    for (_parent, _label_lower, lvl), variants in groups.items():
         # Pick the "best" qname: prefer one whose label matches a data column
         best_qname = variants[0].get("concept_qname", "")
         best_has_data = False
@@ -747,7 +732,7 @@ def _build_tree_from_taxonomy(
     roots: list[dict] = []
     seen_in_roots: set[str] = set()
 
-    for (parent_raw, _label_lower, lvl), variants in groups.items():
+    for (parent_raw, _label_lower, _lvl), variants in groups.items():
         merged_qname = qname_to_merged.get(
             _safe_str(variants[0].get("concept_qname", ""))
         )
@@ -876,7 +861,7 @@ def _build_flat_tree_from_columns(
     col_values: dict[str, list] = {col: [None] * len(doc_ids) for col in data_columns.values()}
     for i, row in enumerate(rows):
         row_dict = dict(row)
-        for col_lower, col_actual in data_columns.items():
+        for col_actual in data_columns.values():
             if col_actual in row_dict:
                 val = row_dict[col_actual]
                 col_values[col_actual][i] = None if val is None else (
@@ -918,7 +903,7 @@ def _build_concept_column_map(
     try:
         conn.execute("SELECT 1 FROM Statement_Hierarchy LIMIT 1")
         sh_exists = True
-    except Exception:
+    except sqlite3.Error:
         pass
 
     if sh_exists:
@@ -1082,7 +1067,7 @@ def _is_nan(value: Any) -> bool:
         return False
     try:
         return value != value  # NaN check
-    except Exception:
+    except Exception:  # noqa: BLE001 - cell values may define __ne__ arbitrarily
         return False
 
 

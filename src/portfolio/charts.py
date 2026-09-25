@@ -14,7 +14,6 @@ from src.orchestrator.common.sqlite import connect_read
 from src.portfolio.currency import (
     get_fx_series,
     get_rate_at_date,
-    get_available_display_currencies,
 )
 
 logger = logging.getLogger(__name__)
@@ -172,7 +171,7 @@ def _convert_base_values(
     if not fx:
         return [round(value, 2) if value is not None else None for value in values]
     converted: list[float | None] = []
-    for date_str, value in zip(dates, values):
+    for date_str, value in zip(dates, values, strict=False):
         if value is None:
             converted.append(None)
             continue
@@ -207,7 +206,7 @@ def _flow_adjusted_series(
     cumulative_returns: list[float | None] = []
     wealth = 1.0
     previous_value: float | None = None
-    for value, inflow in zip(values, inflows):
+    for value, inflow in zip(values, inflows, strict=False):
         if value is None:
             daily_returns.append(None)
             cumulative_returns.append(None)
@@ -301,7 +300,7 @@ def get_portfolio_value_history(
             values = [
                 round(value * (get_rate_at_date(date, fx) or 1.0), 2)
                 if value is not None else None
-                for date, value in zip(date_list, values)
+                for date, value in zip(date_list, values, strict=False)
             ]
         else:
             values = [round(value, 2) if value is not None else None for value in values]
@@ -778,9 +777,10 @@ def get_return_vs_cost(
     Includes both open and closed (non-option) holdings.
     Returns ``[{symbol, cost_basis_display, annualized_return, is_open}, ...]``.
     """
-    from src.portfolio.portfolio_state import get_all_holdings_performance, get_closed_positions
-    from src.portfolio.currency import get_rate_at_date_any
     from datetime import datetime
+
+    from src.portfolio.currency import get_rate_at_date_any
+    from src.portfolio.portfolio_state import get_all_holdings_performance, get_closed_positions
 
     dc = display_currency.upper()
     result: list[dict] = []

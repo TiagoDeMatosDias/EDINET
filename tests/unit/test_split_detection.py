@@ -2,29 +2,26 @@
 
 from __future__ import annotations
 
-import math
 import sqlite3
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from src.portfolio.split_detection import (
-    detect_splits_by_price_heuristic,
-    verify_split_with_share_metrics,
-    run_split_detection,
-    _round_split_ratio,
-)
-from src.portfolio.split_schema import ensure_split_tables
 from src.portfolio.portfolio_state import (
-    _load_split_factors,
     _get_adjusted_price,
     _get_price,
     _invalidate_split_cache,
-    _split_factor_cache,
+    _load_split_factors,
 )
-from tests.factories import create_market_database, add_split_test_data
-
+from src.portfolio.split_detection import (
+    _round_split_ratio,
+    detect_splits_by_price_heuristic,
+    run_split_detection,
+    verify_split_with_share_metrics,
+)
+from src.portfolio.split_schema import ensure_split_tables
+from tests.factories import add_split_test_data, create_market_database
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 

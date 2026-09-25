@@ -1,6 +1,4 @@
 import logging
-import os
-import sqlite3
 
 from src.orchestrator.common.sqlite import OrchestratorProcessorBase
 

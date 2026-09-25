@@ -9,6 +9,20 @@ import main as launcher
 from src.web_app.security import SecurityConfigurationError
 
 
+@pytest.fixture(autouse=True)
+def _isolated_launcher(monkeypatch):
+    """Keep the launcher's process-wide side effects inside each test.
+
+    ``_run_web`` exports its bind settings through ``os.environ`` and calls
+    ``setup_logging``, which writes to (and archives) the project's ``logs/``
+    and attaches file handlers to the root logger.
+    """
+    for name in ("EDINET_HOST", "EDINET_PORT", "EDINET_ALLOW_REMOTE"):
+        # delenv records the original value so it is restored afterwards.
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("src.utilities.logger.setup_logging", lambda *args, **kwargs: None)
+
+
 def test_launcher_rejects_remote_bind_without_opt_in(monkeypatch):
     monkeypatch.delenv("EDINET_AUTH_MODE", raising=False)
     monkeypatch.delenv("EDINET_TRUSTED_HOSTS", raising=False)

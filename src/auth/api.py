@@ -60,7 +60,8 @@ class ApiTokenRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=100)
-    scopes: list[str] = Field(default_factory=lambda: ["*"])
+    # "*" grants full access; "read" restricts the token to GET/HEAD/OPTIONS.
+    scopes: list[str] = Field(default_factory=lambda: ["*"], min_length=1, max_length=2)
     expires_at: datetime | None = None
 
 
@@ -446,7 +447,9 @@ class AuthSettingsRequest(BaseModel):
     registration_mode: str | None = Field(default=None, pattern=r"^(open|closed|invite)$")
     default_role: str | None = Field(default=None, pattern=r"^(admin|operator|member)$")
     password_min_length: int | None = Field(default=None, ge=15, le=128)
-    access_token_seconds: int | None = None
+    access_token_seconds: int | None = Field(default=None, ge=60, le=24 * 3600)
+    refresh_idle_seconds: int | None = Field(default=None, ge=300, le=365 * 24 * 3600)
+    refresh_absolute_seconds: int | None = Field(default=None, ge=300, le=365 * 24 * 3600)
 
 
 @admin_router.post("/invitations")
@@ -522,6 +525,8 @@ def admin_update_settings(request: Request, payload: AuthSettingsRequest) -> dic
             default_role=payload.default_role,
             password_min_length=payload.password_min_length,
             access_token_seconds=payload.access_token_seconds,
+            refresh_idle_seconds=payload.refresh_idle_seconds,
+            refresh_absolute_seconds=payload.refresh_absolute_seconds,
         )
     except AuthError as exc:
         raise _error(exc) from exc

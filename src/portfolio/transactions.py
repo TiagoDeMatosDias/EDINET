@@ -5,8 +5,8 @@ Deduplication is on ``transactionID`` — re-uploading the same XML is safe.
 
 from __future__ import annotations
 
-import sqlite3
 import logging
+import sqlite3
 from collections import defaultdict
 
 from src.orchestrator.common.db_config import get_db3

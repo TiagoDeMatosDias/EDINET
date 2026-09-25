@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 from uuid import uuid4
@@ -14,6 +14,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+from src.utilities.runtime_paths import state_dir
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +26,7 @@ _DEFAULT_MAX_EXPORT_BYTES = 25 * 1024 * 1024
 _DEFAULT_MAX_BACKTEST_ARTIFACT_BYTES = 256 * 1024 * 1024
 _DEFAULT_MAX_REPORT_ARTIFACT_BYTES = 128 * 1024 * 1024
 _REQUEST_ENVELOPE_OVERHEAD_BYTES = 1024 * 1024
-_DEFAULT_JOB_WORKSPACE_ROOT = (
-    Path(__file__).resolve().parents[2] / "config" / "state" / "jobs"
-)
+_DEFAULT_JOB_WORKSPACE_ROOT = state_dir() / "jobs"
 _DEFAULT_AUTH_DB_PATH: Path | None = None
 
 
@@ -47,6 +47,126 @@ _PUBLIC_AUTH_PATHS = frozenset(
         "/api/auth/reset-password",
     }
 )
+
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# FastAPI's interactive docs load their UI from a CDN, so the SPA policy below
+# would blank them; they keep FastAPI's defaults.
+_CSP_EXEMPT_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc"})
+_CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "default-src 'self'",
+        "script-src 'self'",
+        # React style props, chart.js, and filing HTML rely on inline styles.
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "font-src 'self' data:",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    )
+)
+
+
+def _max_request_bytes(settings: "AppSettings", path: str) -> int:
+    limit = (
+        max(settings.max_upload_bytes, settings.max_export_bytes)
+        + _REQUEST_ENVELOPE_OVERHEAD_BYTES
+    )
+    if path == "/api/pipeline/run":
+        limit = max(
+            limit,
+            _DEFAULT_MAX_PIPELINE_UPLOAD_BYTES + _REQUEST_ENVELOPE_OVERHEAD_BYTES,
+        )
+    return limit
+
+
+def _too_large_response(correlation_id: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=413,
+        content={
+            "code": "request_too_large",
+            "detail": "Request body exceeds the configured size limit",
+            "correlation_id": correlation_id,
+        },
+        headers={"X-Correlation-ID": correlation_id},
+    )
+
+
+class _BodyTooLarge(Exception):
+    """Raised from the wrapped ``receive`` once a body passes its limit."""
+
+
+class BodySizeLimitMiddleware:
+    """Enforce request size limits on the bytes actually received.
+
+    The ``Content-Length`` check in ``request_security`` rejects honest
+    oversized requests early; this catches chunked or mislabelled bodies,
+    which carry no trustworthy length header.
+    """
+
+    def __init__(self, app, settings: "AppSettings") -> None:
+        self.app = app
+        self.settings = settings
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        limit = _max_request_bytes(self.settings, scope.get("path", ""))
+        received = 0
+        response_started = False
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise _BodyTooLarge
+            return message
+
+        async def tracking_send(message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracking_send)
+        except _BodyTooLarge:
+            if response_started:
+                raise
+            state = scope.get("state") or {}
+            correlation_id = state.get("correlation_id") or str(uuid4())
+            await _too_large_response(correlation_id)(scope, receive, send)
+
+
+def _apply_security_headers(response, path: str, settings: "AppSettings") -> None:
+    headers = response.headers
+    headers.setdefault("X-Content-Type-Options", "nosniff")
+    headers.setdefault("Referrer-Policy", "no-referrer")
+    headers.setdefault("X-Frame-Options", "DENY")
+    if path not in _CSP_EXEMPT_PATHS:
+        headers.setdefault("Content-Security-Policy", _CONTENT_SECURITY_POLICY)
+    # HSTS pins a host to HTTPS in the browser for a long time. Only send it
+    # for remote deployments: pinning "localhost" would affect every other
+    # local development server on this machine.
+    if settings.remote:
+        headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+
+
+class OperatorGuidanceError(StarletteHTTPException):
+    """A 5xx whose detail is a fixed, hand-written instruction for the operator.
+
+    Ordinary 5xx details are replaced with a generic message because they may
+    carry exception text; this subclass marks a detail as safe to show.
+    """
+
+    def __init__(self, detail: str, status_code: int = 503) -> None:
+        super().__init__(status_code=status_code, detail=detail)
 
 
 class SecurityConfigurationError(ValueError):
@@ -91,7 +211,9 @@ class AppSettings:
     allow_remote: bool = False
     auth_mode: str = "accounts"
     registration_mode: str = "open"
-    auth_db_path: Path = Path("data/databases/auth.db")
+    # Resolved through db_config so a bare AppSettings() never falls back to
+    # a cwd-relative path that could be an operator database.
+    auth_db_path: Path = field(default_factory=lambda: _default_auth_db_path())
     application_token: str | None = None
     # Deprecated compatibility field; never populated from a provider token.
     api_token: str | None = None
@@ -357,6 +479,9 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
         role="admin",
         status="active",
     )
+    # Added before ``request_security`` so it runs inside it: the 413 it
+    # produces still receives the correlation id and security headers.
+    app.add_middleware(BodySizeLimitMiddleware, settings=settings)
     if settings.remote:
         app.add_middleware(
             TrustedHostMiddleware,
@@ -369,16 +494,7 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
         request.state.correlation_id = correlation_id
         if not settings.authentication_required:
             request.state.user = local_user
-        max_request_bytes = (
-            max(settings.max_upload_bytes, settings.max_export_bytes)
-            + _REQUEST_ENVELOPE_OVERHEAD_BYTES
-        )
-        if request.url.path == "/api/pipeline/run":
-            max_request_bytes = max(
-                max_request_bytes,
-                _DEFAULT_MAX_PIPELINE_UPLOAD_BYTES
-                + _REQUEST_ENVELOPE_OVERHEAD_BYTES,
-            )
+        max_request_bytes = _max_request_bytes(settings, request.url.path)
         content_length = request.headers.get("Content-Length")
         if content_length:
             try:
@@ -386,15 +502,9 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
             except ValueError:
                 too_large = True
             if too_large:
-                return JSONResponse(
-                    status_code=413,
-                    content={
-                        "code": "request_too_large",
-                        "detail": "Request body exceeds the configured size limit",
-                        "correlation_id": correlation_id,
-                    },
-                    headers={"X-Correlation-ID": correlation_id},
-                )
+                response = _too_large_response(correlation_id)
+                _apply_security_headers(response, request.url.path, settings)
+                return response
 
         if (
             settings.authentication_required
@@ -407,7 +517,7 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
             if scheme.casefold() == "bearer" and supplied:
                 user = request.app.state.auth_service.authenticate(supplied)
             if user is None:
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=401,
                     content={
                         "code": "unauthorized",
@@ -419,10 +529,32 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
                         "X-Correlation-ID": correlation_id,
                     },
                 )
+                _apply_security_headers(response, request.url.path, settings)
+                return response
+            if (
+                user.scopes is not None
+                and "*" not in user.scopes
+                and request.method.upper() not in _SAFE_METHODS
+            ):
+                response = JSONResponse(
+                    status_code=403,
+                    content={
+                        "code": "insufficient_scope",
+                        "detail": "This API token is read-only",
+                        "correlation_id": correlation_id,
+                    },
+                    headers={
+                        "WWW-Authenticate": 'Bearer error="insufficient_scope"',
+                        "X-Correlation-ID": correlation_id,
+                    },
+                )
+                _apply_security_headers(response, request.url.path, settings)
+                return response
             request.state.user = user
 
         response = await call_next(request)
         response.headers["X-Correlation-ID"] = correlation_id
+        _apply_security_headers(response, request.url.path, settings)
         return response
 
     @app.exception_handler(StarletteHTTPException)
@@ -435,25 +567,29 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
             "correlation_id",
             str(uuid4()),
         )
-        detail = (
-            "Internal server error"
-            if exc.status_code >= 500
-            else exc.detail
-        )
+        guidance = isinstance(exc, OperatorGuidanceError)
+        masked = exc.status_code >= 500 and not guidance
         if exc.status_code >= 500:
             logger.error(
-                "HTTP %d response [%s]",
+                "HTTP %d response [%s]: %s",
                 exc.status_code,
                 correlation_id,
+                exc.detail,
             )
+        if guidance:
+            code = "service_unavailable"
+        elif masked:
+            code = "internal_error"
+        else:
+            code = "request_error"
         return JSONResponse(
             status_code=exc.status_code,
             content={
-                "code": "internal_error" if exc.status_code >= 500 else "request_error",
-                "detail": detail,
+                "code": code,
+                "detail": "Internal server error" if masked else exc.detail,
                 "correlation_id": correlation_id,
             },
-            headers=exc.headers,
+            headers={**(exc.headers or {}), "X-Correlation-ID": correlation_id},
         )
 
     @app.exception_handler(Exception)
@@ -464,11 +600,16 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
             str(uuid4()),
         )
         logger.exception("Unhandled API error [%s]", correlation_id)
-        return JSONResponse(
+        # Unhandled exceptions are answered by Starlette's outermost error
+        # middleware, which bypasses ``request_security``, so set headers here.
+        response = JSONResponse(
             status_code=500,
             content={
                 "code": "internal_error",
                 "detail": "Internal server error",
                 "correlation_id": correlation_id,
             },
+            headers={"X-Correlation-ID": correlation_id},
         )
+        _apply_security_headers(response, request.url.path, settings)
+        return response

@@ -15,7 +15,7 @@ Create the environment and install declared extras:
 
 ```powershell
 py -3.13 -m venv .venv3
-.\.venv3\Scripts\python.exe -m pip install -e ".[dev,build]"
+.\.venv3\Scripts\python.exe -m pip install -e ".[dev,build]" -c constraints.txt
 ```
 
 Build the React frontend:
@@ -52,7 +52,13 @@ $env:EDINET_TRUSTED_HOSTS = "research.example,192.0.2.10"
 
 Remote `/api/*` requests require an account-issued `Authorization: Bearer <token>`. Tokens must not be placed in URLs, logs, or browser storage. `/health` remains minimal and unauthenticated. `EDINET_API_TOKEN` is reserved for outbound EDINET downloads and is never used for application authentication.
 
-Account mode and open registration are the defaults. The first successful registration becomes the local administrator; set `EDINET_REGISTRATION_MODE=closed` when additional self-service accounts should be disabled. Browser refresh tokens are held in an HttpOnly cookie, while access tokens remain in memory. Personal automation tokens can be created under `/api/auth/tokens` and should be revoked when no longer needed.
+Account mode and open registration are the defaults. The first successful registration becomes the local administrator; set `EDINET_REGISTRATION_MODE=closed` (or `invite`) when additional self-service accounts should be disabled. `EDINET_REGISTRATION_MODE` is only the deployment default: once an administrator saves security settings under `/admin`, the saved registration mode, default role, access-token lifetime, and refresh idle/absolute lifetimes take precedence. Browser refresh tokens are held in an HttpOnly cookie, while access tokens remain in memory. Personal automation tokens can be created under `/api/auth/tokens` with scope `*` (full access) or `read` (GET/HEAD/OPTIONS only) and should be revoked when no longer needed; changing or resetting a password revokes all of that account's sessions and API tokens.
+
+Refreshing prices from the provider (`/api/security/update-price`, `/api/screening/update-prices`) writes shared market data and requires the operator or admin role. Saved backtests are visible only to the account that ran them; results saved before ownership was recorded are visible to administrators only.
+
+Responses carry `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and a `Content-Security-Policy` for the workspace; remote deployments also send `Strict-Transport-Security`. Request size limits apply to the bytes actually received, including chunked uploads without a `Content-Length` header.
+
+Generated artifacts and mutable state default to folders inside the project and can be relocated: `EDINET_STATE_DIR` (default `config/state`; saved screens, uploads, and job workspaces), `EDINET_BACKTEST_DIR` (default `data/Backtests`), and `EDINET_REPORT_DIR` (default `data/reports`). `EDINET_JOB_WORKSPACE_ROOT` still overrides the job workspace alone. Missing databases are created when the server starts rather than when its module is imported.
 
 Administrators can change the minimum password length under `/admin` → Security settings. The accepted range is 15–128 characters, and the stored policy applies to registration, invitations, resets, password changes, and administrator-created credentials. The public `/pricing` page currently advertises €10 per month or €100 per year; it is informational and does not enable billing or subscription enforcement.
 

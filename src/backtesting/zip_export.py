@@ -229,7 +229,7 @@ def _add_summary_txt(
         ("Start period", config.get("start_period") or "(earliest)"),
         ("End period", config.get("end_period") or "(latest)"),
     ]
-    max_label = max(len(l) for l, _ in config_rows)
+    max_label = max(len(label) for label, _ in config_rows)
     for label, value in config_rows:
         lines.append(f"  {label:<{max_label}}  {value}")
 
@@ -577,7 +577,7 @@ def _build_report_text(
                          f"  (rf={metrics.get('risk_free_rate', 0):.2%})"),
         ("Max Drawdown", _fmt_pct(metrics.get("max_drawdown"))),
     ]
-    max_label = max(len(l) for l, _ in metric_rows)
+    max_label = max(len(label) for label, _ in metric_rows)
     for label, value in metric_rows:
         lines.append(f"  {label:<{max_label}}  {value}")
 
@@ -602,7 +602,7 @@ def _build_report_text(
         bench_sharpe = metrics.get("benchmark_sharpe_ratio")
         if bench_sharpe is not None:
             bench_rows.append(("Benchmark Sharpe", f"{bench_sharpe:.4f}"))
-        max_bl = max(len(l) for l, _ in bench_rows)
+        max_bl = max(len(label) for label, _ in bench_rows)
         for label, value in bench_rows:
             lines.append(f"  {label:<{max_bl}}  {value}")
 
@@ -781,10 +781,10 @@ def _chart_png_from_json(
         except (ValueError, KeyError):
             dates.append(None)
     # Filter out bad dates
-    valid = [(d, e) for d, e in zip(dates, data) if d is not None]
+    valid = [(d, e) for d, e in zip(dates, data, strict=False) if d is not None]
     if not valid:
         return None
-    dates, data_entries = zip(*valid)
+    dates, data_entries = zip(*valid, strict=True)
 
     if chart_type == "cumulative":
         png = _plot_cumulative(dates, data_entries)
@@ -842,7 +842,7 @@ def _plot_cumulative(
 
     # Combine legends from both axes
     lines = ax.get_lines() + (ax_vami.get_lines() if has_vami else [])
-    labels = [l.get_label() for l in lines]
+    labels = [line.get_label() for line in lines]
     ax.legend(lines, labels, loc="best")
 
     ax.set_title("Cumulative Returns", fontsize=14)
@@ -923,7 +923,7 @@ def _plot_decomposition(
                     alpha=0.5, color=_COLORS["price_fill"],
                     label="Price Return")
     ax.fill_between(dates, price_vals,
-                    [p + d for p, d in zip(price_vals, div_vals)],
+                    [p + d for p, d in zip(price_vals, div_vals, strict=False)],
                     alpha=0.5, color=_COLORS["dividend_fill"],
                     label="Dividend Return")
     ax.plot(dates, total_vals,

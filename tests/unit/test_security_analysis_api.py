@@ -183,16 +183,44 @@ def test_price_history_empty(db):
 
 def test_update_price(db, monkeypatch):
     def fake(ticker, prices_table, conn):
-        conn.execute(f"INSERT INTO {prices_table} VALUES(?,?,?,?)", ("2025-01-01", ticker, "JPY", 999))
+        # Named columns: the update migrates Stock_Prices to the provenance
+        # schema before loading, so positional inserts no longer fit.
+        conn.execute(
+            f"INSERT INTO {prices_table} (Date, Ticker, Currency, Price) VALUES(?,?,?,?)",
+            ("2025-01-01", ticker, "JPY", 999),
+        )
         return True
     monkeypatch.setattr("src.security_analysis.security_analysis.load_ticker_data", fake)
     monkeypatch.setattr("src.security_analysis.load_ticker_data", fake)
     monkeypatch.setattr("src.utilities.stock_prices.load_ticker_data", fake)
-    r = client.post("/api/security/update-price", json={"ticker": "1001.T"}).json()
-    assert r.get("ok") is True or r.get("rows_inserted", 0) >= 0
+    response = client.post("/api/security/update-price", json={"ticker": "1001.T"})
+    assert response.status_code == 200
+    r = response.json()
+    assert r["ok"] is True
+    assert r["rows_inserted"] == 1
+    assert r["max_date"] == "2025-01-01"
 
 def test_update_price_requires_ticker(db):
     assert client.post("/api/security/update-price", json={"ticker": ""}).status_code == 400
+
+
+def test_update_price_is_operator_only(db, monkeypatch):
+    from src.auth.dependencies import current_user
+    from src.auth.models import AuthenticatedUser
+
+    calls = []
+    monkeypatch.setattr(
+        "src.web_app.api.security_analysis._security.update_security_price",
+        lambda db_path, ticker: calls.append(ticker) or {"ok": True},
+    )
+    member = AuthenticatedUser("member-1", "member", None, "member", "active")
+    app.dependency_overrides[current_user] = lambda: member
+    try:
+        response = client.post("/api/security/update-price", json={"ticker": "1001.T"})
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+    assert response.status_code == 403
+    assert calls == []
 
 # ---------------------------------------------------------------------------
 # History

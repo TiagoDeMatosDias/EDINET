@@ -1,5 +1,8 @@
-import os, requests
+import os
+
+import requests
 from dotenv import load_dotenv
+
 load_dotenv()
 key = os.getenv('API_KEY')
 # Test a few dates to find one with data

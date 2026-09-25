@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.comparison.service import (

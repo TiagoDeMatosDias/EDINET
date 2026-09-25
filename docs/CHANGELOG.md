@@ -12,10 +12,30 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- `pyproject.toml` lists direct dependencies only; transitive pins moved to the generated `constraints.txt` (install with `-c constraints.txt`). The unused `patsy` dependency was removed.
+- Page routes are served by the single SPA fallback instead of twenty duplicate handlers, and database bootstrap runs at server startup rather than at import.
+- Route handlers no longer wrap unexpected errors in their own 500 responses; the application-wide handler logs them with a traceback and correlation id.
+- Ruff now passes on the whole repository, and the coverage floor rose from 20% to 65%.
 - Screening now has one set of split-event semantics across every rule shape: raw `Stock_Splits` filters match confirmed events by default and never look past the as-of date (point-in-time screens and rolling backtests can no longer see future splits), the expression join projects the latest confirmed split as of the screening date, and the rule formerly labelled `No recent split` is now `Split event` with a relative window (default 365 days anchored on the as-of date or today), an Advanced panel for confirmation status and exact cutoffs, and intent-named `+ Rule` templates. The screening API no longer returns the generated SQL (`sql_display` was removed from run responses and is stripped from cached results), keeping query internals server-side.
+
+### Security
+
+- Saved backtests are now owned by the account that ran them: listing, result, and download routes only show the caller's own runs (older unowned runs are admin-only).
+- Provider price refreshes (`/api/security/update-price`, `/api/screening/update-prices`) require the operator or admin role; the batch route takes a typed body limited to 100 tickers. The Analysis page hides the Refresh action for members.
+- Administrator security settings are enforced: the saved registration mode (including invite-only), default role, access-token lifetime, and refresh idle/absolute lifetimes now apply instead of only being stored.
+- Invitations are redeemed in a single transaction, so concurrent requests cannot reuse one invitation.
+- Password changes and resets revoke the account's API tokens as well as its sessions; a reset token is no longer consumed by a rejected password.
+- API token scopes are enforced (`*` or `read`); unknown scopes are rejected.
+- Login spends the same password-hashing work for unknown accounts, so response timing no longer reveals which usernames exist.
+- Request size limits now apply to chunked bodies without `Content-Length`, and responses carry CSP, frame, content-type, referrer, and (remote-only) HSTS headers.
 
 ### Fixed
 
+- Profile updates store the normalized username instead of the raw input.
+- The "frontend build missing" 503 now shows its instructions instead of a generic error, and unhandled-error responses include the `X-Correlation-ID` header.
+- EDINET document downloads build file paths with the platform separator; they previously used a Windows backslash and failed on Linux.
+- The rolling backtest XLSX export no longer fails at runtime: `openpyxl` is now a declared dependency.
+- The test suite no longer writes to `data/` or `config/state/` (the auth database, backtests, reports, screening history, and job workspaces are redirected to a temporary directory), and outbound network access is blocked during tests.
 - Financial history no longer rounds raw values to whole numbers: Raw view renders every stored number at full precision (thousands-separated, wrapping at group boundaries), matching the granularity of the CSV export and markdown report.
 - `python -m src.web_app.server` starts again instead of failing with duplicate-route registration; the module passes the already-built app object to uvicorn rather than re-importing itself by string.
 - Price ingestion now rejects degenerate provider histories for every source: sparse multi-year responses (weekly/monthly bars posing as daily) fail over to the next provider, and weekend-dated rows for Japanese codes are dropped.

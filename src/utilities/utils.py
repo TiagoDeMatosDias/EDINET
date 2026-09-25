@@ -1,5 +1,4 @@
 
-import json
 import csv
 from datetime import datetime
 
@@ -78,7 +77,7 @@ def get_latest_submit_datetime(csv_filename):
                         print(f"Error parsing date '{submit_datetime_str}': {e}")
     except FileNotFoundError:
         print(f"File '{csv_filename}' not found.")
-    except Exception as e:
+    except (OSError, csv.Error, UnicodeDecodeError) as e:
         print(f"An error occurred: {e}")
     
     return latest_datetime.strftime("%Y-%m-%d %H:%M:%S") if latest_datetime else None
@@ -109,7 +108,7 @@ def get_list_of_Docs(csv_filename, edinetCode, docTypeCode):
                     doc_list.append(doc_id)
     except FileNotFoundError:
         print(f"File '{csv_filename}' not found.")
-    except Exception as e:
+    except (OSError, csv.Error, UnicodeDecodeError) as e:
         print(f"An error occurred: {e}")
     
     return doc_list

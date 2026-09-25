@@ -52,7 +52,7 @@ See the [User Guide](docs/USER_GUIDE.md) for the complete gallery and a feature-
 
 ```powershell
 py -3.13 -m venv .venv3
-.\.venv3\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv3\Scripts\python.exe -m pip install -e ".[dev]" -c constraints.txt
 
 Set-Location frontend-v2
 npm ci

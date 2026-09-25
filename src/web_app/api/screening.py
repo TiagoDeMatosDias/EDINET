@@ -6,8 +6,8 @@ The frontend never touches the database directly.
 
 from __future__ import annotations
 
-import io
 import hashlib
+import io
 import json
 import logging
 from pathlib import Path
@@ -15,16 +15,18 @@ from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
 import pandas as pd
-from fastapi import APIRouter, Body, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src import screening as _screening
 from src import security_analysis as _security
+from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
 from src.orchestrator.common.db_config import get_db2
 from src.research.runtime import store as _research_store
 from src.screening.persistence import normalize_screening_date
+from src.utilities.runtime_paths import state_dir
 from src.web_app.security import (
     AppSettings,
     PathPolicyError,
@@ -42,9 +44,7 @@ _DB_PATH_POLICY = configured_database_policy(_APP_SETTINGS.allowed_data_roots)
 # Persistence paths (same as Tk UI controllers)
 # ---------------------------------------------------------------------------
 
-_STATE_DIR = (
-    Path(__file__).resolve().parents[3] / "config" / "state"
-)
+_STATE_DIR = state_dir()
 _SAVED_SCREENINGS_DIR = _STATE_DIR / "saved_screenings"
 _SCREENING_HISTORY_PATH = _STATE_DIR / "screening_history.jsonl"
 
@@ -304,17 +304,39 @@ def _persist_screening_result(
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/update-prices")
-def update_prices(request: dict = Body(...)) -> dict:
-    """Update stock prices for all tickers in a screening result set."""
-    db_path = request.get("db_path", "")
-    tickers = request.get("tickers", [])
-    if not db_path or not tickers:
-        raise HTTPException(status_code=400, detail="db_path and tickers required")
+MAX_PRICE_UPDATE_TICKERS = 100
 
-    resolved = _validate_db_path(db_path)
+
+class UpdatePricesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    db_path: str = Field(..., min_length=1)
+    tickers: list[str] = Field(..., min_length=1, max_length=MAX_PRICE_UPDATE_TICKERS)
+
+    @field_validator("tickers")
+    @classmethod
+    def _clean_tickers(cls, value: list[str]) -> list[str]:
+        cleaned = list(dict.fromkeys(t.strip() for t in value if t and t.strip()))
+        if not cleaned:
+            raise ValueError("at least one ticker is required")
+        if any(len(t) > 32 for t in cleaned):
+            raise ValueError("tickers must be at most 32 characters")
+        return cleaned
+
+
+@router.post("/update-prices")
+def update_prices(
+    request: UpdatePricesRequest = Body(...),
+    _operator: AuthenticatedUser = Depends(require_operator),  # noqa: B008
+) -> dict:
+    """Update stock prices for the tickers in a screening result set.
+
+    Each ticker is a provider round trip that writes shared market data, so
+    the call is operator-only and bounded to ``MAX_PRICE_UPDATE_TICKERS``.
+    """
+    resolved = _validate_db_path(request.db_path)
     results = []
-    for ticker in tickers:
+    for ticker in request.tickers:
         try:
             result = _security.update_security_price(resolved, ticker)
             results.append({
@@ -323,7 +345,7 @@ def update_prices(request: dict = Body(...)) -> dict:
                 "rows_inserted": result.get("rows_inserted", 0),
                 "message": result.get("message", ""),
             })
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - one failed ticker must not abort the batch
             logger.warning("Update price failed for %s: %s", ticker, str(e))
             results.append({
                 "ticker": ticker,
@@ -337,42 +359,24 @@ def update_prices(request: dict = Body(...)) -> dict:
 @router.get("/db-path")
 def get_default_db_path() -> dict:
     """Return a stable identifier for the default screening database."""
-    try:
-        _validate_db_path("default")
-        return {"db_path": "default"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to get default DB path: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    _validate_db_path("default")
+    return {"db_path": "default"}
 
 
 @router.get("/metrics")
 def get_metrics(db_path: str = Query(..., description="Path to SQLite database")) -> dict:
     """Return available screening tables and their columns."""
-    try:
-        resolved = _validate_db_path(db_path)
-        metrics = _screening.get_available_metrics(resolved)
-        return {"tables": metrics}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to get metrics: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    resolved = _validate_db_path(db_path)
+    metrics = _screening.get_available_metrics(resolved)
+    return {"tables": metrics}
 
 
 @router.get("/periods")
 def get_periods(db_path: str = Query(..., description="Path to SQLite database")) -> dict:
     """Return available period years."""
-    try:
-        resolved = _validate_db_path(db_path)
-        periods = _screening.get_available_periods(resolved)
-        return {"periods": periods}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to get periods: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    resolved = _validate_db_path(db_path)
+    periods = _screening.get_available_periods(resolved)
+    return {"periods": periods}
 
 
 @router.get("/formulas")
@@ -508,11 +512,11 @@ def run_screening_endpoint(
     except ValueError as e:
         logger.warning("screening/run validation error after %.2fs: %s",
                        _t.monotonic() - _t0, str(e))
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.error("screening/run FAILED after %.2fs: %s",
                      _t.monotonic() - _t0, str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 def _require_user(request: Request) -> AuthenticatedUser:
@@ -544,12 +548,8 @@ def get_last_result(request: Request) -> dict[str, Any]:
 def list_saved(request: Request) -> dict:
     """List saved screening configurations for the authenticated user."""
     user = _require_user(request)
-    try:
-        screens = _research_store.list_saved_screens(user.user_id)
-        return {"screenings": [s["name"] for s in screens]}
-    except Exception as e:
-        logger.error("Failed to list saved screenings: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    screens = _research_store.list_saved_screens(user.user_id)
+    return {"screenings": [s["name"] for s in screens]}
 
 
 @router.get("/saved/{identifier}")
@@ -563,13 +563,9 @@ def load_saved(request: Request, identifier: str) -> dict:
     )
     if match is None:
         raise HTTPException(status_code=404, detail="Screening not found")
-    try:
-        import json
-        definition = json.loads(match["definition_json"])
-        return definition
-    except Exception as e:
-        logger.error("Failed to load screening '%s': %s", identifier, str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    import json
+    definition = json.loads(match["definition_json"])
+    return definition
 
 
 @router.post("/save")
@@ -612,7 +608,7 @@ def save_screening(http_request: Request, payload: ScreeningSaveRequest = Body(.
         if "UNIQUE" in str(e).upper():
             raise HTTPException(status_code=409, detail="A screening with this name already exists") from e
         logger.error("Failed to save screening: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.delete("/saved/{identifier}")
@@ -639,28 +635,20 @@ def get_history(
 ) -> dict:
     """Return screening run history with pagination (most recent first)."""
     _require_user(request)
-    try:
-        entries = _screening.load_screening_history(_screening_history_path())
-        total = len(entries)
-        page = entries[offset:offset + limit]
-        return {"entries": page, "total": total, "limit": limit, "offset": offset}
-    except Exception as e:
-        logger.error("Failed to load screening history: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    entries = _screening.load_screening_history(_screening_history_path())
+    total = len(entries)
+    page = entries[offset:offset + limit]
+    return {"entries": page, "total": total, "limit": limit, "offset": offset}
 
 
 @router.post("/history")
 def save_history(entry: ScreeningHistoryEntry = Body(...)) -> dict:
     """Append a screening run to history."""
-    try:
-        _screening.save_screening_history(
-            entry.model_dump(exclude_none=True),
-            _screening_history_path(),
-        )
-        return {"saved": True}
-    except Exception as e:
-        logger.error("Failed to save screening history: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    _screening.save_screening_history(
+        entry.model_dump(exclude_none=True),
+        _screening_history_path(),
+    )
+    return {"saved": True}
 
 
 def _computed_column_specs(columns: list[ComputedColumn]) -> list[dict]:
@@ -768,10 +756,5 @@ def export_results(request: ScreeningExportRequest = Body(...)) -> StreamingResp
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
-    except HTTPException:
-        raise
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error("Export failed: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e

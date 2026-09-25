@@ -1,9 +1,9 @@
-from contextlib import contextmanager
 import json
 import logging
-from pathlib import Path
 import re
 import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
 
 logger = logging.getLogger("src.data_processing")

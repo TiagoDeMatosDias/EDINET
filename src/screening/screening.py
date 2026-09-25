@@ -634,7 +634,7 @@ def _safe_identifier(name: str) -> str:
         ValueError: If the name is empty.
     """
     if not name or not name.strip():
-        raise ValueError(f"Empty SQL identifier")
+        raise ValueError("Empty SQL identifier")
     return str(name)
 
 
@@ -2257,8 +2257,8 @@ def load_screening_history(history_path: str) -> list[dict]:
 
 
 # Stable facade: cohesive implementations live in focused modules.
-from .formatting import format_financial_value  # noqa: E402,F811
-from .persistence import (  # noqa: E402,F811
+from .formatting import format_financial_value  # noqa: E402,F401,F811
+from .persistence import (  # noqa: E402,F401,F811
     delete_screening_criteria,
     list_saved_screenings,
     load_screening_criteria,

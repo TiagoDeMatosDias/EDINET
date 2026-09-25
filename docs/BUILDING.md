@@ -6,7 +6,7 @@ Windows is the packaged target. Use Python 3.12 or 3.13, Node.js 22/npm 10, and 
 
 ```powershell
 py -3.13 -m venv .venv3
-.\.venv3\Scripts\python.exe -m pip install -e ".[build]"
+.\.venv3\Scripts\python.exe -m pip install -e ".[build]" -c constraints.txt
 ```
 
 ## Canonical workflow

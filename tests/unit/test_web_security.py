@@ -262,3 +262,115 @@ def test_disabled_auth_supplies_local_admin_principal():
         "role": "admin",
         "status": "active",
     }
+
+
+def _body_app() -> FastAPI:
+    app = FastAPI()
+
+    @app.post("/api/echo")
+    async def echo(request: Request):
+        return {"received": len(await request.body())}
+
+    return app
+
+
+def test_chunked_body_without_length_is_limited(monkeypatch):
+    monkeypatch.setattr(security_module, "_REQUEST_ENVELOPE_OVERHEAD_BYTES", 0)
+    app = _body_app()
+    install_security(
+        app,
+        AppSettings(auth_mode="disabled", max_upload_bytes=8, max_export_bytes=8),
+    )
+
+    def chunks():
+        # A generator body is sent with chunked encoding and no Content-Length.
+        for _ in range(4):
+            yield b"12345"
+
+    response = TestClient(app).post("/api/echo", content=chunks())
+    assert "content-length" not in {key.lower() for key in response.request.headers}
+    assert response.status_code == 413
+    assert response.json()["code"] == "request_too_large"
+    assert response.headers["X-Correlation-ID"]
+
+
+def test_chunked_body_within_limit_is_accepted(monkeypatch):
+    monkeypatch.setattr(security_module, "_REQUEST_ENVELOPE_OVERHEAD_BYTES", 0)
+    app = _body_app()
+    install_security(
+        app,
+        AppSettings(auth_mode="disabled", max_upload_bytes=64, max_export_bytes=64),
+    )
+    response = TestClient(app).post("/api/echo", content=iter([b"abc", b"def"]))
+    assert response.status_code == 200
+    assert response.json() == {"received": 6}
+
+
+def test_security_headers_are_sent():
+    app = FastAPI()
+
+    @app.get("/page")
+    def page():
+        return {"ok": True}
+
+    install_security(app, AppSettings(auth_mode="disabled"))
+    response = TestClient(app).get("/page")
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
+    # HSTS would pin localhost to HTTPS for every local dev server.
+    assert "Strict-Transport-Security" not in response.headers
+
+
+def test_remote_deployments_send_hsts(tmp_path):
+    settings = AppSettings(
+        host="0.0.0.0",
+        allow_remote=True,
+        auth_mode="accounts",
+        auth_db_path=tmp_path / "auth.db",
+        trusted_hosts=("testserver",),
+    )
+    app = FastAPI()
+
+    @app.get("/health")
+    def health():
+        return {"status": "healthy"}
+
+    install_security(app, settings)
+    response = TestClient(app).get("/health")
+    assert response.headers["Strict-Transport-Security"].startswith("max-age=")
+
+
+def test_operator_guidance_detail_survives_5xx_masking():
+    app = FastAPI()
+
+    @app.get("/guidance")
+    def guidance():
+        raise security_module.OperatorGuidanceError("Run npm run build in frontend-v2.")
+
+    install_security(app, AppSettings(auth_mode="disabled"))
+    response = TestClient(app).get("/guidance")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Run npm run build in frontend-v2."
+    assert response.json()["code"] == "service_unavailable"
+
+
+def test_unhandled_error_response_carries_correlation_header():
+    app = FastAPI()
+
+    @app.get("/boom")
+    def boom():
+        raise RuntimeError("database password is hunter2")
+
+    install_security(app, AppSettings(auth_mode="disabled"))
+    response = TestClient(app, raise_server_exceptions=False).get("/boom")
+    assert response.status_code == 500
+    assert "hunter2" not in response.text
+    assert response.headers["X-Correlation-ID"] == response.json()["correlation_id"]
+
+
+def test_bare_settings_never_default_to_a_cwd_relative_auth_database():
+    from src.orchestrator.common.db_config import get_auth_db
+
+    assert AppSettings().auth_db_path == Path(get_auth_db())

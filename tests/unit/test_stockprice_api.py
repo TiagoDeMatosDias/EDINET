@@ -248,7 +248,10 @@ class TestImportStockPricesCsv(unittest.TestCase):
         )
 
     def test_degenerate_history_gate(self):
-        from src.utilities.stock_prices import _reject_degenerate_history
+        from src.utilities.stock_prices import (
+            _ProviderCoverageError,
+            _reject_degenerate_history,
+        )
 
         # Monthly bars over multiple years are rejected as sparse.
         monthly = pd.DataFrame(
@@ -257,7 +260,7 @@ class TestImportStockPricesCsv(unittest.TestCase):
                 "Close": [100.0] * 60,
             }
         )
-        with self.assertRaises(Exception):
+        with self.assertRaises(_ProviderCoverageError):
             _reject_degenerate_history(monthly, "72030")
 
         # Weekend-dated rows for a Japanese code are dropped; the rest stays.

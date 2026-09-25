@@ -5,7 +5,7 @@
       "label": "Install Python requirements",
       "type": "process",
       "command": "${command:python.interpreterPath}",
-      "args": ["-m", "pip", "install", "-e", ".[dev]"],
+      "args": ["-m", "pip", "install", "-e", ".[dev]", "-c", "constraints.txt"],
       "options": {
         "cwd": "${workspaceFolder}"
       },

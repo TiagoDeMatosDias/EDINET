@@ -17,9 +17,12 @@ The public homepage at `/` explains the product and links directly to registrati
 Account authentication is optional for loopback use. In account mode:
 
 - the first successful registration becomes the administrator;
-- subsequent registration follows the configured registration mode;
+- subsequent registration follows the registration mode saved in Admin (open, closed, or invite-only), falling back to `EDINET_REGISTRATION_MODE` until one is saved;
 - browser access tokens stay in memory and refresh tokens use an HttpOnly cookie;
-- personal API tokens can be created and revoked from Account;
+- personal API tokens can be created and revoked from Account; a token with the `read` scope cannot change anything;
+- changing or resetting a password signs the account out everywhere and revokes its API tokens;
+- saved backtests are private to the account that ran them;
+- refreshing a price from the provider is available to operators and administrators;
 - an administrator can set the minimum password length from Admin → Security settings. The accepted range is 15–128 characters, and the policy applies to registration, invitations, resets, changes, and administrator-created credentials.
 
 ## Workspace overview

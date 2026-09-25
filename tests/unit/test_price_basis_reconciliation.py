@@ -12,23 +12,23 @@ raw Stooq data are left untouched.
 from __future__ import annotations
 
 import sqlite3
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
-from unittest.mock import patch
 
+from src.portfolio.portfolio_state import _invalidate_split_cache, _load_split_factors
+from src.portfolio.split_schema import ensure_split_tables
 from src.utilities.stock_prices import (
     _create_prices_table,
-    load_ticker_data,
-    _record_provider_splits,
-    _reconcile_splits,
-    _replace_ticker_rows,
     _extract_split_events,
+    _reconcile_splits,
+    _record_provider_splits,
+    _replace_ticker_rows,
     _split_restore_factor,
+    load_ticker_data,
     reconcile_ticker_price_basis,
 )
-from src.portfolio.split_schema import ensure_split_tables
-from src.portfolio.portfolio_state import _load_split_factors, _invalidate_split_cache
 
 
 def _make_prices_conn() -> sqlite3.Connection:

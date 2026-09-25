@@ -1,6 +1,6 @@
 import logging
 
-from src.orchestrator.common import StepDefinition, StepFieldDefinition
+from src.orchestrator.common import StepDefinition
 from src.orchestrator.common.db_config import get_db2
 
 from . import service as rolling_metrics_services
@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 def run_generate_rolling_metrics(config, overwrite=False, context=None):
     logger.info("Generating rolling metrics tables...")
-    step_cfg = config.get("generate_rolling_metrics_config", {})
     db2 = get_db2()
 
     kwargs = dict(

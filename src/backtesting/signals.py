@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 from .asof import HistoricalObservation, select_as_of
 
@@ -35,7 +34,7 @@ def signals_from_observations(
     """
     selected = select_as_of(observations, decision_time)
     signals: list[TradingSignal] = []
-    for (company, metric, _), obs in selected.items():
+    for (company, _metric, _), obs in selected.items():
         if obs.value is None:
             continue
         if obs.value > min_weight:

@@ -8,13 +8,13 @@ Use Python 3.12 or 3.13 in `.venv3`, Node.js 22, and npm 10. Install from the au
 
 ```powershell
 py -3.13 -m venv .venv3
-.\.venv3\Scripts\python.exe -m pip install -e ".[dev,build]"
+.\.venv3\Scripts\python.exe -m pip install -e ".[dev,build]" -c constraints.txt
 Set-Location frontend-v2
 npm ci
 Set-Location ..
 ```
 
-`requirements.txt` is a generated compatibility input. After changing dependencies, run `python scripts/sync_requirements.py`, then verify it with `--check`.
+`requirements.txt` and `constraints.txt` are generated. `pyproject.toml` lists direct dependencies only; pins for their transitive dependencies live in `[tool.edinet].constraints`. After changing either, run `python scripts/sync_requirements.py`, then verify it with `--check`.
 
 ## Verification
 

@@ -9,7 +9,6 @@ retrieves price history, and provides a deterministic peer comparison.
 from __future__ import annotations
 
 import importlib
-import json
 import logging
 import os
 import re
@@ -25,7 +24,16 @@ import pandas as pd
 
 from src.orchestrator.common.sqlite import connect_read, connect_write, transaction
 from src.utilities.price_provenance import table_columns
-from src.utilities.stock_prices import _create_prices_table, load_ticker_data
+
+# Re-exported: callers and tests patch these names on this module.
+from src.utilities.stock_prices import _create_prices_table, load_ticker_data  # noqa: F401
+
+from .text import clean_text_block as _clean_text_block
+from .text import (  # noqa: F401 - re-exported for callers and tests
+    summarize_business_description as _summarize_business_description,
+)
+from .text import summarize_english_text as _summarize_english_text  # noqa: F401 - re-export
+from .text import summarize_preferred_description as _summarize_preferred_description
 
 logger = logging.getLogger(__name__)
 
@@ -520,16 +528,10 @@ def _resolve_search_schema(db_path: str) -> SecuritySearchSchema:
 #  2. FORMATTING & SCORING HELPERS
 # ---------------------------------------------------------------------------
 # Text processing, cleaning, and summarisation utilities are now in
-# src.security_analysis.text.  We import only the functions used by the
-# public API endpoints (get_security_overview, etc.).
+# src.security_analysis.text (imported at the top of this module).
 #
 # _safe_str and _safe_float remain here because they are used by 60+
 # call sites throughout this module.
-
-from .text import clean_text_block as _clean_text_block
-from .text import summarize_english_text as _summarize_english_text
-from .text import summarize_preferred_description as _summarize_preferred_description
-from .text import summarize_business_description as _summarize_business_description
 
 
 def _safe_str(value: Any) -> str:

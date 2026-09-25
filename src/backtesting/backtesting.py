@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -37,6 +38,10 @@ from src.orchestrator.common.backtesting import (
     resolve_portfolio_allocations,
 )
 from src.orchestrator.common.sqlite import connect_read
+
+if TYPE_CHECKING:
+    import queue
+    import threading
 
 logger = logging.getLogger(__name__)
 
@@ -399,8 +404,7 @@ def run_backtest_web(
     )
 
     # ── 5. Yearly returns (from per-company-per-year) ───────────────────
-    yearly_records = per_company_per_year.to_dict(orient="records") if not per_company_per_year.empty else []
-    # Also keep legacy yearly_returns for the frontend's yearly table
+    # Legacy yearly_returns feed the frontend's yearly table
     yearly_returns = calculate_yearly_returns(decomposition) if decomposition else None
 
     # ── Benchmark ──
@@ -595,9 +599,6 @@ def run_backtest_web(
                     div_ps = float(bd[bd["Year"] == year]["PerShare_Dividends"].sum())
                 price_ret = (e_price - s_price) / s_price if s_price > 0 else 0.0
                 div_ret = div_ps / s_price if s_price > 0 else 0.0
-                # Compute portfolio start value for weighted calc
-                yr_port_rows = per_company_per_year[per_company_per_year["Year"] == year]
-                port_start = yr_port_rows["Starting_Market_Value"].sum() if "Starting_Market_Value" in yr_port_rows.columns else initial_capital
                 bench_start_mkt = effective_initial_capital  # same capital invested
                 bench_end_mkt = bench_start_mkt * (1.0 + price_ret)
                 bench_yearly_rows.append({
@@ -841,7 +842,7 @@ def run_backtest_set_web(
     try:
         df = pd.read_csv(io.StringIO(csv_content), comment="#")
     except Exception as e:
-        raise ValueError(f"Failed to parse CSV: {e}")
+        raise ValueError(f"Failed to parse CSV: {e}") from e
 
     required = {"Year", "Tickers", "Type", "Amount"}
     missing = required - set(df.columns)
@@ -1115,7 +1116,6 @@ def run_screening_backtest_set(
 
     # Equal-weight portfolio
     weight = 1.0 / len(tickers)
-    portfolio = {t: {"mode": "weight", "value": weight} for t in tickers}
 
     # ── Build CSV-like input for run_backtest_set_web ─────────────────
     # We build a CSV string for a single year = screening_date year
@@ -1596,8 +1596,8 @@ def run_screening_backtest_rolling(
     risk_free_rate: float = 0.0,
     start_period: str | None = None,
     end_period: str | None = None,
-    progress_queue: "queue.Queue | None" = None,
-    cancel_event: "threading.Event | None" = None,
+    progress_queue: queue.Queue | None = None,
+    cancel_event: threading.Event | None = None,
     prices_table: str = "Stock_Prices",
     ratios_table: str = "ShareMetrics",
     company_table: str = "CompanyInfo",
@@ -1661,18 +1661,6 @@ def run_screening_backtest_rolling(
         columns_full = list(columns) + [f"Stock_Prices.{resolved_price}"]
     else:
         columns_full = list(columns)
-
-    # Check latest price date once to warn about future screenings
-    conn = connect_read(db_path, busy_timeout_ms=10_000)
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            f"SELECT MAX(Date) FROM {_sql_ident(prices_table)}"
-        )
-        latest_price = cursor.fetchone()
-        latest_price_date = latest_price[0] if latest_price and latest_price[0] else None
-    finally:
-        conn.close()
 
     # ── Run screenings + backtests for each period ────────────────
     all_results: list[dict] = []

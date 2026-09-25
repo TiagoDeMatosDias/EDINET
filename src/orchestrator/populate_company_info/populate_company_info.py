@@ -2,7 +2,7 @@ import logging
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common.db_config import get_db2
-from src.orchestrator.common.edinet import Edinet, EDINET_BASE_URL
+from src.orchestrator.common.edinet import EDINET_BASE_URL, Edinet
 
 logger = logging.getLogger(__name__)
 

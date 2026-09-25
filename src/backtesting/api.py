@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import backtesting as _bt
+from src.auth.models import AuthenticatedUser
 from src.backtesting.zip_export import (
     ExportSizeLimitExceeded,
     build_rolling_zip,
@@ -35,6 +36,7 @@ from src.orchestrator.common.db_config import get_db2, get_db3
 from src.orchestrator.common.sqlite import connect_read
 from src.portfolio.currency import get_available_display_currencies
 from src.portfolio.performance import get_risk_free_rate
+from src.utilities.runtime_paths import backtest_root
 from src.web_app.security import (
     AppSettings,
     PathPolicyError,
@@ -52,9 +54,7 @@ _MAX_CONCURRENT = 2
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 _APP_SETTINGS = AppSettings.from_env()
 _DB_PATH_POLICY = configured_database_policy(_APP_SETTINGS.allowed_data_roots)
-_BACKTEST_ROOT = (
-    Path(__file__).resolve().parents[2] / "data" / "Backtests"
-).resolve(strict=False)
+_BACKTEST_ROOT = backtest_root().resolve(strict=False)
 _BACKTEST_ID = re.compile(r"^\d{8}_\d{6}(?:_[0-9a-f]{8})?$")
 
 
@@ -108,6 +108,54 @@ def _backtest_directory(backtest_id: str, *, require_existing: bool) -> Path:
     if require_existing and not candidate.is_dir():
         raise HTTPException(status_code=404, detail="Backtest not found.")
     return candidate
+
+
+_OWNER_FILE = "owner.json"
+
+
+def _request_user(http_request: Request | None) -> AuthenticatedUser | None:
+    user = getattr(getattr(http_request, "state", None), "user", None)
+    return user if isinstance(user, AuthenticatedUser) else None
+
+
+def _write_owner(out_dir: Path, http_request: Request | None) -> None:
+    """Record which account produced a saved backtest directory."""
+    user = _request_user(http_request)
+    owner = user.user_id if user is not None else None
+    (out_dir / _OWNER_FILE).write_text(
+        json.dumps({"owner_user_id": owner}),
+        encoding="utf-8",
+    )
+
+
+def _read_owner(directory: Path) -> str | None:
+    owner_path = directory / _OWNER_FILE
+    if not owner_path.is_file() or owner_path.is_symlink():
+        return None
+    try:
+        payload = json.loads(owner_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    owner = payload.get("owner_user_id") if isinstance(payload, dict) else None
+    return owner if isinstance(owner, str) and owner else None
+
+
+def _can_access(directory: Path, user: AuthenticatedUser | None) -> bool:
+    """Owners see their own results; unowned (legacy) results are admin-only."""
+    if user is None:
+        return False
+    owner = _read_owner(directory)
+    if owner is None:
+        return user.role == "admin"
+    return owner == user.user_id
+
+
+def _owned_backtest_directory(backtest_id: str, http_request: Request) -> Path:
+    directory = _backtest_directory(backtest_id, require_existing=True)
+    if not _can_access(directory, _request_user(http_request)):
+        # 404 rather than 403 so other accounts' result ids are not confirmed.
+        raise HTTPException(status_code=404, detail="Backtest not found.")
+    return directory
 
 
 def _record_recent_backtest(
@@ -252,13 +300,8 @@ class RollingExportRequest(BaseModel):
 @router.get("/db-path")
 def get_db_path() -> dict:
     """Return a stable identifier for the default database."""
-    try:
-        _resolve_db()
-        return {"db_path": "default"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    _resolve_db()
+    return {"db_path": "default"}
 
 
 @router.get("/available-tickers")
@@ -269,23 +312,17 @@ def get_available_tickers(
 
     Queries ``CompanyInfo.Company_Ticker`` for speed (smaller table).
     """
+    resolved = _resolve_db(db_path)
+    conn = connect_read(resolved)
     try:
-        resolved = _resolve_db(db_path)
-        conn = connect_read(resolved)
-        try:
-            rows = conn.execute(
-                "SELECT DISTINCT Company_Ticker FROM CompanyInfo "
-                "WHERE Company_Ticker IS NOT NULL AND Company_Ticker != '' "
-                "ORDER BY Company_Ticker"
-            ).fetchall()
-            return {"tickers": [r[0] for r in rows]}
-        finally:
-            conn.close()
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("available-tickers failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        rows = conn.execute(
+            "SELECT DISTINCT Company_Ticker FROM CompanyInfo "
+            "WHERE Company_Ticker IS NOT NULL AND Company_Ticker != '' "
+            "ORDER BY Company_Ticker"
+        ).fetchall()
+        return {"tickers": [r[0] for r in rows]}
+    finally:
+        conn.close()
 
 
 @router.get("/base-currencies")
@@ -296,13 +333,19 @@ def get_base_currencies() -> dict:
 
 
 @router.get("/list")
-def list_backtests() -> dict:
-    """List saved backtest results."""
+def list_backtests(http_request: Request) -> dict:
+    """List the saved backtest results visible to the current account."""
     if not _BACKTEST_ROOT.exists():
         return {"backtests": []}
+    user = _request_user(http_request)
     items = []
     for d in sorted(_BACKTEST_ROOT.iterdir(), reverse=True):
-        if _BACKTEST_ID.fullmatch(d.name) and d.is_dir() and not d.is_symlink():
+        if (
+            _BACKTEST_ID.fullmatch(d.name)
+            and d.is_dir()
+            and not d.is_symlink()
+            and _can_access(d, user)
+        ):
             zip_file = d / "backtest.zip"
             items.append({
                 "id": d.name,
@@ -314,12 +357,9 @@ def list_backtests() -> dict:
 
 
 @router.get("/download/{backtest_id}")
-def download_backtest(backtest_id: str):
+def download_backtest(backtest_id: str, http_request: Request):
     """Serve a previously saved backtest ZIP file."""
-    zip_path = _backtest_directory(
-        backtest_id,
-        require_existing=True,
-    ) / "backtest.zip"
+    zip_path = _owned_backtest_directory(backtest_id, http_request) / "backtest.zip"
     if not zip_path.is_file() or zip_path.is_symlink():
         raise HTTPException(status_code=404, detail="Backtest not found.")
     return FileResponse(
@@ -330,9 +370,9 @@ def download_backtest(backtest_id: str):
 
 
 @router.get("/result/{backtest_id}")
-def get_backtest_result(backtest_id: str) -> dict[str, Any]:
+def get_backtest_result(backtest_id: str, http_request: Request) -> dict[str, Any]:
     """Load the lightweight result payload used by the Backtest workspace."""
-    result_path = _backtest_directory(backtest_id, require_existing=True) / "result.json"
+    result_path = _owned_backtest_directory(backtest_id, http_request) / "result.json"
     if not result_path.is_file() or result_path.is_symlink():
         raise HTTPException(status_code=404, detail="Backtest result not found.")
     try:
@@ -403,15 +443,9 @@ async def run_backtest(
                 timeout=120,
             )
         except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Backtest timed out after 120 seconds.")
-        except HTTPException:
-            raise
+            raise HTTPException(status_code=504, detail="Backtest timed out after 120 seconds.") from None
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            import traceback
-            logger.error("Backtest run failed: %s\n%s", e, traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     # Save result JSON to disk immediately (fast), build ZIP in background
     ts = _new_backtest_id()
@@ -448,6 +482,7 @@ async def run_backtest(
                 "Generated backtest files exceed the configured size limit",
             )
         out_dir.mkdir(parents=True, exist_ok=False)
+        _write_owner(out_dir, http_request)
         (out_dir / "result.json").write_bytes(result_bytes)
         (out_dir / "backtest.zip").write_bytes(zip_bytes)
         if daily_bytes:
@@ -512,14 +547,9 @@ async def run_from_csv(
                 timeout=120,
             )
         except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Backtest set timed out after 120 seconds.")
-        except HTTPException:
-            raise
+            raise HTTPException(status_code=504, detail="Backtest set timed out after 120 seconds.") from None
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            logger.error("CSV backtest set failed: %s", e)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     # Save results to disk as JSON + summary
     import io as _io
@@ -549,6 +579,7 @@ async def run_from_csv(
             "Generated backtest files exceed the configured size limit",
         )
     out_dir.mkdir(parents=True, exist_ok=False)
+    _write_owner(out_dir, http_request)
     (out_dir / "result.json").write_bytes(result_bytes)
     (out_dir / "backtest.zip").write_bytes(zip_bytes)
 
@@ -593,12 +624,7 @@ def get_rolling_periods(
             "estimated_backtests": estimated_backtests,
         }
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("rolling-periods failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/run-rolling")
@@ -696,13 +722,15 @@ async def run_rolling(
                     str(_BACKTEST_ROOT),
                     _APP_SETTINGS.max_backtest_artifact_bytes,
                 )
-                backtest_id = saved_path.split("/")[-1] if "/" in saved_path else saved_path.split("\\")[-1]
+                saved_dir = Path(saved_path)
+                backtest_id = saved_dir.name
                 agg = final_result.get("aggregate", {})
                 cfg = final_result.get("config", {})
+                _write_owner(saved_dir, http_request)
                 # Keep a small, navigable result alongside the ZIP.  The ZIP
                 # remains the full artifact; this file is only for the
                 # workspace's recent-history links.
-                Path(saved_path, "result.json").write_text(
+                (saved_dir / "result.json").write_text(
                     json.dumps({"aggregate": agg, "config": cfg}, default=str),
                     encoding="utf-8",
                 )
@@ -938,25 +966,21 @@ async def export_rolling_xlsx(request: RollingExportRequest) -> StreamingRespons
                         ws.cell(row=row, column=c, value=h)
                     style_header(ws, row, len(co_headers))
                     row += 1
+                    co_keys = [
+                        "total_return", "price_return", "dividend_return", "weight",
+                        "weighted_price", "weighted_dividend", "weighted_total",
+                        "start_price", "end_price",
+                    ]
+                    if has_capital:
+                        co_keys += [
+                            "capital_invested", "shares_purchased",
+                            "dividends_received", "market_value",
+                        ]
                     for co in per_co:
-                        col = 1
-                        ws.cell(row=row, column=col, value=co.get("Ticker", "")); col += 1
-                        ws.cell(row=row, column=col, value=co.get("total_return", 0)); col += 1
-                        ws.cell(row=row, column=col, value=co.get("price_return", 0)); col += 1
-                        ws.cell(row=row, column=col, value=co.get("dividend_return", 0)); col += 1
-                        ws.cell(row=row, column=col, value=co.get("weight", 0)); col += 1
-                        ws.cell(row=row, column=col, value=co.get("weighted_price", 0)); col += 1
-                        ws.cell(row=row, column=col, value=co.get("weighted_dividend", 0)); col += 1
-                        ws.cell(row=row, column=col, value=co.get("weighted_total", 0)); col += 1
-                        ws.cell(row=row, column=col, value=co.get("start_price", 0)); col += 1
-                        ws.cell(row=row, column=col, value=co.get("end_price", 0)); col += 1
-                        if has_capital:
-                            ws.cell(row=row, column=col, value=co.get("capital_invested", 0)); col += 1
-                            ws.cell(row=row, column=col, value=co.get("shares_purchased", 0)); col += 1
-                            ws.cell(row=row, column=col, value=co.get("dividends_received", 0)); col += 1
-                            ws.cell(row=row, column=col, value=co.get("market_value", 0)); col += 1
-                        for c in range(1, col):
-                            ws.cell(row=row, column=c).border = thin_border
+                        values = [co.get("Ticker", "")] + [co.get(key, 0) for key in co_keys]
+                        for col, value in enumerate(values, start=1):
+                            cell = ws.cell(row=row, column=col, value=value)
+                            cell.border = thin_border
                         for c in [2, 3, 4, 5, 6, 7, 8]:
                             ws.cell(row=row, column=c).number_format = pct_fmt
                         row += 1

@@ -53,7 +53,11 @@ def test_rolling_run_uses_dedicated_artifact_limit(monkeypatch, tmp_path):
 
     def save_archive(result, base_dir, max_bytes):
         captured.update(result=result, base_dir=base_dir, max_bytes=max_bytes)
-        return str(tmp_path / "20260723_120000_1234abcd")
+        # The real saver creates the result directory; the API then adds
+        # result.json and owner.json next to the archive.
+        saved = tmp_path / "20260723_120000_1234abcd"
+        saved.mkdir()
+        return str(saved)
 
     monkeypatch.setattr(backtesting_api, "save_rolling_backtest_zip", save_archive)
     monkeypatch.setattr(

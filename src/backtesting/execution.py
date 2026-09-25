@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from .asof import ExecutionCostModel
-from .calendar import TradingCalendar, DEFAULT_CALENDAR
+from .calendar import DEFAULT_CALENDAR, TradingCalendar
 from .signals import TradingSignal
 
 

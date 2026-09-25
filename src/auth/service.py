@@ -12,7 +12,7 @@ from typing import Any
 
 from .models import AuthenticatedUser, IssuedTokens
 from .passwords import hash_password, password_needs_rehash, verify_password
-from .storage import AuthStore, timestamp, utc_now
+from .storage import AuthStore, parse_timestamp, timestamp, utc_now
 from .tokens import new_token, token_digest
 
 _USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{2,63}$")
@@ -21,6 +21,15 @@ _REFRESH_TTL = timedelta(days=30)
 _API_TOKEN_PREFIX = "ed_pat_"
 DEFAULT_PASSWORD_MIN_LENGTH = 15
 MAX_PASSWORD_LENGTH = 128
+REGISTRATION_MODES = frozenset({"open", "closed", "invite"})
+ROLES = frozenset({"admin", "operator", "member"})
+# ``*`` grants full access; ``read`` limits a token to safe HTTP methods.
+API_TOKEN_SCOPES = frozenset({"*", "read"})
+_TTL_BOUNDS: dict[str, tuple[int, int]] = {
+    "access_token_seconds": (60, 24 * 3600),
+    "refresh_idle_seconds": (300, 365 * 24 * 3600),
+    "refresh_absolute_seconds": (300, 365 * 24 * 3600),
+}
 
 
 class AuthError(ValueError):
@@ -65,14 +74,37 @@ def _validate_password(value: str, minimum: int = DEFAULT_PASSWORD_MIN_LENGTH) -
         )
 
 
-def _user_from_row(row: Any) -> AuthenticatedUser:
+def _user_from_row(row: Any, scopes: frozenset[str] | None = None) -> AuthenticatedUser:
     return AuthenticatedUser(
         user_id=row["user_id"],
         username=row["username"],
         email=row["email"],
         role=row["role"],
         status=row["status"],
+        scopes=scopes,
     )
+
+
+def _token_scopes(scopes_json: str | None) -> frozenset[str]:
+    try:
+        values = json.loads(scopes_json or "[]")
+    except (TypeError, ValueError):
+        return frozenset()
+    if not isinstance(values, list):
+        return frozenset()
+    return frozenset(str(value) for value in values) & API_TOKEN_SCOPES
+
+
+# Verified against unknown logins so a missing account costs the same Argon2
+# work as a wrong password and response timing does not reveal usernames.
+_DUMMY_PASSWORD_HASH: str | None = None
+
+
+def _dummy_password_hash() -> str:
+    global _DUMMY_PASSWORD_HASH
+    if _DUMMY_PASSWORD_HASH is None:
+        _DUMMY_PASSWORD_HASH = hash_password(uuid.uuid4().hex)
+    return _DUMMY_PASSWORD_HASH
 
 
 def _login_key(login: str, remote_addr: str | None) -> str:
@@ -91,12 +123,45 @@ class AuthService:
         access_ttl: timedelta = _ACCESS_TTL,
         refresh_ttl: timedelta = _REFRESH_TTL,
     ) -> None:
-        if registration_mode not in {"open", "closed"}:
-            raise ValueError("registration_mode must be open or closed")
+        if registration_mode not in REGISTRATION_MODES:
+            raise ValueError("registration_mode must be open, closed, or invite")
         self.store = store
-        self.registration_mode = registration_mode
-        self.access_ttl = access_ttl
-        self.refresh_ttl = refresh_ttl
+        # Deployment defaults. Settings an administrator saves in the account
+        # database take precedence over them (see ``_saved_setting``).
+        self.default_registration_mode = registration_mode
+        self.default_access_ttl = access_ttl
+        self.default_refresh_ttl = refresh_ttl
+
+    def _saved_setting(self, name: str) -> Any:
+        saved = self.store.get_saved_auth_settings()
+        return saved.get(name) if saved else None
+
+    @property
+    def registration_mode(self) -> str:
+        saved = self._saved_setting("registration_mode")
+        return saved if saved in REGISTRATION_MODES else self.default_registration_mode
+
+    @property
+    def default_role(self) -> str:
+        saved = self._saved_setting("default_role")
+        return saved if saved in ROLES else "member"
+
+    @property
+    def access_ttl(self) -> timedelta:
+        saved = self._saved_setting("access_token_seconds")
+        return timedelta(seconds=int(saved)) if saved else self.default_access_ttl
+
+    @property
+    def refresh_ttl(self) -> timedelta:
+        """Idle lifetime: each rotation extends the session by this much."""
+        saved = self._saved_setting("refresh_idle_seconds")
+        return timedelta(seconds=int(saved)) if saved else self.default_refresh_ttl
+
+    @property
+    def refresh_absolute_ttl(self) -> timedelta | None:
+        """Maximum lifetime of a login, however often it is refreshed."""
+        saved = self._saved_setting("refresh_absolute_seconds")
+        return timedelta(seconds=int(saved)) if saved else None
 
     @property
     def bootstrap_required(self) -> bool:
@@ -122,14 +187,14 @@ class AuthService:
         normalized_email = _normalize_email(email)
         _validate_password(password, self.password_min_length)
         first_user = self.bootstrap_required
-        if not first_user and self.registration_mode == "closed":
+        if not first_user and self.registration_mode != "open":
             raise AuthError("Registration is closed", code="registration_closed", status_code=403)
         now = utc_now()
         user = AuthenticatedUser(
             user_id=str(uuid.uuid4()),
             username=normalized_username,
             email=normalized_email,
-            role="admin" if first_user else "member",
+            role="admin" if first_user else self.default_role,
             status="active",
         )
         try:
@@ -154,7 +219,7 @@ class AuthService:
                 user_id=user.user_id,
                 username=user.username,
                 email=user.email,
-                role="admin" if stored_as_first else "member",
+                role="admin" if stored_as_first else self.default_role,
                 status=user.status,
             )
         self.store.audit("account_created", user.user_id, remote_addr=remote_addr)
@@ -174,7 +239,9 @@ class AuthService:
             if throttle["locked_until"] > timestamp(utc_now()):
                 raise AuthError("Invalid credentials", code="invalid_credentials", status_code=401)
         row = self.store.get_user_by_login(login)
-        if row is None or row["status"] != "active" or not verify_password(row["password_hash"], password):
+        stored_hash = row["password_hash"] if row is not None else _dummy_password_hash()
+        password_ok = verify_password(stored_hash, password)
+        if row is None or row["status"] != "active" or not password_ok:
             self.store.record_login_failure(login_key, utc_now())
             self.store.audit("login_failed", None, remote_addr=remote_addr)
             raise AuthError("Invalid credentials", code="invalid_credentials", status_code=401)
@@ -241,6 +308,15 @@ class AuthService:
         access_expires = now + self.access_ttl
         refresh_expires = now + self.refresh_ttl
         family_id = row["family_id"] or str(uuid.uuid4())
+        absolute_ttl = self.refresh_absolute_ttl
+        if absolute_ttl is not None:
+            started = self.store.family_started_at(family_id) if row["family_id"] else None
+            deadline = (started or parse_timestamp(row["created_at"])) + absolute_ttl
+            if deadline <= now:
+                self.store.revoke_family(family_id, now)
+                raise AuthError("Refresh token is invalid or expired", code="invalid_refresh", status_code=401)
+            refresh_expires = min(refresh_expires, deadline)
+            access_expires = min(access_expires, deadline)
         access_values = self._session_values(row["user_id"], access, "access", now, access_expires, user_agent, remote_addr, family_id)
         refresh_values = self._session_values(row["user_id"], replacement, "refresh", now, refresh_expires, user_agent, remote_addr, family_id)
         try:
@@ -259,7 +335,7 @@ class AuthService:
             if row is None:
                 return None
             self.store.touch_api_token(row["token_id"], utc_now())
-            return _user_from_row(row)
+            return _user_from_row(row, scopes=_token_scopes(row["scopes_json"]))
         row = self.store.find_active_session(token_digest(token), "access", utc_now())
         return _user_from_row(row) if row is not None else None
 
@@ -283,6 +359,12 @@ class AuthService:
     ) -> str:
         if not name.strip() or len(name.strip()) > 100:
             raise AuthError("Token name is required", code="invalid_token_name")
+        requested = set(scopes or ["*"])
+        if not requested <= API_TOKEN_SCOPES:
+            raise AuthError(
+                "Token scopes must be '*' (full access) or 'read' (read-only)",
+                code="invalid_scope",
+            )
         raw = new_token(_API_TOKEN_PREFIX)
         now = utc_now()
         self.store.add_api_token(
@@ -292,7 +374,7 @@ class AuthService:
                 "name": name.strip(),
                 "token_hash": token_digest(raw),
                 "token_prefix": raw[:12],
-                "scopes_json": json.dumps(sorted(set(scopes or ["*"])), separators=(",", ":")),
+                "scopes_json": json.dumps(sorted(requested), separators=(",", ":")),
                 "created_at": timestamp(now),
                 "expires_at": timestamp(expires_at) if expires_at else None,
             }
@@ -314,9 +396,10 @@ class AuthService:
 
     def update_profile(self, user_id: str, *, username: str | None = None, email: str | None = None) -> AuthenticatedUser:
         if username is not None:
-            _normalize_username(username)
+            username = _normalize_username(username)
         if email is not None:
-            _normalize_email(email)
+            # A blank value leaves the stored address unchanged.
+            email = _normalize_email(email)
         now = utc_now()
         try:
             self.store.update_user_profile(user_id, username=username, email=email, when=now)
@@ -409,38 +492,39 @@ class AuthService:
         return token
 
     def accept_invitation(self, invitation_token: str, username: str, password: str) -> AuthenticatedUser:
-        now = utc_now()
-        token_hash_val = token_digest(invitation_token)
-        invitation = self.store.find_valid_invitation(token_hash_val, now)
-        if invitation is None:
-            raise AuthError("Invitation is invalid or expired", code="invalid_invitation", status_code=410)
         normalized_username = _normalize_username(username)
         _validate_password(password, self.password_min_length)
-        user = AuthenticatedUser(
-            user_id=str(uuid.uuid4()),
+        now = utc_now()
+        user_id = str(uuid.uuid4())
+        try:
+            # Checking, creating, and consuming happen in one transaction so
+            # concurrent requests cannot redeem the same invitation twice.
+            invitation = self.store.create_user_from_invitation(
+                token_digest(invitation_token),
+                {
+                    "user_id": user_id,
+                    "username": normalized_username,
+                    "password_hash": hash_password(password),
+                    "status": "active",
+                    "created_at": timestamp(now),
+                    "updated_at": timestamp(now),
+                },
+                now,
+            )
+        except Exception as exc:
+            if "UNIQUE" in str(exc).upper():
+                raise AuthError("Username or email is already registered", code="account_exists", status_code=409) from exc
+            raise
+        if invitation is None:
+            raise AuthError("Invitation is invalid or expired", code="invalid_invitation", status_code=410)
+        self.store.audit("invitation_accepted", user_id)
+        return AuthenticatedUser(
+            user_id=user_id,
             username=normalized_username,
             email=invitation["email_normalized"],
             role=invitation["role"],
             status="active",
         )
-        try:
-            self.store.create_user({
-                "user_id": user.user_id,
-                "username": user.username,
-                "email": user.email,
-                "password_hash": hash_password(password),
-                "role": user.role,
-                "status": user.status,
-                "created_at": timestamp(now),
-                "updated_at": timestamp(now),
-            })
-            self.store.accept_invitation(token_hash_val, user.user_id, now)
-            self.store.audit("invitation_accepted", user.user_id)
-        except Exception as exc:
-            if "UNIQUE" in str(exc).upper():
-                raise AuthError("Username or email is already registered", code="account_exists", status_code=409) from exc
-            raise
-        return user
 
     def revoke_invitation(self, invitation_id: str, *, requested_by: str) -> bool:
         self._require_admin(requested_by)
@@ -460,26 +544,54 @@ class AuthService:
         return token
 
     def reset_password(self, reset_token: str, new_password: str) -> None:
-        now = utc_now()
-        row = self.store.consume_credential_reset(token_digest(reset_token), now)
-        if row is None:
-            raise AuthError("Reset token is invalid or expired", code="invalid_reset", status_code=410)
+        # Validate first: a rejected password must not burn the one-time token.
         _validate_password(new_password, self.password_min_length)
-        self.store.change_user_password(row["user_id"], hash_password(new_password), now)
-        self.store.audit("password_reset", row["user_id"], detail="via credential reset")
+        user_id = self.store.reset_password_with_token(
+            token_digest(reset_token),
+            hash_password(new_password),
+            utc_now(),
+        )
+        if user_id is None:
+            raise AuthError("Reset token is invalid or expired", code="invalid_reset", status_code=410)
+        self.store.audit("password_reset", user_id, detail="via credential reset")
 
     # -- auth settings (admin only) --
 
+    def effective_auth_settings(self) -> dict[str, object]:
+        """Return the settings actually enforced, saved or deployment default."""
+        absolute = self.refresh_absolute_ttl
+        return {
+            "registration_mode": self.registration_mode,
+            "default_role": self.default_role,
+            "password_min_length": self.password_min_length,
+            "access_token_seconds": int(self.access_ttl.total_seconds()),
+            "refresh_idle_seconds": int(self.refresh_ttl.total_seconds()),
+            "refresh_absolute_seconds": int(absolute.total_seconds()) if absolute else None,
+            "updated_at": self._saved_setting("updated_at"),
+        }
+
     def get_auth_settings(self, *, requested_by: str) -> dict[str, object]:
         self._require_admin(requested_by)
-        return self.store.get_auth_settings()
+        return self.effective_auth_settings()
 
     def update_auth_settings(self, *, requested_by: str, **kwargs: Any) -> dict[str, object]:
         self._require_admin(requested_by)
         allowed = {"registration_mode", "default_role", "password_min_length", "access_token_seconds", "refresh_idle_seconds", "refresh_absolute_seconds"}
         filtered = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
-        if "registration_mode" in filtered and filtered["registration_mode"] not in {"open", "closed", "invite"}:
+        if "registration_mode" in filtered and filtered["registration_mode"] not in REGISTRATION_MODES:
             raise AuthError("registration_mode must be open, closed, or invite", code="invalid_setting")
+        if "default_role" in filtered and filtered["default_role"] not in ROLES:
+            raise AuthError("default_role must be admin, operator, or member", code="invalid_setting")
+        for name, (low, high) in _TTL_BOUNDS.items():
+            if name not in filtered:
+                continue
+            try:
+                seconds = int(filtered[name])
+            except (TypeError, ValueError) as exc:
+                raise AuthError(f"{name} must be an integer", code="invalid_setting") from exc
+            if not low <= seconds <= high:
+                raise AuthError(f"{name} must be between {low} and {high}", code="invalid_setting")
+            filtered[name] = seconds
         if "password_min_length" in filtered:
             try:
                 password_minimum = int(filtered["password_min_length"])
@@ -488,6 +600,19 @@ class AuthService:
             if not DEFAULT_PASSWORD_MIN_LENGTH <= password_minimum <= MAX_PASSWORD_LENGTH:
                 raise AuthError(f"password_min_length must be between {DEFAULT_PASSWORD_MIN_LENGTH} and {MAX_PASSWORD_LENGTH}", code="invalid_setting")
             filtered["password_min_length"] = password_minimum
+        if not filtered:
+            return self.effective_auth_settings()
+        # The first save snapshots the effective values, so settings the
+        # administrator did not touch keep behaving as before.
+        if self.store.get_saved_auth_settings() is None:
+            current = self.effective_auth_settings()
+            filtered = {
+                "registration_mode": current["registration_mode"],
+                "default_role": current["default_role"],
+                "access_token_seconds": current["access_token_seconds"],
+                "refresh_idle_seconds": current["refresh_idle_seconds"],
+                **filtered,
+            }
         self.store.update_auth_settings(**filtered, updated_by=requested_by)
         self.store.audit("auth_settings_updated", requested_by)
-        return self.store.get_auth_settings()
+        return self.effective_auth_settings()

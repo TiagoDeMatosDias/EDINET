@@ -797,30 +797,75 @@ def _create_db_for_update_prices(path: str) -> str:
 def test_update_prices_requires_tickers(tmp_path):
     db_path = _create_db_for_update_prices(str(tmp_path / "test.db"))
     resp = client.post("/api/screening/update-prices", json={"db_path": db_path, "tickers": []})
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 def test_update_prices_requires_db_path():
     resp = client.post("/api/screening/update-prices", json={"tickers": ["7203"]})
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
-def test_update_prices_returns_results_structure(tmp_path):
+def test_update_prices_rejects_oversized_ticker_lists(tmp_path):
     db_path = _create_db_for_update_prices(str(tmp_path / "test.db"))
+    tickers = [f"T{index}" for index in range(screening_api.MAX_PRICE_UPDATE_TICKERS + 1)]
     resp = client.post(
         "/api/screening/update-prices",
-        json={"db_path": db_path, "tickers": ["7203", "6758"]},
+        json={"db_path": db_path, "tickers": tickers},
+    )
+    assert resp.status_code == 422
+
+
+def _fake_price_update(calls):
+    """Deterministic stand-in for the provider round trip."""
+
+    def update(db_path, ticker):
+        calls.append((db_path, ticker))
+        return {"ok": True, "rows_inserted": 3, "message": f"updated {ticker}"}
+
+    return update
+
+
+def test_update_prices_returns_results_structure(tmp_path, monkeypatch):
+    db_path = _create_db_for_update_prices(str(tmp_path / "test.db"))
+    calls = []
+    monkeypatch.setattr(
+        screening_api._security, "update_security_price", _fake_price_update(calls)
+    )
+    resp = client.post(
+        "/api/screening/update-prices",
+        # Duplicates and blanks are dropped before any provider call.
+        json={"db_path": db_path, "tickers": ["7203", "6758", "7203", " "]},
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert "results" in data
-    assert isinstance(data["results"], list)
-    assert len(data["results"]) == 2
+    assert [r["ticker"] for r in data["results"]] == ["7203", "6758"]
+    assert [ticker for _, ticker in calls] == ["7203", "6758"]
     for r in data["results"]:
-        assert "ticker" in r
-        assert "ok" in r
-        assert "rows_inserted" in r
-        assert "message" in r
+        assert r["ok"] is True
+        assert r["rows_inserted"] == 3
+        assert r["message"] == f"updated {r['ticker']}"
+
+
+def test_update_prices_requires_operator_role(tmp_path, monkeypatch):
+    from src.auth.dependencies import current_user
+    from src.auth.models import AuthenticatedUser
+
+    db_path = _create_db_for_update_prices(str(tmp_path / "test.db"))
+    calls = []
+    monkeypatch.setattr(
+        screening_api._security, "update_security_price", _fake_price_update(calls)
+    )
+    member = AuthenticatedUser("member-1", "member", None, "member", "active")
+    app.dependency_overrides[current_user] = lambda: member
+    try:
+        resp = client.post(
+            "/api/screening/update-prices",
+            json={"db_path": db_path, "tickers": ["7203"]},
+        )
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+    assert resp.status_code == 403
+    assert calls == []
 
 
 def test_update_prices_unknown_db(tmp_path):

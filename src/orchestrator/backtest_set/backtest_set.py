@@ -1,7 +1,6 @@
 import logging
 
-from src.orchestrator.common import StepDefinition, StepFieldDefinition
-from src.orchestrator.common import backtesting
+from src.orchestrator.common import StepDefinition, StepFieldDefinition, backtesting
 from src.orchestrator.common.db_config import get_db2
 
 logger = logging.getLogger(__name__)

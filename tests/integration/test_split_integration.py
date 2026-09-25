@@ -6,21 +6,19 @@ the portfolio rebuild pipeline.
 
 from __future__ import annotations
 
-import gc
+import sqlite3
 import tempfile
 from pathlib import Path
 
-import sqlite3
-
-from src.portfolio.split_schema import ensure_split_tables
-from src.portfolio.split_detection import run_split_detection
 from src.portfolio.portfolio_state import (
-    build_portfolio_state,
     _get_adjusted_price,
     _get_price,
     _invalidate_split_cache,
+    build_portfolio_state,
 )
-from tests.factories import create_market_database, add_split_test_data
+from src.portfolio.split_detection import run_split_detection
+from src.portfolio.split_schema import ensure_split_tables
+from tests.factories import add_split_test_data, create_market_database
 
 
 class TestEndToEndSplitPipeline:

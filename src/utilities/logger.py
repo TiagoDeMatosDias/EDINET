@@ -8,7 +8,6 @@ This module provides centralized logging functionality that:
 """
 
 import logging
-import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -94,7 +93,7 @@ class LogSetup:
                 try:
                     archive_path = self.archive_dir / log_file.name
                     shutil.move(str(log_file), str(archive_path))
-                except Exception as e:
+                except OSError as e:
                     print(f"Warning: Could not archive log file {log_file.name}: {e}")
 
 

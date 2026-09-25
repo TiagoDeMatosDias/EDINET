@@ -7,16 +7,17 @@ The frontend is the React SPA at ``frontend-v2``.  API routes are built by
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.orchestrator.common.database_bootstrap import ensure_application_databases
 from src.version import __version__
 from src.web_app.api import router_app
-from src.web_app.security import AppSettings, install_security
+from src.web_app.security import AppSettings, OperatorGuidanceError, install_security
 
 BASE_DIR = Path(__file__).resolve().parent
 BRAND_ASSETS_DIR = BASE_DIR.parent.parent / "assets" / "brand"
@@ -33,7 +34,23 @@ app.description = "Value in context: source-linked company research and analysis
 app.version = __version__
 SETTINGS = AppSettings.from_env()
 install_security(app, SETTINGS)
-ensure_application_databases(settings=SETTINGS)
+
+_api_lifespan = app.router.lifespan_context
+
+
+@asynccontextmanager
+async def _lifespan(lifespan_app: FastAPI):
+    """Create missing databases at startup rather than at import time.
+
+    Importing this module (tests, tools, route inspection) therefore never
+    touches the configured databases.
+    """
+    ensure_application_databases(settings=SETTINGS)
+    async with _api_lifespan(lifespan_app):
+        yield
+
+
+app.router.lifespan_context = _lifespan
 
 
 if FRONTEND_V2_DIST.exists():
@@ -47,98 +64,13 @@ if BRAND_ASSETS_DIR.exists():
     app.mount("/brand-assets", StaticFiles(directory=BRAND_ASSETS_DIR), name="brand-assets")
 
 
-
-
 def _frontend_v2() -> FileResponse:
     index = FRONTEND_V2_DIST / "index.html"
     if not index.exists():
-        raise HTTPException(
-            status_code=503,
-            detail="Frontend build missing. Run npm run build in frontend-v2.",
+        raise OperatorGuidanceError(
+            "Frontend build missing. Run npm run build in frontend-v2.",
         )
     return FileResponse(index)
-
-
-# ── React SPA routes ──
-
-
-@app.get("/")
-def page_main() -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/overview")
-def page_overview() -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/pricing")
-def page_pricing() -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/screen")
-def page_screen() -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/analyze")
-@app.get("/analyze/{subpath:path}")
-@app.get("/security")
-def page_analyze(subpath: str = "") -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/backtest")
-@app.get("/backtesting")
-def page_backtest() -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/pipeline")
-def page_pipeline() -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/portfolio")
-def page_portfolio() -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/filings")
-@app.get("/filings/{subpath:path}")
-def page_filings(subpath: str = "") -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/compare")
-def page_compare() -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/research")
-def page_research() -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/account")
-def page_account() -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/admin")
-def page_admin() -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/login")
-def page_login() -> FileResponse:
-    return _frontend_v2()
-
-
-@app.get("/register")
-def page_register() -> FileResponse:
-    return _frontend_v2()
 
 
 # ── Static / fallback ──
@@ -151,7 +83,7 @@ def page_favicon() -> FileResponse:
 
 @app.get("/{path:path}")
 def spa_fallback(path: str) -> FileResponse:
-    """Serve the SPA for unknown paths so client-side routing works on reload."""
+    """Serve the SPA for every page route; React Router resolves (and 404s) it."""
     if path.startswith("api/") or path == "health":
         raise HTTPException(status_code=404, detail="Not found")
     # Treat unknown paths as SPA routes (React Router handles 404s client-side)

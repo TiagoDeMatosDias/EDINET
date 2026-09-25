@@ -1,5 +1,7 @@
+import ipaddress
 import os
 import shutil
+import socket
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -45,6 +47,14 @@ os.environ["EDINET_AUTH_MODE"] = "disabled"
 os.environ["EDINET_AUTH_DB"] = _TEST_DATABASE_PATHS["auth_db"]
 os.environ["EDINET_ALLOWED_DATA_ROOTS"] = str(_TEST_DATABASE_DIR)
 os.environ["EDINET_FRONTEND_DIST"] = str(_TEST_FRONTEND_DIST)
+# Generated artifacts and mutable state default to folders inside the
+# project (data/, config/state/). Redirect every root before any application
+# module is imported so no test can write next to operator-owned data.
+os.environ["EDINET_STATE_DIR"] = str(_TEST_RUNTIME_DIR / "state")
+os.environ["EDINET_JOB_WORKSPACE_ROOT"] = str(_TEST_RUNTIME_DIR / "state" / "jobs")
+os.environ["EDINET_BACKTEST_DIR"] = str(_TEST_RUNTIME_DIR / "backtests")
+os.environ["EDINET_REPORT_DIR"] = str(_TEST_RUNTIME_DIR / "reports")
+os.environ["EDINET_CERT_DIR"] = str(_TEST_RUNTIME_DIR / "certs")
 
 # db_config intentionally reads one project-level JSON file in production.
 # Supplying its cache before test collection gives every imported module the
@@ -52,6 +62,53 @@ os.environ["EDINET_FRONTEND_DIST"] = str(_TEST_FRONTEND_DIST)
 from src.orchestrator.common import db_config  # noqa: E402
 
 db_config._cache = dict(_TEST_DATABASE_PATHS)
+
+# The server creates missing databases in its startup hook, which plain
+# ``TestClient(app)`` calls never run. Bootstrap the isolated set once here.
+from src.orchestrator.common.database_bootstrap import (  # noqa: E402
+    ensure_application_databases,
+)
+
+ensure_application_databases()
+
+
+class NetworkAccessBlocked(RuntimeError):
+    """Raised when a test tries to reach a real network host."""
+
+
+_real_connect = socket.socket.connect
+_real_connect_ex = socket.socket.connect_ex
+
+
+def _is_local_address(address) -> bool:
+    if isinstance(address, (str, bytes)):  # AF_UNIX socket path
+        return True
+    host = str(address[0]).strip("[]")
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _guarded_connect(sock, address):
+    if not _is_local_address(address):
+        raise NetworkAccessBlocked(f"Tests must use fixed data; blocked connect to {address!r}")
+    return _real_connect(sock, address)
+
+
+def _guarded_connect_ex(sock, address):
+    if not _is_local_address(address):
+        raise NetworkAccessBlocked(f"Tests must use fixed data; blocked connect to {address!r}")
+    return _real_connect_ex(sock, address)
+
+
+@pytest.fixture(autouse=True)
+def _block_network(monkeypatch):
+    """Fail fast on any outbound connection so no test depends on live data."""
+    monkeypatch.setattr(socket.socket, "connect", _guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", _guarded_connect_ex)
 
 
 def pytest_sessionfinish(session, exitstatus):

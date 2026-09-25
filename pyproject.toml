@@ -7,41 +7,27 @@ name = "edinet-workstation"
 dynamic = ["version"]
 description = "Local EDINET research and portfolio workstation"
 requires-python = ">=3.12,<3.14"
+# Direct dependencies only: packages this code imports or needs at runtime.
+# Pins for their transitive dependencies live in [tool.edinet].constraints
+# and are rendered to constraints.txt by scripts/sync_requirements.py.
 dependencies = [
-  "beautifulsoup4==4.13.4",
-  "argostranslate>=1.9",
   "argon2-cffi==23.1.0",
-  "defusedxml==0.7.1",
-  "certifi==2025.1.31",
+  "argostranslate>=1.9",
+  "beautifulsoup4==4.13.4",
   "chardet==5.2.0",
-  "charset-normalizer==3.4.1",
-  "colorama==0.4.6",
   "cryptography==50.0.1",
+  "defusedxml==0.7.1",
   "fastapi==0.136.1",
-  "frozendict==2.4.6",
-  "idna==3.10",
-  "joblib==1.5.2",
   "matplotlib==3.9.4",
-  "multitasking==0.0.11",
   "numpy==2.2.4",
-  "packaging==25.0",
+  "openpyxl==3.1.5",
   "pandas==2.2.3",
-  "patsy==1.0.1",
-  "peewee==3.17.9",
-  "platformdirs==4.3.7",
   "python-dateutil==2.9.0.post0",
   "python-dotenv==1.1.1",
   "python-multipart==0.0.20",
-  "pytz==2025.2",
   "requests==2.32.3",
   "scikit-learn==1.7.2",
   "scipy==1.16.2",
-  "six==1.17.0",
-  "soupsieve==2.6",
-  "threadpoolctl==3.6.0",
-  "typing_extensions==4.13.2",
-  "tzdata==2025.2",
-  "urllib3==2.4.0",
   "uvicorn==0.46.0",
   "yfinance==0.2.55",
 ]
@@ -56,6 +42,30 @@ dev = [
   "ruff>=0.12,<1",
 ]
 build = ["pyinstaller==6.16.0"]
+
+[tool.edinet]
+# Reproducible pins for transitive dependencies. Install with
+#   pip install -e ".[dev]" -c constraints.txt
+constraints = [
+  "certifi==2025.1.31",
+  "charset-normalizer==3.4.1",
+  "colorama==0.4.6",
+  "et_xmlfile==2.0.0",
+  "frozendict==2.4.6",
+  "idna==3.10",
+  "joblib==1.5.2",
+  "multitasking==0.0.11",
+  "packaging==25.0",
+  "peewee==3.17.9",
+  "platformdirs==4.3.7",
+  "pytz==2025.2",
+  "six==1.17.0",
+  "soupsieve==2.6",
+  "threadpoolctl==3.6.0",
+  "typing_extensions==4.13.2",
+  "tzdata==2025.2",
+  "urllib3==2.4.0",
+]
 
 [tool.setuptools.dynamic]
 version = {attr = "src.version.__version__"}
@@ -79,6 +89,16 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "B", "BLE"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI declares parameters through these calls in argument defaults.
+extend-immutable-calls = [
+  "fastapi.Body",
+  "fastapi.Depends",
+  "fastapi.File",
+  "fastapi.Form",
+  "fastapi.Query",
+]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["BLE001"]
 "src/orchestrator/**/*.py" = ["BLE001"]
@@ -100,6 +120,6 @@ branch = true
 source = ["src"]
 
 [tool.coverage.report]
-fail_under = 20
+fail_under = 65
 show_missing = true
 skip_covered = true

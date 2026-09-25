@@ -1,21 +1,22 @@
-import requests
-from datetime import datetime, timedelta
-import logging
-from src.utilities import utils as h
-import sqlite3
-import os
-import zipfile
-import chardet
-import csv
-import shutil
 import base64
 import io
 import json
-import pandas as pd
+import logging
+import os
 import re
+import shutil
+import sqlite3
 import time
+import zipfile
+from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
+
+import chardet
+import pandas as pd
+import requests
+
+from src.utilities import utils as h
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +254,7 @@ class Edinet:
         # Check if the request was successful (status code 200)
         if response.status_code == 200:
         # Save the content as a ZIP file on disk
-            filename = fileLocation + "\\" + docID +'.zip'
+            filename = os.path.join(fileLocation, docID + ".zip")
             with open(filename, 'wb') as f:
                 f.write(response.content)
             logger.info(f"File downloaded and saved as {filename}.")
@@ -454,7 +455,6 @@ class Edinet:
             else:
                 conn = connection
 
-            cursor = conn.cursor()
             for csv_file in financialFiles:
                 # Detect file encoding
                 encoding = self.detect_file_encoding(csv_file)
@@ -497,7 +497,7 @@ class Edinet:
             conn.commit()
         except FileNotFoundError:
             logger.warning("File '%s' not found.", csv_file)
-        except Exception as e:
+        except Exception:
             logger.exception("An error occurred")
         finally:
             if connection is None:
@@ -551,7 +551,7 @@ class Edinet:
             quoted_table = self._quote_identifier(table_name)
             cursor.execute(f"DROP TABLE IF EXISTS {quoted_table}")
             conn.commit()
-        except Exception as e:
+        except Exception:
             logger.exception("An error occurred")
         finally:
             try:
@@ -584,7 +584,7 @@ class Edinet:
         except FileNotFoundError:
             logger.warning("Folder '%s' not found.", folder_path)
             return []
-        except Exception as e:
+        except Exception:
             logger.exception("An error occurred")
             return []
 
@@ -603,7 +603,7 @@ class Edinet:
                 zip_ref.extractall(output_dir)
         except FileNotFoundError:
             logger.warning("File '%s' not found.", zip_file)
-        except Exception as e:
+        except Exception:
             logger.exception("An error occurred")
 
     def unzip_files(self, zip_files, output_dir):
@@ -635,7 +635,7 @@ class Edinet:
                 logger.info("Folder created: %s", folder_path)
             else:
                 logger.info("Folder already exists: %s", folder_path)
-        except Exception as e:
+        except Exception:
             logger.exception("Error creating folder %s", folder_path)
 
     def delete_folder(self, folder_path):
@@ -724,9 +724,9 @@ class Edinet:
                 return None
             else:
                 # Convert rows to list of dictionaries
-                result = [dict(zip(column_names, row)) for row in rows]
+                result = [dict(zip(column_names, row, strict=True)) for row in rows]
                 return result
-        except Exception as e:
+        except Exception:
             logger.exception("An error occurred")
             return None
         finally:
@@ -756,7 +756,7 @@ class Edinet:
             quoted_table = self._quote_identifier(table_name)
             column_definitions = ", ".join([f"{self._quote_identifier(col)} TEXT" for col in columns])
             cursor.execute(f"CREATE TABLE IF NOT EXISTS {quoted_table} ({column_definitions})")
-        except Exception as e:
+        except Exception:
             logger.exception("Error creating table %s", table_name)
         finally:
             
@@ -798,7 +798,7 @@ class Edinet:
             else:
                 cursor.executemany(f"INSERT INTO {quoted_table} VALUES ({placeholders})", rows)
             conn.commit()
-        except Exception as e:
+        except Exception:
             logger.exception("Error inserting data into table %s", table_name)
         finally:
             if connection is None:
@@ -854,7 +854,7 @@ class Edinet:
             filter_values = [value for _, (_, value) in filter.items()]
             cursor.execute(query, (value,) + tuple(filter_values))
             conn.commit()
-        except Exception as e:
+        except Exception:
             logger.exception("An error occurred")
         finally:
             if connection is None:

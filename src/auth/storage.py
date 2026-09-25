@@ -398,17 +398,32 @@ class AuthStore:
 
     def change_user_password(self, user_id: str, password_hash: str, when: datetime) -> bool:
         with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
-            result = conn.execute(
-                "UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = ? "
-                "WHERE user_id = ? AND status = 'active'",
-                (password_hash, timestamp(when), user_id),
-            )
-            if result.rowcount == 1:
-                conn.execute(
-                    "UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
-                    (timestamp(when), user_id),
-                )
-            return result.rowcount == 1
+            return self._change_password(conn, user_id, password_hash, when)
+
+    @staticmethod
+    def _change_password(
+        conn: sqlite3.Connection,
+        user_id: str,
+        password_hash: str,
+        when: datetime,
+    ) -> bool:
+        """Replace a password and revoke every credential issued before it."""
+        result = conn.execute(
+            "UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = ? "
+            "WHERE user_id = ? AND status = 'active'",
+            (password_hash, timestamp(when), user_id),
+        )
+        if result.rowcount != 1:
+            return False
+        conn.execute(
+            "UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+            (timestamp(when), user_id),
+        )
+        conn.execute(
+            "UPDATE api_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+            (timestamp(when), user_id),
+        )
+        return True
 
     def update_user_profile(
         self,
@@ -586,6 +601,45 @@ class AuthStore:
             )
             return result.rowcount == 1
 
+    def create_user_from_invitation(
+        self,
+        token_hash: str,
+        values: dict[str, Any],
+        when: datetime,
+    ) -> sqlite3.Row | None:
+        """Atomically redeem an invitation for a new account.
+
+        Returns the invitation row, or ``None`` when it is not redeemable.
+        The user takes the invitation's role and email; ``values`` supplies
+        everything else.
+        """
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            invitation = conn.execute(
+                """SELECT * FROM invitations WHERE token_hash = ?
+                   AND revoked_at IS NULL AND accepted_at IS NULL
+                   AND (expires_at IS NULL OR expires_at > ?)""",
+                (token_hash, timestamp(when)),
+            ).fetchone()
+            if invitation is None:
+                return None
+            conn.execute(
+                """INSERT INTO users
+                (user_id, username, email, password_hash, role, status,
+                 created_at, updated_at, last_login_at)
+                VALUES (:user_id, :username, :email, :password_hash, :role,
+                        :status, :created_at, :updated_at, NULL)""",
+                {
+                    **values,
+                    "email": invitation["email_normalized"],
+                    "role": invitation["role"],
+                },
+            )
+            conn.execute(
+                "UPDATE invitations SET accepted_by = ?, accepted_at = ? WHERE invitation_id = ?",
+                (values["user_id"], timestamp(when), invitation["invitation_id"]),
+            )
+            return invitation
+
     def revoke_invitation(self, invitation_id: str, when: datetime) -> bool:
         with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
             result = conn.execute(
@@ -616,6 +670,33 @@ class AuthStore:
             )
         return reset_id
 
+    def reset_password_with_token(
+        self,
+        token_hash: str,
+        password_hash: str,
+        when: datetime,
+    ) -> str | None:
+        """Consume a reset token and apply the new password atomically.
+
+        Returns the affected user id, or ``None`` when the token is invalid.
+        """
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            row = conn.execute(
+                """SELECT * FROM credential_resets WHERE token_hash = ?
+                   AND consumed_at IS NULL AND revoked_at IS NULL
+                   AND (expires_at IS NULL OR expires_at > ?)""",
+                (token_hash, timestamp(when)),
+            ).fetchone()
+            if row is None:
+                return None
+            if not self._change_password(conn, row["user_id"], password_hash, when):
+                return None
+            conn.execute(
+                "UPDATE credential_resets SET consumed_at = ? WHERE reset_id = ?",
+                (timestamp(when), row["reset_id"]),
+            )
+            return str(row["user_id"])
+
     def consume_credential_reset(self, token_hash: str, when: datetime) -> sqlite3.Row | None:
         with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
             row = conn.execute(
@@ -643,6 +724,29 @@ class AuthStore:
             return dict(row) if row else {"registration_mode": "closed", "default_role": "member", "password_min_length": 15}
         finally:
             conn.close()
+
+    def get_saved_auth_settings(self) -> dict[str, Any] | None:
+        """Return the administrator-saved settings, or ``None`` if never saved."""
+        conn = self.connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM auth_settings WHERE singleton_id = 1"
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def family_started_at(self, family_id: str) -> datetime | None:
+        """Return when the first session of a refresh family was issued."""
+        conn = self.connection()
+        try:
+            row = conn.execute(
+                "SELECT MIN(created_at) FROM sessions WHERE family_id = ?",
+                (family_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return parse_timestamp(row[0]) if row and row[0] else None
 
     def update_auth_settings(self, **kwargs: Any) -> None:
         now = utc_now()
