@@ -176,6 +176,7 @@ class SecuritySchema:
     fs_description_en_col: str | None
     fs_shares_outstanding_col: str | None
     fs_share_price_col: str | None
+    fs_currency_col: str | None
     doclist_docid_col: str | None
     doclist_submit_dt_col: str | None
 
@@ -448,6 +449,7 @@ def resolve_schema(db_path: str) -> SecuritySchema:
                 fs_cols, ["SharesOutstanding"], required=False
             ),
             fs_share_price_col=_resolve_column(fs_cols, ["SharePrice"], required=False),
+            fs_currency_col=_resolve_column(fs_cols, ["Currency"], required=False),
             doclist_docid_col=_resolve_column(document_list_cols, ["docID", "DocID"], required=False),
             doclist_submit_dt_col=_resolve_column(
                 document_list_cols, ["submitDateTime", "SubmitDateTime"], required=False
@@ -1582,6 +1584,7 @@ def _load_price_range(conn: sqlite3.Connection, schema: SecuritySchema, ticker: 
             ("Source_Id", "price_source_id"),
             ("Source_Revision", "price_source_revision"),
             ("Retrieved_At", "price_retrieved_at"),
+            ("Currency", "price_currency"),
         )
         if column in columns
     )
@@ -1600,6 +1603,7 @@ def _load_price_range(conn: sqlite3.Connection, schema: SecuritySchema, ticker: 
             "price_source_id": None,
             "price_source_revision": None,
             "price_retrieved_at": None,
+            "price_currency": None,
             "previous_price": None,
             "change_pct_1d": None,
             "range_52w_low": None,
@@ -1618,6 +1622,7 @@ def _load_price_range(conn: sqlite3.Connection, schema: SecuritySchema, ticker: 
             "price_source_id",
             "price_source_revision",
             "price_retrieved_at",
+            "price_currency",
         )
         if key in latest_df.columns
     }
@@ -1695,6 +1700,10 @@ def _load_latest_snapshot(conn: sqlite3.Connection, schema: SecuritySchema, comp
         )
     else:
         select_parts.append("NULL AS SharesOutstanding")
+    if schema.fs_currency_col:
+        select_parts.append(f"fs.{_quote_ident(schema.fs_currency_col)} AS reporting_currency")
+    else:
+        select_parts.append("NULL AS reporting_currency")
     if schema.fs_share_price_col:
         select_parts.append(
             f"fs.{_quote_ident(schema.fs_share_price_col)} AS SharePrice"
@@ -2181,6 +2190,7 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
                 "price_source_id": price_info.get("price_source_id"),
                 "price_source_revision": price_info.get("price_source_revision"),
                 "price_retrieved_at": price_info.get("price_retrieved_at"),
+                "price_currency": price_info.get("price_currency"),
                 "previous_price": price_info.get("previous_price"),
                 "change_pct_1d": price_info.get("change_pct_1d"),
                 "range_52w_low": price_info.get("range_52w_low"),
@@ -2223,6 +2233,7 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
             "price_source_id": None,
             "price_source_revision": None,
             "price_retrieved_at": None,
+            "price_currency": None,
             "previous_price": None,
             "change_pct_1d": None,
             "range_52w_low": None,
@@ -2284,6 +2295,7 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
             "price_source_id": combined.get("price_source_id"),
             "price_source_revision": combined.get("price_source_revision"),
             "price_retrieved_at": combined.get("price_retrieved_at"),
+            "price_currency": combined.get("price_currency"),
             "previous_price": combined.get("previous_price"),
             "change_pct_1d": combined.get("change_pct_1d"),
             "range_52w_low": combined.get("range_52w_low"),
@@ -2309,6 +2321,7 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
         },
         "metadata": {
             "last_financial_period_end": snapshot.get("period_end"),
+            "reporting_currency": snapshot.get("reporting_currency"),
             "last_price_date": combined.get("latest_price_date"),
             "doc_id": _safe_str(snapshot.get("docID")),
             "statement_split_adjustment_factor": snapshot.get(

@@ -58,14 +58,14 @@ from src.portfolio.transactions import (
     get_unique_symbols,
     insert_entries,
 )
-from src.web_app.security import AppSettings
+from src.web_app.security import get_settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
 _UPLOAD_CHUNK_BYTES = 64 * 1024
-_MAX_XML_UPLOAD_BYTES = AppSettings.from_env().max_upload_bytes
+_MAX_XML_UPLOAD_BYTES = get_settings().max_upload_bytes
 
 
 class TaxLotEvent(BaseModel):

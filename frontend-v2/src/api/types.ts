@@ -1,3 +1,5 @@
+import type { MetricDefinition } from '../metrics'
+
 export type JsonRecord = Record<string, unknown>
 
 export interface Health {
@@ -86,6 +88,7 @@ export interface SecurityOverview {
   company: Record<string, unknown>
   market: Record<string, unknown>
   metrics: Record<string, number | null>
+  metric_definitions?: Record<string, MetricDefinition>
   quality?: Record<string, unknown>
   metadata?: Record<string, unknown>
 }

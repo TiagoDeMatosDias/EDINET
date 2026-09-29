@@ -27,7 +27,7 @@ def _install_fast_rolling_backtest(monkeypatch) -> None:
         "run_screening_backtest_rolling",
         run_rolling,
     )
-    monkeypatch.setattr(backtesting_api, "_resolve_db", lambda _path: "test.db")
+    monkeypatch.setattr(backtesting_api, "_resolve_db", lambda: "test.db")
     monkeypatch.setattr(
         backtesting_api,
         "_validate_base_currency",
@@ -60,15 +60,8 @@ def test_rolling_run_uses_dedicated_artifact_limit(monkeypatch, tmp_path):
         return str(saved)
 
     monkeypatch.setattr(backtesting_api, "save_rolling_backtest_zip", save_archive)
-    monkeypatch.setattr(
-        backtesting_api,
-        "_APP_SETTINGS",
-        replace(
-            backtesting_api._APP_SETTINGS,
-            max_export_bytes=1,
-            max_backtest_artifact_bytes=4096,
-        ),
-    )
+    limited = replace(backtesting_api.get_settings(), max_export_bytes=1, max_backtest_artifact_bytes=4096)
+    monkeypatch.setattr(backtesting_api, "get_settings", lambda: limited)
 
     response = _post_rolling()
 
@@ -88,14 +81,8 @@ def test_rolling_archive_limit_returns_actionable_error(monkeypatch):
         "save_rolling_backtest_zip",
         reject_archive,
     )
-    monkeypatch.setattr(
-        backtesting_api,
-        "_APP_SETTINGS",
-        replace(
-            backtesting_api._APP_SETTINGS,
-            max_backtest_artifact_bytes=1024 * 1024,
-        ),
-    )
+    limited = replace(backtesting_api.get_settings(), max_backtest_artifact_bytes=1024 * 1024)
+    monkeypatch.setattr(backtesting_api, "get_settings", lambda: limited)
 
     response = _post_rolling()
 

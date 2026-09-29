@@ -6,10 +6,10 @@ from pathlib import Path
 
 from src.orchestrator.common.db_config import get_pipeline_jobs_db
 from src.pipeline_jobs import JobStore, PipelineJobManager, PipelineScheduler
-from src.web_app.security import AppSettings
+from src.web_app.security import get_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SETTINGS = AppSettings.from_env()
+SETTINGS = get_settings()
 PIPELINE_INPUT_ROOTS = (
     PROJECT_ROOT / "data",
     PROJECT_ROOT / "assets",

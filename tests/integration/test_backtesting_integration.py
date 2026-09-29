@@ -47,12 +47,9 @@ def _assert_finite(value, path: str = "result") -> None:
 
 
 def test_database_metadata_endpoints_use_generated_database() -> None:
-    database = client.get("/api/backtesting/db-path")
     tickers = client.get("/api/backtesting/available-tickers")
     currencies = client.get("/api/backtesting/base-currencies")
 
-    assert database.status_code == 200
-    assert database.json() == {"db_path": "default"}
     assert tickers.status_code == 200
     assert tickers.json()["tickers"] == ["AAA", "BBB", "BENCH", "SPIN"]
     assert currencies.status_code == 200

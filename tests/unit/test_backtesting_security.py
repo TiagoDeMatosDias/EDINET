@@ -8,7 +8,6 @@ import pytest
 from fastapi import HTTPException
 
 import src.backtesting.api as backtesting_api
-from src.web_app.security import PathPolicy
 
 
 def _database(path):
@@ -18,19 +17,15 @@ def _database(path):
     return path
 
 
-def test_database_outside_allowed_root_is_rejected(tmp_path, monkeypatch):
-    allowed = tmp_path / "allowed"
-    allowed.mkdir()
-    outside = _database(tmp_path / "outside.db")
-    monkeypatch.setattr(
-        backtesting_api,
-        "_DB_PATH_POLICY",
-        PathPolicy(read_roots=(allowed,)),
-    )
+def test_backtests_read_the_configured_database(tmp_path, monkeypatch):
+    configured = _database(tmp_path / "Standardized.db")
+    monkeypatch.setattr(backtesting_api, "get_db2", lambda: str(configured))
+    assert backtesting_api._resolve_db() == str(configured)
 
+    monkeypatch.setattr(backtesting_api, "get_db2", lambda: str(tmp_path / "missing.db"))
     with pytest.raises(HTTPException) as exc_info:
-        backtesting_api._resolve_db(str(outside))
-    assert exc_info.value.status_code == 400
+        backtesting_api._resolve_db()
+    assert exc_info.value.status_code == 503
 
 
 @pytest.mark.parametrize(
@@ -62,11 +57,8 @@ def test_generated_backtest_identifiers_are_collision_resistant():
 def test_export_size_limit_is_enforced(monkeypatch):
     from dataclasses import replace
 
-    monkeypatch.setattr(
-        backtesting_api,
-        "_APP_SETTINGS",
-        replace(backtesting_api._APP_SETTINGS, max_export_bytes=4),
-    )
+    limited = replace(backtesting_api.get_settings(), max_export_bytes=4)
+    monkeypatch.setattr(backtesting_api, "get_settings", lambda: limited)
     with pytest.raises(HTTPException) as exc_info:
         backtesting_api._enforce_export_size(b"12345")
     assert exc_info.value.status_code == 413
@@ -75,15 +67,8 @@ def test_export_size_limit_is_enforced(monkeypatch):
 def test_backtest_artifact_uses_its_own_size_limit(monkeypatch):
     from dataclasses import replace
 
-    monkeypatch.setattr(
-        backtesting_api,
-        "_APP_SETTINGS",
-        replace(
-            backtesting_api._APP_SETTINGS,
-            max_export_bytes=4,
-            max_backtest_artifact_bytes=8,
-        ),
-    )
+    limited = replace(backtesting_api.get_settings(), max_export_bytes=4, max_backtest_artifact_bytes=8)
+    monkeypatch.setattr(backtesting_api, "get_settings", lambda: limited)
     assert backtesting_api._enforce_backtest_artifact_size(b"12345") == b"12345"
     with pytest.raises(HTTPException) as exc_info:
         backtesting_api._enforce_backtest_artifact_size(b"123456789")

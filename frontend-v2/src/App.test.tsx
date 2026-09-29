@@ -16,10 +16,11 @@ const MEMBER = { user_id: 'u-1', username: 'alice', email: null, role: 'member',
 
 function stubBackend(
   authMode: 'accounts' | 'disabled' = 'accounts',
-  { signedIn = false, tokenLifetimeMs = 900_000, refreshesBeforeExpiry = Infinity } = {},
+  { signedIn = false, tokenLifetimeMs = 900_000, refreshesBeforeExpiry = Infinity, statusFailures = 0 } = {},
 ) {
   let session = signedIn
   let refreshes = 0
+  let statusCalls = 0
   const token = () => ({
     access_token: 'token-1',
     expires_at: new Date(Date.now() + tokenLifetimeMs).toISOString(),
@@ -44,6 +45,8 @@ function stubBackend(
     }
     if (path === '/api/auth/me') return session ? jsonResponse(MEMBER) : jsonResponse({ detail: 'Authentication required' }, 401)
     if (path === '/api/auth/status') {
+      statusCalls += 1
+      if (statusCalls <= statusFailures) return jsonResponse({ detail: 'Service unavailable' }, 503)
       return jsonResponse({
         mode: authMode,
         registration_open: authMode === 'accounts',
@@ -177,6 +180,25 @@ describe('account sessions', () => {
     expect(password).toHaveAttribute('type', 'password')
     expect(password).toHaveAccessibleName('Password')
     expect(password).toHaveAccessibleDescription(/Minimum 15 characters/)
+  })
+
+  it('reports an unreachable server instead of assuming authentication is disabled', async () => {
+    stubBackend('accounts', { statusFailures: 1 })
+    renderApp('/overview')
+
+    expect(await screen.findByRole('heading', { name: 'Service unavailable' })).toBeInTheDocument()
+    expect(screen.queryByText('Authentication is disabled.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Overview' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
+  })
+
+  it('keeps public pages available when the server is unreachable', async () => {
+    stubBackend('accounts', { statusFailures: 1 })
+    renderApp('/')
+
+    expect(await screen.findByRole('heading', { name: 'Research companies with the evidence still attached.' })).toBeInTheDocument()
   })
 
   it('renews the access token before the expiry the server set', async () => {

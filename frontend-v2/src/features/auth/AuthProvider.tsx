@@ -5,7 +5,7 @@ import { useLocation } from 'react-router-dom'
 import { ApiError, apiRequest, setAccessToken } from '../../api/client'
 import { BrandLockup } from '../../components/Brand'
 import { AuthForm, type AuthMode } from './AuthForm'
-import { AuthContext, DEFAULT_PASSWORD_MIN_LENGTH, type AuthContextValue, type AuthStatus, type AuthUser } from './authContext'
+import { AuthContext, type AuthContextValue, type AuthStatus, type AuthUser } from './authContext'
 
 export type { AuthContextValue, AuthStatus, AuthUser } from './authContext'
 
@@ -53,6 +53,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setRenewal(null)
   }, [queryClient])
 
+  // Bumped by "Try again" to re-run the status check below.
+  const [statusAttempt, setStatusAttempt] = useState(0)
+  const [statusUnavailable, setStatusUnavailable] = useState(false)
+
   useEffect(() => {
     let cancelled = false
     void apiRequest<AuthStatus>('/api/auth/status')
@@ -70,13 +74,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           .finally(() => { if (!cancelled) setLoading(false) })
       })
       .catch(() => {
+        // Never assume a mode the server did not report: an unreachable server
+        // is shown as unavailable rather than as "authentication disabled".
         if (!cancelled) {
-          setStatus({ mode: 'disabled', registration_open: false, bootstrap_required: false, password_min_length: DEFAULT_PASSWORD_MIN_LENGTH })
+          setStatusUnavailable(true)
           setLoading(false)
         }
       })
     return () => { cancelled = true }
-  }, [startSession])
+  }, [startSession, statusAttempt])
 
   // Renew the access token before the expiry the server set, which also
   // confirms the session and refreshes the account's role. A 401 means the
@@ -154,6 +160,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     )
   }
 
+  if (statusUnavailable && !isPublicPath) {
+    return (
+      <ServiceUnavailable
+        onRetry={() => {
+          setStatusUnavailable(false)
+          setLoading(true)
+          setStatusAttempt(attempt => attempt + 1)
+        }}
+      />
+    )
+  }
+
   return (
     <AuthContext.Provider value={value}>
       {status?.mode === 'accounts' && !user && !isPublicPath ? (
@@ -165,6 +183,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         </>
       )}
     </AuthContext.Provider>
+  )
+}
+
+function ServiceUnavailable({ onRetry }: { onRetry: () => void }) {
+  return (
+    <main className="auth-page">
+      <div className="auth-card card" role="alert">
+        <BrandLockup className="auth-brand" showTagline />
+        <h1>Service unavailable</h1>
+        <p>The workspace could not reach the server to check your session. Make sure the server is running, then try again.</p>
+        <button className="button button--primary button--full" onClick={onRetry}>Try again</button>
+      </div>
+    </main>
   )
 }
 

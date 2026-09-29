@@ -28,18 +28,11 @@ from src.research.runtime import store as _research_store
 from src.screening.display_formats import result_column_formats
 from src.screening.persistence import normalize_screening_date
 from src.utilities.runtime_paths import state_dir
-from src.web_app.security import (
-    AppSettings,
-    PathPolicyError,
-    configured_database_policy,
-)
+from src.web_app.security import get_settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/screening", tags=["screening"])
-
-_APP_SETTINGS = AppSettings.from_env()
-_DB_PATH_POLICY = configured_database_policy(_APP_SETTINGS.allowed_data_roots)
 
 # ---------------------------------------------------------------------------
 # Persistence paths (same as Tk UI controllers)
@@ -140,7 +133,6 @@ class ScreeningDateRequest(BaseModel):
 
 
 class ScreeningRunRequest(ScreeningDateRequest):
-    db_path: str = Field(..., description="Absolute path to the SQLite database")
     criteria: list[ScreeningCriterion] = Field(default_factory=list)
     columns: list[str] = Field(default_factory=list)
     computed_columns: list[ComputedColumn] = Field(default_factory=list)
@@ -162,7 +154,6 @@ class ScreeningSaveRequest(ScreeningDateRequest):
 
 
 class ScreeningExportRequest(ScreeningDateRequest):
-    db_path: str = Field(...)
     criteria: list[ScreeningCriterion] = Field(default_factory=list)
     columns: list[str] = Field(default_factory=list)
     computed_columns: list[ComputedColumn] = Field(default_factory=list)
@@ -186,15 +177,12 @@ class ScreeningHistoryEntry(ScreeningDateRequest):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _validate_db_path(db_path: str) -> str:
-    """Resolve a database only when it is inside an allowed data root."""
-    reference = db_path.strip()
-    if reference in {"", "default", "standardized"}:
-        reference = get_db2()
-    try:
-        return str(_DB_PATH_POLICY.authorize_database(reference))
-    except PathPolicyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+def _resolve_db() -> str:
+    """The server's configured Standardized database; requests cannot name another."""
+    path = Path(get_db2())
+    if not path.is_file():
+        raise HTTPException(status_code=503, detail="The screening database is not available.")
+    return str(path)
 
 
 def _criteria_to_dicts(criteria: list[ScreeningCriterion]) -> list[dict]:
@@ -311,7 +299,6 @@ MAX_PRICE_UPDATE_TICKERS = 100
 class UpdatePricesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    db_path: str = Field(..., min_length=1)
     tickers: list[str] = Field(..., min_length=1, max_length=MAX_PRICE_UPDATE_TICKERS)
 
     @field_validator("tickers")
@@ -335,7 +322,7 @@ def update_prices(
     Each ticker is a provider round trip that writes shared market data, so
     the call is operator-only and bounded to ``MAX_PRICE_UPDATE_TICKERS``.
     """
-    resolved = _validate_db_path(request.db_path)
+    resolved = _resolve_db()
     results = []
     for ticker in request.tickers:
         try:
@@ -357,26 +344,17 @@ def update_prices(
     return {"results": results}
 
 
-@router.get("/db-path")
-def get_default_db_path() -> dict:
-    """Return a stable identifier for the default screening database."""
-    _validate_db_path("default")
-    return {"db_path": "default"}
-
-
 @router.get("/metrics")
-def get_metrics(db_path: str = Query(..., description="Path to SQLite database")) -> dict:
+def get_metrics() -> dict:
     """Return available screening tables and their columns."""
-    resolved = _validate_db_path(db_path)
-    metrics = _screening.get_available_metrics(resolved)
+    metrics = _screening.get_available_metrics(_resolve_db())
     return {"tables": metrics}
 
 
 @router.get("/periods")
-def get_periods(db_path: str = Query(..., description="Path to SQLite database")) -> dict:
+def get_periods() -> dict:
     """Return available period years."""
-    resolved = _validate_db_path(db_path)
-    periods = _screening.get_available_periods(resolved)
+    periods = _screening.get_available_periods(_resolve_db())
     return {"periods": periods}
 
 
@@ -441,17 +419,17 @@ def run_screening_endpoint(
     """Run a screening query and return the matching rows."""
     import time as _t
     _t0 = _t.monotonic()
-    logger.info("screening/run START db=%s criteria=%d cols=%d",
-                payload.db_path, len(payload.criteria), len(payload.columns))
+    logger.info("screening/run START criteria=%d cols=%d",
+                len(payload.criteria), len(payload.columns))
 
     try:
         _t1 = _t.monotonic()
-        resolved = _validate_db_path(payload.db_path)
+        resolved = _resolve_db()
         # Populate user-scoped tags before running the screen
         user = getattr(http_request.state, "user", None)
         if isinstance(user, AuthenticatedUser):
             _screening.populate_user_tags(str(resolved), user.user_id)
-        logger.info("screening/run db_path validated (%.2fs)", _t.monotonic() - _t1)
+        logger.info("screening/run database resolved (%.2fs)", _t.monotonic() - _t1)
 
         _t1 = _t.monotonic()
         criteria_dicts = _criteria_to_dicts(payload.criteria)
@@ -498,7 +476,7 @@ def run_screening_endpoint(
         _t1 = _t.monotonic()
         result = _df_to_json(df)
         result["error"] = None
-        result["column_formats"] = result_column_formats(list(payload.columns))
+        result["column_formats"] = result_column_formats(list(payload.columns), resolved)
         if isinstance(user, AuthenticatedUser):
             stored = _persist_screening_result(user, payload, result)
             if stored:
@@ -542,7 +520,12 @@ def get_last_result(request: Request) -> dict[str, Any]:
             stored["result"].pop("sql_display", None)
             # Results cached before column formats were returned get them here.
             definition = stored.get("definition") or {}
-            stored["result"].setdefault("column_formats", result_column_formats(list(definition.get("columns") or [])))
+            if "column_formats" not in stored["result"]:
+                try:
+                    db_path = _resolve_db()
+                except HTTPException:
+                    db_path = None
+                stored["result"]["column_formats"] = result_column_formats(list(definition.get("columns") or []), db_path)
         return {"result": stored}
     except Exception as exc:  # noqa: BLE001 - an empty cache is still a valid state
         logger.warning("Could not load latest screening result for %s: %s", user.user_id, exc)
@@ -675,7 +658,7 @@ def _computed_column_specs(columns: list[ComputedColumn]) -> list[dict]:
 
 def _enforce_export_limit(content: str) -> str:
     """Reject generated responses that exceed the configured byte limit."""
-    if len(content.encode("utf-8")) > _APP_SETTINGS.max_export_bytes:
+    if len(content.encode("utf-8")) > get_settings().max_export_bytes:
         raise HTTPException(413, "Generated export exceeds the configured size limit")
     return content
 
@@ -726,7 +709,7 @@ def _export_backtest_content(
             historical=request.historical,
             computed_columns=computed_columns,
         )
-        if output_path.stat().st_size > _APP_SETTINGS.max_export_bytes:
+        if output_path.stat().st_size > get_settings().max_export_bytes:
             raise HTTPException(
                 413,
                 "Generated export exceeds the configured size limit",
@@ -738,7 +721,7 @@ def _export_backtest_content(
 def export_results(request: ScreeningExportRequest = Body(...)) -> StreamingResponse:
     """Export screening results to CSV (or backtest CSV format)."""
     try:
-        resolved = _validate_db_path(request.db_path)
+        resolved = _resolve_db()
         criteria_dicts = _criteria_to_dicts(request.criteria)
         ranking_dicts = _ranking_rules_to_dicts(request.ranking_rules)
         computed_specs = _computed_column_specs(request.computed_columns)

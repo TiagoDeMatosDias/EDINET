@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -17,20 +18,14 @@ from pydantic import BaseModel, Field
 from src import security_analysis as _security
 from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
+from src.comparison.service import METRIC_DEFINITIONS, flatten_overview
 from src.orchestrator.common.db_config import get_db2
 from src.orchestrator.common.sqlite import connect_read
 from src.security_analysis.company_descriptions import get_or_fetch_description, yahoo_symbol
-from src.web_app.security import (
-    AppSettings,
-    PathPolicyError,
-    configured_database_policy,
-)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/security", tags=["security_analysis"])
-_APP_SETTINGS = AppSettings.from_env()
-_DB_PATH_POLICY = configured_database_policy(_APP_SETTINGS.allowed_data_roots)
 
 
 # ---------------------------------------------------------------------------
@@ -38,13 +33,11 @@ _DB_PATH_POLICY = configured_database_policy(_APP_SETTINGS.allowed_data_roots)
 # ---------------------------------------------------------------------------
 
 def _resolve_db() -> str:
+    """The server's configured Standardized database."""
     db_path = get_db2()
-    if not db_path:
-        raise HTTPException(status_code=503, detail="No database configured.")
-    try:
-        return str(_DB_PATH_POLICY.authorize_database(db_path))
-    except PathPolicyError as exc:
-        raise HTTPException(status_code=503, detail="Database not found.") from exc
+    if not db_path or not Path(db_path).is_file():
+        raise HTTPException(status_code=503, detail="Database not found.")
+    return db_path
 
 
 def _filing_description_source(company: dict[str, Any]) -> dict[str, str] | None:
@@ -124,18 +117,13 @@ def get_overview(
             # structurally present but empty while an earlier filing has the
             # usable statements and ratios.
             from src.comparison.api import _enrich_overview
-            from src.comparison.service import flatten_overview
 
             result = _enrich_overview(db, resolved_code, result)
             result["metrics"] = flatten_overview(result)
         except Exception as exc:  # noqa: BLE001 - metrics enrichment is optional
             logger.warning("Metrics computation failed for %s: %s", code or tkr, exc)
-            result["metrics"] = {k: None for k in (
-                "LatestPrice", "MarketCap", "PERatio", "PriceToBook",
-                "PriceToSales", "DividendsYield", "PayoutRatio",
-                "ReturnOnAssets", "ReturnOnEquity", "CurrentRatio",
-                "SharesOutstanding",
-            )}
+            result["metrics"] = dict.fromkeys(METRIC_DEFINITIONS)
+        result["metric_definitions"] = METRIC_DEFINITIONS
         company = dict(result.get("company") or {})
         external_ticker = str(company.get("ticker") or tkr or "")
         company["yahoo_symbol"] = yahoo_symbol(external_ticker) or None

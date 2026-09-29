@@ -5,39 +5,40 @@ from __future__ import annotations
 import re
 from typing import Any
 
-DEFAULT_METRICS = [
-    "LatestPrice", "MarketCap", "PERatio", "PriceToBook", "PriceToSales",
-    "EnterpriseValueToSales", "DividendsYield", "ReturnOnEquity",
-    "DebtToEquity", "CurrentRatio", "GrossMargin", "OperatingMargin",
-    "NetMargin", "PayoutRatio", "ReturnOnAssets", "Revenue", "OperatingIncome",
-    "NetIncome", "TotalAssets", "TotalEquity", "SharesOutstanding",
-]
+# The one description of each standard metric, in display order. ``group``
+# and ``label`` drive both the comparison matrix and the analysis snapshot;
+# ``direction`` says which way is favourable when companies are compared (size
+# metrics and payout have none); ``format`` is ``money`` or ``percent`` (stored
+# as a fraction), and money is in the ``price`` or ``reporting`` currency.
+_PRICE_MONEY = {"format": "money", "currency": "price"}
+_REPORTED_MONEY = {"format": "money", "currency": "reporting"}
+_PERCENT = {"format": "percent"}
 
-# ``direction`` says which way is favourable when companies are compared;
-# size metrics (price, revenue, assets, shares) and payout have none.
 METRIC_DEFINITIONS: dict[str, dict[str, str]] = {
-    "LatestPrice": {"label": "Price", "group": "Market"},
-    "MarketCap": {"label": "Market cap", "group": "Market"},
+    "LatestPrice": {"label": "Price", "group": "Market", **_PRICE_MONEY},
+    "MarketCap": {"label": "Market cap", "group": "Market", **_PRICE_MONEY},
     "PERatio": {"label": "P/E", "group": "Valuation", "direction": "lower"},
     "PriceToBook": {"label": "P/B", "group": "Valuation", "direction": "lower"},
     "PriceToSales": {"label": "P/S", "group": "Valuation", "direction": "lower"},
     "EnterpriseValueToSales": {"label": "EV/Sales", "group": "Valuation", "direction": "lower"},
-    "DividendsYield": {"label": "Dividend yield", "group": "Valuation", "direction": "higher"},
-    "ReturnOnEquity": {"label": "ROE", "group": "Quality", "direction": "higher"},
+    "DividendsYield": {"label": "Dividend yield", "group": "Valuation", "direction": "higher", **_PERCENT},
+    "PayoutRatio": {"label": "Payout ratio", "group": "Valuation", **_PERCENT},
+    "ReturnOnEquity": {"label": "ROE", "group": "Quality", "direction": "higher", **_PERCENT},
+    "ReturnOnAssets": {"label": "Return on assets", "group": "Quality", "direction": "higher", **_PERCENT},
     "DebtToEquity": {"label": "Debt/equity", "group": "Quality", "direction": "lower"},
     "CurrentRatio": {"label": "Current ratio", "group": "Quality", "direction": "higher"},
-    "GrossMargin": {"label": "Gross margin", "group": "Quality", "direction": "higher"},
-    "OperatingMargin": {"label": "Operating margin", "group": "Quality", "direction": "higher"},
-    "NetMargin": {"label": "Net margin", "group": "Quality", "direction": "higher"},
-    "PayoutRatio": {"label": "Payout ratio", "group": "Valuation"},
-    "ReturnOnAssets": {"label": "Return on assets", "group": "Quality", "direction": "higher"},
-    "Revenue": {"label": "Revenue", "group": "Income"},
-    "OperatingIncome": {"label": "Operating income", "group": "Income"},
-    "NetIncome": {"label": "Net income", "group": "Income"},
-    "TotalAssets": {"label": "Total assets", "group": "Balance sheet"},
-    "TotalEquity": {"label": "Shareholders' equity", "group": "Balance sheet"},
+    "GrossMargin": {"label": "Gross margin", "group": "Quality", "direction": "higher", **_PERCENT},
+    "OperatingMargin": {"label": "Operating margin", "group": "Quality", "direction": "higher", **_PERCENT},
+    "NetMargin": {"label": "Net margin", "group": "Quality", "direction": "higher", **_PERCENT},
+    "Revenue": {"label": "Revenue", "group": "Income", **_REPORTED_MONEY},
+    "OperatingIncome": {"label": "Operating income", "group": "Income", **_REPORTED_MONEY},
+    "NetIncome": {"label": "Net income", "group": "Income", **_REPORTED_MONEY},
+    "TotalAssets": {"label": "Total assets", "group": "Balance sheet", **_REPORTED_MONEY},
+    "TotalEquity": {"label": "Shareholders' equity", "group": "Balance sheet", **_REPORTED_MONEY},
     "SharesOutstanding": {"label": "Shares outstanding", "group": "Balance sheet"},
 }
+
+DEFAULT_METRICS = list(METRIC_DEFINITIONS)
 
 
 def _number(value: Any) -> float | None:

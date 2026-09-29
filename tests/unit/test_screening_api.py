@@ -11,7 +11,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 import src.web_app.api.screening as screening_api
-from src.web_app.security import PathPolicy
 from src.web_app.server import app
 
 client = TestClient(app)
@@ -22,17 +21,18 @@ client = TestClient(app)
 # ---------------------------------------------------------------------------
 
 
+def _use_database(monkeypatch, path) -> str:
+    """Make ``path`` the server's configured screening database."""
+    monkeypatch.setattr(screening_api, "get_db2", lambda: str(path))
+    return str(path)
+
+
 @pytest.fixture(autouse=True)
-def allow_temporary_databases(monkeypatch, tmp_path):
-    """Authorize only each test's temporary directory as a data root."""
-    default_database = tmp_path / "default.db"
-    default_database.touch()
-    monkeypatch.setattr(screening_api, "get_db2", lambda: str(default_database))
-    monkeypatch.setattr(
-        screening_api,
-        "_DB_PATH_POLICY",
-        PathPolicy(read_roots=(tmp_path,), write_roots=(tmp_path,)),
-    )
+def default_database(monkeypatch, tmp_path):
+    """Point the configured database at an empty per-test file."""
+    database = tmp_path / "default.db"
+    database.touch()
+    _use_database(monkeypatch, database)
 
 
 def _create_test_db(path: str) -> str:
@@ -154,24 +154,10 @@ def _create_test_db(path: str) -> str:
 
 
 @pytest.fixture
-def test_db_path(tmp_path):
+def test_db_path(tmp_path, monkeypatch):
     """Create a test database file and return its path."""
     db_path = str(tmp_path / "test_screening.db")
-    return _create_test_db(db_path)
-
-
-# ---------------------------------------------------------------------------
-# Tests — GET /api/screening/db-path
-# ---------------------------------------------------------------------------
-
-
-def test_get_default_db_path():
-    """Should return the default DB2 path."""
-    resp = client.get("/api/screening/db-path")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "db_path" in data
-    assert data["db_path"]
+    return _use_database(monkeypatch, _create_test_db(db_path))
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +167,7 @@ def test_get_default_db_path():
 
 def test_get_metrics(test_db_path):
     """Should return available tables and columns."""
-    resp = client.get(f"/api/screening/metrics?db_path={test_db_path}")
+    resp = client.get("/api/screening/metrics")
     assert resp.status_code == 200
     data = resp.json()
     assert "tables" in data
@@ -196,10 +182,11 @@ def test_get_metrics(test_db_path):
     assert "EPS" in tables["PerShare"]
 
 
-def test_get_metrics_invalid_db():
-    """Should return 400 for nonexistent database."""
-    resp = client.get("/api/screening/metrics?db_path=/nonexistent/path.db")
-    assert resp.status_code == 400
+def test_get_metrics_reports_missing_configured_database(monkeypatch, tmp_path):
+    """A missing configured database is a server problem, not a client error."""
+    _use_database(monkeypatch, tmp_path / "missing.db")
+    resp = client.get("/api/screening/metrics")
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +196,7 @@ def test_get_metrics_invalid_db():
 
 def test_get_periods(test_db_path):
     """Should return available period years."""
-    resp = client.get(f"/api/screening/periods?db_path={test_db_path}")
+    resp = client.get("/api/screening/periods")
     assert resp.status_code == 200
     data = resp.json()
     assert "periods" in data
@@ -244,7 +231,6 @@ def test_get_formulas():
 def test_run_screening_basic(test_db_path):
     """Basic screening with no criteria should return all companies."""
     resp = client.post("/api/screening/run", json={
-        "db_path": test_db_path,
         "criteria": [],
         "columns": ["CompanyInfo.Company_Code", "CompanyInfo.Company_Name"],
     })
@@ -259,7 +245,6 @@ def test_run_screening_basic(test_db_path):
 def test_run_screening_with_criteria(test_db_path):
     """Filtering by industry should return only that company."""
     resp = client.post("/api/screening/run", json={
-        "db_path": test_db_path,
         "criteria": [{
             "table": "CompanyInfo",
             "column": "Company_Industry",
@@ -293,7 +278,6 @@ def test_run_screening_excludes_recent_stock_splits_by_date(test_db_path):
         )
 
     resp = client.post("/api/screening/run", json={
-        "db_path": test_db_path,
         "criteria": [{
             "comparison_mode": "recent_split",
             "operator": "=",
@@ -322,7 +306,6 @@ def test_run_screening_recent_split_options_are_forwarded(test_db_path):
         )
 
     resp = client.post("/api/screening/run", json={
-        "db_path": test_db_path,
         "criteria": [{
             "comparison_mode": "recent_split",
             "operator": "=",
@@ -353,7 +336,6 @@ def test_run_screening_recent_split_window_is_forwarded(test_db_path):
         )
 
     resp = client.post("/api/screening/run", json={
-        "db_path": test_db_path,
         "criteria": [{
             "comparison_mode": "recent_split",
             "split_window_days": 365,
@@ -372,7 +354,6 @@ def test_run_screening_recent_split_window_is_forwarded(test_db_path):
 def test_run_screening_with_column_compare_and_offset(test_db_path):
     """Column comparison with offset."""
     resp = client.post("/api/screening/run", json={
-        "db_path": test_db_path,
         "criteria": [{
             "table": "PerShare",
             "column": "BookValue",
@@ -392,7 +373,6 @@ def test_run_screening_with_column_compare_and_offset(test_db_path):
 def test_run_screening_with_computed_columns(test_db_path):
     """Computed P/E column should be in results."""
     resp = client.post("/api/screening/run", json={
-        "db_path": test_db_path,
         "criteria": [],
         "columns": ["CompanyInfo.Company_Code"],
         "computed_columns": [{
@@ -416,7 +396,6 @@ def test_run_screening_with_computed_columns(test_db_path):
 def test_run_screening_with_period(test_db_path):
     """Period filter should restrict results."""
     resp = client.post("/api/screening/run", json={
-        "db_path": test_db_path,
         "criteria": [],
         "columns": ["CompanyInfo.Company_Code", "FinancialStatements.periodEnd"],
         "period": "2023",
@@ -439,7 +418,6 @@ def test_run_screening_with_screening_date(test_db_path):
     """Point-in-time date should restrict to filings before that date."""
     # 2023-06-01: should only see the 2023-03-31 filing for E00001
     resp = client.post("/api/screening/run", json={
-        "db_path": test_db_path,
         "criteria": [],
         "columns": ["CompanyInfo.Company_Code", "FinancialStatements.periodEnd"],
         "screening_date": "2023-06-01",
@@ -460,20 +438,19 @@ def test_run_screening_with_screening_date(test_db_path):
             assert period_val <= "2023-06-01", f"Got period {period_val} after screening_date"
 
 
-def test_run_screening_invalid_db():
-    """Nonexistent DB should get 400."""
+def test_run_screening_rejects_a_client_database_path(test_db_path):
+    """Requests cannot name a database; the removed field is rejected outright."""
     resp = client.post("/api/screening/run", json={
-        "db_path": "/nonexistent/db.sqlite",
+        "db_path": test_db_path,
         "criteria": [],
         "columns": [],
     })
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 def test_run_screening_validation_error(test_db_path):
     """Invalid column reference should get 400."""
     resp = client.post("/api/screening/run", json={
-        "db_path": test_db_path,
         "criteria": [{
             "table": "NonexistentTable",
             "column": "FakeCol",
@@ -644,7 +621,6 @@ def test_screening_history_invalid_limit():
 def test_export_csv(test_db_path):
     """CSV export should return a CSV file."""
     resp = client.post("/api/screening/export", json={
-        "db_path": test_db_path,
         "criteria": [],
         "columns": ["CompanyInfo.Company_Code"],
         "format": "csv",
@@ -671,7 +647,6 @@ def test_export_backtest(test_db_path, monkeypatch):
         capture_output_path,
     )
     resp = client.post("/api/screening/export", json={
-        "db_path": test_db_path,
         "criteria": [],
         "columns": ["CompanyInfo.Company_Ticker"],
         "format": "backtest",
@@ -693,13 +668,9 @@ def test_export_enforces_response_size_limit(test_db_path, monkeypatch):
     """CSV responses larger than the configured limit are rejected."""
     from dataclasses import replace
 
-    monkeypatch.setattr(
-        screening_api,
-        "_APP_SETTINGS",
-        replace(screening_api._APP_SETTINGS, max_export_bytes=8),
-    )
+    limited = replace(screening_api.get_settings(), max_export_bytes=8)
+    monkeypatch.setattr(screening_api, "get_settings", lambda: limited)
     resp = client.post("/api/screening/export", json={
-        "db_path": test_db_path,
         "criteria": [],
         "columns": ["CompanyInfo.Company_Code"],
         "format": "csv",
@@ -709,7 +680,6 @@ def test_export_enforces_response_size_limit(test_db_path, monkeypatch):
 
 def test_export_rejects_unknown_format(test_db_path):
     resp = client.post("/api/screening/export", json={
-        "db_path": test_db_path,
         "criteria": [],
         "columns": ["CompanyInfo.Company_Code"],
         "format": "spreadsheet",
@@ -724,7 +694,7 @@ def test_export_rejects_unknown_format(test_db_path):
 
 def test_metrics_returns_many_tables(test_db_path):
     """The metrics endpoint must return all user tables, not a hardcoded subset."""
-    resp = client.get(f"/api/screening/metrics?db_path={test_db_path}")
+    resp = client.get("/api/screening/metrics")
     assert resp.status_code == 200
     tables = resp.json()["tables"]
     # Must have more than 1 table
@@ -739,7 +709,7 @@ def test_metrics_returns_many_tables(test_db_path):
     assert "Stock_Prices" in tables
 
 
-def test_metrics_includes_custom_tables(tmp_path):
+def test_metrics_includes_custom_tables(tmp_path, monkeypatch):
     """Metrics must include tables with arbitrary names, not just known ones."""
     import sqlite3
     db_path = str(tmp_path / "custom.db")
@@ -752,7 +722,8 @@ def test_metrics_includes_custom_tables(tmp_path):
     conn.commit()
     conn.close()
 
-    resp = client.get(f"/api/screening/metrics?db_path={db_path}")
+    _use_database(monkeypatch, db_path)
+    resp = client.get("/api/screening/metrics")
     assert resp.status_code == 200
     tables = resp.json()["tables"]
 
@@ -794,23 +765,24 @@ def _create_db_for_update_prices(path: str) -> str:
     return path
 
 
-def test_update_prices_requires_tickers(tmp_path):
-    db_path = _create_db_for_update_prices(str(tmp_path / "test.db"))
-    resp = client.post("/api/screening/update-prices", json={"db_path": db_path, "tickers": []})
+def test_update_prices_requires_tickers(tmp_path, monkeypatch):
+    _use_database(monkeypatch, _create_db_for_update_prices(str(tmp_path / "test.db")))
+    resp = client.post("/api/screening/update-prices", json={"tickers": []})
     assert resp.status_code == 422
 
 
-def test_update_prices_requires_db_path():
-    resp = client.post("/api/screening/update-prices", json={"tickers": ["7203"]})
+def test_update_prices_rejects_a_client_database_path(tmp_path):
+    db_path = _create_db_for_update_prices(str(tmp_path / "test.db"))
+    resp = client.post("/api/screening/update-prices", json={"db_path": db_path, "tickers": ["7203"]})
     assert resp.status_code == 422
 
 
-def test_update_prices_rejects_oversized_ticker_lists(tmp_path):
-    db_path = _create_db_for_update_prices(str(tmp_path / "test.db"))
+def test_update_prices_rejects_oversized_ticker_lists(tmp_path, monkeypatch):
+    _use_database(monkeypatch, _create_db_for_update_prices(str(tmp_path / "test.db")))
     tickers = [f"T{index}" for index in range(screening_api.MAX_PRICE_UPDATE_TICKERS + 1)]
     resp = client.post(
         "/api/screening/update-prices",
-        json={"db_path": db_path, "tickers": tickers},
+        json={"tickers": tickers},
     )
     assert resp.status_code == 422
 
@@ -826,7 +798,7 @@ def _fake_price_update(calls):
 
 
 def test_update_prices_returns_results_structure(tmp_path, monkeypatch):
-    db_path = _create_db_for_update_prices(str(tmp_path / "test.db"))
+    db_path = _use_database(monkeypatch, _create_db_for_update_prices(str(tmp_path / "test.db")))
     calls = []
     monkeypatch.setattr(
         screening_api._security, "update_security_price", _fake_price_update(calls)
@@ -834,12 +806,12 @@ def test_update_prices_returns_results_structure(tmp_path, monkeypatch):
     resp = client.post(
         "/api/screening/update-prices",
         # Duplicates and blanks are dropped before any provider call.
-        json={"db_path": db_path, "tickers": ["7203", "6758", "7203", " "]},
+        json={"tickers": ["7203", "6758", "7203", " "]},
     )
     assert resp.status_code == 200
     data = resp.json()
     assert [r["ticker"] for r in data["results"]] == ["7203", "6758"]
-    assert [ticker for _, ticker in calls] == ["7203", "6758"]
+    assert calls == [(db_path, "7203"), (db_path, "6758")]
     for r in data["results"]:
         assert r["ok"] is True
         assert r["rows_inserted"] == 3
@@ -850,7 +822,7 @@ def test_update_prices_requires_operator_role(tmp_path, monkeypatch):
     from src.auth.dependencies import current_user
     from src.auth.models import AuthenticatedUser
 
-    db_path = _create_db_for_update_prices(str(tmp_path / "test.db"))
+    _use_database(monkeypatch, _create_db_for_update_prices(str(tmp_path / "test.db")))
     calls = []
     monkeypatch.setattr(
         screening_api._security, "update_security_price", _fake_price_update(calls)
@@ -860,7 +832,7 @@ def test_update_prices_requires_operator_role(tmp_path, monkeypatch):
     try:
         resp = client.post(
             "/api/screening/update-prices",
-            json={"db_path": db_path, "tickers": ["7203"]},
+            json={"tickers": ["7203"]},
         )
     finally:
         app.dependency_overrides.pop(current_user, None)
@@ -868,9 +840,7 @@ def test_update_prices_requires_operator_role(tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_update_prices_unknown_db(tmp_path):
-    resp = client.post(
-        "/api/screening/update-prices",
-        json={"db_path": "/nonexistent/path.db", "tickers": ["7203"]},
-    )
-    assert resp.status_code == 400
+def test_update_prices_reports_missing_configured_database(tmp_path, monkeypatch):
+    _use_database(monkeypatch, tmp_path / "missing.db")
+    resp = client.post("/api/screening/update-prices", json={"tickers": ["7203"]})
+    assert resp.status_code == 503

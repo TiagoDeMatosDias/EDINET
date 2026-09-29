@@ -321,6 +321,11 @@ def _load_xml_from_zip(archive: zipfile.ZipFile, member_name: str) -> ET.Element
 
 
 _TAXONOMY_TABLE_NAME = "Taxonomy"
+# Every concept of every taxonomy in a release (financial statements, IFRS,
+# corporate disclosure, document information) with its XBRL item type and
+# standard labels. Not named ``taxonomy_concepts``: that legacy name is dropped
+# on every schema check.
+_DICTIONARY_TABLE_NAME = "Taxonomy_Dictionary"
 _TAXONOMY_COLUMNS = (
     "release_id",
     "statement_family",
@@ -529,6 +534,19 @@ def _taxonomy_schema_sql() -> str:
         CREATE INDEX IF NOT EXISTS idx_taxonomy_release_column
             ON \"{_TAXONOMY_TABLE_NAME}\"(release_id, column_concept_qname);
 
+        CREATE TABLE IF NOT EXISTS "{_DICTIONARY_TABLE_NAME}" (
+            release_id TEXT NOT NULL,
+            concept_qname TEXT NOT NULL,
+            item_type TEXT,
+            period_type TEXT,
+            is_abstract INTEGER NOT NULL DEFAULT 0,
+            label_en TEXT,
+            label_ja TEXT,
+            PRIMARY KEY (release_id, concept_qname)
+        );
+        CREATE INDEX IF NOT EXISTS idx_taxonomy_dictionary_concept
+            ON "{_DICTIONARY_TABLE_NAME}"(concept_qname);
+
         CREATE TABLE IF NOT EXISTS Statement_Hierarchy (
             statement_family      TEXT NOT NULL,
             concept_qname         TEXT NOT NULL PRIMARY KEY,
@@ -575,6 +593,74 @@ def _delete_release_namespace_rows(conn: sqlite3.Connection, release_id: str, na
         f'DELETE FROM "{_TAXONOMY_TABLE_NAME}" WHERE release_id = ?',
         (str(release_id),),
     )
+
+
+def _dictionary_rows_exist(conn: sqlite3.Connection, release_id: str) -> bool:
+    if not _table_exists(conn, _DICTIONARY_TABLE_NAME):
+        return False
+    row = conn.execute(
+        f'SELECT 1 FROM "{_DICTIONARY_TABLE_NAME}" WHERE release_id = ? LIMIT 1',
+        (str(release_id),),
+    ).fetchone()
+    return row is not None
+
+
+def _parse_concept_dictionary(archive: zipfile.ZipFile, release_id: str) -> dict[str, list[tuple]]:
+    """Concept rows for every taxonomy in the archive, keyed by namespace prefix."""
+    names = archive.namelist()
+    roots = sorted({
+        name.split("/")[1]
+        for name in names
+        if name.startswith("taxonomy/") and name.count("/") >= 3 and name.split("/")[1] != "common"
+    })
+    rows_by_namespace: dict[str, list[tuple]] = {}
+    for root in roots:
+        namespace_prefix = f"{root}_cor"
+        concept_xsd_paths = [
+            name for name in names
+            if re.search(rf"taxonomy/{re.escape(root)}/[^/]+/{re.escape(root)}_cor_.*\.xsd$", name)
+            and "/deprecated/" not in name
+        ]
+        if not concept_xsd_paths:
+            continue
+        label_paths = [
+            name for name in names
+            if f"taxonomy/{root}/" in name and "/label/" in name and name.endswith(".xml")
+        ]
+        concepts = _parse_concepts(archive, release_id, namespace_prefix, concept_xsd_paths)
+        labels = _parse_labels(archive, release_id, namespace_prefix, label_paths)
+        rows_by_namespace[namespace_prefix] = [
+            (
+                str(release_id),
+                concept_qname,
+                concept.get("data_type"),
+                concept.get("period_type"),
+                int(concept.get("is_abstract") or 0),
+                _pick_primary_label(labels.get(concept_qname, []), "en"),
+                _pick_primary_label(labels.get(concept_qname, []), "ja"),
+            )
+            for concept_qname, concept in concepts.items()
+        ]
+    return rows_by_namespace
+
+
+def _persist_concept_dictionary(conn: sqlite3.Connection, rows_by_namespace: dict[str, list[tuple]]) -> int:
+    count = 0
+    for namespace_prefix, rows in rows_by_namespace.items():
+        if not rows:
+            continue
+        conn.execute(
+            f'DELETE FROM "{_DICTIONARY_TABLE_NAME}" WHERE release_id = ? AND concept_qname LIKE ?',
+            (rows[0][0], f"{namespace_prefix}:%"),
+        )
+        conn.executemany(
+            f"""INSERT OR REPLACE INTO "{_DICTIONARY_TABLE_NAME}"
+                (release_id, concept_qname, item_type, period_type, is_abstract, label_en, label_ja)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        count += len(rows)
+    return count
 
 
 def _taxonomy_rows_exist(conn: sqlite3.Connection, release_id: str, namespace_prefix: str | None) -> bool:
@@ -1729,6 +1815,7 @@ def _persist_taxonomy_package(
         roles = _parse_roles(archive, release_id, namespace_prefix, role_xsd_paths)
         labels_by_concept = _parse_labels(archive, release_id, namespace_prefix, label_paths)
         arcs, primary_metadata = _parse_presentation_arcs(archive, release_id, namespace_prefix, pre_paths, roles)
+        dictionary_rows = _parse_concept_dictionary(archive, release_id)
 
     for concept_qname, concept in concepts.items():
         labels = labels_by_concept.get(concept_qname, [])
@@ -1739,6 +1826,7 @@ def _persist_taxonomy_package(
     label_rows = [item for items in labels_by_concept.values() for item in items]
     taxonomy_rows = _build_taxonomy_level_rows(release_id, namespace_prefix, concepts)
     _delete_release_namespace_rows(conn, release_id, namespace_prefix)
+    dictionary_count = _persist_concept_dictionary(conn, dictionary_rows)
 
     if taxonomy_rows:
         conn.executemany(
@@ -1816,6 +1904,7 @@ def _persist_taxonomy_package(
         "presentation_arcs": len(arcs),
         "taxonomy_rows": len(taxonomy_rows),
         "taxonomy_levels": len(taxonomy_rows),
+        "dictionary_concepts": dictionary_count,
     }
 
 
@@ -1888,6 +1977,7 @@ def sync_taxonomy_releases(
             "presentation_arcs": 0,
             "taxonomy_rows": 0,
             "taxonomy_levels": 0,
+            "dictionary_concepts": 0,
         }
 
     os.makedirs(download_dir, exist_ok=True)
@@ -1907,6 +1997,7 @@ def sync_taxonomy_releases(
             "presentation_arcs": 0,
             "taxonomy_rows": 0,
             "taxonomy_levels": 0,
+            "dictionary_concepts": 0,
         }
 
         session = requests.Session()
@@ -1936,7 +2027,13 @@ def sync_taxonomy_releases(
                     with open(archive_path, "wb") as handle:
                         handle.write(archive_bytes)
 
-                if _taxonomy_rows_exist(conn, release_id, entry.namespace_prefix) and not force_reparse:
+                # Releases parsed before the concept dictionary existed are
+                # reparsed once from the cached archive to fill it.
+                if (
+                    _taxonomy_rows_exist(conn, release_id, entry.namespace_prefix)
+                    and _dictionary_rows_exist(conn, release_id)
+                    and not force_reparse
+                ):
                     logger.info(
                         "Taxonomy archive %s already parsed for release %s; skipping reparse.",
                         entry.archive_name,

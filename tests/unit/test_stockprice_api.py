@@ -565,12 +565,15 @@ class TestImportStockPricesCsv(unittest.TestCase):
 
     def test_recent_jpx_update_replaces_overlapping_dates(self):
         db_path = os.path.join(self.tmpdir.name, "recent-jpx-idempotent.db")
-        last_date = (
-            pd.Timestamp.today().normalize() - pd.Timedelta(days=10)
-        ).strftime("%Y-%m-%d")
-        friday = (pd.Timestamp.today().normalize() - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-        while pd.Timestamp(friday).dayofweek >= 5:
-            friday = (pd.Timestamp(friday) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        def latest_weekday(days_ago: int) -> str:
+            # The loader drops weekend-dated rows, so both dates must be trading days.
+            day = pd.Timestamp.today().normalize() - pd.Timedelta(days=days_ago)
+            while day.dayofweek >= 5:
+                day -= pd.Timedelta(days=1)
+            return day.strftime("%Y-%m-%d")
+
+        last_date = latest_weekday(10)
+        friday = latest_weekday(1)
         history = pd.DataFrame(
             {
                 "Date": [last_date, friday],

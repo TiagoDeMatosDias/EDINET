@@ -51,7 +51,6 @@ export default function BacktestingPage() {
   const [endPeriod, setEndPeriod] = useState('')
   const [progress, setProgress] = useState<StreamMessage>()
   const abortRef = useRef<AbortController | null>(null)
-  const db = useQuery({ queryKey: ['backtesting-db'], queryFn: () => apiRequest<{ db_path: string }>('/api/backtesting/db-path') })
   const currencies = useQuery({ queryKey: ['backtesting-currencies'], queryFn: () => apiRequest<{ currencies: Array<{ code?: string } | string> }>('/api/backtesting/base-currencies') })
   const saved = useQuery({ queryKey: ['saved-backtests'], queryFn: () => apiRequest<{ backtests: SavedBacktest[] }>('/api/backtesting/list') })
   const loadedResult = useQuery({
@@ -60,7 +59,7 @@ export default function BacktestingPage() {
     queryFn: () => apiRequest<BacktestResultPayload>(`/api/backtesting/result/${encodeURIComponent(resultParam)}`),
   })
   const run = useMutation({ mutationFn: async () => {
-    if (mode === 'csv') return apiPost<{ id: string; aggregate: BacktestSummary }>('/api/backtesting/run-from-csv', { db_path: db.data?.db_path ?? '', csv_content: csvContent, benchmark_ticker: benchmark, benchmark_mode: 'ticker', base_currency: baseCurrency, durations, initial_capital: capital, risk_free_rate: 0 })
+    if (mode === 'csv') return apiPost<{ id: string; aggregate: BacktestSummary }>('/api/backtesting/run-from-csv', { csv_content: csvContent, benchmark_ticker: benchmark, benchmark_mode: 'ticker', base_currency: baseCurrency, durations, initial_capital: capital, risk_free_rate: 0 })
     if (mode === 'screen') {
       const draft = JSON.parse(localStorage.getItem('shade.screening.draft') ?? '{}') as { criteria?: Array<Record<string, unknown>>; columns?: string[] }
       if (!draft.criteria?.length) throw new Error('Build or load a screen before starting this backtest.')
@@ -70,7 +69,6 @@ export default function BacktestingPage() {
       setProgress({ type: 'starting', message: 'Preparing rolling periods' })
       try {
         return await apiStream('/api/backtesting/run-rolling', {
-          db_path: db.data?.db_path ?? '',
           criteria: draft.criteria.map(criterion => Object.fromEntries(Object.entries(criterion).filter(([key]) => key !== 'id'))),
           columns: draft.columns ?? [],
           computed_columns: [],
@@ -93,7 +91,7 @@ export default function BacktestingPage() {
       }
     }
     const portfolio = Object.fromEntries(holdings.filter(item => item.ticker.trim()).map(item => [item.ticker.trim(), { mode: item.mode, value: item.value }]))
-    return apiPost<{ id: string; summary: BacktestSummary }>('/api/backtesting/run', { db_path: db.data?.db_path ?? '', portfolio, start_date: startDate, end_date: endDate, benchmark_ticker: benchmark, benchmark_mode: 'ticker', base_currency: baseCurrency, initial_capital: capital, risk_free_rate: 0 })
+    return apiPost<{ id: string; summary: BacktestSummary }>('/api/backtesting/run', { portfolio, start_date: startDate, end_date: endDate, benchmark_ticker: benchmark, benchmark_mode: 'ticker', base_currency: baseCurrency, initial_capital: capital, risk_free_rate: 0 })
   }, onSuccess: () => saved.refetch() })
   const displayedResult = run.data ?? loadedResult.data
   const summary = resultSummary(displayedResult)
@@ -103,7 +101,7 @@ export default function BacktestingPage() {
   const savedColumns = useMemo<ColumnDef<SavedBacktest>[]>(() => [{ accessorKey: 'created', header: 'Created' }, { accessorKey: 'id', header: 'ID' }, { id: 'view', header: '', cell: ({ row }) => <Link className="button button--ghost" to={`/backtest?result=${encodeURIComponent(row.original.id)}`} onClick={() => { resetRun(); window.scrollTo({ top: 0 }) }}>Review</Link> }, { id: 'download', header: '', cell: ({ row }) => row.original.has_zip ? <DownloadButton className="button button--ghost" path={`/api/backtesting/download/${encodeURIComponent(row.original.id)}`} filename={`backtest_${row.original.id}.zip`}>Download</DownloadButton> : <span className="muted">Preparing</span> }], [resetRun])
 
   return <div className="stack dense-page backtesting-workspace">
-    <PageHeader eyebrow="Strategy research" title="Backtest an investment idea" description="Define the universe first, then portfolio construction, period, and benchmark. Inputs from Screening or Company Analysis arrive preselected." actions={run.isPending && mode === 'screen' ? <button className="button button--danger" onClick={() => abortRef.current?.abort()}><CircleStop />Cancel rolling backtest</button> : <button className="button button--primary" disabled={run.isPending || db.isLoading} onClick={() => run.mutate()}><FlaskConical />{run.isPending ? 'Running…' : 'Run backtest'}</button>} />
+    <PageHeader eyebrow="Strategy research" title="Backtest an investment idea" description="Define the universe first, then portfolio construction, period, and benchmark. Inputs from Screening or Company Analysis arrive preselected." actions={run.isPending && mode === 'screen' ? <button className="button button--danger" onClick={() => abortRef.current?.abort()}><CircleStop />Cancel rolling backtest</button> : <button className="button button--primary" disabled={run.isPending} onClick={() => run.mutate()}><FlaskConical />{run.isPending ? 'Running…' : 'Run backtest'}</button>} />
     <div className="step-tabs"><button className={mode === 'manual' ? 'active' : ''} onClick={() => setMode('manual')}>Manual portfolio</button><button className={mode === 'screen' ? 'active' : ''} onClick={() => setMode('screen')}>Saved screen</button><button className={mode === 'csv' ? 'active' : ''} onClick={() => setMode('csv')}>CSV set</button></div>
     {loadedResult.isLoading && !run.data && <Card><LoadingState label="Loading saved backtest" /></Card>}
     {loadedResult.error && !run.data && <ErrorState error={loadedResult.error} />}

@@ -26,3 +26,39 @@ def test_formats_are_keyed_by_result_column_names():
         "Return on Equity": "percent",
         "Return on Equity_Average_3_Year": "percent",
     }
+
+
+def test_taxonomy_percent_items_are_formatted_as_percentages(tmp_path):
+    import sqlite3
+
+    database = tmp_path / "standardized.db"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE Statement_Hierarchy (statement_family TEXT, concept_qname TEXT, primary_label_en TEXT, is_column INTEGER)")
+        conn.execute("CREATE TABLE Taxonomy_Dictionary (release_id TEXT, concept_qname TEXT, item_type TEXT)")
+        conn.executemany("INSERT INTO Statement_Hierarchy VALUES (?, ?, ?, 1)", [
+            ("ShareMetrics", "jpcrp_cor:EquityToAssetRatioSummaryOfBusinessResults", "Equity-to-asset ratio"),
+            ("ShareMetrics", "jpcrp_cor:NumberOfEmployees", "Number of employees"),
+        ])
+        conn.executemany("INSERT INTO Taxonomy_Dictionary VALUES ('2025-11-01', ?, ?)", [
+            ("jpcrp_cor:EquityToAssetRatioSummaryOfBusinessResults", "num:percentItemType"),
+            ("jpcrp_cor:NumberOfEmployees", "xbrli:sharesItemType"),
+        ])
+
+    formats = result_column_formats(
+        ["ShareMetrics.Equity-to-asset ratio", "ShareMetrics.Number of employees", "ShareMetrics_Rolling.Equity-to-asset ratio_Average_5_Year"],
+        str(database),
+    )
+
+    assert formats == {
+        "Equity-to-asset ratio": "percent",
+        "Equity-to-asset ratio_Average_5_Year": "percent",
+    }
+
+
+def test_missing_concept_dictionary_leaves_columns_unformatted(tmp_path):
+    import sqlite3
+
+    database = tmp_path / "standardized.db"
+    sqlite3.connect(database).close()
+
+    assert result_column_formats(["ShareMetrics.Equity-to-asset ratio"], str(database)) == {}

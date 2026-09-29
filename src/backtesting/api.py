@@ -37,11 +37,7 @@ from src.orchestrator.common.sqlite import connect_read
 from src.portfolio.currency import get_available_display_currencies
 from src.portfolio.performance import get_risk_free_rate
 from src.utilities.runtime_paths import backtest_root
-from src.web_app.security import (
-    AppSettings,
-    PathPolicyError,
-    configured_database_policy,
-)
+from src.web_app.security import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +48,6 @@ router = APIRouter(prefix="/api/backtesting", tags=["backtesting"])
 # ---------------------------------------------------------------------------
 _MAX_CONCURRENT = 2
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
-_APP_SETTINGS = AppSettings.from_env()
-_DB_PATH_POLICY = configured_database_policy(_APP_SETTINGS.allowed_data_roots)
-_PORTFOLIO_DB_POLICY = configured_database_policy(
-    _APP_SETTINGS.allowed_data_roots,
-    also_allow=("db3",),
-)
 _BACKTEST_ROOT = backtest_root().resolve(strict=False)
 _BACKTEST_ID = re.compile(r"^\d{8}_\d{6}(?:_[0-9a-f]{8})?$")
 
@@ -66,34 +56,23 @@ _BACKTEST_ID = re.compile(r"^\d{8}_\d{6}(?:_[0-9a-f]{8})?$")
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _resolve_db(db_path: str = "") -> str:
-    """Resolve a database path, falling back to the configured DB2."""
-    supplied = db_path.strip()
-    resolved = get_db2() if supplied in {"", "default", "standardized"} else supplied
-    if not resolved:
-        raise HTTPException(status_code=503, detail="No database configured.")
-    try:
-        return str(_DB_PATH_POLICY.authorize_database(resolved))
-    except PathPolicyError as exc:
-        status = 400 if supplied not in {"", "default", "standardized"} else 503
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+def _resolve_db() -> str:
+    """The server's configured Standardized database; requests cannot name another."""
+    resolved = get_db2()
+    if not resolved or not Path(resolved).is_file():
+        raise HTTPException(status_code=503, detail="The backtesting database is not available.")
+    return resolved
 
 
 def _resolve_db3() -> str:
     """Resolve the portfolio database (db3) path."""
     db3 = get_db3()
-    if not db3:
-        raise HTTPException(
-            status_code=400,
-            detail="Portfolio database not configured. Import transactions first."
-        )
-    try:
-        return str(_PORTFOLIO_DB_POLICY.authorize_database(db3))
-    except PathPolicyError as exc:
+    if not db3 or not Path(db3).is_file():
         raise HTTPException(
             status_code=400,
             detail="Portfolio database not found. Import transactions first."
-        ) from exc
+        )
+    return db3
 
 
 def _new_backtest_id() -> str:
@@ -200,13 +179,13 @@ def _record_recent_backtest(
 
 
 def _enforce_export_size(content: bytes) -> bytes:
-    if len(content) > _APP_SETTINGS.max_export_bytes:
+    if len(content) > get_settings().max_export_bytes:
         raise HTTPException(413, "Generated export exceeds the configured size limit")
     return content
 
 
 def _enforce_backtest_artifact_size(content: bytes) -> bytes:
-    if len(content) > _APP_SETTINGS.max_backtest_artifact_bytes:
+    if len(content) > get_settings().max_backtest_artifact_bytes:
         raise HTTPException(
             413,
             "Generated backtest artifact exceeds the configured size limit",
@@ -257,7 +236,6 @@ class AllocationSpec(BaseModel):
 
 
 class BacktestRunRequest(BaseModel):
-    db_path: str = ""
     portfolio: dict[str, AllocationSpec]
     start_date: str = Field(..., description="YYYY-MM-DD")
     end_date: str = Field(..., description="YYYY-MM-DD")
@@ -272,7 +250,6 @@ class BacktestRunRequest(BaseModel):
 
 
 class CSVBacktestRequest(BaseModel):
-    db_path: str = ""
     csv_content: str = Field(..., description="Raw CSV string")
     benchmark_ticker: str = ""
     benchmark_mode: Literal["ticker", "portfolio"] = "ticker"
@@ -283,7 +260,6 @@ class CSVBacktestRequest(BaseModel):
 
 
 class RollingScreeningRequest(BaseModel):
-    db_path: str = ""
     criteria: list[dict]
     columns: list[str]
     computed_columns: list[dict] = []
@@ -312,22 +288,13 @@ class RollingExportRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/db-path")
-def get_db_path() -> dict:
-    """Return a stable identifier for the default database."""
-    _resolve_db()
-    return {"db_path": "default"}
-
-
 @router.get("/available-tickers")
-def get_available_tickers(
-    db_path: str = Query(default="", description="Database path"),
-) -> dict:
+def get_available_tickers() -> dict:
     """Return distinct tickers for autocomplete in the portfolio builder.
 
     Queries ``CompanyInfo.Company_Ticker`` for speed (smaller table).
     """
-    resolved = _resolve_db(db_path)
+    resolved = _resolve_db()
     conn = connect_read(resolved)
     try:
         rows = conn.execute(
@@ -421,7 +388,7 @@ async def run_backtest(
 ) -> dict:
     """Run a single backtest.  Results are saved to disk; only a summary
     and the download path are returned to the client."""
-    db = _resolve_db(request.db_path)
+    db = _resolve_db()
 
     portfolio: dict[str, dict] = {
         tk: {"mode": spec.mode, "value": spec.value}
@@ -490,7 +457,7 @@ async def run_backtest(
             daily_bytes = stream.getvalue().encode("utf-8")
             _enforce_backtest_artifact_size(daily_bytes)
         if sum(map(len, (result_bytes, zip_bytes, daily_bytes))) > (
-            _APP_SETTINGS.max_backtest_artifact_bytes
+            get_settings().max_backtest_artifact_bytes
         ):
             raise HTTPException(
                 413,
@@ -534,11 +501,11 @@ async def run_from_csv(
     http_request: Request = None,
 ) -> dict:
     """Run a backtest set from an uploaded CSV content string."""
-    db = _resolve_db(request.db_path)
+    db = _resolve_db()
 
     if not request.csv_content.strip():
         raise HTTPException(status_code=400, detail="CSV content is empty.")
-    if len(request.csv_content.encode("utf-8")) > _APP_SETTINGS.max_upload_bytes:
+    if len(request.csv_content.encode("utf-8")) > get_settings().max_upload_bytes:
         raise HTTPException(413, "CSV content exceeds the configured size limit")
 
     base_currency = _validate_base_currency(request.base_currency)
@@ -591,7 +558,7 @@ async def run_from_csv(
     zip_bytes = _enforce_backtest_artifact_size(zip_buf.getvalue())
     if (
         len(result_bytes) + len(zip_bytes)
-        > _APP_SETTINGS.max_backtest_artifact_bytes
+        > get_settings().max_backtest_artifact_bytes
     ):
         raise HTTPException(
             413,
@@ -622,7 +589,6 @@ async def run_from_csv(
 
 @router.get("/rolling-periods")
 def get_rolling_periods(
-    db_path: str = Query(default="", description="Database path"),
     cadence: str = Query(default="monthly", description="monthly|quarterly|yearly"),
     start_period: str | None = Query(default=None, description="YYYY-MM"),
     end_period: str | None = Query(default=None, description="YYYY-MM"),
@@ -631,7 +597,7 @@ def get_rolling_periods(
     financial_statements_table: str = Query(default="FinancialStatements"),
 ) -> dict:
     """Return available screening periods and estimated backtest count."""
-    db = _resolve_db(db_path)
+    db = _resolve_db()
     try:
         periods = _bt._discover_screening_periods(
             db, cadence, start_period, end_period,
@@ -655,7 +621,7 @@ async def run_rolling(
     http_request: Request,
 ) -> StreamingResponse:
     """Run a rolling screening backtest with SSE progress streaming."""
-    db = _resolve_db(request.db_path)
+    db = _resolve_db()
 
     base_currency = _validate_base_currency(request.base_currency)
     db3 = ""
@@ -742,7 +708,7 @@ async def run_rolling(
                     save_rolling_backtest_zip,
                     final_result,
                     str(_BACKTEST_ROOT),
-                    _APP_SETTINGS.max_backtest_artifact_bytes,
+                    get_settings().max_backtest_artifact_bytes,
                 )
                 saved_dir = Path(saved_path)
                 backtest_id = saved_dir.name

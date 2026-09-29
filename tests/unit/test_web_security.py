@@ -14,7 +14,6 @@ from src.web_app.security import (
     PathPolicy,
     PathPolicyError,
     SecurityConfigurationError,
-    configured_database_policy,
     install_security,
     is_loopback_host,
 )
@@ -167,97 +166,6 @@ def test_path_policy_allows_only_database_files_inside_roots(tmp_path):
         policy.authorize_database(text_file)
     with pytest.raises(PathPolicyError, match="outside"):
         policy.authorize_database(outside)
-
-
-def _configure_database_directory(monkeypatch, directory: Path) -> dict[str, Path]:
-    """Point db_config at a directory where every store is co-located."""
-    from src.orchestrator.common import db_config
-
-    names = {
-        "db1": "Base.db",
-        "db2": "Standardized.db",
-        "db3": "Portfolio.db",
-        "auth_db": "auth.db",
-        "research_db": "research.db",
-        "pipeline_jobs_db": "pipeline_jobs.db",
-        "filings_db": "Filings.db",
-    }
-    paths = {key: directory / name for key, name in names.items()}
-    for path in paths.values():
-        path.write_bytes(b"")
-    monkeypatch.setattr(db_config, "_cache", {key: str(path) for key, path in paths.items()})
-    for spec in db_config.DATABASES:
-        if spec.env_override:
-            monkeypatch.delenv(spec.env_override, raising=False)
-    return paths
-
-
-def test_configured_policy_does_not_authorize_the_shared_database_directory(tmp_path, monkeypatch):
-    paths = _configure_database_directory(monkeypatch, tmp_path)
-
-    policy = configured_database_policy()
-
-    assert policy.authorize_database(paths["db1"]) == paths["db1"].resolve()
-    assert policy.authorize_database(paths["db2"]) == paths["db2"].resolve()
-    for key in ("db3", "auth_db", "research_db", "pipeline_jobs_db", "filings_db"):
-        with pytest.raises(PathPolicyError, match="outside"):
-            policy.authorize_database(paths[key])
-
-
-def test_configured_policy_refuses_private_stores_inside_explicit_roots(tmp_path, monkeypatch):
-    paths = _configure_database_directory(monkeypatch, tmp_path)
-    operator_copy = tmp_path / "Standardized-2025.db"
-    operator_copy.write_bytes(b"")
-
-    policy = configured_database_policy((tmp_path,))
-
-    assert policy.authorize_database(operator_copy) == operator_copy.resolve()
-    for key in ("db3", "auth_db", "research_db", "pipeline_jobs_db", "filings_db"):
-        with pytest.raises(PathPolicyError, match="outside"):
-            policy.authorize_database(paths[key])
-
-
-def test_every_registered_store_is_private_unless_it_opts_in(tmp_path, monkeypatch):
-    from src.orchestrator.common import db_config
-
-    paths = _configure_database_directory(monkeypatch, tmp_path)
-    new_store = tmp_path / "new_store.db"
-    new_store.write_bytes(b"")
-    monkeypatch.setattr(db_config, "_cache", {**db_config._cache, "new_store": str(new_store)})
-    monkeypatch.setattr(db_config, "DATABASES", (*db_config.DATABASES, db_config.DatabaseSpec("new_store", "new_store.db")))
-    monkeypatch.setattr(db_config, "_DATABASES_BY_KEY", {spec.key: spec for spec in db_config.DATABASES})
-
-    policy = configured_database_policy((tmp_path,))
-
-    with pytest.raises(PathPolicyError, match="outside"):
-        policy.authorize_database(new_store)
-    assert policy.authorize_database(paths["db2"]) == paths["db2"].resolve()
-
-
-def test_configured_policy_refuses_overridden_auth_and_research_stores(tmp_path, monkeypatch):
-    _configure_database_directory(monkeypatch, tmp_path)
-    auth_override = tmp_path / "custom-auth.db"
-    research_override = tmp_path / "custom-research.db"
-    auth_override.write_bytes(b"")
-    research_override.write_bytes(b"")
-    monkeypatch.setenv("EDINET_AUTH_DB", str(auth_override))
-    monkeypatch.setenv("EDINET_RESEARCH_DB", str(research_override))
-
-    policy = configured_database_policy((tmp_path,))
-
-    for path in (auth_override, research_override):
-        with pytest.raises(PathPolicyError, match="outside"):
-            policy.authorize_database(path)
-
-
-def test_portfolio_policy_authorizes_only_the_configured_portfolio_addition(tmp_path, monkeypatch):
-    paths = _configure_database_directory(monkeypatch, tmp_path)
-
-    policy = configured_database_policy(also_allow=("db3",))
-
-    assert policy.authorize_database(paths["db3"]) == paths["db3"].resolve()
-    with pytest.raises(PathPolicyError, match="outside"):
-        policy.authorize_database(paths["auth_db"])
 
 
 def test_path_policy_rejects_symlink_escape_when_supported(tmp_path):
@@ -468,16 +376,26 @@ def test_bare_settings_never_default_to_a_cwd_relative_auth_database():
     assert AppSettings().auth_db_path == Path(get_auth_db())
 
 
-@pytest.mark.parametrize("getter", ["get_auth_db", "get_research_db", "get_pipeline_jobs_db", "get_db3"])
-def test_screening_refuses_private_database_paths(getter):
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("get", "/api/screening/metrics", None),
+        ("post", "/api/screening/run", {"criteria": [], "columns": ["CompanyInfo.Company_Name"]}),
+        ("get", "/api/backtesting/available-tickers", None),
+    ],
+)
+def test_requests_cannot_choose_a_database(method, path, body):
+    """A client-supplied ``db_path`` never selects the database a request reads."""
     from src.orchestrator.common import db_config
     from src.web_app.server import app
 
-    private = getattr(db_config, getter)()
-    assert Path(private).is_file()
     client = TestClient(app)
-
-    response = client.get("/api/screening/metrics", params={"db_path": private})
-
-    assert response.status_code == 400
-    assert "tables" not in response.json()
+    private = db_config.get_auth_db()
+    if method == "get":
+        response = client.get(path, params={"db_path": private})
+        assert response.status_code == 200
+        assert response.json() == client.get(path).json()
+    else:
+        response = client.post(path, json={**body, "db_path": private})
+        # Strict request contracts reject the removed field outright.
+        assert response.status_code == 422

@@ -251,23 +251,6 @@ def parse_labels(contents: Iterable[bytes]) -> dict[tuple[str, str], str]:
     return labels
 
 
-# EDINET element names end with a statement-section code (current assets,
-# operating cash flow, ...) and IFRS elements with ``IFRS``. The codes are part
-# of the published EDINET taxonomy naming rules; they are removed only when no
-# label exists in any source and the element name itself has to be shown.
-_EDINET_NAME_SUFFIXES = ("IFRS", "OpeCF", "InvCF", "FinCF", "NCA", "NCL", "IOA", "SGA", "NOI", "NOE", "CA", "CL", "EI", "EL")
-
-
-def _element_label(name: str) -> str:
-    """Last-resort label for an element that has no label in any source."""
-    for _ in range(2):  # e.g. ``...CAIFRS``
-        for suffix in _EDINET_NAME_SUFFIXES:
-            if len(name) > len(suffix) and name.endswith(suffix) and name[-len(suffix) - 1].islower():
-                name = name[: -len(suffix)]
-                break
-    return humanize(name)
-
-
 def humanize(name: str) -> str:
     """Readable text from an element or role name, e.g. ``NetSalesIFRS`` -> ``Net sales IFRS``."""
     words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", name))
@@ -376,7 +359,7 @@ class _Labeler:
             self.extension.get((node.concept, preferred))
             or self.extension.get((node.concept, _STANDARD_LABEL))
             or self.taxonomy.get(node.qname)
-            or _element_label(node.concept)
+            or humanize(node.concept)
         )
         if (node.concept, preferred) in self.extension:
             return label

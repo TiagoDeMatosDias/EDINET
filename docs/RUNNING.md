@@ -7,7 +7,17 @@ The current workstation includes the public homepage and pricing page, account a
 - Python 3.12 or 3.13; `.venv3` is the canonical local environment.
 - Node.js 22 and npm 10.
 - Windows is the packaged target. Linux is supported for source development and CI.
-- Base, Standardized, and Portfolio databases are selected through `config/database_paths.json`. API requests may name only the configured Base and Standardized files; any other database directory must be listed explicitly in `EDINET_ALLOWED_DATA_ROOTS`. Every other application database (auth, research, pipeline jobs, Portfolio, and the filing catalog) is refused as a request-selected database even inside an allowed root; the `DATABASES` registry in `src/orchestrator/common/db_config.py` marks which stores requests may name, so a newly registered store is private by default.
+- Databases are split by whether they can be regenerated. Base, Standardized, and the filing catalog are rebuildable by the pipeline and live in `data/databases/`. Accounts (`auth.db`), research notes (`research.db`), portfolio transactions (`Portfolio.db`), and pipeline job history (`pipeline_jobs.db`) cannot be regenerated and live in `databases/` inside the state directory (`EDINET_STATE_DIR`, default `config/state`), so backing up the state directory covers everything irreplaceable. Any database can be relocated with an entry in `config/database_paths.json`; the defaults are listed in the `DATABASES` registry in `src/orchestrator/common/db_config.py`.
+- The server always reads its configured databases; API requests cannot name a database. `EDINET_ALLOWED_DATA_ROOTS` lists extra directories that pipeline steps may read input files from.
+
+Installations from before this layout keep their state databases in `data/databases/`. The server then refuses to start rather than create empty replacements; stop it and move them with:
+
+```powershell
+.\.venv3\Scripts\python.exe -m src.orchestrator.common.migrate_state_databases --dry-run
+.\.venv3\Scripts\python.exe -m src.orchestrator.common.migrate_state_databases
+```
+
+The migration folds each database's write-ahead log into the file, refuses a database that is still open, and never overwrites an existing file.
 
 When the web server starts, it creates any missing configured database parents and files. Base and Standardized are created as empty pipeline-owned SQLite databases, Portfolio receives its versioned schema, and auth, research, pipeline-jobs, and filings receive their managed schemas and migrations.
 
@@ -58,7 +68,7 @@ Refreshing prices from the provider (`/api/security/update-price`, `/api/screeni
 
 Responses carry `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and a `Content-Security-Policy` for the workspace; remote deployments also send `Strict-Transport-Security`. Request size limits apply to the bytes actually received, including chunked uploads without a `Content-Length` header.
 
-Generated artifacts and mutable state default to folders inside the project and can be relocated: `EDINET_STATE_DIR` (default `config/state`; saved screens, uploads, and job workspaces), `EDINET_BACKTEST_DIR` (default `data/Backtests`), and `EDINET_REPORT_DIR` (default `data/reports`). `EDINET_JOB_WORKSPACE_ROOT` still overrides the job workspace alone. Missing databases are created when the server starts rather than when its module is imported.
+Generated artifacts and mutable state default to folders inside the project and can be relocated: `EDINET_STATE_DIR` (default `config/state`; saved screens, uploads, job workspaces, and the irreplaceable databases), `EDINET_BACKTEST_DIR` (default `data/Backtests`), and `EDINET_REPORT_DIR` (default `data/reports`). `EDINET_JOB_WORKSPACE_ROOT` still overrides the job workspace alone. Missing databases are created when the server starts rather than when its module is imported.
 
 Administrators can change the minimum password length under `/admin` → Security settings. The accepted range is 15–128 characters, and the stored policy applies to registration, invitations, resets, password changes, and administrator-created credentials. The public `/pricing` page currently advertises €10 per month or €100 per year; it is informational and does not enable billing or subscription enforcement.
 
@@ -343,6 +353,7 @@ Syncs EDINET taxonomy releases into normalized taxonomy tables, or imports a loc
 - `force_download` redownloads archives even if they already exist locally.
 - `force_reparse` rebuilds normalized taxonomy tables even if the archive hash is unchanged.
 - `Target_Database` — database where the normalized taxonomy tables will be written.
+- Each release also fills `Taxonomy_Dictionary`: every concept of every taxonomy in the archive (J-GAAP, IFRS, corporate disclosure, document information) with its XBRL item type and standard English and Japanese labels. The Filing Explorer labels statement lines from it, and screening formats percentage columns from the item types. Releases parsed before the dictionary existed are reparsed once from the cached archives in `download_dir` on the next run; no new download is needed.
 
 ---
 

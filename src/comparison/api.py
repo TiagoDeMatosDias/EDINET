@@ -240,6 +240,7 @@ def _snapshot_rows(db: str, codes: list[str], metrics: list[str]) -> tuple[list[
                 or metadata.get("last_financial_period_end")
             ),
             "price_date": metadata.get("last_price_date"),
+            "reporting_currency": metadata.get("reporting_currency"),
             "data_quality_flags": metadata.get("data_quality_flags", []),
         })
         rows.append(row)
@@ -250,7 +251,11 @@ def _snapshot_rows(db: str, codes: list[str], metrics: list[str]) -> tuple[list[
 def metrics() -> dict[str, Any]:
     """Return statement tables and columns available to the comparison picker."""
     try:
-        return {"tables": _metric_catalog(_resolve_db())}
+        return {
+            "tables": _metric_catalog(_resolve_db()),
+            "definitions": METRIC_DEFINITIONS,
+            "default_metrics": DEFAULT_METRICS,
+        }
     except Exception as exc:
         _LOGGER.error("Could not load comparison metric catalog: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

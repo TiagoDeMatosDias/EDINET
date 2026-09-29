@@ -11,7 +11,6 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
-from src.web_app.security import PathPolicy
 from src.web_app.server import app
 
 client = TestClient(app)
@@ -51,11 +50,6 @@ def db(tmp_path, monkeypatch):
     _create_db(p)
     import src.web_app.api.security_analysis as m
     monkeypatch.setattr(m, "get_db2", lambda: p)
-    monkeypatch.setattr(
-        m,
-        "_DB_PATH_POLICY",
-        PathPolicy(read_roots=(tmp_path,), write_roots=(tmp_path,)),
-    )
     return p
 
 
@@ -304,3 +298,18 @@ def test_overview_labels_external_description_fallback(db, monkeypatch):
         "label": "Yahoo Finance profile",
         "symbol": "1001.T",
     }
+
+
+def test_overview_reports_price_and_reporting_currencies(db):
+    with sqlite3.connect(db) as conn:
+        conn.execute("ALTER TABLE FinancialStatements ADD COLUMN Currency TEXT")
+        conn.execute("UPDATE FinancialStatements SET Currency = 'USD'")
+
+    data = client.get("/api/security/overview", params={"company_code": "E00001"}).json()
+
+    assert data["market"]["price_currency"] == "JPY"
+    assert data["metadata"]["reporting_currency"] == "USD"
+    assert data["metric_definitions"]["MarketCap"] == {
+        "label": "Market cap", "group": "Market", "format": "money", "currency": "price",
+    }
+    assert data["metric_definitions"]["Revenue"]["currency"] == "reporting"

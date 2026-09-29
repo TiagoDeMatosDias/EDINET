@@ -3,7 +3,7 @@ import type { ColumnDef } from '@tanstack/react-table';
 import { ChevronDown, ChevronUp, Download, FlaskConical, GitCompare, Plus, Save, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { apiPost, apiRequest, authenticatedFetch, queryString } from '../../api/client';
+import { apiPost, apiRequest, authenticatedFetch } from '../../api/client';
 import type { ScreeningResult } from '../../api/types';
 import { DataTable } from '../../components/DataTable';
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback';
@@ -126,12 +126,9 @@ export default function ScreeningWorkspaceDense() {
     const [rulesCollapsed, setRulesCollapsed] = useState(() => localStorage.getItem(RULES_COLLAPSED_KEY) === 'true');
     const navigate = useNavigate();
     const queryClient = useQueryClient();
-    const db = useQuery({ queryKey: ['screening-db'], queryFn: () => apiRequest<{
-            db_path: string;
-        }>('/api/screening/db-path') });
-    const metrics = useQuery({ queryKey: ['screening-metrics', db.data?.db_path], enabled: Boolean(db.data?.db_path), queryFn: () => apiRequest<{
+    const metrics = useQuery({ queryKey: ['screening-metrics'], queryFn: () => apiRequest<{
             tables: MetricCatalog;
-        }>(`/api/screening/metrics${queryString({ db_path: db.data!.db_path })}`) });
+        }>('/api/screening/metrics') });
     const saved = useQuery({ queryKey: ['saved-screenings'], queryFn: () => apiRequest<{
             screenings: string[];
         }>('/api/screening/saved') });
@@ -145,15 +142,14 @@ export default function ScreeningWorkspaceDense() {
     const tagNames = useMemo(() => (tags.data?.tags ?? []).map(t => t.name), [tags.data]);
     const catalog = metrics.data?.tables ?? {};
     const payload = useCallback(() => ({ criteria: criteria.map(serializeCriterion), columns, computed_columns: computed.map(serializeComputedColumn), screening_date: screeningDate || null, ranking_algorithm: rankingAlgorithm, ranking_rules: rankingRules }), [criteria, columns, computed, screeningDate, rankingAlgorithm, rankingRules]);
-    const run = useMutation({ mutationFn: () => apiPost<ScreeningResult>('/api/screening/run', { db_path: db.data!.db_path, ...payload(), sort_order: 'DESC' }), onSuccess: data => { setResult(data); void queryClient.invalidateQueries({ queryKey: ['screening-last-result'] }); } });
+    const run = useMutation({ mutationFn: () => apiPost<ScreeningResult>('/api/screening/run', { ...payload(), sort_order: 'DESC' }), onSuccess: data => { setResult(data); void queryClient.invalidateQueries({ queryKey: ['screening-last-result'] }); } });
     const save = useMutation({ mutationFn: () => apiPost('/api/screening/save', { name: saveName.trim(), ...payload() }), onSuccess: () => { setSelectedSaved(saveName.trim()); setSaveName(''); void queryClient.invalidateQueries({ queryKey: ['saved-screenings'] }); } });
     const removeSaved = useMutation({ mutationFn: () => apiRequest(`/api/screening/saved/${encodeURIComponent(selectedSaved)}`, { method: 'DELETE' }), onSuccess: () => { setSelectedSaved(''); void queryClient.invalidateQueries({ queryKey: ['saved-screenings'] }); } });
     useEffect(() => localStorage.setItem(DRAFT_KEY, JSON.stringify(payload())), [payload]);
     useEffect(() => localStorage.setItem(RULES_COLLAPSED_KEY, String(rulesCollapsed)), [rulesCollapsed]);
     const loadSaved = async (name: string) => { setSelectedSaved(name); if (!name)
         return; const data = await apiRequest<SavedScreen>(`/api/screening/saved/${encodeURIComponent(name)}`); setCriteria((data.criteria ?? []).map(normalizeCriterion)); setColumns(data.columns?.length ? data.columns : DEFAULT_COLUMNS); setComputed(data.computed_columns ?? []); setScreeningDate(data.screening_date ?? ''); setRankingAlgorithm(data.ranking_algorithm ?? 'none'); setRankingRules(data.ranking_rules ?? []); };
-    const exportResults = async () => { if (!db.data)
-        return; const response = await authenticatedFetch('/api/screening/export', { method: 'POST', body: JSON.stringify({ db_path: db.data.db_path, ...payload(), format: 'csv' }) }); if (!response.ok)
+    const exportResults = async () => { const response = await authenticatedFetch('/api/screening/export', { method: 'POST', body: JSON.stringify({ ...payload(), format: 'csv' }) }); if (!response.ok)
         throw new Error('Export failed'); const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'screening.csv'; link.click(); URL.revokeObjectURL(link.href); };
     const deleteSavedScreen = () => { if (!selectedSaved || !window.confirm(`Delete saved screen "${selectedSaved}"?`))
         return; removeSaved.mutate(); };
@@ -166,10 +162,10 @@ export default function ScreeningWorkspaceDense() {
         params.set('source', 'screen');
         return `/compare?${params.toString()}`;
     }, [compareCodes]);
-    if (db.isLoading || metrics.isLoading)
+    if (metrics.isLoading)
         return <LoadingState label="Preparing screening data"/>;
-    if (db.isError || metrics.isError)
-        return <ErrorState error={db.error ?? metrics.error}/>;
+    if (metrics.isError)
+        return <ErrorState error={metrics.error}/>;
     return <div className="stack dense-page screening-workspace screening-workspace--max"><PageHeader eyebrow="Company discovery" title="Screen companies" description="Build full expressions from table-first metric selectors." actions={<button className="button button--primary" onClick={() => run.mutate()} disabled={run.isPending}><FlaskConical />{run.isPending ? 'Running…' : 'Run screen'}</button>}/><div className="screen-toolbar"><Field label="Saved screen"><div className="inline-control"><select className="select" value={selectedSaved} onChange={event => void loadSaved(event.target.value)}><option value="">New screen</option>{saved.data?.screenings.map(name => <option key={name}>{name}</option>)}</select><button className="button button--danger" type="button" disabled={!selectedSaved || removeSaved.isPending} onClick={deleteSavedScreen}><Trash2 />Delete</button></div></Field><Field label="Save as"><div className="inline-control"><input className="input" value={saveName} onChange={event => setSaveName(event.target.value)} placeholder="Screen name"/><button className="button button--secondary" disabled={!saveName.trim()} onClick={() => save.mutate()}><Save />Save</button></div></Field><Field label="As-of date"><input className="input" type="date" value={screeningDate} onChange={event => setScreeningDate(event.target.value)}/></Field><span className="toolbar-summary">{criteria.length} rules · {columns.length} columns · {computed.length} derived</span></div><div className={'screen-builder-grid screen-builder-grid--dense' + (rulesCollapsed ? ' is-rules-collapsed' : '')}>
 <Card title={'Rules (' + criteria.length + ')'} actions={<div className="button-row"><button className="button button--secondary rules-collapse" aria-expanded={!rulesCollapsed} aria-controls="screening-rules" onClick={() => setRulesCollapsed(value => !value)}>{rulesCollapsed ? <ChevronDown /> : <ChevronUp />}{rulesCollapsed ? 'Show rules' : 'Minimize'}</button>{!rulesCollapsed && <AddRuleMenu onAdd={kind => setCriteria(items => [...items, newRuleCriterion(kind)])} />}</div>}><div id="screening-rules" className="criteria-list">{criteria.map((criterion, index) => <CriterionEditor key={criterion.id} criterion={criterion} catalog={catalog} tagNames={tagNames} index={index} onChange={next => setCriteria(items => items.map((item, itemIndex) => itemIndex === index ? next : item))} onRemove={() => setCriteria(items => items.filter(item => item.id !== criterion.id))}/>)}</div></Card>
 <div className="screen-side"><Card title="Screen output" actions={<div className="segmented"><button className={optionsTab === 'columns' ? 'active' : ''} onClick={() => setOptionsTab('columns')}>Columns ({columns.length})</button><button className={optionsTab === 'derived' ? 'active' : ''} onClick={() => setOptionsTab('derived')}>Derived ({computed.length})</button></div>}>{optionsTab === 'columns' ? <ResultColumnPicker catalog={catalog} selected={columns} onChange={setColumns}/> : <DerivedColumns value={computed} catalog={catalog} onChange={setComputed}/>}</Card></div>

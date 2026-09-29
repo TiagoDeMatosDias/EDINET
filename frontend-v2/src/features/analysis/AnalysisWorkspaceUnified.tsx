@@ -9,38 +9,30 @@ import { ApiError, apiPost, apiRequest, authenticatedFetch, queryString } from '
 import type { SecurityHistory, SecurityOverview } from '../../api/types'
 import { BRAND_COLORS } from '../../brand'
 import { useAuth } from '../auth/authContext'
+import { formatMetricValue, groupMetrics, metricDefinition } from '../../metrics'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
 import { Card, Metric, PageHeader } from '../../components/Page'
 import { downloadBlob } from '../../api/download'
 import { downloadTextFile, safeFileName } from './downloads'
 import { FinancialHistoryWorkspace } from './FinancialHistoryWorkspace'
-import { formatCompactNumber } from './numberFormat'
-import { buildCompanyReport } from './markdownReport'
+import { buildCompanyReport, type SnapshotGroup } from './markdownReport'
 import { filterPriceHistory, PRICE_RANGE_OPTIONS, type PriceHistoryRow, type PriceRangeKey } from './priceHistoryRanges'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Legend, Tooltip)
 const PRICE_COLOR = BRAND_COLORS.ink
-const SNAPSHOT_GROUPS: Array<{ title: string; metrics: Array<[string, string]> }> = [
-  { title: 'Market', metrics: [['LatestPrice', 'Price'], ['MarketCap', 'Market cap']] },
-  { title: 'Valuation', metrics: [['PERatio', 'P/E'], ['PriceToBook', 'P/B'], ['PriceToSales', 'P/S'], ['EnterpriseValueToSales', 'EV/Sales'], ['DividendsYield', 'Dividend yield'], ['PayoutRatio', 'Payout ratio']] },
-  { title: 'Quality', metrics: [['ReturnOnEquity', 'Return on equity'], ['ReturnOnAssets', 'Return on assets'], ['DebtToEquity', 'Debt/equity'], ['CurrentRatio', 'Current ratio'], ['GrossMargin', 'Gross margin'], ['OperatingMargin', 'Operating margin'], ['NetMargin', 'Net margin']] },
-  { title: 'Income', metrics: [['Revenue', 'Revenue'], ['OperatingIncome', 'Operating income'], ['NetIncome', 'Net income']] },
-  { title: 'Balance sheet', metrics: [['TotalAssets', 'Total assets'], ['TotalEquity', "Shareholders' equity"], ['SharesOutstanding', 'Shares outstanding']] },
-]
+// The headline strip is a curated pick; labels and formats come from the
+// server's metric definitions like the grouped snapshot below it.
+const HEADLINE_METRICS = ['LatestPrice', 'MarketCap', 'PERatio', 'PriceToBook', 'PriceToSales', 'ReturnOnEquity', 'ReturnOnAssets', 'DividendsYield', 'CurrentRatio', 'DebtToEquity', 'OperatingMargin', 'PayoutRatio']
+
+function stringOrNull(value: unknown) {
+  return typeof value === 'string' && value ? value : null
+}
 
 interface FilingSummary {
   doc_id: string
   submitted_at?: string | null
   period_end?: string | null
   status: string
-}
-
-function formatOverview(key: string, value: number | null | undefined) {
-  if (value == null || Number.isNaN(value)) return '—'
-  if (key === 'LatestPrice') return `¥${value.toLocaleString()}`
-  if (['MarketCap', 'Revenue', 'OperatingIncome', 'NetIncome', 'TotalAssets', 'TotalEquity'].includes(key)) return `¥${formatCompactNumber(value)}`
-  if (['DividendsYield', 'PayoutRatio', 'ReturnOnAssets', 'ReturnOnEquity', 'GrossMargin', 'NetMargin', 'OperatingMargin'].includes(key)) return `${(value * 100).toFixed(1)}%`
-  return value.toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
 
 function PriceChart({ ticker }: { ticker: string }) {
@@ -91,8 +83,8 @@ function FilingSummaryCard({ companyCode }: { companyCode: string }) {
   >{filings.isLoading && <LoadingState label="Loading filings" />}{filings.data?.filings.slice(0, 8).map(filing => <Link className="filing-row" key={filing.doc_id} to={`/filings/${encodeURIComponent(filing.doc_id)}?from=analysis&company=${encodeURIComponent(companyCode)}`}><span><strong>{filing.period_end || 'Period unavailable'}</strong><small>{filing.doc_id}</small></span><span><small>{filing.submitted_at || 'Submission unavailable'} · {filing.status}</small></span></Link>)}{filings.data && !filings.data.filings.length && <EmptyState title="No archived XBRL reports" description="Type-1 filing packages will appear after acquisition." />}{exportError && <p className="form-error" role="alert" style={{ margin: '8px 0 0' }}>{exportError}</p>}<Link className="button button--ghost" to={`/filings?company=${encodeURIComponent(companyCode)}&from=analysis`}>Open Filing Explorer</Link></Card>
 }
 
-function SnapshotMetrics({ metrics }: { metrics: Record<string, number | null> }) {
-  return <div className="company-snapshot-groups">{SNAPSHOT_GROUPS.map(group => <section className="company-snapshot-group" key={group.title}><h3>{group.title}</h3><dl className="company-snapshot-metrics">{group.metrics.map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{formatOverview(key, metrics[key])}</dd></div>)}</dl></section>)}</div>
+function SnapshotMetrics({ metrics, groups, format }: { metrics: Record<string, number | null>; groups: SnapshotGroup[]; format: (key: string, value: number | null | undefined) => string }) {
+  return <div className="company-snapshot-groups">{groups.map(group => <section className="company-snapshot-group" key={group.title}><h3>{group.title}</h3><dl className="company-snapshot-metrics">{group.metrics.map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{format(key, metrics[key])}</dd></div>)}</dl></section>)}</div>
 }
 
 export default function AnalysisWorkspaceUnified() {
@@ -136,7 +128,12 @@ export default function AnalysisWorkspaceUnified() {
     return <div className="stack dense-page analysis-empty-page"><PageHeader eyebrow="Company research" title="Company not found" description={`No company in the research database matches “${lookup}”.`} /><EmptyState title="Search for the company above" description="Enter a name, ticker, EDINET code, or industry and choose a result." /></div>
   }
   if (overview.isError) return <ErrorState error={overview.error} retry={() => overview.refetch()} />
-  const metricKeys = [['LatestPrice', 'Price'], ['MarketCap', 'Market cap'], ['PERatio', 'P/E'], ['PriceToBook', 'P/B'], ['PriceToSales', 'P/S'], ['ReturnOnEquity', 'ROE'], ['ReturnOnAssets', 'ROA'], ['DividendsYield', 'Dividend'], ['CurrentRatio', 'Current ratio'], ['DebtToEquity', 'Debt/equity'], ['OperatingMargin', 'Operating margin'], ['PayoutRatio', 'Payout']]
+  const metricDefinitions = overview.data?.metric_definitions ?? {}
+  const currencies = { price: stringOrNull(overview.data?.market?.price_currency), reporting: stringOrNull(overview.data?.metadata?.reporting_currency) }
+  const formatMetric = (key: string, value: number | null | undefined) => formatMetricValue(metricDefinitions[key], value, currencies)
+  const snapshotGroups: SnapshotGroup[] = groupMetrics(Object.keys(metricDefinitions), metricDefinitions)
+    .map(({ group, metrics: keys }) => ({ title: group, metrics: keys.map(key => [key, metricDefinitions[key].label] as [string, string]) }))
+  const metricKeys = HEADLINE_METRICS.map(key => [key, metricDefinition(key, metricDefinitions).label])
   const qualityFlags = overview.data?.metadata?.data_quality_flags
   const tickerOnly = Array.isArray(qualityFlags) && qualityFlags.includes('ticker_only_no_company_record')
   const yahooSymbol = String(company.yahoo_symbol ?? '')
@@ -154,11 +151,11 @@ export default function AnalysisWorkspaceUnified() {
       market: company.market ? String(company.market) : undefined,
       description: businessDescription ? [businessDescription.slice(0, 4000), descriptionProvenance && `Source: ${descriptionProvenance}`].filter(Boolean).join('\n\n') : undefined,
       snapshotPeriod: metricPeriod || undefined,
-      snapshotGroups: SNAPSHOT_GROUPS,
+      snapshotGroups,
       metrics,
-      formatSnapshotMetric: formatOverview,
+      formatSnapshotMetric: formatMetric,
       history: history.data,
     }), 'text/markdown;charset=utf-8')
   }
-  return <div className="stack dense-page analysis-workspace"><PageHeader eyebrow="Company analysis" title={name} description={[ticker, canonicalCode, company.industry, company.market].filter(Boolean).join(' · ')} actions={<div className="button-row">{params.get('from') === 'screen' && <Link className="button button--ghost" to="/screen"><ArrowLeft />Return to Screening</Link>}<button className="button button--secondary" disabled={!history.data} onClick={downloadReport} title={history.data ? 'Download a markdown report with the snapshot and financial history' : 'Financial history is still loading'}><Download />Export report</button>{yahooSymbol && <a className="button button--secondary" href={`https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`} target="_blank" rel="noreferrer"><ExternalLink />Yahoo Finance</a>}<Link className="button button--primary" to={`/backtest?symbol=${ticker}`}><BarChart3 />Backtest</Link></div>} />{tickerOnly && <div className="callout callout--warning" role="status"><strong>No company record matches “{tickerParam}”.</strong> Showing stored price data only. Broker and portfolio symbols do not always match the exchange ticker used in EDINET data; search by company name or EDINET code for statements and filings.</div>}<div className="metric-strip analysis-metric-strip">{metricKeys.map(([key, label]) => <Metric key={key} label={label} value={formatOverview(key, metrics[key])} detail={key === 'LatestPrice' && canRefreshPrice ? <button className="text-button" onClick={() => updatePrice.mutate()}><RefreshCw />Refresh</button> : undefined} />)}</div><div className="analysis-top-grid"><Card title="Price history"><PriceChart ticker={ticker} /></Card><Card title="Company snapshot"><dl className="company-facts"><div><dt>Industry</dt><dd>{String(company.industry ?? '—')}</dd></div><div><dt>Market</dt><dd>{String(company.market ?? '—')}</dd></div><div><dt>Code</dt><dd>{canonicalCode || '—'}</dd></div><div><dt>Ticker</dt><dd>{ticker || '—'}</dd></div></dl>{metricPeriod && <p className="company-snapshot-period">Financial metrics: {metricPeriod}</p>}<SnapshotMetrics metrics={metrics} /><div className="company-tags"><div className="tag-list">{(tags.data?.tags ?? []).map(tag => <span className="tag" key={tag}>{tag}<button className="icon-button" onClick={() => removeTag.mutate(tag)} aria-label={`Remove tag ${tag}`}><X /></button></span>)}</div><div className="tag-add"><input className="input" placeholder="Add tag…" value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newTag.trim()) { addTag.mutate(newTag.trim()); setNewTag('') } }} /><button className="button button--ghost" disabled={!newTag.trim() || !canonicalCode} onClick={() => { addTag.mutate(newTag.trim()); setNewTag('') }} aria-label="Add tag"><Plus /></button></div></div><div className="company-description-block"><strong>Business description</strong><p className="company-description company-description--compact">{businessDescription || 'No business description available.'}</p>{descriptionProvenance && <small className="company-description-source">Source: {descriptionProvenance}</small>}</div></Card></div><Card className="analysis-history-card" title="Financial history" description="Select metrics in the table to chart them alongside the underlying values."><FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} downloadPrefix={canonicalCode || ticker} /></Card>{canonicalCode && <FilingSummaryCard companyCode={canonicalCode} />}</div>
+  return <div className="stack dense-page analysis-workspace"><PageHeader eyebrow="Company analysis" title={name} description={[ticker, canonicalCode, company.industry, company.market].filter(Boolean).join(' · ')} actions={<div className="button-row">{params.get('from') === 'screen' && <Link className="button button--ghost" to="/screen"><ArrowLeft />Return to Screening</Link>}<button className="button button--secondary" disabled={!history.data} onClick={downloadReport} title={history.data ? 'Download a markdown report with the snapshot and financial history' : 'Financial history is still loading'}><Download />Export report</button>{yahooSymbol && <a className="button button--secondary" href={`https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`} target="_blank" rel="noreferrer"><ExternalLink />Yahoo Finance</a>}<Link className="button button--primary" to={`/backtest?symbol=${ticker}`}><BarChart3 />Backtest</Link></div>} />{tickerOnly && <div className="callout callout--warning" role="status"><strong>No company record matches “{tickerParam}”.</strong> Showing stored price data only. Broker and portfolio symbols do not always match the exchange ticker used in EDINET data; search by company name or EDINET code for statements and filings.</div>}<div className="metric-strip analysis-metric-strip">{metricKeys.map(([key, label]) => <Metric key={key} label={label} value={formatMetric(key, metrics[key])} detail={key === 'LatestPrice' && canRefreshPrice ? <button className="text-button" onClick={() => updatePrice.mutate()}><RefreshCw />Refresh</button> : undefined} />)}</div><div className="analysis-top-grid"><Card title="Price history"><PriceChart ticker={ticker} /></Card><Card title="Company snapshot"><dl className="company-facts"><div><dt>Industry</dt><dd>{String(company.industry ?? '—')}</dd></div><div><dt>Market</dt><dd>{String(company.market ?? '—')}</dd></div><div><dt>Code</dt><dd>{canonicalCode || '—'}</dd></div><div><dt>Ticker</dt><dd>{ticker || '—'}</dd></div></dl>{metricPeriod && <p className="company-snapshot-period">Financial metrics: {metricPeriod}</p>}<SnapshotMetrics metrics={metrics} groups={snapshotGroups} format={formatMetric} /><div className="company-tags"><div className="tag-list">{(tags.data?.tags ?? []).map(tag => <span className="tag" key={tag}>{tag}<button className="icon-button" onClick={() => removeTag.mutate(tag)} aria-label={`Remove tag ${tag}`}><X /></button></span>)}</div><div className="tag-add"><input className="input" placeholder="Add tag…" value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newTag.trim()) { addTag.mutate(newTag.trim()); setNewTag('') } }} /><button className="button button--ghost" disabled={!newTag.trim() || !canonicalCode} onClick={() => { addTag.mutate(newTag.trim()); setNewTag('') }} aria-label="Add tag"><Plus /></button></div></div><div className="company-description-block"><strong>Business description</strong><p className="company-description company-description--compact">{businessDescription || 'No business description available.'}</p>{descriptionProvenance && <small className="company-description-source">Source: {descriptionProvenance}</small>}</div></Card></div><Card className="analysis-history-card" title="Financial history" description="Select metrics in the table to chart them alongside the underlying values."><FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} downloadPrefix={canonicalCode || ticker} /></Card>{canonicalCode && <FilingSummaryCard companyCode={canonicalCode} />}</div>
 }

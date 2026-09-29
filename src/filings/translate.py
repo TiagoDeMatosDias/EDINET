@@ -592,14 +592,3 @@ def translate_filing_sections(
             entry["text_en"] = translations.get(body, body)
         result.append(entry)
     return result
-
-
-def translate_facts(
-    facts: list[dict[str, Any]],
-    catalog: Any | None = None,
-) -> dict[str, str]:
-    """Return concept -> English label map for a list of facts."""
-    concepts = list(dict.fromkeys(f.get("concept", "") for f in facts if f.get("concept")))
-    if not concepts:
-        return {}
-    return translate_batch(concepts, catalog)

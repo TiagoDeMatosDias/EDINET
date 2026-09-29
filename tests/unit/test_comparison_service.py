@@ -201,3 +201,18 @@ def test_metric_definitions_declare_which_direction_is_favourable():
     assert _metric_definition("ReturnOnEquity")["direction"] == "higher"
     assert "direction" not in _metric_definition("Revenue")
     assert "direction" not in _metric_definition("IncomeStatement.Gross profit")
+
+
+def test_metrics_endpoint_describes_standard_metrics(monkeypatch):
+    import src.comparison.api as comparison_api
+
+    monkeypatch.setattr(comparison_api, "_resolve_db", lambda: "fixture.db")
+    monkeypatch.setattr(comparison_api, "_metric_catalog", lambda _db: {"IncomeStatement": ["Gross profit"]})
+
+    response = comparison_api.metrics()
+
+    assert response["tables"] == {"IncomeStatement": ["Gross profit"]}
+    assert response["default_metrics"] == list(response["definitions"])
+    assert response["definitions"]["ReturnOnEquity"]["format"] == "percent"
+    groups = [definition["group"] for definition in response["definitions"].values()]
+    assert groups == sorted(groups, key=groups.index), "definitions are grouped in display order"

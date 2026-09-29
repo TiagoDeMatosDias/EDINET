@@ -1291,6 +1291,42 @@ class TestTaxonomyProcessing(unittest.TestCase):
             ["JPPFS_20231101.zip", "JPPFS_20241101.zip"],
         )
 
+    def _sync(self):
+        def fake_session_factory():
+            return _FakeSession(self.html_text, self.archive_bytes)
+
+        with patch(
+            "src.orchestrator.parse_taxonomy.taxonomy_processing.requests.get",
+            return_value=_FakeResponse(text=self.html_text),
+        ), patch(
+            "src.orchestrator.parse_taxonomy.taxonomy_processing.requests.Session",
+            side_effect=fake_session_factory,
+        ):
+            return taxonomy_processing.sync_taxonomy_releases(
+                target_database=self.db_path,
+                release_selection="latest",
+                namespaces=["jppfs_cor"],
+                download_dir=self.download_dir,
+            )
+
+    def test_sync_fills_the_dictionary_for_releases_parsed_before_it_existed(self):
+        self._sync()
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("DELETE FROM Taxonomy_Dictionary")
+        conn.commit()
+        conn.close()
+
+        stats = self._sync()
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            restored = conn.execute("SELECT count(*) FROM Taxonomy_Dictionary").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(stats["archives_processed"], 1)
+        self.assertEqual(restored, 3)
+        self.assertEqual(self._sync()["archives_processed"], 0, "complete releases are not reparsed")
+
     def test_sync_taxonomy_releases_parses_archive_into_single_taxonomy_table(self):
         def fake_session_factory():
             return _FakeSession(self.html_text, self.archive_bytes)
@@ -1343,13 +1379,22 @@ class TestTaxonomyProcessing(unittest.TestCase):
                 """,
             ).fetchone()
             release_rows = taxonomy_processing.load_release_rows(conn)
+            dictionary_rows = conn.execute(
+                "SELECT concept_qname, is_abstract, label_ja FROM Taxonomy_Dictionary ORDER BY concept_qname"
+            ).fetchall()
         finally:
             conn.close()
 
         self.assertEqual(stats["releases_processed"], 1)
         self.assertEqual(stats["archives_processed"], 1)
         self.assertEqual(stats["taxonomy_rows"], 2)
-        self.assertEqual(tables, ["Taxonomy"])
+        self.assertEqual(stats["dictionary_concepts"], 3)
+        self.assertEqual(tables, ["Taxonomy", "Taxonomy_Dictionary"])
+        self.assertEqual(dictionary_rows, [
+            ("jppfs_cor:AssetsAbstract", 1, None),
+            ("jppfs_cor:BalanceSheetAbstract", 1, None),
+            ("jppfs_cor:CashAndDeposits", 0, "Cash and Deposits"),
+        ])
         self.assertEqual(
             columns,
             [
@@ -1402,3 +1447,85 @@ class TestTaxonomyProcessing(unittest.TestCase):
             ],
         )
         self.assertEqual(hierarchy_violations, (0,))
+
+
+def _archive_with_ifrs_taxonomy() -> bytes:
+    """The fixture archive plus an IFRS taxonomy with English labels and item types."""
+    ifrs_xsd = textwrap.dedent(
+        """\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+                   xmlns:xbrli="http://www.xbrl.org/2003/instance"
+                   targetNamespace="http://example.com/jpigp">
+          <xs:element name="RevenueIFRS" id="jpigp_cor_RevenueIFRS" type="xbrli:monetaryItemType"
+                      xbrli:periodType="duration" abstract="false" />
+          <xs:element name="EquityToAssetRatioIFRS" id="jpigp_cor_EquityToAssetRatioIFRS"
+                      type="num:percentItemType" xbrli:periodType="instant" abstract="false" />
+        </xs:schema>
+        """
+    )
+    ifrs_labels = textwrap.dedent(
+        """\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+                       xmlns:xlink="http://www.w3.org/1999/xlink">
+          <link:labelLink xlink:type="extended">
+            <link:loc xlink:type="locator" xlink:label="loc_revenue"
+                      xlink:href="../jpigp_cor_2024-11-01.xsd#jpigp_cor_RevenueIFRS" />
+            <link:label xlink:type="resource" xlink:label="lab_revenue"
+                        xlink:role="http://www.xbrl.org/2003/role/label" xml:lang="en">Revenue</link:label>
+            <link:label xlink:type="resource" xlink:label="lab_revenue_total"
+                        xlink:role="http://www.xbrl.org/2003/role/totalLabel" xml:lang="en">Total revenue</link:label>
+            <link:labelArc xlink:type="arc" xlink:from="loc_revenue" xlink:to="lab_revenue" />
+            <link:labelArc xlink:type="arc" xlink:from="loc_revenue" xlink:to="lab_revenue_total" />
+          </link:labelLink>
+        </link:linkbase>
+        """
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(_build_taxonomy_archive_bytes())) as source, zipfile.ZipFile(output, "w") as target:
+        for name in source.namelist():
+            target.writestr(name, source.read(name))
+        target.writestr("taxonomy/jpigp/2024-11-01/jpigp_cor_2024-11-01.xsd", ifrs_xsd)
+        target.writestr("taxonomy/jpigp/2024-11-01/label/jpigp_2024-11-01_lab-en.xml", ifrs_labels)
+    return output.getvalue()
+
+
+class TestTaxonomyDictionary(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.tmpdir.name, "taxonomy.db")
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _persist(self, archive_bytes: bytes) -> dict:
+        conn = sqlite3.connect(self.db_path)
+        try:
+            taxonomy_processing._ensure_taxonomy_schema(conn)
+            stats = taxonomy_processing._persist_taxonomy_package(
+                conn, "2024-11-01", "jppfs_cor", "JPPFS_20241101.zip", "", archive_bytes, "",
+            )
+            conn.commit()
+            return stats
+        finally:
+            conn.close()
+
+    def test_every_taxonomy_in_the_archive_is_recorded_with_types_and_standard_labels(self):
+        stats = self._persist(_archive_with_ifrs_taxonomy())
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = dict(
+                (qname, (item_type, label_en))
+                for qname, item_type, label_en in conn.execute(
+                    "SELECT concept_qname, item_type, label_en FROM Taxonomy_Dictionary"
+                )
+            )
+        finally:
+            conn.close()
+
+        self.assertEqual(stats["dictionary_concepts"], 5)
+        self.assertEqual(rows["jpigp_cor:RevenueIFRS"], ("xbrli:monetaryItemType", "Revenue"))
+        self.assertEqual(rows["jpigp_cor:EquityToAssetRatioIFRS"], ("num:percentItemType", None))
+        self.assertIn("jppfs_cor:CashAndDeposits", rows)

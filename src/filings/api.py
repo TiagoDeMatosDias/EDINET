@@ -35,7 +35,6 @@ from .translate import (
     TRANSLATOR_VERSION,
     TranslationError,
     translate_batch,
-    translate_facts,
     translate_filing_sections,
     translate_html_fragment,
 )
@@ -254,10 +253,12 @@ def filing_statements(doc_id: str, concept: str | None = None, limit: int = 500)
 
 
 def _taxonomy_labels(qnames: Iterable[str]) -> dict[str, str]:
-    """English labels for standard concepts from the Standardized ``Taxonomy`` table.
+    """English labels for standard concepts from the Standardized database.
 
-    Later taxonomy releases override earlier ones. Missing data only means the
-    statement falls back to the filing's own labels or element names.
+    The taxonomy pipeline's concept dictionary covers every EDINET taxonomy
+    (J-GAAP, IFRS, disclosure); the older statement-family ``Taxonomy`` table
+    fills gaps. Later releases override earlier ones, and missing tables only
+    mean the statement falls back to the filing's labels or element names.
     """
     names = list(qnames)
     labels: dict[str, str] = {}
@@ -266,18 +267,18 @@ def _taxonomy_labels(qnames: Iterable[str]) -> dict[str, str]:
     except (OSError, sqlite3.Error):
         return labels
     try:
-        for start in range(0, len(names), 500):
-            chunk = names[start:start + 500]
-            placeholders = ",".join("?" * len(chunk))
-            for qname, label in conn.execute(
-                f"SELECT concept_qname, primary_label_en FROM Taxonomy "
-                f"WHERE concept_qname IN ({placeholders}) ORDER BY release_id",
-                chunk,
-            ):
-                if label:
-                    labels[str(qname)] = str(label)
-    except sqlite3.Error as exc:
-        logger.info("Taxonomy labels unavailable for statement tables: %s", exc)
+        for query in (
+            "SELECT concept_qname, primary_label_en FROM Taxonomy WHERE concept_qname IN ({}) ORDER BY release_id",
+            "SELECT concept_qname, label_en FROM Taxonomy_Dictionary WHERE concept_qname IN ({}) ORDER BY release_id",
+        ):
+            try:
+                for start in range(0, len(names), 500):
+                    chunk = names[start:start + 500]
+                    for qname, label in conn.execute(query.format(",".join("?" * len(chunk))), chunk):
+                        if label:
+                            labels[str(qname)] = str(label)
+            except sqlite3.Error as exc:
+                logger.info("Taxonomy labels unavailable for statement tables: %s", exc)
     finally:
         conn.close()
     return labels
@@ -715,24 +716,6 @@ def translate_section_body(
     except TranslationError as exc:
         raise _translation_http_exception(exc) from exc
     return {"section": translated[0] if translated else {}}
-
-
-@router.get("/{doc_id}/facts-translated")
-def translated_facts(doc_id: str, concept: str | None = None, limit: int = 2000) -> dict[str, Any]:
-    """Return filing facts with English concept labels added."""
-    if catalog.get_filing(doc_id) is None:
-        raise HTTPException(status_code=404, detail="Filing not found")
-    rows = catalog.list_facts(doc_id, concept, limit)
-    facts_list = [_record(r) for r in rows]
-    try:
-        concept_map = translate_facts(facts_list, catalog)
-    except TranslationError as exc:
-        raise _translation_http_exception(exc) from exc
-    for f in facts_list:
-        c = f.get("concept", "")
-        if c in concept_map:
-            f["concept_en"] = concept_map[c]
-    return {"facts": facts_list, "count": len(facts_list)}
 
 
 # -- provenance and data quality --
