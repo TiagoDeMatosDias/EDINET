@@ -18,7 +18,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from src.orchestrator.common.sqlite import connect_read, transaction
-from src.utilities.stock_prices import _provider_symbol_for_ticker
+from src.utilities.stock_prices import _provider_symbol_for_ticker, tse_code
 
 logger = logging.getLogger(__name__)
 
@@ -254,9 +254,14 @@ def _fetch_yahoo_yfinance(symbol: str) -> str:
         return ""
 
 
+def yahoo_symbol(ticker: str | None) -> str:
+    """Return the Yahoo Finance symbol used for a stored ticker."""
+    return _provider_symbol_for_ticker(str(ticker or "").strip())
+
+
 def fetch_yahoo_description(ticker: str | None) -> str:
     """Fetch Yahoo's long business summary for a ticker, if available."""
-    symbol = _provider_symbol_for_ticker(str(ticker or "").strip())
+    symbol = yahoo_symbol(ticker)
     if not symbol:
         return ""
     description = _fetch_yahoo_profile_page(symbol)
@@ -283,9 +288,16 @@ def get_or_fetch_description(
     company_code: str | None,
     ticker: str | None,
 ) -> str:
-    """Return a cached description or fetch/store it once for this company."""
+    """Return a cached description or fetch/store it once for this company.
+
+    An EDINET company is only looked up under a Tokyo listing symbol: a ticker
+    that maps anywhere else (a demo code, a colliding foreign symbol) would
+    return an unrelated company's profile, so no external text is used.
+    """
     cache_key = _key(company_code, ticker)
     if not cache_key.split(":", 1)[1]:
+        return ""
+    if str(company_code or "").strip() and tse_code(ticker) is None:
         return ""
     _ensure_table(db_path)
     cached = _cached(db_path, cache_key)

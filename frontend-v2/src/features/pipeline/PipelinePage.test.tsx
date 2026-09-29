@@ -53,3 +53,25 @@ describe('pipeline file fields', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 })
+
+describe('pipeline job details', () => {
+  it('renders step state as a table and output as labelled values', async () => {
+    const { RunOutput, StepStateTable } = await import('./JobDetails')
+    render(<>
+      <StepStateTable steps={[
+        { ordinal: 1, step_name: 'parse_xbrl', overwrite: false, status: 'failed', duration_ms: 65_000, error_message: 'Archive missing' },
+        { ordinal: 0, step_name: 'download_xbrl', overwrite: true, status: 'completed', duration_ms: 1_500 },
+      ]} />
+      <RunOutput output={{ download_xbrl: { files_downloaded: 1234, skipped: [], doc_ids: ['S1', 'S2'] } }} />
+    </>)
+
+    const rows = screen.getAllByRole('row').slice(1).map(row => row.textContent)
+    expect(rows[0]).toContain('download_xbrl')
+    expect(rows[0]).toContain('1.5 s')
+    expect(rows[1]).toContain('Archive missing')
+    expect(rows[1]).toContain('1 min 5 s')
+    expect(screen.getByText('Files downloaded').nextSibling).toHaveTextContent('1,234')
+    expect(screen.getByText('Doc ids').nextSibling).toHaveTextContent('S1, S2')
+    expect(screen.getByText('Skipped').nextSibling).toHaveTextContent('None')
+  })
+})

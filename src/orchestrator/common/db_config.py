@@ -11,6 +11,7 @@ Edit ``config/database_paths.json`` to point to the right databases.
 import json
 import os
 import sys
+from dataclasses import dataclass
 
 _CONFIG_DIR_NAME = "config"
 _CONFIG_FILE_NAME = "database_paths.json"
@@ -69,46 +70,83 @@ def reload() -> None:
     _cache = None
 
 
+@dataclass(frozen=True)
+class DatabaseSpec:
+    """One application database.
+
+    ``request_selectable`` marks the analytical databases an API request may
+    name as its data source. Every other store (credentials, per-user state,
+    job history, ...) is private: it is refused as a request-selected path even
+    inside an explicitly allowed data root, so a store added here later is
+    private unless it opts in.
+    """
+
+    key: str
+    default_path: str
+    env_override: str | None = None
+    request_selectable: bool = False
+
+
+DATABASES: tuple[DatabaseSpec, ...] = (
+    DatabaseSpec("db1", "data/databases/Base.db", request_selectable=True),
+    DatabaseSpec("db2", "data/databases/Standardized.db", request_selectable=True),
+    DatabaseSpec("db3", "data/databases/Portfolio.db"),
+    DatabaseSpec("auth_db", "data/databases/auth.db", env_override="EDINET_AUTH_DB"),
+    DatabaseSpec("research_db", "data/databases/research.db", env_override="EDINET_RESEARCH_DB"),
+    DatabaseSpec("pipeline_jobs_db", "data/databases/pipeline_jobs.db"),
+    DatabaseSpec("filings_db", "data/databases/Filings.db", env_override="EDINET_FILINGS_DB"),
+)
+_DATABASES_BY_KEY = {spec.key: spec for spec in DATABASES}
+
+
+def database_path(key: str) -> str:
+    """Return the configured absolute path for one application database."""
+    spec = _DATABASES_BY_KEY[key]
+    return _resolve(_load_config().get(key, spec.default_path))
+
+
+def database_locations(spec: DatabaseSpec) -> list[str]:
+    """Every path the database may be opened from: configured and env override."""
+    locations = [database_path(spec.key)]
+    override = os.getenv(spec.env_override) if spec.env_override else None
+    if override:
+        locations.append(os.path.abspath(os.path.expanduser(override)))
+    return locations
+
+
 def get_db1() -> str:
     """Return the absolute path to DB1 (raw data: DocumentList, financialData_full)."""
-    cfg = _load_config()
-    return _resolve(cfg.get("db1", "data/databases/Base.db"))
+    return database_path("db1")
 
 
 def get_db2() -> str:
     """Return the absolute path to DB2 (standardized data: all other tables)."""
-    cfg = _load_config()
-    return _resolve(cfg.get("db2", "data/databases/Standardized.db"))
+    return database_path("db2")
 
 
 def get_db3() -> str:
     """Return the absolute path to DB3 (portfolio module data)."""
-    cfg = _load_config()
-    return _resolve(cfg.get("db3", "data/databases/Portfolio.db"))
+    return database_path("db3")
 
 
 def get_auth_db() -> str:
     """Return the absolute path to the non-rebuildable authentication database."""
-    cfg = _load_config()
-    return _resolve(cfg.get("auth_db", "data/databases/auth.db"))
+    return database_path("auth_db")
 
 
 def get_research_db() -> str:
     """Return the absolute path to the owner-scoped research-state database."""
-    cfg = _load_config()
-    return _resolve(cfg.get("research_db", "data/databases/research.db"))
+    return database_path("research_db")
 
 
 def get_pipeline_jobs_db() -> str:
     """Return the absolute path to the durable pipeline-jobs database."""
-    cfg = _load_config()
-    return _resolve(cfg.get("pipeline_jobs_db", "data/databases/pipeline_jobs.db"))
+    return database_path("pipeline_jobs_db")
 
 
 def get_filings_db() -> str:
     """Return the absolute path to the rebuildable filing catalog database."""
-    cfg = _load_config()
-    return _resolve(cfg.get("filings_db", "data/databases/Filings.db"))
+    return database_path("filings_db")
 
 
 def resolve_db_path(db_value: str | None) -> str | None:

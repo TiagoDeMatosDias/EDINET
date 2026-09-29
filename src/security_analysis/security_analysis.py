@@ -25,8 +25,13 @@ import pandas as pd
 from src.orchestrator.common.sqlite import connect_read, connect_write, transaction
 from src.utilities.price_provenance import table_columns
 
-# Re-exported: callers and tests patch these names on this module.
-from src.utilities.stock_prices import _create_prices_table, load_ticker_data  # noqa: F401
+# ``_create_prices_table`` and ``load_ticker_data`` are re-exported: callers
+# and tests patch these names on this module.
+from src.utilities.stock_prices import (  # noqa: F401
+    _create_prices_table,
+    load_ticker_data,
+    tse_code,
+)
 
 from .text import clean_text_block as _clean_text_block
 from .text import (  # noqa: F401 - re-exported for callers and tests
@@ -1960,16 +1965,14 @@ def _normalize_ibkr_ticker(ticker: str) -> str:
 def _normalize_ticker_for_query(ticker: str) -> list[str]:
     """Return a list of ticker variants to try when querying the database.
 
-    For a ticker like ``5984.T``, returns ``["5984.T", "59840"]`` so the
-    search can fall back to the db2 format if the IBKR format is not found.
+    Any form of a Tokyo Stock Exchange code (``5984``, ``59840``, ``5984.T``)
+    also tries the stored five-character and the ``.T`` forms, so broker and
+    provider symbols resolve to the same company.
     """
     t = ticker.strip()
-    variants = [t]
-    if t.endswith(".T") and len(t) == 6 and t[:4].isdigit():
-        variants.append(t[:4] + "0")
-    elif len(t) == 5 and t.isdigit():
-        variants.append(t[:4] + ".T")
-    return variants
+    code = tse_code(t)
+    variants = [t, f"{code}0", f"{code}.T"] if code else [t]
+    return list(dict.fromkeys(variants))
 
 
 def _load_search_latest_price(

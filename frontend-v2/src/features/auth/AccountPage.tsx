@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiRequest } from '../../api/client'
-import { useAuth } from './AuthProvider'
+import { useAuth } from './authContext'
 import { LoadingState } from '../../components/Feedback'
 import { PageHeader } from '../../components/Page'
 

@@ -122,6 +122,38 @@ def test_coverage_summary_counts_unique_filings_companies_and_archives(tmp_path)
     }
 
 
+def test_listed_facts_carry_context_periods(tmp_path):
+    xbrl = b"""<?xml version='1.0'?>
+<xbrli:xbrl xmlns:xbrli='http://www.xbrl.org/2003/instance'
+ xmlns:jp='https://example.test/jp'>
+  <xbrli:context id='CurrentYearDuration'><xbrli:entity><xbrli:identifier scheme='x'>E123</xbrli:identifier></xbrli:entity>
+    <xbrli:period><xbrli:startDate>2024-04-01</xbrli:startDate><xbrli:endDate>2025-03-31</xbrli:endDate></xbrli:period>
+  </xbrli:context>
+  <xbrli:context id='CurrentYearInstant_NonConsolidatedMember'><xbrli:entity><xbrli:identifier scheme='x'>E123</xbrli:identifier></xbrli:entity>
+    <xbrli:period><xbrli:instant>2025-03-31</xbrli:instant></xbrli:period>
+  </xbrli:context>
+  <xbrli:unit id='JPY'><xbrli:measure>iso4217:JPY</xbrli:measure></xbrli:unit>
+  <jp:Assets contextRef='CurrentYearInstant_NonConsolidatedMember' unitRef='JPY' decimals='0'>900</jp:Assets>
+  <jp:Revenue contextRef='CurrentYearDuration' unitRef='JPY' decimals='0'>1234</jp:Revenue>
+</xbrli:xbrl>"""
+    archive, _, _ = archive_zip(
+        _zip_bytes(("PublicDoc/report.xbrl", xbrl)),
+        "S100PERIODS",
+        tmp_path / "archive",
+    )
+    catalog = FilingCatalog(tmp_path / "Filings.db")
+    ingest_archive(archive, "S100PERIODS", catalog)
+
+    facts = {row["concept"]: dict(row) for row in catalog.list_facts("S100PERIODS")}
+
+    assert facts["Revenue"]["period_start"] == "2024-04-01"
+    assert facts["Revenue"]["period_end"] == "2025-03-31"
+    assert facts["Revenue"]["instant"] is None
+    assert facts["Assets"]["instant"] == "2025-03-31"
+    assert [dict(row)["concept"] for row in catalog.list_facts("S100PERIODS", "Assets")] == ["Assets"]
+    assert {row["concept"] for row in catalog.statement_facts("S100PERIODS")} == {"Assets", "Revenue"}
+
+
 def test_only_structural_numeric_xbrl_facts_are_indexed(tmp_path):
     xbrl = XBRL.replace(
         b"</xbrli:xbrl>",

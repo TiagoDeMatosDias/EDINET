@@ -301,6 +301,8 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .filing-outline { max-height: 70vh; overflow-y: auto; }
 .outline-item { width: 100%; display: block; padding: 6px 10px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; text-align: left; font-size: .8rem; }
 .outline-item:hover { background: var(--surface-subtle); }
+.outline-item[aria-current="true"] { background: var(--primary-soft); font-weight: 600; }
+.outline-item small { display: block; color: var(--muted); font-size: .68rem; font-weight: 400; }
 .filing-main { min-width: 0; }
 .filing-inspector { position: sticky; top: 80px; }
 .filing-sections article { padding: 12px 0; border-bottom: 1px solid var(--border); }
@@ -324,7 +326,12 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .filing-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: .78rem; color: var(--muted); }
 .filing-meta span { white-space: nowrap; }
 .filing-viewer-body { flex: 1; padding: 0 clamp(18px, 3vw, 40px) 40px; }
-.filing-viewer-page .tabs-bar { padding: 0 clamp(18px, 3vw, 40px); background: var(--surface); border-bottom: 1px solid var(--border); }
+.filing-viewer-page .tabs-bar { padding: 0 clamp(18px, 3vw, 40px); background: var(--surface); border-bottom: 1px solid var(--border); overflow-x: auto; }
+.filing-viewer-page .tab { flex-shrink: 0; white-space: nowrap; }
+.filing-report-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 20px; padding-top: 20px; min-height: 60vh; }
+.filing-report-files { max-height: 70vh; overflow-y: auto; }
+.filing-report-content { min-width: 0; }
+.filing-report-content .card-header { flex-wrap: wrap; gap: 8px; }
 .filing-document { max-width: 900px; padding-top: 20px; }
 .filing-section { padding: 16px 0; border-bottom: 1px solid var(--border); }
 .filing-section h2 { font-family: var(--font-display); font-size: 1.1rem; margin-bottom: 6px; }
@@ -335,7 +342,7 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .filing-report-pane .panel-label { padding: 8px 12px; margin: 0; background: var(--surface-subtle); border-bottom: 1px solid var(--border); }
 .filing-report-frame { display: block; width: 100%; height: 75vh; border: 0; background: #fff; }
 /* ---- XBRL facts viewer ---- */
-.facts-toolbar { display: flex; align-items: center; gap: 12px; padding: 16px 0; }
+.facts-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 16px 0; }
 .facts-toolbar .input { max-width: 320px; }
 .facts-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 24px; align-items: start; }
 .facts-table-wrap { min-width: 0; }
@@ -365,7 +372,10 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .statement-table { min-width: 600px; }
 .statement-table th { white-space: nowrap; }
 .statement-table .num-col { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.statement-table .en-cell { font-size: .78rem; color: var(--muted); font-style: italic; }
+.statement-table th small { display: block; font-size: .66rem; font-weight: 400; text-transform: none; letter-spacing: 0; }
+.statement-table .member-cell { font-size: .78rem; color: var(--muted); }
+.statement-stack { display: flex; flex-direction: column; gap: 32px; }
+.statement-note { margin: -4px 0 8px; font-size: .76rem; }
 .statement-table td.num-col { font-weight: 400; }
 .section-row td { padding: 10px 10px 6px; background: var(--surface-subtle); border-bottom: 1px solid var(--border-strong); font-size: .78rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .subtotal-row td { border-top: 1px solid var(--border-strong); border-bottom: 1px solid var(--text); background: rgb(28 27 25 / 3%); }
@@ -416,6 +426,9 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
   .metric-grid { grid-template-columns: 1fr 1fr; }
   .comparison-metric-picker-header { align-items: flex-start; flex-direction: column; }
   .comparison-metric-picker-fields { grid-template-columns: 1fr; }
+  .filing-viewer-header { flex-wrap: wrap; }
+  .filing-report-layout { grid-template-columns: minmax(0, 1fr); }
+  .filing-report-files { max-height: 40vh; }
   .mobile-nav { position: fixed; right: 0; bottom: 0; left: 0; z-index: 22; display: grid; grid-template-columns: repeat(5, 1fr); padding: 6px 4px max(6px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: rgb(243 240 232 / 96%); backdrop-filter: blur(10px); }
   .mobile-nav a { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 5px 2px; border-radius: var(--radius); color: var(--muted); font-size: .65rem; text-decoration: none; }
   .mobile-nav a.active { color: var(--text); box-shadow: inset 0 2px 0 var(--vermilion); }

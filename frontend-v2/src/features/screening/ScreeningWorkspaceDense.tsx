@@ -13,6 +13,7 @@ import { CriterionEditor, ExpressionTokenList } from './ExpressionEditorDense';
 import { newExpressionCriterion, newRuleCriterion, normalizeCriterion } from './expression-model'
 
 import type { ComputedColumn, Criterion, ExpressionToken, MetricCatalog, SavedScreen } from './types';
+import { formatResultValue } from './resultFormat';
 type ResultRow = Record<string, unknown>;
 const DEFAULT_COLUMNS = ['CompanyInfo.EdinetCode', 'CompanyInfo.Company_Ticker', 'CompanyInfo.Company_Name', 'CompanyInfo.Company_Industry'];
 const DRAFT_KEY = 'shade.screening.draft';
@@ -106,7 +107,7 @@ function AddRuleMenu({ onAdd }: { onAdd: (kind: string) => void }) {
     </div>;
 }
 function buildColumns(result: ScreeningResult | undefined, navigate: ReturnType<typeof useNavigate>) {
-    const columns: ColumnDef<ResultRow>[] = (result?.columns ?? []).map(column => ({ accessorKey: column, header: column.split('.').at(-1) ?? column, cell: info => String(info.getValue() ?? '—') }));
+    const columns: ColumnDef<ResultRow>[] = (result?.columns ?? []).map(column => ({ accessorKey: column, header: column.split('.').at(-1) ?? column, cell: info => { const value = info.getValue(); return <span title={typeof value === 'number' ? String(value) : undefined}>{formatResultValue(value, result?.column_formats?.[column])}</span>; } }));
     columns.push({ id: 'action', header: '', cell: ({ row }) => { const code = row.original.EdinetCode ?? row.original['CompanyInfo.EdinetCode']; return <button className="button button--ghost" disabled={!code} onClick={() => navigate(`/analyze/${encodeURIComponent(String(code))}?from=screen`)}>Analyze</button>; } });
     return columns;
 }

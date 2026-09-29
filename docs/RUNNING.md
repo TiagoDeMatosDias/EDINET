@@ -7,7 +7,7 @@ The current workstation includes the public homepage and pricing page, account a
 - Python 3.12 or 3.13; `.venv3` is the canonical local environment.
 - Node.js 22 and npm 10.
 - Windows is the packaged target. Linux is supported for source development and CI.
-- Base, Standardized, and Portfolio databases are selected through `config/database_paths.json`; additional roots require `EDINET_ALLOWED_DATA_ROOTS`.
+- Base, Standardized, and Portfolio databases are selected through `config/database_paths.json`. API requests may name only the configured Base and Standardized files; any other database directory must be listed explicitly in `EDINET_ALLOWED_DATA_ROOTS`. Every other application database (auth, research, pipeline jobs, Portfolio, and the filing catalog) is refused as a request-selected database even inside an allowed root; the `DATABASES` registry in `src/orchestrator/common/db_config.py` marks which stores requests may name, so a newly registered store is private by default.
 
 When the web server starts, it creates any missing configured database parents and files. Base and Standardized are created as empty pipeline-owned SQLite databases, Portfolio receives its versioned schema, and auth, research, pipeline-jobs, and filings receive their managed schemas and migrations.
 

@@ -10,9 +10,12 @@ import re
 import sqlite3
 import tempfile
 import zipfile
+from collections.abc import Iterable
+from functools import lru_cache
 from html import escape
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import FileResponse, Response
@@ -20,13 +23,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
 from src.auth.models import AuthenticatedUser
-from src.orchestrator.common.db_config import get_db1
+from src.orchestrator.common.db_config import get_db1, get_db2
 from src.orchestrator.common.sqlite import connect_read
 
 from .acquisition import EdinetAcquisitionError, EdinetDownloadClient
 from .archive import ArchiveMemberNotFoundError, UnsafeArchiveError
 from .catalog import FilingCatalog
 from .runtime import catalog
+from .statements import build_statement_tables, read_linkbases
 from .translate import (
     TRANSLATOR_VERSION,
     TranslationError,
@@ -247,6 +251,63 @@ def filing_outline(doc_id: str, limit: int = 200) -> dict[str, Any]:
 @router.get("/{doc_id}/statements")
 def filing_statements(doc_id: str, concept: str | None = None, limit: int = 500) -> dict[str, Any]:
     return list_facts(doc_id, concept, limit)
+
+
+def _taxonomy_labels(qnames: Iterable[str]) -> dict[str, str]:
+    """English labels for standard concepts from the Standardized ``Taxonomy`` table.
+
+    Later taxonomy releases override earlier ones. Missing data only means the
+    statement falls back to the filing's own labels or element names.
+    """
+    names = list(qnames)
+    labels: dict[str, str] = {}
+    try:
+        conn = connect_read(get_db2())
+    except (OSError, sqlite3.Error):
+        return labels
+    try:
+        for start in range(0, len(names), 500):
+            chunk = names[start:start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            for qname, label in conn.execute(
+                f"SELECT concept_qname, primary_label_en FROM Taxonomy "
+                f"WHERE concept_qname IN ({placeholders}) ORDER BY release_id",
+                chunk,
+            ):
+                if label:
+                    labels[str(qname)] = str(label)
+    except sqlite3.Error as exc:
+        logger.info("Taxonomy labels unavailable for statement tables: %s", exc)
+    finally:
+        conn.close()
+    return labels
+
+
+@lru_cache(maxsize=16)
+def _statement_tables(doc_id: str, archive_sha256: str) -> dict[str, Any]:
+    """Build (once per retained archive) the linkbase-driven statement tables."""
+    archive = catalog.get_archive_content(doc_id)
+    if archive is None:
+        raise HTTPException(
+            status_code=404,
+            detail="The filing archive is not retained, so statement tables are unavailable.",
+        )
+    try:
+        linkbases = read_linkbases(archive)
+        facts = [dict(row) for row in catalog.statement_facts(doc_id)]
+        return build_statement_tables(linkbases, facts, _taxonomy_labels)
+    except (UnsafeArchiveError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
+        logger.warning("Statement tables could not be built for %s: %s", doc_id, exc)
+        raise HTTPException(status_code=422, detail="The filing archive could not be read.") from exc
+
+
+@router.get("/{doc_id}/statement-tables")
+def statement_tables(doc_id: str) -> dict[str, Any]:
+    """Every statement and note table of a filing, structured by its own linkbases."""
+    filing = catalog.get_filing(doc_id)
+    if filing is None:
+        raise HTTPException(status_code=404, detail="Filing not found")
+    return _statement_tables(doc_id, str(filing["archive_sha256"] or ""))
 
 
 @router.get("/{doc_id}/quality")

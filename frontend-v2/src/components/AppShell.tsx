@@ -5,7 +5,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../hooks/useHealth'
 import { BrandLockup } from './Brand'
 import { GlobalCompanySearch } from './GlobalCompanySearch'
-import { useAuth } from '../features/auth/AuthProvider'
+import { useAuth } from '../features/auth/authContext'
 
 const navigation = [
   { to: '/overview', label: 'Overview', icon: Home },

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -12,9 +12,37 @@ function jsonResponse(value: unknown, status = 200) {
   }))
 }
 
-function stubBackend(authMode: 'accounts' | 'disabled' = 'accounts') {
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+const MEMBER = { user_id: 'u-1', username: 'alice', email: null, role: 'member', status: 'active' }
+
+function stubBackend(
+  authMode: 'accounts' | 'disabled' = 'accounts',
+  { signedIn = false, tokenLifetimeMs = 900_000, refreshesBeforeExpiry = Infinity } = {},
+) {
+  let session = signedIn
+  let refreshes = 0
+  const token = () => ({
+    access_token: 'token-1',
+    expires_at: new Date(Date.now() + tokenLifetimeMs).toISOString(),
+    expires_in: tokenLifetimeMs / 1000,
+    user: MEMBER,
+  })
+  const refreshCalls = () => refreshes
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input)
+    if (path === '/api/auth/login' && init?.method === 'POST') {
+      session = true
+      return jsonResponse(token())
+    }
+    if (path === '/api/auth/refresh') {
+      refreshes += 1
+      if (refreshes > refreshesBeforeExpiry) session = false
+      return session ? jsonResponse(token()) : jsonResponse({ detail: 'No session' }, 401)
+    }
+    if (path === '/api/auth/logout') {
+      session = false
+      return Promise.resolve(new Response(null, { status: 204 }))
+    }
+    if (path === '/api/auth/me') return session ? jsonResponse(MEMBER) : jsonResponse({ detail: 'Authentication required' }, 401)
     if (path === '/api/auth/status') {
       return jsonResponse({
         mode: authMode,
@@ -23,17 +51,16 @@ function stubBackend(authMode: 'accounts' | 'disabled' = 'accounts') {
         password_min_length: 15,
       })
     }
-    if (path === '/api/auth/refresh') return jsonResponse({ detail: 'No session' }, 401)
     if (path === '/health') return jsonResponse({ status: 'healthy', timestamp: '2026-07-19T12:00:00Z', jobs_active: 0 })
     if (path.startsWith('/api/jobs')) return jsonResponse([])
     if (path === '/api/steps') return jsonResponse({ steps: [] })
     if (path === '/api/portfolio/activity-summary') return jsonResponse({ by_activity: {} })
     return jsonResponse({})
   }))
+  return { refreshCalls }
 }
 
-function renderApp(path: string) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+function renderApp(path: string, client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[path]}>
@@ -93,5 +120,79 @@ describe('public pages and workspace shell', () => {
     expect(screen.getAllByRole('link', { name: 'Screen' })[0]).toHaveAttribute('href', '/screen')
     expect(screen.getAllByRole('link', { name: 'Analyze' })[0]).toHaveAttribute('href', '/analyze')
     expect(screen.getByText('Data service ready')).toBeInTheDocument()
+  })
+})
+
+describe('account sessions', () => {
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  it('establishes the workspace session from the dedicated sign-in page', async () => {
+    stubBackend()
+    renderApp('/login')
+
+    fireEvent.change(await screen.findByLabelText('Username or email'), { target: { value: 'alice' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'correct horse battery staple' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+
+    expect(await screen.findByRole('heading', { name: 'Overview' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Sign in' })).not.toBeInTheDocument()
+  })
+
+  it('drops cached private data when a new account signs in', async () => {
+    stubBackend()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData(['research-tags'], { tags: ['previous-account-tag'] })
+    renderApp('/login', client)
+
+    fireEvent.change(await screen.findByLabelText('Username or email'), { target: { value: 'alice' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'correct horse battery staple' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+
+    await screen.findByRole('heading', { name: 'Overview' })
+    expect(client.getQueryData(['research-tags'])).toBeUndefined()
+  })
+
+  it('drops cached private data on sign out', async () => {
+    stubBackend('accounts', { signedIn: true })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    renderApp('/overview', client)
+
+    await screen.findByRole('heading', { name: 'Overview' })
+    client.setQueryData(['research-tags'], { tags: ['private-tag'] })
+    fireEvent.click(screen.getByRole('button', { name: /alice/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+
+    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
+    await waitFor(() => expect(client.getQueryData(['research-tags'])).toBeUndefined())
+  })
+
+  it('names the registration password field without its hint text', async () => {
+    stubBackend()
+    renderApp('/register')
+
+    const password = await screen.findByLabelText('Password')
+    expect(password).toHaveAttribute('type', 'password')
+    expect(password).toHaveAccessibleName('Password')
+    expect(password).toHaveAccessibleDescription(/Minimum 15 characters/)
+  })
+
+  it('renews the access token before the expiry the server set', async () => {
+    const backend = stubBackend('accounts', { signedIn: true, tokenLifetimeMs: 500 })
+    renderApp('/overview')
+
+    await screen.findByRole('heading', { name: 'Overview' })
+    await waitFor(() => expect(backend.refreshCalls()).toBeGreaterThan(1), { timeout: 2000 })
+    expect(screen.getByRole('heading', { name: 'Overview' })).toBeInTheDocument()
+  })
+
+  it('signs out when renewal finds the session has ended', async () => {
+    stubBackend('accounts', { signedIn: true, tokenLifetimeMs: 500, refreshesBeforeExpiry: 1 })
+    renderApp('/overview')
+
+    await screen.findByRole('heading', { name: 'Overview' })
+    expect(await screen.findByRole('heading', { name: 'Sign in' }, { timeout: 2000 })).toBeInTheDocument()
   })
 })

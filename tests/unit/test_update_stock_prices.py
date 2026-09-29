@@ -1,6 +1,8 @@
 import sqlite3
 from unittest.mock import patch
 
+import pytest
+
 from src.orchestrator.update_stock_prices import update_stock_prices
 
 
@@ -144,3 +146,25 @@ def test_update_stops_early_when_last_resort_provider_is_cooling_down(tmp_path):
         "aborted_early": True,
         "skipped": 2,
     }
+
+
+@pytest.mark.parametrize(
+    ("ticker", "code"),
+    [
+        ("7203", "7203"),
+        ("72030", "7203"),
+        ("7203.T", "7203"),
+        ("7203.jp", "7203"),
+        ("285a", "285A"),
+        ("285A0", "285A"),
+        ("12345", None),
+        ("AAPL", None),
+        ("AAA", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_tse_code_recognises_every_stored_and_broker_form(ticker, code):
+    from src.utilities.stock_prices import tse_code
+
+    assert tse_code(ticker) == code

@@ -1,8 +1,8 @@
 import { BarElement, CategoryScale, Chart as ChartJS, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip } from 'chart.js'
-import { Download } from 'lucide-react'
 import { Bar, Line } from 'react-chartjs-2'
 
 import { BRAND_COLORS, SEMANTIC_CHART_COLORS } from '../../brand'
+import { DownloadButton } from '../../components/DownloadButton'
 import { Card, Metric } from '../../components/Page'
 
 ChartJS.register(BarElement, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip)
@@ -51,8 +51,8 @@ function RollingSummary({ aggregate }: { aggregate: Record<string, unknown> }) {
 export function BacktestResults({ data, resultId }: { data: unknown; resultId: string }) {
   const record = data as ResultRecord
   const summary = record.summary
-  if (!summary && record.aggregate) return <Card title="Rolling backtest results" actions={resultId && <a className="button button--secondary" href={`/api/backtesting/download/${resultId}`}><Download />Download</a>}><RollingSummary aggregate={record.aggregate} /><details className="details"><summary>Technical aggregate</summary><pre>{JSON.stringify(record.aggregate, null, 2)}</pre></details></Card>
+  if (!summary && record.aggregate) return <Card title="Rolling backtest results" actions={resultId && <DownloadButton path={`/api/backtesting/download/${encodeURIComponent(resultId)}`} filename={`backtest_${resultId}.zip`}>Download</DownloadButton>}><RollingSummary aggregate={record.aggregate} /><details className="details"><summary>Technical aggregate</summary><pre>{JSON.stringify(record.aggregate, null, 2)}</pre></details></Card>
   if (!summary) return null
   const charts = record.chart_data ?? {}
-  return <Card className="backtest-results" title="Backtest results" description={`Saved as ${resultId}`} actions={<a className="button button--secondary" href={`/api/backtesting/download/${resultId}`}><Download />Download full result</a>}><ResultMetrics summary={summary} /><div className="backtest-chart-grid"><section><strong>Cumulative return</strong><div><ReturnChart rows={charts.cumulative ?? []} /></div></section><section><strong>Drawdown</strong><div><DrawdownChart rows={charts.drawdown ?? []} /></div></section><section><strong>Price and dividend return</strong><div><DecompositionChart rows={charts.decomposition ?? []} /></div></section><section><strong>Holding contribution</strong><HoldingsBreakdown rows={record.per_company ?? []} /></section></div><details className="details"><summary>Technical result summary</summary><pre>{JSON.stringify(summary, null, 2)}</pre></details></Card>
+  return <Card className="backtest-results" title="Backtest results" description={`Saved as ${resultId}`} actions={resultId && <DownloadButton path={`/api/backtesting/download/${encodeURIComponent(resultId)}`} filename={`backtest_${resultId}.zip`}>Download full result</DownloadButton>}><ResultMetrics summary={summary} /><div className="backtest-chart-grid"><section><strong>Cumulative return</strong><div><ReturnChart rows={charts.cumulative ?? []} /></div></section><section><strong>Drawdown</strong><div><DrawdownChart rows={charts.drawdown ?? []} /></div></section><section><strong>Price and dividend return</strong><div><DecompositionChart rows={charts.decomposition ?? []} /></div></section><section><strong>Holding contribution</strong><HoldingsBreakdown rows={record.per_company ?? []} /></section></div><details className="details"><summary>Technical result summary</summary><pre>{JSON.stringify(summary, null, 2)}</pre></details></Card>
 }

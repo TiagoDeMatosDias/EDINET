@@ -15,6 +15,23 @@ RATIO_DEFINITIONS_PATH = os.path.abspath(
 )
 
 
+def ratio_display_formats(formulas_path: str = RATIO_DEFINITIONS_PATH) -> dict[str, str]:
+    """``{"Table.Ratio": format}`` for ratios that declare a display ``format``.
+
+    Ratios are stored as plain fractions; ``"percent"`` marks the ones that
+    read as percentages (returns, margins, shares of assets).
+    """
+    with open(formulas_path, "r", encoding="utf-8") as handle:
+        tables = json.load(handle).get("ratios", {})
+    formats: dict[str, str] = {}
+    for table_name, entries in tables.items():
+        for entry in entries:
+            for ratio_name, spec in entry.items():
+                if isinstance(spec, dict) and spec.get("format"):
+                    formats[f"{table_name}.{ratio_name}"] = str(spec["format"])
+    return formats
+
+
 def _resolve_column_name_in_schema(helper, conn, schema_name, table_name, column_name):
     columns = helper._get_table_columns_in_schema(conn, schema_name, table_name)
     by_lower = {str(col).lower(): str(col) for col in columns}

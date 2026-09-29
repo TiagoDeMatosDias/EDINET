@@ -302,6 +302,18 @@ def _request_with_retries(
     raise RuntimeError(f"No response received from {provider}")
 
 
+# A Tokyo Stock Exchange code is four characters (digits, and since 2024 a
+# possible trailing letter). EDINET stores it with a trailing check digit
+# ("72030", "285A0"); brokers and Yahoo use "7203" or "7203.T".
+_TSE_CODE = re.compile(r"^(?P<code>\d{3}[0-9A-Z])(?:0|\.T|\.JP)?$", re.IGNORECASE)
+
+
+def tse_code(ticker: str | None) -> str | None:
+    """Return the four-character TSE code for any stored or broker form, else None."""
+    match = _TSE_CODE.match(str(ticker or "").strip())
+    return match["code"].upper() if match else None
+
+
 def _provider_symbol_for_ticker(ticker: str) -> str:
     """Map stored ticker values to the symbol expected by Yahoo Finance.
 

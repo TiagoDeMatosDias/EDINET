@@ -25,6 +25,7 @@ from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
 from src.orchestrator.common.db_config import get_db2
 from src.research.runtime import store as _research_store
+from src.screening.display_formats import result_column_formats
 from src.screening.persistence import normalize_screening_date
 from src.utilities.runtime_paths import state_dir
 from src.web_app.security import (
@@ -497,6 +498,7 @@ def run_screening_endpoint(
         _t1 = _t.monotonic()
         result = _df_to_json(df)
         result["error"] = None
+        result["column_formats"] = result_column_formats(list(payload.columns))
         if isinstance(user, AuthenticatedUser):
             stored = _persist_screening_result(user, payload, result)
             if stored:
@@ -538,6 +540,9 @@ def get_last_result(request: Request) -> dict[str, Any]:
         # may still embed it; it is internal and must not reach clients.
         if isinstance(stored, dict) and isinstance(stored.get("result"), dict):
             stored["result"].pop("sql_display", None)
+            # Results cached before column formats were returned get them here.
+            definition = stored.get("definition") or {}
+            stored["result"].setdefault("column_formats", result_column_formats(list(definition.get("columns") or [])))
         return {"result": stored}
     except Exception as exc:  # noqa: BLE001 - an empty cache is still a valid state
         logger.warning("Could not load latest screening result for %s: %s", user.user_id, exc)

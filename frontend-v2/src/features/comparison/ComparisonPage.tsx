@@ -8,6 +8,7 @@ import type { SecuritySearchResult } from '../../api/types'
 import { CompanyPicker, searchCompanies } from '../../components/CompanyPicker'
 import { EmptyState, LoadingState } from '../../components/Feedback'
 import { Card, PageHeader } from '../../components/Page'
+import { bestValue, type MetricDirection } from './bestValue'
 
 interface ComparisonCompany {
   company_code: string
@@ -26,14 +27,20 @@ interface ComparisonResponse {
   requested: string[]
   missing: string[]
   metrics: string[]
-  metric_definitions?: Record<string, { label: string; group: string }>
+  metric_definitions?: Record<string, MetricDefinition>
 }
 
 interface MetricCatalogResponse {
   tables: Record<string, string[]>
 }
 
-const METRIC_DEFINITIONS: Record<string, { label: string; group: string }> = {
+interface MetricDefinition {
+  label: string
+  group: string
+  direction?: MetricDirection
+}
+
+const METRIC_DEFINITIONS: Record<string, MetricDefinition> = {
   LatestPrice: { label: 'Price', group: 'Market' },
   MarketCap: { label: 'Market cap', group: 'Market' },
   PERatio: { label: 'P/E', group: 'Valuation' },
@@ -79,12 +86,7 @@ function companyLabel(company: ComparisonCompany) {
   return company.company.company_name || company.company.ticker || company.company_code
 }
 
-function bestValue(companies: ComparisonCompany[], metric: string) {
-  const values = companies.map(company => company.metrics[metric]).filter((value): value is number => value != null)
-  return values.length > 1 ? Math.max(...values) : null
-}
-
-function metricDefinition(metric: string, definitions?: Record<string, { label: string; group: string }>) {
+function metricDefinition(metric: string, definitions?: Record<string, MetricDefinition>): MetricDefinition {
   const known = definitions?.[metric] ?? METRIC_DEFINITIONS[metric]
   if (known) return known
   const [, column] = metric.split('.', 2)
@@ -192,7 +194,7 @@ function MetricMatrix({ result, showPercentiles }: { result: ComparisonResponse;
   const groups = [...GROUPS.filter(group => metricGroups.includes(group)), ...metricGroups]
     .filter((group, index, values) => values.indexOf(group) === index)
   return (
-    <Card title="Financial comparison" description="Values use each company's latest available price and reported financial period.">
+    <Card title="Financial comparison" description="Values use each company's latest available price and reported financial period. Highlights mark the most favourable value where direction is meaningful: lower valuation multiples and leverage, higher returns, margins, yield, and liquidity.">
       <div className="table-scroll">
         <table className="data-grid comparison-matrix">
           <thead><tr><th>Metric</th>{result.companies.map(company => <th key={company.company_code}><strong>{companyLabel(company)}</strong><small>{[company.company.ticker, company.company_code].filter(Boolean).join(' · ')}</small><small>{company.period_end ? `Period ${company.period_end}` : 'Period unavailable'}</small></th>)}</tr></thead>
@@ -200,7 +202,7 @@ function MetricMatrix({ result, showPercentiles }: { result: ComparisonResponse;
             {groups.map(group => <Fragment key={group}>
               <tr className="comparison-group" key={`${group}-heading`}><th colSpan={result.companies.length + 1}>{group}</th></tr>
               {result.metrics.filter(metric => metricDefinition(metric, definitions).group === group).map(metric => {
-                const best = bestValue(result.companies, metric)
+                const best = bestValue(metricDefinition(metric, definitions).direction, result.companies.map(company => company.metrics[metric]))
                 return <tr key={metric}><th>{metricDefinition(metric, definitions).label}{showPercentiles && <small>Peer percentile</small>}</th>{result.companies.map(company => <td key={company.company_code} className={best != null && company.metrics[metric] === best ? 'comparison-best' : ''}>{formatMetric(metric, company.metrics[metric])}{showPercentiles && <small>{formatPercent(company.percentiles[metric])}</small>}</td>)}</tr>
               })}
             </Fragment>)}

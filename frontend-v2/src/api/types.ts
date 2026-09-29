@@ -120,4 +120,6 @@ export interface ScreeningResult {
   columns: string[]
   rows: unknown[][]
   row_count: number
+  /** Display formats declared for result columns, keyed by column name. */
+  column_formats?: Record<string, string>
 }

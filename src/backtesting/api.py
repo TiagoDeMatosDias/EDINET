@@ -54,6 +54,10 @@ _MAX_CONCURRENT = 2
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 _APP_SETTINGS = AppSettings.from_env()
 _DB_PATH_POLICY = configured_database_policy(_APP_SETTINGS.allowed_data_roots)
+_PORTFOLIO_DB_POLICY = configured_database_policy(
+    _APP_SETTINGS.allowed_data_roots,
+    also_allow=("db3",),
+)
 _BACKTEST_ROOT = backtest_root().resolve(strict=False)
 _BACKTEST_ID = re.compile(r"^\d{8}_\d{6}(?:_[0-9a-f]{8})?$")
 
@@ -84,7 +88,7 @@ def _resolve_db3() -> str:
             detail="Portfolio database not configured. Import transactions first."
         )
     try:
-        return str(_DB_PATH_POLICY.authorize_database(db3))
+        return str(_PORTFOLIO_DB_POLICY.authorize_database(db3))
     except PathPolicyError as exc:
         raise HTTPException(
             status_code=400,
@@ -158,6 +162,17 @@ def _owned_backtest_directory(backtest_id: str, http_request: Request) -> Path:
     return directory
 
 
+def _holdings_label(tickers: list[str], shown: int = 3) -> str:
+    """Name a portfolio by its first few holdings, e.g. ``7203, 6758 +2 more``."""
+    names = [ticker.strip() for ticker in tickers if ticker.strip()]
+    label = ", ".join(names[:shown])
+    return f"{label} +{len(names) - shown} more" if len(names) > shown else label
+
+
+def _backtest_subtitle(*parts: str | None) -> str:
+    return " · ".join(part for part in parts if part)
+
+
 def _record_recent_backtest(
     http_request: Request | None,
     backtest_id: str,
@@ -175,7 +190,7 @@ def _record_recent_backtest(
             user.user_id,
             "backtest",
             f"backtest:{backtest_id}",
-            f"{title} · {backtest_id}",
+            title,
             subtitle,
             f"/backtest?result={backtest_id}",
             {"backtest_id": backtest_id},
@@ -490,11 +505,15 @@ async def run_backtest(
 
     await asyncio.to_thread(_save_and_zip)
 
+    holdings = _holdings_label(list(request.portfolio))
     _record_recent_backtest(
         http_request,
         ts,
-        title="Backtest",
-        subtitle=f"{request.start_date} to {request.end_date}",
+        title=f"Backtest · {holdings}" if holdings else "Backtest",
+        subtitle=_backtest_subtitle(
+            f"{request.start_date} to {request.end_date}",
+            f"vs {request.benchmark_ticker}" if request.benchmark_ticker else None,
+        ),
     )
 
     return {
@@ -586,8 +605,11 @@ async def run_from_csv(
     _record_recent_backtest(
         http_request,
         ts,
-        title="CSV backtest",
-        subtitle=", ".join(request.durations) if request.durations else "Configured periods",
+        title="CSV portfolio backtest",
+        subtitle=_backtest_subtitle(
+            ", ".join(request.durations) if request.durations else "Configured periods",
+            f"vs {request.benchmark_ticker}" if request.benchmark_ticker else None,
+        ),
     )
 
     return {
@@ -737,8 +759,12 @@ async def run_rolling(
                 _record_recent_backtest(
                     http_request,
                     backtest_id,
-                    title="Rolling screen backtest",
-                    subtitle=f"{cfg.get('cadence', request.cadence)} cadence",
+                    title=f"Rolling screen backtest · {cfg.get('cadence', request.cadence)}",
+                    subtitle=_backtest_subtitle(
+                        ", ".join(request.durations),
+                        f"top {request.max_companies}",
+                        f"vs {request.benchmark_ticker}" if request.benchmark_ticker else None,
+                    ),
                 )
                 yield f"data: {json.dumps({'type': 'result', 'id': backtest_id, 'path': backtest_id, 'aggregate': agg, 'config': cfg})}\n\n"
             except ExportSizeLimitExceeded as exc:

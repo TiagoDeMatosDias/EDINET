@@ -19,6 +19,7 @@ from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
 from src.orchestrator.common.db_config import get_db2
 from src.orchestrator.common.sqlite import connect_read
+from src.security_analysis.company_descriptions import get_or_fetch_description, yahoo_symbol
 from src.web_app.security import (
     AppSettings,
     PathPolicyError,
@@ -44,6 +45,17 @@ def _resolve_db() -> str:
         return str(_DB_PATH_POLICY.authorize_database(db_path))
     except PathPolicyError as exc:
         raise HTTPException(status_code=503, detail="Database not found.") from exc
+
+
+def _filing_description_source(company: dict[str, Any]) -> dict[str, str] | None:
+    """Describe where the overview's own business description came from."""
+    if str(company.get("filing_description_en") or "").strip():
+        return {"kind": "filing", "label": "EDINET annual report (English translation)"}
+    if str(company.get("filing_description") or "").strip():
+        return {"kind": "filing", "label": "EDINET annual report"}
+    if str(company.get("company_info_description") or "").strip():
+        return {"kind": "company_info", "label": "Company record"}
+    return None
 
 
 def _safe_float(value: Any) -> float | None:
@@ -125,17 +137,28 @@ def get_overview(
                 "SharesOutstanding",
             )}
         company = dict(result.get("company") or {})
-        try:
-            from src.security_analysis.company_descriptions import get_or_fetch_description
-
-            company["yahoo_description"] = get_or_fetch_description(
-                db,
-                resolved_code or None,
-                str(company.get("ticker") or tkr or ""),
-            )
-        except Exception as exc:  # noqa: BLE001 - profile enrichment is optional
-            logger.info("Yahoo description enrichment failed for %s: %s", resolved_code or tkr, exc)
-            company["yahoo_description"] = ""
+        external_ticker = str(company.get("ticker") or tkr or "")
+        company["yahoo_symbol"] = yahoo_symbol(external_ticker) or None
+        company["yahoo_description"] = ""
+        company["description_source"] = _filing_description_source(company)
+        if company["description_source"] is None:
+            # The external profile is only a fallback for companies whose own
+            # filings carry no business description.
+            try:
+                description = get_or_fetch_description(
+                    db,
+                    str(company.get("company_code") or code or "") or None,
+                    external_ticker,
+                )
+                if description:
+                    company["yahoo_description"] = description
+                    company["description_source"] = {
+                        "kind": "external",
+                        "label": "Yahoo Finance profile",
+                        "symbol": company["yahoo_symbol"],
+                    }
+            except Exception as exc:  # noqa: BLE001 - profile enrichment is optional
+                logger.info("Yahoo description enrichment failed for %s: %s", resolved_code or tkr, exc)
         result["company"] = company
         user = getattr(request.state, "user", None) if request is not None else None
         if isinstance(user, AuthenticatedUser) and resolved_code:

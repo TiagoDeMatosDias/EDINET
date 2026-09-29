@@ -190,7 +190,7 @@ export default function PortfolioWorkspace() {
       {tab === 'activity' && <PortfolioActivity data={transactions.data ?? []} activity={activity.data?.by_activity ?? {}} dateRange={dateRange.data} isLoading={transactions.isLoading} error={transactions.error} onOpenDetail={openDetail} />}
     </>}
     <PortfolioDrawer open={Boolean(detail)} eyebrow={metadata.eyebrow} title={metadata.title} description={metadata.description} onClose={closeDetail}>
-      {detail && <PortfolioDetailContent detail={detail} performance={performance.data} summary={summary} valueHistory={rangedHistory} allocation={allocation.data} currencies={currencyExposure.data} dividends={dividendsByCompany.data} activity={activity.data?.by_activity ?? {}} transactions={transactions.data ?? []} holdingHistory={holdingHistory.data} holdingHistoryLoading={holdingHistory.isLoading} currency={currency} onAnalyze={symbol => navigate(`/analyze?q=${encodeURIComponent(symbol)}`)} />}
+      {detail && <PortfolioDetailContent detail={detail} performance={performance.data} summary={summary} valueHistory={rangedHistory} allocation={allocation.data} currencies={currencyExposure.data} dividends={dividendsByCompany.data} activity={activity.data?.by_activity ?? {}} transactions={transactions.data ?? []} holdingHistory={holdingHistory.data} holdingHistoryLoading={holdingHistory.isLoading} currency={currency} onAnalyze={symbol => navigate(`/analyze?ticker=${encodeURIComponent(symbol)}`)} />}
     </PortfolioDrawer>
   </div>
 }

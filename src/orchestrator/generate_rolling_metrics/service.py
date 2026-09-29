@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import random
+import re
 import sqlite3
 
 import numpy as np
@@ -18,6 +19,36 @@ _PROGRESS_LOG_EVERY_ROWS = 5000
 ROLLING_METRICS_CONFIG_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "rolling_metrics.json")
 )
+_ROLLING_TABLE_SUFFIX = "_Rolling"
+_ROLLING_COLUMN = re.compile(r"^(?P<metric>.+)_(?P<kind>Average|Growth)_(?P<window>\d+)_Year$")
+
+
+def rolling_average_column(metric_column: str, window: int) -> str:
+    return f"{metric_column}_Average_{window}_Year"
+
+
+def rolling_growth_column(metric_column: str, window: int) -> str:
+    """Compound annual growth over ``window`` years, stored as a fraction."""
+    return f"{metric_column}_Growth_{window}_Year"
+
+
+def rolling_table_name(source_table: str) -> str:
+    return f"{source_table}{_ROLLING_TABLE_SUFFIX}"
+
+
+def rolling_source_table(table: str) -> str | None:
+    """The source table a rolling table was generated from, if it is one."""
+    if table.endswith(_ROLLING_TABLE_SUFFIX) and len(table) > len(_ROLLING_TABLE_SUFFIX):
+        return table[: -len(_ROLLING_TABLE_SUFFIX)]
+    return None
+
+
+def parse_rolling_column(column: str) -> tuple[str, str] | None:
+    """``(source metric column, "average" | "growth")`` for a rolling column name."""
+    match = _ROLLING_COLUMN.match(column)
+    if match is None:
+        return None
+    return match["metric"], match["kind"].lower()
 
 
 def _find_docid_column(conn, schema_name, table_name, helper=None):
@@ -176,8 +207,8 @@ def _compute_rolling_dataframe(df, metric_columns):
         grouped = series.groupby(df["company_code"])
 
         for window in _ROLLING_WINDOWS:
-            avg_col = f"{metric_column}_Average_{window}_Year"
-            growth_col = f"{metric_column}_Growth_{window}_Year"
+            avg_col = rolling_average_column(metric_column, window)
+            growth_col = rolling_growth_column(metric_column, window)
 
             computed_columns[avg_col] = grouped.transform(
                 lambda s, w=window: s.rolling(window=w, min_periods=1).mean()
@@ -212,8 +243,8 @@ def _ensure_rolling_table_schema(conn, table_name, metric_columns, helper=None, 
     rolling_columns = []
     for metric_column in metric_columns:
         for window in _ROLLING_WINDOWS:
-            rolling_columns.append(f"{metric_column}_Average_{window}_Year")
-            rolling_columns.append(f"{metric_column}_Growth_{window}_Year")
+            rolling_columns.append(rolling_average_column(metric_column, window))
+            rolling_columns.append(rolling_growth_column(metric_column, window))
 
     for column_name in rolling_columns:
         if column_name in existing_columns:
@@ -380,10 +411,10 @@ def generate_rolling_metrics(
             source_ref = f"{helper._sql_ident(source_schema)}.{helper._sql_ident(source_table)}"
             helper._create_index_if_not_exists(conn, source_schema, source_table, [source_docid_column])
 
-            rolling_table_name = f"{source_table}_Rolling"
+            target_table = rolling_table_name(source_table)
             _ensure_rolling_table_schema(
                 conn,
-                rolling_table_name,
+                target_table,
                 metric_columns,
                 helper=helper,
                 overwrite=overwrite,
@@ -453,7 +484,7 @@ def generate_rolling_metrics(
                     continue
 
                 rolling_df = _compute_rolling_dataframe(df, metric_columns)
-                _upsert_rolling_rows(conn, rolling_table_name, rolling_df, helper=helper)
+                _upsert_rolling_rows(conn, target_table, rolling_df, helper=helper)
                 processed_any_rows = True
                 rows_processed_for_table += len(df)
                 while rows_processed_for_table >= next_progress_log_at:
@@ -474,7 +505,7 @@ def generate_rolling_metrics(
                 source_table,
                 rows_processed_for_table,
             )
-            processed_tables.append(rolling_table_name)
+            processed_tables.append(target_table)
 
         if context is not None and table_count:
             context.report_progress(

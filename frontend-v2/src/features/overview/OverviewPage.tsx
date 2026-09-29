@@ -8,8 +8,9 @@ import type { Job, PipelineStep } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
 import { Card, Metric, PageHeader } from '../../components/Page'
-import { useAuth } from '../auth/AuthProvider'
+import { useAuth } from '../auth/authContext'
 import { useHealth } from '../../hooks/useHealth'
+import { recentWorkTitle } from './recentWork'
 
 const jobColumns: ColumnDef<Job>[] = [
   { accessorKey: 'status', header: 'Status', cell: info => <span className={`badge ${info.getValue() === 'completed' ? 'badge--success' : info.getValue() === 'failed' ? 'badge--danger' : ''}`}>{String(info.getValue())}</span> },
@@ -24,6 +25,7 @@ interface RecentWorkItem {
   title: string
   subtitle?: string | null
   href: string
+  details_json?: string | null
   occurred_at: string
 }
 
@@ -50,7 +52,7 @@ function RecentWork() {
       {recentGroups.map(group => {
         const groupItems = items.filter(item => item.kind === group.kind).slice(0, 8)
         return <Card key={group.kind} title={group.title}>
-          {groupItems.length ? <div className="recent-work-list">{groupItems.map(item => <Link className="recent-work-item" key={item.work_id} to={item.href}><span><strong>{item.title}</strong><small>{item.subtitle || 'Open to review'}</small></span><span><small>{new Date(item.occurred_at).toLocaleString()}</small><ArrowRight /></span></Link>)}</div> : <EmptyState title="Nothing here yet" description={group.empty} />}
+          {groupItems.length ? <div className="recent-work-list">{groupItems.map(item => <Link className="recent-work-item" key={item.work_id} to={item.href}><span><strong>{recentWorkTitle(item)}</strong><small>{item.subtitle || 'Open to review'}</small></span><span><small>{new Date(item.occurred_at).toLocaleString()}</small><ArrowRight /></span></Link>)}</div> : <EmptyState title="Nothing here yet" description={group.empty} />}
         </Card>
       })}
     </div>}

@@ -3,7 +3,8 @@ import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 
 import { AppShell } from './components/AppShell'
 import { LoadingState } from './components/Feedback'
-import { AuthProvider, useAuth } from './features/auth/AuthProvider'
+import { AuthProvider } from './features/auth/AuthProvider'
+import { useAuth } from './features/auth/authContext'
 
 const OverviewPage = lazy(() => import('./features/overview/OverviewPage'))
 const HomePage = lazy(() => import('./features/marketing/HomePage'))

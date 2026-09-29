@@ -41,7 +41,20 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_at: datetime
+    # Seconds until expiry, measured on the server so client clock skew does
+    # not matter (the OAuth 2.0 ``expires_in`` convention).
+    expires_in: int
     user: UserResponse
+
+
+def _token_response(access_token: str, expires_at: datetime, user: AuthenticatedUser) -> TokenResponse:
+    remaining = (expires_at - datetime.now(expires_at.tzinfo or timezone.utc)).total_seconds()
+    return TokenResponse(
+        access_token=access_token,
+        expires_at=expires_at,
+        expires_in=max(0, int(remaining)),
+        user=_user_response(user),
+    )
 
 
 class RegisterResponse(BaseModel):
@@ -148,11 +161,7 @@ def login(request: Request, response: Response, payload: LoginRequest) -> TokenR
     except AuthError as exc:
         raise _error(exc) from exc
     _set_refresh_cookie(response, request, result.tokens.refresh_token, result.tokens.refresh_expires_at)
-    return TokenResponse(
-        access_token=result.tokens.access_token,
-        expires_at=result.tokens.access_expires_at,
-        user=_user_response(result.user),
-    )
+    return _token_response(result.tokens.access_token, result.tokens.access_expires_at, result.user)
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -169,11 +178,7 @@ def refresh(request: Request, response: Response) -> TokenResponse:
     except AuthError as exc:
         raise _error(exc) from exc
     _set_refresh_cookie(response, request, result.tokens.refresh_token, result.tokens.refresh_expires_at)
-    return TokenResponse(
-        access_token=result.tokens.access_token,
-        expires_at=result.tokens.access_expires_at,
-        user=_user_response(result.user),
-    )
+    return _token_response(result.tokens.access_token, result.tokens.access_expires_at, result.user)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

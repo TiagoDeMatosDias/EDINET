@@ -88,3 +88,11 @@ def test_backtest_artifact_uses_its_own_size_limit(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         backtesting_api._enforce_backtest_artifact_size(b"123456789")
     assert exc_info.value.status_code == 413
+
+
+def test_recent_backtest_labels_name_holdings_instead_of_run_ids():
+    assert backtesting_api._holdings_label(["7203", "6758"]) == "7203, 6758"
+    assert backtesting_api._holdings_label(["7203", "6758", "9984", "8306", " "]) == "7203, 6758, 9984 +1 more"
+    assert backtesting_api._backtest_subtitle("2016-01-01 to 2026-01-01", None, "vs ^TPX") == (
+        "2016-01-01 to 2026-01-01 · vs ^TPX"
+    )

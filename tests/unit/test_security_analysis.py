@@ -670,3 +670,20 @@ def test_update_security_price_updates_single_ticker(security_db, monkeypatch):
         assert row == (880.0,)
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize(
+    ("ticker", "variants"),
+    [
+        ("5984.T", ["5984.T", "59840"]),
+        ("59840", ["59840", "5984.T"]),
+        ("5984", ["5984", "59840", "5984.T"]),
+        ("285a", ["285a", "285A0", "285A.T"]),
+        ("AAPL", ["AAPL"]),
+        ("12345", ["12345"]),
+    ],
+)
+def test_ticker_variants_bridge_broker_and_stored_tse_codes(ticker, variants):
+    from src.security_analysis.security_analysis import _normalize_ticker_for_query
+
+    assert _normalize_ticker_for_query(ticker) == variants

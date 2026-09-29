@@ -149,3 +149,22 @@ def test_stale_empty_description_cache_is_retried(tmp_path, monkeypatch):
         str(database), "E00001", "75750"
     ) == "A cached business description."
     assert calls == ["75750"]
+
+
+def test_edinet_company_without_tokyo_symbol_never_uses_external_profile(tmp_path, monkeypatch):
+    database = tmp_path / "standardized.db"
+    company_descriptions._ensure_table(str(database))
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            """INSERT INTO Company_Descriptions
+               (cache_key, company_code, ticker, description, provider, fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("company:E99999", "E99999", "AAA", "A US exchange-traded fund.", "Yahoo Finance", "2026-01-01T00:00:00+00:00"),
+        )
+
+    def unexpected_fetch(ticker: str | None) -> str:
+        raise AssertionError(f"external profile fetched for {ticker}")
+
+    monkeypatch.setattr(company_descriptions, "fetch_yahoo_description", unexpected_fetch)
+
+    assert company_descriptions.get_or_fetch_description(str(database), "E99999", "AAA") == ""

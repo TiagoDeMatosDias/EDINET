@@ -3,6 +3,7 @@
         "Financial_Ratios": [
             {
                 "Return on Assets": {
+                    "format": "percent",
                     "inputs": [
                         {
                             "name": "Assets",
@@ -28,6 +29,7 @@
             },
             {
                 "Return on Equity": {
+                    "format": "percent",
                     "inputs": [
                         {
                             "name": "Equity",
@@ -101,6 +103,7 @@
             },
             {
                 "Intangibles on Assets": {
+                    "format": "percent",
                     "inputs": [
                         {
                             "name": "Assets",
@@ -125,6 +128,7 @@
             },
             {
                 "PPE on Assets": {
+                    "format": "percent",
                     "inputs": [
                         {
                             "name": "Assets",
@@ -149,6 +153,7 @@
             },
             {
                 "Net Margin": {
+                    "format": "percent",
                     "inputs": [
                         {
                             "name": "Revenue",
@@ -174,6 +179,7 @@
             },
             {
                 "Gross Margin": {
+                    "format": "percent",
                     "inputs": [
                         {
                             "name": "Revenue",
@@ -198,6 +204,7 @@
             },
             {
                 "Pre-tax Margin": {
+                    "format": "percent",
                     "inputs": [
                         {
                             "name": "Revenue",
@@ -223,6 +230,7 @@
             },
             {
                 "G&A Margin": {
+                    "format": "percent",
                     "inputs": [
                         {
                             "name": "Revenue",
@@ -247,6 +255,7 @@
             },
             {
                 "Depreciation Margin": {
+                    "format": "percent",
                     "inputs": [
                         {
                             "name": "Revenue",
@@ -271,6 +280,7 @@
             },
             {
                 "Interest expenses Margin": {
+                    "format": "percent",
                     "inputs": [
                         {
                             "name": "Revenue",
@@ -295,6 +305,7 @@
             },
             {
                 "Salaries Margin": {
+                    "format": "percent",
                     "inputs": [
                         {
                             "name": "Revenue",

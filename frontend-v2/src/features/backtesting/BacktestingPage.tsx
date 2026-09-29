@@ -1,12 +1,13 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { CircleStop, Download, FileSpreadsheet, FlaskConical, Plus, Trash2 } from 'lucide-react'
+import { CircleStop, FileSpreadsheet, FlaskConical, Plus, Trash2 } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import { apiPost, apiRequest } from '../../api/client'
 import { apiStream, type StreamMessage } from '../../api/stream'
 import { DataTable } from '../../components/DataTable'
+import { DownloadButton } from '../../components/DownloadButton'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
 import { Card, Field, PageHeader } from '../../components/Page'
 import { BacktestResults } from './BacktestResults'
@@ -98,7 +99,8 @@ export default function BacktestingPage() {
   const summary = resultSummary(displayedResult)
   const resultId = displayedResult && typeof displayedResult === 'object' && 'id' in displayedResult ? String(displayedResult.id ?? '') : resultParam
   const currencyCodes = (currencies.data?.currencies ?? []).map(item => typeof item === 'string' ? item : item.code ?? '').filter(Boolean)
-  const savedColumns = useMemo<ColumnDef<SavedBacktest>[]>(() => [{ accessorKey: 'created', header: 'Created' }, { accessorKey: 'id', header: 'ID' }, { id: 'view', header: '', cell: ({ row }) => <a className="button button--ghost" href={`/backtest?result=${encodeURIComponent(row.original.id)}`}>Review</a> }, { id: 'download', header: '', cell: ({ row }) => row.original.has_zip ? <a className="button button--ghost" href={`/api/backtesting/download/${encodeURIComponent(row.original.id)}`}><Download />Download</a> : <span className="muted">Preparing</span> }], [])
+  const resetRun = run.reset
+  const savedColumns = useMemo<ColumnDef<SavedBacktest>[]>(() => [{ accessorKey: 'created', header: 'Created' }, { accessorKey: 'id', header: 'ID' }, { id: 'view', header: '', cell: ({ row }) => <Link className="button button--ghost" to={`/backtest?result=${encodeURIComponent(row.original.id)}`} onClick={() => { resetRun(); window.scrollTo({ top: 0 }) }}>Review</Link> }, { id: 'download', header: '', cell: ({ row }) => row.original.has_zip ? <DownloadButton className="button button--ghost" path={`/api/backtesting/download/${encodeURIComponent(row.original.id)}`} filename={`backtest_${row.original.id}.zip`}>Download</DownloadButton> : <span className="muted">Preparing</span> }], [resetRun])
 
   return <div className="stack dense-page backtesting-workspace">
     <PageHeader eyebrow="Strategy research" title="Backtest an investment idea" description="Define the universe first, then portfolio construction, period, and benchmark. Inputs from Screening or Company Analysis arrive preselected." actions={run.isPending && mode === 'screen' ? <button className="button button--danger" onClick={() => abortRef.current?.abort()}><CircleStop />Cancel rolling backtest</button> : <button className="button button--primary" disabled={run.isPending || db.isLoading} onClick={() => run.mutate()}><FlaskConical />{run.isPending ? 'Running…' : 'Run backtest'}</button>} />

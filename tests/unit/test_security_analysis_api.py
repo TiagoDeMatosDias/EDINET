@@ -253,3 +253,54 @@ def test_page_html(db):
     assert "/app-assets/" in r.text
     # Must not leak db_path
     assert "db_path" not in r.text
+
+
+def test_overview_prefers_filing_description_without_external_lookup(db, monkeypatch):
+    import src.web_app.api.security_analysis as m
+
+    original = m._security.get_security_overview
+
+    def with_filing_text(*args, **kwargs):
+        result = original(*args, **kwargs)
+        result["company"]["filing_description_en"] = "Alpha makes industrial sensors."
+        result["company"]["description"] = "Alpha makes industrial sensors."
+        return result
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(m._security, "get_security_overview", with_filing_text)
+    monkeypatch.setattr(
+        m,
+        "get_or_fetch_description",
+        lambda *args: calls.append(args) or "External profile text.",
+    )
+
+    company = client.get("/api/security/overview", params={"company_code": "E00001"}).json()["company"]
+
+    assert calls == []
+    assert company["yahoo_description"] == ""
+    assert company["description_source"] == {
+        "kind": "filing",
+        "label": "EDINET annual report (English translation)",
+    }
+
+
+def test_overview_labels_external_description_fallback(db, monkeypatch):
+    import src.web_app.api.security_analysis as m
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        m,
+        "get_or_fetch_description",
+        lambda *args: calls.append(args) or "External profile text.",
+    )
+
+    company = client.get("/api/security/overview", params={"company_code": "E00001"}).json()["company"]
+
+    assert calls and calls[0][1:] == ("E00001", "1001.T")
+    assert company["yahoo_description"] == "External profile text."
+    assert company["yahoo_symbol"] == "1001.T"
+    assert company["description_source"] == {
+        "kind": "external",
+        "label": "Yahoo Finance profile",
+        "symbol": "1001.T",
+    }

@@ -5,14 +5,16 @@ import { useState } from 'react'
 import { Line } from 'react-chartjs-2'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 
-import { apiPost, apiRequest, authenticatedFetch, queryString } from '../../api/client'
+import { ApiError, apiPost, apiRequest, authenticatedFetch, queryString } from '../../api/client'
 import type { SecurityHistory, SecurityOverview } from '../../api/types'
 import { BRAND_COLORS } from '../../brand'
-import { useAuth } from '../auth/AuthProvider'
+import { useAuth } from '../auth/authContext'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
 import { Card, Metric, PageHeader } from '../../components/Page'
-import { downloadBlob, downloadTextFile, safeFileName } from './downloads'
+import { downloadBlob } from '../../api/download'
+import { downloadTextFile, safeFileName } from './downloads'
 import { FinancialHistoryWorkspace } from './FinancialHistoryWorkspace'
+import { formatCompactNumber } from './numberFormat'
 import { buildCompanyReport } from './markdownReport'
 import { filterPriceHistory, PRICE_RANGE_OPTIONS, type PriceHistoryRow, type PriceRangeKey } from './priceHistoryRanges'
 
@@ -33,25 +35,12 @@ interface FilingSummary {
   status: string
 }
 
-function compactNumber(value: number) {
-  if (Math.abs(value) < 1_000) return value.toLocaleString(undefined, { maximumFractionDigits: 2 })
-  const units: Array<[number, string]> = [[1e12, 'Trillion'], [1e9, 'Billion'], [1e6, 'Million'], [1e3, 'Thousand']]
-  const [scale, label] = units.find(([threshold]) => Math.abs(value) >= threshold) ?? [1, '']
-  return `${(value / scale).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${label}`
-}
-
 function formatOverview(key: string, value: number | null | undefined) {
   if (value == null || Number.isNaN(value)) return '—'
   if (key === 'LatestPrice') return `¥${value.toLocaleString()}`
-  if (['MarketCap', 'Revenue', 'OperatingIncome', 'NetIncome', 'TotalAssets', 'TotalEquity'].includes(key)) return `¥${compactNumber(value)}`
+  if (['MarketCap', 'Revenue', 'OperatingIncome', 'NetIncome', 'TotalAssets', 'TotalEquity'].includes(key)) return `¥${formatCompactNumber(value)}`
   if (['DividendsYield', 'PayoutRatio', 'ReturnOnAssets', 'ReturnOnEquity', 'GrossMargin', 'NetMargin', 'OperatingMargin'].includes(key)) return `${(value * 100).toFixed(1)}%`
   return value.toLocaleString(undefined, { maximumFractionDigits: 2 })
-}
-
-export function yahooFinanceSymbol(ticker: string) {
-  const trimmed = ticker.trim()
-  const japanese = /^\d{5}$/.test(trimmed) && trimmed.endsWith('0') ? trimmed.slice(0, -1) : trimmed
-  return /^\d{4}$/.test(japanese) ? `${japanese}.T` : japanese
 }
 
 function PriceChart({ ticker }: { ticker: string }) {
@@ -143,10 +132,18 @@ export default function AnalysisWorkspaceUnified() {
 
   if (!lookup) return <div className="stack dense-page analysis-empty-page"><PageHeader eyebrow="Company research" title="Analyze a company" description="Use the company search above to open price, statements, ratios, and trends." /><EmptyState title="Search for a company above" description="Enter a name, ticker, EDINET code, or industry and choose a result." /></div>
   if (overview.isLoading) return <LoadingState label="Loading company analysis" />
+  if (overview.isError && overview.error instanceof ApiError && overview.error.status === 404) {
+    return <div className="stack dense-page analysis-empty-page"><PageHeader eyebrow="Company research" title="Company not found" description={`No company in the research database matches “${lookup}”.`} /><EmptyState title="Search for the company above" description="Enter a name, ticker, EDINET code, or industry and choose a result." /></div>
+  }
   if (overview.isError) return <ErrorState error={overview.error} retry={() => overview.refetch()} />
   const metricKeys = [['LatestPrice', 'Price'], ['MarketCap', 'Market cap'], ['PERatio', 'P/E'], ['PriceToBook', 'P/B'], ['PriceToSales', 'P/S'], ['ReturnOnEquity', 'ROE'], ['ReturnOnAssets', 'ROA'], ['DividendsYield', 'Dividend'], ['CurrentRatio', 'Current ratio'], ['DebtToEquity', 'Debt/equity'], ['OperatingMargin', 'Operating margin'], ['PayoutRatio', 'Payout']]
-  const yahooSymbol = yahooFinanceSymbol(ticker)
-  const reportDescription = [company.yahoo_description, company.description_summary, company.description].find(value => value != null && String(value).trim())
+  const qualityFlags = overview.data?.metadata?.data_quality_flags
+  const tickerOnly = Array.isArray(qualityFlags) && qualityFlags.includes('ticker_only_no_company_record')
+  const yahooSymbol = String(company.yahoo_symbol ?? '')
+  // The filing's own business description comes first; the external profile is a labelled fallback.
+  const descriptionSource = company.description_source as { kind?: string; label?: string; symbol?: string } | null | undefined
+  const businessDescription = String((descriptionSource?.kind === 'external' ? company.yahoo_description : company.description_summary || company.description) ?? '').trim()
+  const descriptionProvenance = businessDescription && descriptionSource?.label ? [descriptionSource.label, descriptionSource.symbol].filter(Boolean).join(' · ') : ''
   const downloadReport = () => {
     if (!history.data) return
     downloadTextFile(`${safeFileName(name)}-report.md`, buildCompanyReport({
@@ -155,7 +152,7 @@ export default function AnalysisWorkspaceUnified() {
       companyCode: canonicalCode || undefined,
       industry: company.industry ? String(company.industry) : undefined,
       market: company.market ? String(company.market) : undefined,
-      description: reportDescription ? String(reportDescription).slice(0, 4000) : undefined,
+      description: businessDescription ? [businessDescription.slice(0, 4000), descriptionProvenance && `Source: ${descriptionProvenance}`].filter(Boolean).join('\n\n') : undefined,
       snapshotPeriod: metricPeriod || undefined,
       snapshotGroups: SNAPSHOT_GROUPS,
       metrics,
@@ -163,5 +160,5 @@ export default function AnalysisWorkspaceUnified() {
       history: history.data,
     }), 'text/markdown;charset=utf-8')
   }
-  return <div className="stack dense-page analysis-workspace"><PageHeader eyebrow="Company analysis" title={name} description={[ticker, canonicalCode, company.industry, company.market].filter(Boolean).join(' · ')} actions={<div className="button-row">{params.get('from') === 'screen' && <Link className="button button--ghost" to="/screen"><ArrowLeft />Return to Screening</Link>}<button className="button button--secondary" disabled={!history.data} onClick={downloadReport} title={history.data ? 'Download a markdown report with the snapshot and financial history' : 'Financial history is still loading'}><Download />Export report</button>{yahooSymbol && <a className="button button--secondary" href={`https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`} target="_blank" rel="noreferrer"><ExternalLink />Yahoo Finance</a>}<Link className="button button--primary" to={`/backtest?symbol=${ticker}`}><BarChart3 />Backtest</Link></div>} /><div className="metric-strip analysis-metric-strip">{metricKeys.map(([key, label]) => <Metric key={key} label={label} value={formatOverview(key, metrics[key])} detail={key === 'LatestPrice' && canRefreshPrice ? <button className="text-button" onClick={() => updatePrice.mutate()}><RefreshCw />Refresh</button> : undefined} />)}</div><div className="analysis-top-grid"><Card title="Price history"><PriceChart ticker={ticker} /></Card><Card title="Company snapshot"><dl className="company-facts"><div><dt>Industry</dt><dd>{String(company.industry ?? '—')}</dd></div><div><dt>Market</dt><dd>{String(company.market ?? '—')}</dd></div><div><dt>Code</dt><dd>{canonicalCode || '—'}</dd></div><div><dt>Ticker</dt><dd>{ticker || '—'}</dd></div></dl>{metricPeriod && <p className="company-snapshot-period">Financial metrics: {metricPeriod}</p>}<SnapshotMetrics metrics={metrics} /><div className="company-tags"><div className="tag-list">{(tags.data?.tags ?? []).map(tag => <span className="tag" key={tag}>{tag}<button className="icon-button" onClick={() => removeTag.mutate(tag)} aria-label={`Remove tag ${tag}`}><X /></button></span>)}</div><div className="tag-add"><input className="input" placeholder="Add tag…" value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newTag.trim()) { addTag.mutate(newTag.trim()); setNewTag('') } }} /><button className="button button--ghost" disabled={!newTag.trim() || !canonicalCode} onClick={() => { addTag.mutate(newTag.trim()); setNewTag('') }} aria-label="Add tag"><Plus /></button></div></div><div className="company-description-block"><strong>Business description</strong><p className="company-description company-description--compact">{String(company.yahoo_description || company.description_summary || company.description || 'No business description available.')}</p></div></Card></div><Card className="analysis-history-card" title="Financial history" description="Select metrics in the table to chart them alongside the underlying values."><FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} downloadPrefix={canonicalCode || ticker} /></Card>{canonicalCode && <FilingSummaryCard companyCode={canonicalCode} />}</div>
+  return <div className="stack dense-page analysis-workspace"><PageHeader eyebrow="Company analysis" title={name} description={[ticker, canonicalCode, company.industry, company.market].filter(Boolean).join(' · ')} actions={<div className="button-row">{params.get('from') === 'screen' && <Link className="button button--ghost" to="/screen"><ArrowLeft />Return to Screening</Link>}<button className="button button--secondary" disabled={!history.data} onClick={downloadReport} title={history.data ? 'Download a markdown report with the snapshot and financial history' : 'Financial history is still loading'}><Download />Export report</button>{yahooSymbol && <a className="button button--secondary" href={`https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`} target="_blank" rel="noreferrer"><ExternalLink />Yahoo Finance</a>}<Link className="button button--primary" to={`/backtest?symbol=${ticker}`}><BarChart3 />Backtest</Link></div>} />{tickerOnly && <div className="callout callout--warning" role="status"><strong>No company record matches “{tickerParam}”.</strong> Showing stored price data only. Broker and portfolio symbols do not always match the exchange ticker used in EDINET data; search by company name or EDINET code for statements and filings.</div>}<div className="metric-strip analysis-metric-strip">{metricKeys.map(([key, label]) => <Metric key={key} label={label} value={formatOverview(key, metrics[key])} detail={key === 'LatestPrice' && canRefreshPrice ? <button className="text-button" onClick={() => updatePrice.mutate()}><RefreshCw />Refresh</button> : undefined} />)}</div><div className="analysis-top-grid"><Card title="Price history"><PriceChart ticker={ticker} /></Card><Card title="Company snapshot"><dl className="company-facts"><div><dt>Industry</dt><dd>{String(company.industry ?? '—')}</dd></div><div><dt>Market</dt><dd>{String(company.market ?? '—')}</dd></div><div><dt>Code</dt><dd>{canonicalCode || '—'}</dd></div><div><dt>Ticker</dt><dd>{ticker || '—'}</dd></div></dl>{metricPeriod && <p className="company-snapshot-period">Financial metrics: {metricPeriod}</p>}<SnapshotMetrics metrics={metrics} /><div className="company-tags"><div className="tag-list">{(tags.data?.tags ?? []).map(tag => <span className="tag" key={tag}>{tag}<button className="icon-button" onClick={() => removeTag.mutate(tag)} aria-label={`Remove tag ${tag}`}><X /></button></span>)}</div><div className="tag-add"><input className="input" placeholder="Add tag…" value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newTag.trim()) { addTag.mutate(newTag.trim()); setNewTag('') } }} /><button className="button button--ghost" disabled={!newTag.trim() || !canonicalCode} onClick={() => { addTag.mutate(newTag.trim()); setNewTag('') }} aria-label="Add tag"><Plus /></button></div></div><div className="company-description-block"><strong>Business description</strong><p className="company-description company-description--compact">{businessDescription || 'No business description available.'}</p>{descriptionProvenance && <small className="company-description-source">Source: {descriptionProvenance}</small>}</div></Card></div><Card className="analysis-history-card" title="Financial history" description="Select metrics in the table to chart them alongside the underlying values."><FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} downloadPrefix={canonicalCode || ticker} /></Card>{canonicalCode && <FilingSummaryCard companyCode={canonicalCode} />}</div>
 }

@@ -14,6 +14,7 @@ import type {
 import { DataTable } from '../../components/DataTable'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
 import { Card, Field, PageHeader } from '../../components/Page'
+import { RunOutput, StepStateTable } from './JobDetails'
 
 type SelectedStep = { id: string; name: string; overwrite: boolean }
 type SavedSetup = { name: string; steps: SelectedStep[]; config: Record<string, unknown> }
@@ -233,9 +234,9 @@ export default function PipelinePage() {
     {cancel.isError && <ErrorState error={cancel.error} />}
     {activeJob.isLoading && recoveredJobId && <Card><LoadingState label="Loading pipeline job" /></Card>}
     {activeJob.isError && <ErrorState error={activeJob.error} retry={() => activeJob.refetch()} />}
-    {activeJob.data && <Card title="Latest run" description={activeJob.data.current_step ? 'Current step: ' + activeJob.data.current_step : 'Persisted pipeline job state'} actions={<span className={`badge ${activeJob.data.status === 'completed' ? 'badge--success' : activeJob.data.status === 'failed' || activeJob.data.status === 'interrupted' ? 'badge--danger' : ''}`}>{activeJob.data.status}</span>}><p>Progress: {Math.round(activeJob.data.progress_percent ?? 0)}% · {activeJob.data.completed_step_count ?? 0}/{activeJob.data.step_count ?? activeJob.data.steps?.length ?? 0} steps complete</p>{activeJob.data.status_message && <p>{activeJob.data.status_message}</p>}{activeJob.data.error_message && <p>{activeJob.data.error_message}</p>}<details className="details"><summary>View step state</summary><pre>{JSON.stringify(activeJob.data.steps ?? [], null, 2)}</pre></details></Card>}
+    {activeJob.data && <Card title="Latest run" description={activeJob.data.current_step ? 'Current step: ' + activeJob.data.current_step : 'Persisted pipeline job state'} actions={<span className={`badge ${activeJob.data.status === 'completed' ? 'badge--success' : activeJob.data.status === 'failed' || activeJob.data.status === 'interrupted' ? 'badge--danger' : ''}`}>{activeJob.data.status}</span>}><p>Progress: {Math.round(activeJob.data.progress_percent ?? 0)}% · {activeJob.data.completed_step_count ?? 0}/{activeJob.data.step_count ?? activeJob.data.steps?.length ?? 0} steps complete</p>{activeJob.data.status_message && <p>{activeJob.data.status_message}</p>}{activeJob.data.error_message && <p>{activeJob.data.error_message}</p>}<StepStateTable steps={activeJob.data.steps ?? []} /></Card>}
     {output.isError && <ErrorState error={output.error} />}
-    {output.data && <Card title="Run output" description="Bounded, redacted output persisted by the backend."><details className="details"><summary>View run output</summary><pre>{JSON.stringify(output.data.output, null, 2)}</pre></details></Card>}
+    {output.data && <Card title="Run output" description="Bounded, redacted output persisted by the backend."><RunOutput output={output.data.output} /></Card>}
     <Card title="Recent runs" description="Pipeline job history from the backend.">{jobs.isLoading ? <LoadingState label="Loading pipeline history" /> : jobs.isError ? <ErrorState error={jobs.error} /> : <DataTable data={jobs.data ?? []} columns={jobColumns} emptyText="No pipeline runs yet." dense />}</Card>
   </div>
 }

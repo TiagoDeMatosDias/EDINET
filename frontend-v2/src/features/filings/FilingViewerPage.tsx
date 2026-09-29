@@ -1,20 +1,17 @@
 import { useMemo, useState } from 'react'
 import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Download, FileText, Globe, ShieldAlert, Table2, Tags } from 'lucide-react'
+import { ArrowLeft, FileText, Globe, ShieldAlert, Table2, Tags } from 'lucide-react'
 
 import { apiRequest, queryString } from '../../api/client'
-import { EmptyState, LoadingState } from '../../components/Feedback'
+import { DownloadButton } from '../../components/DownloadButton'
+import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
+import { filterRows, lineItemCount, splitPeriods, type StatementPeriod, type StatementRow, type StatementTable, type StatementTablesResponse } from './statements'
 
 interface Filing {
   doc_id: string; edinet_code?: string | null; submitter_name?: string | null
   submitted_at?: string | null; period_start?: string | null; period_end?: string | null
   status: string; form_code?: string | null; archive_sha256?: string | null
-}
-interface Fact {
-  fact_id: string; concept: string; concept_en?: string; context_id?: string
-  value_text?: string; numeric_value?: number | null; unit_id?: string
-  namespace_uri?: string
 }
 interface Section {
   section_id: string; title?: string; title_en?: string; text: string; text_en?: string; ordinal: number
@@ -51,180 +48,70 @@ function translationErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
 
-function conceptDisplay(concept: string): string {
-  return concept.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).replace(/Net Income/i, 'Net Income').replace(/Gross Profit/i, 'Gross Profit').trim()
+function StatementGrid({ periods, rows, memberHeader }: { periods: StatementPeriod[]; rows: StatementRow[]; memberHeader: string }) {
+  const columnCount = (memberHeader ? 3 : 2) + periods.length
+  const indent = (depth: number) => ({ paddingLeft: `${10 + depth * 14}px` })
+  return (
+    <div className="table-scroll">
+      <table className="facts-table statement-table">
+        <thead>
+          <tr>
+            <th scope="col" className="concept-col">Line item</th>
+            {memberHeader && <th scope="col">{memberHeader}</th>}
+            <th scope="col" className="unit-col">Unit</th>
+            {periods.map(period => (
+              <th key={period.key} scope="col" className="num-col">
+                {period.label}
+                {period.detail && <small>{period.detail}</small>}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => {
+            if (row.kind === 'heading') {
+              return <tr key={index} className="section-row"><td colSpan={columnCount} style={indent(row.depth)}><strong>{row.label}</strong></td></tr>
+            }
+            const isTotal = row.kind === 'total'
+            return (
+              <tr key={index} className={isTotal ? 'subtotal-row' : ''}>
+                <td className="concept-cell" style={indent(row.depth)} title={row.concept}>{isTotal ? <strong>{row.label}</strong> : row.label}</td>
+                {memberHeader && <td className="member-cell">{row.member}</td>}
+                <td className="unit-cell">{row.unit ?? ''}</td>
+                {periods.map(period => {
+                  const value = row.values?.[period.key]
+                  return (
+                    <td key={period.key} className="num-col">
+                      {value != null ? (isTotal ? <strong>{fmtNum(value)}</strong> : fmtNum(value)) : '—'}
+                    </td>
+                  )
+                })}
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
-function extractPeriod(fact: Fact): string {
-  const ctx = fact.context_id ?? ''
-  const m = ctx.match(/(FY|Q[1-4]|Annual|Interim|SemiAnnual)/i)
-  if (m) {
-    const rest = ctx.slice(ctx.indexOf(m[1]) + m[1].length)
-    const yr = rest.match(/(\d{4})/)
-    return yr ? `${m[1]} ${yr[1]}` : m[1]
-  }
-  const yr = ctx.match(/(\d{4})/)
-  return yr ? yr[1] : ctx.slice(-12)
-}
-
-// --- Statement structure ---
-interface StmtSection { label: string; labelEn?: string; concepts: string[]; isSubtotal?: boolean }
-interface StmtDefinition { name: string; sections: StmtSection[] }
-interface PivotCell { period: string; value: number | null; fact: Fact }
-interface StmtRow { kind: 'section' | 'row' | 'subtotal'; label: string; labelEn?: string; concept?: string; unit?: string; cells: Map<string, PivotCell>; indent: boolean }
-
-// EDGAR-style statement definitions with proper ordering and subtotals
-const STATEMENTS: StmtDefinition[] = [
-  {
-    name: 'Balance Sheet',
-    sections: [
-      { label: 'Assets', concepts: [] },
-      { label: 'Current assets', concepts: ['CurrentAssets', 'CashAndDeposits', 'CashAndCashEquivalents', 'NotesAndAccountsReceivableTrade', 'AccountsReceivableTrade', 'AccountsReceivable', 'NotesReceivable', 'Inventories', 'MerchandiseAndFinishedGoods', 'WorkInProcess', 'RawMaterials', 'Supplies', 'ShortTermLoansReceivable', 'DeferredTaxAssets', 'AllowanceForDoubtfulAccounts', 'AllowanceForDoubtfulAccountsIOAByGroup', 'AccountsPayableOther', 'OtherCurrentAssets', 'Other'] },
-      { label: 'Non-current assets', concepts: ['NonCurrentAssets', 'PropertyPlantAndEquipment', 'BuildingsAndStructures', 'MachineryEquipmentAndVehicles', 'Land', 'ConstructionInProgress', 'IntangibleAssets', 'Goodwill', 'Software', 'InvestmentsAndOtherAssets', 'InvestmentSecurities', 'InvestmentsInSubsidiaries', 'LongTermLoansReceivable', 'DeferredTaxAssetsNonCurrent', 'OtherNonCurrentAssets'] },
-      { label: 'Total assets', concepts: ['TotalAssets', 'Assets'], isSubtotal: true },
-      { label: 'Liabilities', concepts: [] },
-      { label: 'Current liabilities', concepts: ['CurrentLiabilities', 'NotesAndAccountsPayableTrade', 'AccountsPayableTrade', 'AccountsPayable', 'ShortTermBorrowings', 'ShortTermLoansPayable', 'CurrentPortionOfLongTermDebt', 'CommercialPapers', 'IncomeTaxesPayable', 'AccruedExpenses', 'DepositsReceived', 'ProvisionForBonuses', 'OtherCurrentLiabilities'] },
-      { label: 'Non-current liabilities', concepts: ['NonCurrentLiabilities', 'LongTermBorrowings', 'LongTermLoansPayable', 'Bonds', 'CorporateBonds', 'ConvertibleBonds', 'DeferredTaxLiabilities', 'ProvisionForRetirementBenefits', 'ProvisionForDirectorsRetirementBenefits', 'AssetRetirementObligations', 'OtherNonCurrentLiabilities'] },
-      { label: 'Total liabilities', concepts: ['TotalLiabilities', 'Liabilities'], isSubtotal: true },
-      { label: 'Net assets', concepts: [] },
-      { label: 'Shareholders equity', concepts: ['NetAssets', 'ShareholdersEquity', 'CapitalStock', 'ShareCapital', 'CapitalSurplus', 'AdditionalPaidInCapital', 'RetainedEarnings', 'TreasuryShares', 'TreasuryStock', 'AccumulatedOtherComprehensiveIncome', 'ValuationDifferenceOnAvailableForSaleSecurities', 'DeferredGainsOrLossesOnHedges', 'RevaluationReserve', 'ForeignCurrencyTranslationAdjustment', 'RemeasurementsOfDefinedBenefitPlans', 'StockAcquisitionRights', 'ShareOptions', 'NonControllingInterests', 'MinorityInterests', 'NetChangesOfItemsOtherThanShareholdersEquity', 'TotalChangesOfItemsDuringThePeriod', 'DisposalOfTreasuryStock', 'PurchaseOfTreasuryStock', 'RetirementOfTreasuryStock', 'DividendsFromSurplus', 'ReversalOfReserveForAdvancedDepreciationOfNoncurrentAssets'] },
-      { label: 'Total net assets', concepts: ['TotalNetAssets', 'TotalEquity', 'Equity'], isSubtotal: true },
-      { label: 'Total liabilities and net assets', concepts: ['TotalLiabilitiesAndNetAssets', 'TotalLiabilitiesAndEquity'], isSubtotal: true },
-    ],
-  },
-  {
-    name: 'Income Statement',
-    sections: [
-      { label: 'Revenue', concepts: ['NetSales', 'Revenue', 'OperatingRevenue', 'SalesRevenue', 'OtherRevenue'] },
-      { label: 'Cost of sales', concepts: ['CostOfSales', 'CostOfGoodsSold', 'CostOfRevenue'] },
-      { label: 'Gross profit', concepts: ['GrossProfit', 'GrossMargin'], isSubtotal: true },
-      { label: 'Operating expenses', concepts: ['SellingGeneralAndAdministrativeExpenses', 'SGA', 'SellingExpenses', 'GeneralAndAdministrativeExpenses', 'SalariesAndWages', 'DepreciationAndAmortizationSGA', 'ResearchAndDevelopment', 'OtherOperatingExpenses'] },
-      { label: 'Operating income', concepts: ['OperatingIncome', 'OperatingProfit', 'OperatingLoss', 'BusinessProfit'], isSubtotal: true },
-      { label: 'Non-operating income / expenses', concepts: ['NonOperatingIncome', 'NonOperatingExpenses', 'InterestIncome', 'InterestExpense', 'DividendIncome', 'ForeignExchangeGains', 'ForeignExchangeLosses', 'GainOnSalesOfSecurities', 'LossOnSalesOfSecurities', 'EquityInEarningsOfAffiliates', 'OtherNonOperatingItems'] },
-      { label: 'Ordinary income', concepts: ['OrdinaryIncome', 'OrdinaryProfit', 'OrdinaryLoss', 'IncomeBeforeIncomeTaxes'], isSubtotal: true },
-      { label: 'Extraordinary items', concepts: ['ExtraordinaryIncome', 'ExtraordinaryLoss', 'ExtraordinaryItems', 'GainOnSalesOfFixedAssets', 'LossOnSalesOfFixedAssets', 'ImpairmentLoss', 'LossOnDisaster', 'RestructuringCharges'] },
-      { label: 'Income before tax', concepts: ['IncomeBeforeTax', 'IncomeBeforeIncomeTaxesAndMinorityInterests'], isSubtotal: true },
-      { label: 'Income taxes', concepts: ['IncomeTaxes', 'IncomeTaxExpense', 'IncomeTaxesCurrent', 'IncomeTaxesDeferred', 'CorporationTax', 'InhabitantTax', 'EnterpriseTax', 'AdjustmentForIncomeTaxes'] },
-      { label: 'Net income', concepts: ['NetIncome', 'NetLoss', 'ProfitLoss', 'ProfitLossAttributableToOwnersOfParent', 'IncomeAttributableToOwnersOfParent'], isSubtotal: true },
-      { label: 'Earnings per share', concepts: ['BasicEarningsPerShare', 'BasicEPS', 'DilutedEarningsPerShare', 'DilutedEPS', 'BasicEarningsLossPerShare', 'DilutedEarningsLossPerShare'] },
-      { label: 'Key metrics (summary)', concepts: ['NumberOfEmployees', 'AverageNumberOfTemporaryWorkers', 'TotalNumberOfIssuedShares', 'NumberOfSharesIssuedSharesVotingRights', 'NumberOfSharesHeld', 'ShareholdingRatio', 'TotalShareholderReturn', 'TotalReturnOnSharePriceIndex'] },
-    ],
-  },
-  {
-    name: 'Cash Flow',
-    sections: [
-      { label: 'Operating activities', concepts: ['NetCashProvidedByUsedInOperatingActivities', 'OperatingActivities', 'CashFlowsFromOperatingActivities', 'IncomeBeforeIncomeTaxes', 'DepreciationAndAmortization', 'Depreciation', 'AmortizationOfGoodwill', 'ImpairmentLoss', 'InterestAndDividendsIncome', 'InterestExpense', 'ForeignExchangeLossesGains', 'DecreaseIncreaseInTradeReceivables', 'DecreaseIncreaseInInventories', 'IncreaseDecreaseInTradePayables', 'IncreaseDecreaseInAccruedExpenses', 'OtherOperatingCF', 'SubtotalOperatingCF'], isSubtotal: true },
-      { label: 'Investing activities', concepts: ['NetCashProvidedByUsedInInvestingActivities', 'InvestingActivities', 'CashFlowsFromInvestingActivities', 'PurchaseOfPropertyPlantAndEquipment', 'ProceedsFromSalesOfPropertyPlantAndEquipment', 'PurchaseOfIntangibleAssets', 'PurchaseOfInvestmentSecurities', 'ProceedsFromSalesOfInvestmentSecurities', 'PaymentsForAcquisitions', 'OtherInvestingCF'] },
-      { label: 'Financing activities', concepts: ['NetCashProvidedByUsedInFinancingActivities', 'FinancingActivities', 'CashFlowsFromFinancingActivities', 'ProceedsFromShortTermBorrowings', 'RepaymentsOfShortTermBorrowings', 'ProceedsFromLongTermBorrowings', 'RepaymentsOfLongTermBorrowings', 'ProceedsFromIssuanceOfBonds', 'RedemptionOfBonds', 'ProceedsFromIssuanceOfShares', 'DividendsPaid', 'CashDividendsPaid', 'OtherFinancingCF'] },
-      { label: 'Net change in cash', concepts: ['NetIncreaseDecreaseInCashAndCashEquivalents', 'NetChangeInCash', 'EffectOfExchangeRateChangesOnCash'], isSubtotal: true },
-      { label: 'Cash at beginning', concepts: ['CashAndCashEquivalentsAtBeginningOfPeriod', 'BeginningCash', 'CashAtBeginningOfPeriod', 'BeginningBalance'] },
-      { label: 'Cash at end', concepts: ['CashAndCashEquivalentsAtEndOfPeriod', 'EndingCash', 'CashAtEndOfPeriod', 'EndingBalance'], isSubtotal: true },
-    ],
-  },
-]
-
-function matchConcept(concept: string, patterns: string[]): boolean {
-  const upper = concept.toUpperCase()
-  for (const p of patterns) {
-    const pUpper = p.toUpperCase()
-    // Match if concept contains the pattern, OR if the pattern starts the concept
-    // (handles suffixes like SummaryOfBusinessResults)
-    if (upper.includes(pUpper)) return true
-    // Also match prefix: 'NetSales' matches 'NetSalesSummaryOfBusinessResults'
-    if (upper.startsWith(pUpper)) return true
-  }
-  return false
-}
-
-// Also try conceptDisplay-based matching for common Japanese-labeled concepts
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function conceptLabelToEnglish(label: string): string | null {
-  const m: Record<string, string> = {
-    'Net Sales Summary Of Business Results': 'NetSales',
-    'Total Assets Summary Of Business Results': 'TotalAssets',
-    'Ordinary Income Loss Summary Of Business Results': 'OrdinaryIncome',
-    'Net Income Loss Summary Of Business Results': 'NetIncome',
-    'Profit Loss Attributable To Owners Of Parent Summary Of Business Results': 'NetIncome',
-    'Basic Earnings Loss Per Share Summary Of Business Results': 'BasicEPS',
-    'Diluted Earnings Per Share Summary Of Business Results': 'DilutedEPS',
-    'Equity To Asset Ratio Summary Of Business Results': 'Equity',
-    'Net Assets Per Share Summary Of Business Results': 'NetAssets',
-    'Net Assets Summary Of Business Results': 'NetAssets',
-    'Rate Of Return On Equity Summary Of Business Results': 'ReturnOnEquity',
-    'Price Earnings Ratio Summary Of Business Results': 'PERatio',
-    'Cash And Cash Equivalents Summary Of Business Results': 'Cash',
-    'Capital Stock Summary Of Business Results': 'ShareCapital',
-    'Comprehensive Income Summary Of Business Results': 'ComprehensiveIncome',
-    'Dividend Paid Per Share Summary Of Business Results': 'Dividends',
-    'Interim Dividend Paid Per Share Summary Of Business Results': 'Dividends',
-    'Payout Ratio Summary Of Business Results': 'PayoutRatio',
-    'Net Cash Provided By Used In Operating Activities Summary Of Business Results': 'OperatingActivities',
-    'Net Cash Provided By Used In Investing Activities Summary Of Business Results': 'InvestingActivities',
-    'Net Cash Provided By Used In Financing Activities Summary Of Business Results': 'FinancingActivities',
-  }
-  return m[label] || null
-}
-
-function buildStatementTable(facts: Fact[], stmtDef: StmtDefinition): StmtRow[] {
-  // Collect all facts into a concept-indexed map
-  const factMap = new Map<string, Fact[]>()
-  for (const f of facts) factMap.set(f.concept, [...(factMap.get(f.concept) || []), f])
-
-  // Build rows following the statement structure
-  const rows: StmtRow[] = []
-  const usedConcepts = new Set<string>()
-
-  for (const section of stmtDef.sections) {
-    // Section header
-    rows.push({ kind: 'section', label: section.label, indent: false, cells: new Map() })
-
-    // Find matching facts
-    for (const [concept, factList] of factMap) {
-      if (usedConcepts.has(concept)) continue
-      if (section.concepts.length === 0) continue // Skip empty-concept sections (pure headers)
-      if (matchConcept(concept, section.concepts)) {
-        usedConcepts.add(concept)
-        const row: StmtRow = { kind: section.isSubtotal ? 'subtotal' : 'row', label: conceptDisplay(concept), concept, indent: !section.isSubtotal, cells: new Map() }
-        if (factList[0].concept_en) row.labelEn = factList[0].concept_en
-        if (factList[0].unit_id) row.unit = factList[0].unit_id
-        for (const f of factList) {
-          const period = extractPeriod(f)
-          row.cells.set(period, { period, value: f.numeric_value ?? null, fact: f })
-        }
-        rows.push(row)
-      }
-    }
-  }
-
-  // Remaining unmatched concepts go to "Other"
-  const otherRows: StmtRow[] = []
-  for (const [concept, factList] of factMap) {
-    if (usedConcepts.has(concept)) continue
-    const row: StmtRow = { kind: 'row', label: conceptDisplay(concept), concept, indent: true, cells: new Map() }
-    if (factList[0].concept_en) row.labelEn = factList[0].concept_en
-    if (factList[0].unit_id) row.unit = factList[0].unit_id
-    for (const f of factList) {
-      row.cells.set(extractPeriod(f), { period: extractPeriod(f), value: f.numeric_value ?? null, fact: f })
-    }
-    otherRows.push(row)
-  }
-  if (otherRows.length > 0) {
-    rows.push({ kind: 'section', label: 'Other', indent: false, cells: new Map() })
-    rows.push(...otherRows)
-  }
-
-  return rows
-}
-
-function collectPeriodsFromRows(stmts: Map<string, StmtRow[]>): string[] {
-  const seen = new Set<string>()
-  for (const rows of stmts.values()) {
-    for (const row of rows) {
-      for (const key of row.cells.keys()) seen.add(key)
-    }
-  }
-  return Array.from(seen).sort()
+function StatementView({ statement, rows }: { statement: StatementTable; rows: StatementRow[] }) {
+  const [showSparse, setShowSparse] = useState(false)
+  const { shown, sparse } = splitPeriods(statement.periods)
+  return (
+    <section className="statement-block" aria-label={statement.name}>
+      <h2 className="statement-title">{statement.name}</h2>
+      {sparse.length > 0 && (
+        <p className="text-muted statement-note">
+          {showSparse
+            ? `Showing all ${statement.periods.length} reported periods.`
+            : `${sparse.length} sparsely reported ${sparse.length === 1 ? 'period is' : 'periods are'} hidden.`}
+          {' '}<button className="text-button" onClick={() => setShowSparse(value => !value)}>{showSparse ? 'Hide sparse periods' : 'Show all periods'}</button>
+        </p>
+      )}
+      <StatementGrid periods={showSparse ? statement.periods : shown} rows={rows} memberHeader={statement.member_axes.join(' · ')} />
+    </section>
+  )
 }
 
 export default function FilingViewerPage() {
@@ -251,11 +138,12 @@ export default function FilingViewerPage() {
     enabled: Boolean(docId),
     queryFn: () => apiRequest<FilingDetail>(`/api/filings/${encodeURIComponent(docId ?? '')}`),
   })
-  const facts = useQuery({
-    queryKey: ['filing-facts-tr', docId],
-    enabled: Boolean(docId),
-    queryFn: () => apiRequest<{ facts: Fact[]; count: number }>(`/api/filings/${encodeURIComponent(docId ?? '')}/facts-translated${queryString({ limit: 3000 })}`),
+  const statementTables = useQuery({
+    queryKey: ['filing-statement-tables', docId],
+    enabled: Boolean(docId) && tab === 'facts',
+    queryFn: () => apiRequest<StatementTablesResponse>(`/api/filings/${encodeURIComponent(docId ?? '')}/statement-tables`),
   })
+  const [selectedStatement, setSelectedStatement] = useState<string | null>(null)
   const [translatingSections, setTranslatingSections] = useState<Set<string>>(new Set())
   const [sectionTranslationErrors, setSectionTranslationErrors] = useState<Record<string, string>>({})
   const sections = useQuery({
@@ -354,21 +242,10 @@ export default function FilingViewerPage() {
 
   const filing = detail.data?.filing
 
-  // Build EDGAR-style statement tables from facts
-  const statements = useMemo(() => {
-    if (!facts.data?.facts) return new Map<string, StmtRow[]>()
-    const result = new Map<string, StmtRow[]>()
-    for (const stmtDef of STATEMENTS) {
-      const rows = buildStatementTable(facts.data.facts, stmtDef)
-      if (rows.some(r => r.kind !== 'section')) result.set(stmtDef.name, rows)
-    }
-    return result
-  }, [facts.data])
-  const periods = useMemo(() => collectPeriodsFromRows(statements), [statements])
-
-  const stmtOrder = ['Balance Sheet', 'Income Statement', 'Cash Flow']
-  const orderedStatements = stmtOrder.filter(s => statements.has(s))
-  for (const s of statements.keys()) { if (!orderedStatements.includes(s)) orderedStatements.push(s) }
+  const statementMatches = useMemo(() => (statementTables.data?.statements ?? [])
+    .map(statement => ({ statement, rows: filterRows(statement.rows, conceptFilter) }))
+    .filter(({ rows }) => lineItemCount(rows) > 0), [conceptFilter, statementTables.data])
+  const activeStatement = statementMatches.find(({ statement }) => statement.id === selectedStatement) ?? statementMatches[0]
 
   return (
     <div className="filing-viewer-page">
@@ -387,7 +264,7 @@ export default function FilingViewerPage() {
           </div>
         </div>
         {filing?.archive_sha256 && (
-          <a className="button button--secondary" href={`/api/filings/${docId}/artifact`} download><Download size={14} /> ZIP</a>
+          <DownloadButton path={`/api/filings/${encodeURIComponent(docId ?? '')}/artifact`} filename={`${docId}.zip`}>ZIP</DownloadButton>
         )}
       </header>
 
@@ -404,8 +281,8 @@ export default function FilingViewerPage() {
 
         {/* Original HTM report */}
         {tab === 'original' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 20, paddingTop: 20, minHeight: '60vh' }}>
-            <div className="card" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
+          <div className="filing-report-layout">
+            <div className="card filing-report-files">
               <div className="card-header"><h2>Report files</h2></div>
               <div className="card-body">
                 {htmFiles.isLoading ? <LoadingState label="Loading" /> : (
@@ -424,9 +301,9 @@ export default function FilingViewerPage() {
                 {htmFiles.data && !htmFiles.data.files.length && <EmptyState title="No HTML files" description="This archive has no inline XBRL report files." />}
               </div>
             </div>
-            <div>
+            <div className="filing-report-content">
               {!selectedHtm ? (
-                <EmptyState title="Select a report file" description="Click a file in the sidebar to view the original EDINET report." />
+                <EmptyState title="Select a report file" description="Choose a report file to view the original EDINET report." />
               ) : !htmContent ? (
                 <LoadingState label="Loading report" />
               ) : (
@@ -573,73 +450,31 @@ export default function FilingViewerPage() {
         {tab === 'facts' && (
           <div>
             <div className="facts-toolbar">
-              <input className="input" placeholder="Filter concepts…" value={conceptFilter} onChange={e => setConceptFilter(e.target.value)} />
-              <span className="text-muted">{facts.data?.count ?? 0} facts</span>
-              <label className="inline-toggle">
-                <input type="checkbox" checked={sideBySide} onChange={e => setSideBySide(e.target.checked)} /> Side-by-side EN
-              </label>
+              <input className="input" aria-label="Filter line items" placeholder="Filter line items…" value={conceptFilter} onChange={e => setConceptFilter(e.target.value)} />
+              {statementTables.data && <span className="text-muted">{statementTables.data.fact_count.toLocaleString()} facts · {statementTables.data.statements.length} tables</span>}
             </div>
-            {facts.isLoading ? <LoadingState label="Loading facts" /> : !facts.data?.facts.length ? (
-              <EmptyState title="No facts" />
+            {statementTables.isLoading ? <LoadingState label="Loading statements" /> : statementTables.isError ? <ErrorState error={statementTables.error} retry={() => { void statementTables.refetch() }} /> : !activeStatement ? (
+              <EmptyState title={conceptFilter ? 'No matching line items' : 'No numeric facts'} />
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
-                {orderedStatements.map(stmtName => {
-                  const rows = statements.get(stmtName)!.filter(r => {
-                    if (r.kind === 'section') return true
-                    if (!conceptFilter) return true
-                    return (r.concept || '').toLowerCase().includes(conceptFilter.toLowerCase())
-                  })
-                  // Hide statement if no data rows
-                  if (!rows.some(r => r.kind !== 'section')) return null
-                  return (
-                    <div key={stmtName} className="statement-block">
-                      <h2 className="statement-title">{stmtName}</h2>
-                      <div className="table-scroll">
-                        <table className="facts-table statement-table">
-                          <thead>
-                            <tr>
-                              <th style={{ minWidth: 220 }}></th>
-                              {sideBySide && <th style={{ minWidth: 180 }}>English</th>}
-                              <th style={{ width: 60 }}>Unit</th>
-                              {periods.map(p => <th key={p} className="num-col">{p}</th>)}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {rows.map((row, i) => {
-                              if (row.kind === 'section') {
-                                return (
-                                  <tr key={`sec-${i}`} className="section-row">
-                                    <td colSpan={sideBySide ? 3 + periods.length : 2 + periods.length}>
-                                      <strong>{row.label}</strong>
-                                    </td>
-                                  </tr>
-                                )
-                              }
-                              const isSub = row.kind === 'subtotal'
-                              return (
-                                <tr key={row.concept || i} className={isSub ? 'subtotal-row' : ''}>
-                                  <td className={`concept-cell${row.indent ? ' indent' : ''}`}>
-                                    {isSub ? <strong>{row.label}</strong> : row.label}
-                                  </td>
-                                  {sideBySide && <td className="en-cell">{isSub ? '' : (row.labelEn || '')}</td>}
-                                  <td className="unit-cell">{row.unit || ''}</td>
-                                  {periods.map(p => {
-                                    const cell = row.cells.get(p)
-                                    return (
-                                      <td key={p} className="num-col">
-                                        {cell?.value != null ? (isSub ? <strong>{fmtNum(cell.value)}</strong> : fmtNum(cell.value)) : '—'}
-                                      </td>
-                                    )
-                                  })}
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )
-                })}
+              <div className="filing-report-layout">
+                <nav className="card filing-report-files" aria-label="Statements and notes">
+                  <div className="card-body">
+                    {statementMatches.map(({ statement, rows }) => (
+                      <button
+                        key={statement.id}
+                        className="outline-item"
+                        aria-current={statement.id === activeStatement.statement.id ? 'true' : undefined}
+                        onClick={() => setSelectedStatement(statement.id)}
+                      >
+                        <strong>{statement.name}</strong>
+                        <small>{lineItemCount(rows)} line items</small>
+                      </button>
+                    ))}
+                  </div>
+                </nav>
+                <div className="filing-report-content">
+                  <StatementView key={activeStatement.statement.id} statement={activeStatement.statement} rows={activeStatement.rows} />
+                </div>
               </div>
             )}
           </div>

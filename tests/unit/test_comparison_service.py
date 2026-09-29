@@ -192,3 +192,12 @@ def test_metric_catalog_returns_joinable_table_columns(tmp_path):
     assert catalog["IncomeStatement"] == ["Revenue", "Label"]
     assert "CompanyInfo" not in catalog
     assert "Unrelated" not in catalog
+
+
+def test_metric_definitions_declare_which_direction_is_favourable():
+    from src.comparison.api import _metric_definition
+
+    assert _metric_definition("PERatio")["direction"] == "lower"
+    assert _metric_definition("ReturnOnEquity")["direction"] == "higher"
+    assert "direction" not in _metric_definition("Revenue")
+    assert "direction" not in _metric_definition("IncomeStatement.Gross profit")

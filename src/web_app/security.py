@@ -368,12 +368,17 @@ class PathPolicy:
         read_roots: Iterable[str | Path] = (),
         write_roots: Iterable[str | Path] = (),
         allowed_files: Iterable[str | Path] = (),
+        denied_files: Iterable[str | Path] = (),
     ) -> None:
         self.read_roots = self._normalize_roots(read_roots)
         self.write_roots = self._normalize_roots(write_roots)
         self.allowed_files = frozenset(
             Path(path).expanduser().resolve(strict=False)
             for path in allowed_files
+        )
+        self.denied_files = frozenset(
+            Path(path).expanduser().resolve(strict=False)
+            for path in denied_files
         )
 
     @staticmethod
@@ -418,6 +423,8 @@ class PathPolicy:
         if not resolved.is_file():
             raise PathPolicyError("Database path is not a normal file")
 
+        if resolved in self.denied_files:
+            raise PathPolicyError("Database path is outside the configured data roots")
         roots = self.write_roots if writable else self.read_roots
         if resolved in self.allowed_files:
             return resolved
@@ -428,29 +435,45 @@ class PathPolicy:
 
 def configured_database_policy(
     extra_roots: Iterable[str | Path] = (),
+    *,
+    also_allow: Iterable[str] = (),
 ) -> PathPolicy:
-    """Build a policy around configured database files and their directories."""
-    from src.orchestrator.common.db_config import get_db1, get_db2, get_db3
+    """Build the policy for databases that API requests may read.
 
-    configured: list[Path] = []
-    for getter in (get_db1, get_db2, get_db3):
+    The application's database registry decides: request-selectable databases
+    are authorized, and every other registered store is refused even when an
+    explicitly configured data root contains it. The directory holding the
+    configured databases is deliberately *not* a root, because private stores
+    are co-located there.
+
+    ``also_allow`` names registry keys to authorize for server-chosen reads
+    (for example the portfolio database); never use it for client paths.
+    """
+    from src.orchestrator.common.db_config import DATABASES, database_locations
+
+    extra = set(also_allow)
+    allowed: list[Path] = []
+    denied: list[Path] = []
+    for spec in DATABASES:
         try:
-            configured.append(Path(getter()).expanduser().resolve(strict=False))
+            locations = [Path(path).expanduser().resolve(strict=False) for path in database_locations(spec)]
         except (OSError, ValueError):
-            logger.warning("Could not resolve a configured database path", exc_info=True)
+            logger.warning("Could not resolve the %s database path", spec.key, exc_info=True)
+            continue
+        if spec.request_selectable or spec.key in extra:
+            allowed.extend(locations)
+        else:
+            denied.extend(locations)
 
-    roots = {
-        path.parent
-        for path in configured
-    }
-    roots.update(
+    roots = tuple(
         Path(root).expanduser().resolve(strict=False)
         for root in extra_roots
     )
     return PathPolicy(
         read_roots=roots,
         write_roots=roots,
-        allowed_files=configured,
+        allowed_files=allowed,
+        denied_files=denied,
     )
 
 

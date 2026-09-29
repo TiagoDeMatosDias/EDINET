@@ -481,18 +481,25 @@ class FilingCatalog:
             )
             return int(cursor.rowcount)
 
+    _FACT_WITH_PERIOD = (
+        "SELECT f.*, c.period_start, c.period_end, c.instant "
+        "FROM xbrl_facts f "
+        "LEFT JOIN xbrl_contexts c ON c.doc_id = f.doc_id AND c.context_id = f.context_id "
+        "WHERE f.doc_id = ? AND f.numeric_value IS NOT NULL AND f.is_nil = 0 "
+    )
+
     def list_facts(self, doc_id: str, concept: str | None = None, limit: int = 500) -> list[sqlite3.Row]:
-        if concept:
-            return self._all(
-                "SELECT * FROM xbrl_facts WHERE doc_id = ? AND numeric_value IS NOT NULL "
-                "AND is_nil = 0 AND concept LIKE ? ORDER BY concept LIMIT ?",
-                (doc_id, concept, max(1, min(limit, 5000))),
-            )
+        """Return numeric facts with their context's reporting period."""
+        concept_filter = "AND f.concept LIKE ? " if concept else ""
+        params: tuple[Any, ...] = (doc_id, concept) if concept else (doc_id,)
         return self._all(
-            "SELECT * FROM xbrl_facts WHERE doc_id = ? AND numeric_value IS NOT NULL "
-            "AND is_nil = 0 ORDER BY concept LIMIT ?",
-            (doc_id, max(1, min(limit, 5000))),
+            f"{self._FACT_WITH_PERIOD}{concept_filter}ORDER BY f.concept LIMIT ?",
+            (*params, max(1, min(limit, 5000))),
         )
+
+    def statement_facts(self, doc_id: str) -> list[sqlite3.Row]:
+        """Every numeric fact of one filing with its period, for statement tables."""
+        return self._all(f"{self._FACT_WITH_PERIOD}ORDER BY f.rowid", (doc_id,))
 
     def _on_demand_sections(
         self,
