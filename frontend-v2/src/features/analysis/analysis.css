@@ -1,5 +1,5 @@
 /* Company analysis: one dense, keyboard-first research page. */
-.analysis { --analysis-gutter: clamp(18px, 3vw, 40px); --analysis-nav-top: 64px; display: flex; flex-direction: column; gap: 14px; }
+.analysis { --analysis-nav-top: 64px; display: flex; flex-direction: column; gap: 14px; }
 #main-content:has(> .analysis) { padding-top: 20px; }
 
 /* Header: identity, live quote, actions */
@@ -27,7 +27,7 @@
 .neg { color: var(--vermilion); }
 
 /* Sticky section bar */
-.analysis-nav { position: sticky; top: var(--analysis-nav-top); z-index: 15; min-height: 40px; display: flex; align-items: center; gap: 2px; margin: 0 calc(-1 * var(--analysis-gutter)); padding: 0 var(--analysis-gutter); border-bottom: 1px solid var(--border); background: rgb(243 240 232 / 95%); backdrop-filter: blur(10px); }
+.analysis-nav { position: sticky; top: var(--analysis-nav-top); z-index: 15; min-height: 40px; display: flex; align-items: center; gap: 2px; margin: 0 calc(-1 * var(--page-gutter)); padding: 0 var(--page-gutter); border-bottom: 1px solid var(--border); background: rgb(243 240 232 / 95%); backdrop-filter: blur(10px); }
 .analysis-nav > a { display: inline-flex; align-items: center; gap: 7px; padding: 10px 12px 8px; border-bottom: 2px solid transparent; color: var(--muted); font-size: .82rem; text-decoration: none; }
 .analysis-nav > a:hover { color: var(--text); }
 .analysis-nav > a.active { border-bottom-color: var(--vermilion); color: var(--text); }
@@ -45,7 +45,6 @@
 .analysis-section__header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
 .analysis-section__header h2 { margin: 0; font-family: var(--font-display); font-size: 1.18rem; font-weight: 500; outline: none; }
 .analysis-section__note { color: var(--muted); font-size: .76rem; }
-.panel { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 .panel__header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 9px 12px 0; }
 .panel__header h3, .profile h3 { margin: 0; color: var(--muted); font-size: .68rem; font-weight: 500; letter-spacing: .09em; text-transform: uppercase; }
 .panel__meta { color: var(--muted); font-size: .72rem; }
@@ -192,21 +191,6 @@
 /* Filings */
 .filings-panel__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: .76rem; }
 .filings-panel .form-error { margin: 8px 10px 0; }
-.filings-table-wrap { overflow-x: auto; }
-.filings-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
-.filings-table th { padding: 6px 12px; border-bottom: 1px solid var(--border-strong); color: var(--muted); font-size: .66rem; font-weight: 500; letter-spacing: .07em; text-align: left; text-transform: uppercase; white-space: nowrap; }
-.filings-table td { padding: 6px 12px; border-bottom: 1px solid var(--border); vertical-align: baseline; white-space: nowrap; }
-.filings-table tbody tr { cursor: pointer; }
-.filings-table tbody tr:hover > td { background: #eeeae0; }
-.filings-table .num { text-align: right; }
-.filings-table .mono { color: var(--muted); font-family: var(--font-mono); font-size: .74rem; }
-.filings-table__period { color: var(--text); font-family: var(--font-mono); font-weight: 500; text-decoration: none; }
-.filings-table__period:hover { text-decoration: underline; text-underline-offset: 3px; }
-.filings-table td small { margin-left: 10px; color: var(--muted); font-size: .7rem; }
-.status { display: inline-flex; align-items: center; gap: 4px; font-size: .74rem; text-transform: capitalize; }
-.status svg { width: 13px; height: 13px; }
-.status--ok { color: var(--indigo); }
-.status--error { color: var(--vermilion); }
 .filings-panel__more { margin: 7px 12px 9px; font-size: .76rem; }
 
 @media (max-width: 1240px) {

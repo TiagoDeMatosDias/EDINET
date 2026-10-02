@@ -11,6 +11,7 @@ import argparse
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -298,8 +299,8 @@ def _capture_with_playwright(
 
         page.goto(f"{base_url}/filings/S100DEMO", wait_until="networkidle")
         dismiss_local_warning(page)
-        page.get_by_role("button", name="Sections", exact=True).click()
-        page.get_by_text("English", exact=True).first.wait_for(timeout=10_000)
+        page.get_by_role("tab", name=re.compile("Sections")).click()
+        page.locator(".reader-english p").first.wait_for(timeout=10_000)
         page.screenshot(path=str(output_dir / "web-filing-translation.png"))
 
         _seed_research(research_db)

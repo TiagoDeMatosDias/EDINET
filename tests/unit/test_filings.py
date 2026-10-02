@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import sqlite3
 import zipfile
 
 import pytest
@@ -72,18 +73,18 @@ def test_type1_archive_is_stored_and_indexed(tmp_path):
     assert loaded["content"] == b"<html><h1>Overview</h1><p>Revenue increased.</p></html>"
 
 
-def test_coverage_summary_counts_unique_filings_companies_and_archives(tmp_path):
+def test_coverage_summary_counts_filings_companies_forms_and_dates(tmp_path):
     catalog = FilingCatalog(tmp_path / "Filings.db")
 
-    def filing(doc_id: str, company: str, status: str, archive_hash: str) -> dict:
+    def filing(doc_id: str, company: str, status: str, archive_hash: str, submitted: str = "2025-06-01T00:00:00Z", form: str = "030000") -> dict:
         return {
             "doc_id": doc_id,
             "edinet_code": company,
             "submitter_name": company,
             "period_start": "2024-04-01",
             "period_end": "2025-03-31",
-            "submitted_at": "2025-06-01T00:00:00Z",
-            "form_code": "030000",
+            "submitted_at": submitted,
+            "form_code": form,
             "doc_type_code": "1",
             "xbrl_flag": "1",
             "csv_flag": "0",
@@ -97,9 +98,9 @@ def test_coverage_summary_counts_unique_filings_companies_and_archives(tmp_path)
             "updated_at": "2025-06-01T00:00:00Z",
         }
 
-    catalog.upsert_filing(filing("S100ONE", "E00001", "parsed", "archive-a"))
-    catalog.upsert_filing(filing("S100TWO", "E00001", "parsed", "archive-a"))
-    catalog.upsert_filing(filing("S100THREE", "E00002", "error", "archive-b"))
+    catalog.upsert_filing(filing("S100ONE", "E00001", "parsed", "archive-a", "2024-06-01T00:00:00Z"))
+    catalog.upsert_filing(filing("S100TWO", "E00001", "parsed", "archive-a", "2025-06-01T00:00:00Z", "043A00"))
+    catalog.upsert_filing(filing("S100THREE", "E00002", "error", "archive-b", "2026-06-01T00:00:00Z"))
 
     conn = connect_write(catalog.path)
     try:
@@ -115,11 +116,49 @@ def test_coverage_summary_counts_unique_filings_companies_and_archives(tmp_path)
     assert catalog.coverage_summary() == {
         "unique_filings": 3,
         "unique_companies": 2,
-        "unique_archives": 2,
-        "parsed_filings": 2,
-        "error_filings": 1,
         "filings_with_issues": 1,
+        "first_submitted": "2024-06-01T00:00:00Z",
+        "last_submitted": "2026-06-01T00:00:00Z",
     }
+    assert [dict(row) for row in catalog.form_coverage()] == [
+        {"form_code": "030000", "filings": 2, "companies": 2},
+        {"form_code": "043A00", "filings": 1, "companies": 1},
+    ]
+    assert [row["doc_id"] for row in catalog.list_recent()] == ["S100THREE", "S100TWO", "S100ONE"]
+    assert [row["doc_id"] for row in catalog.list_recent(form_codes=["030000"])] == ["S100THREE", "S100ONE"]
+    assert [row["doc_id"] for row in catalog.list_recent("E00001", form_codes=["030000"])] == ["S100ONE"]
+
+
+def test_coverage_summary_reads_no_column_stored_after_the_archive_blob(tmp_path, monkeypatch):
+    # Columns after archive_content force SQLite to page through every archive;
+    # on a full catalog that turned the landing page into a minutes-long scan.
+    import src.filings.catalog as catalog_module
+
+    catalog = FilingCatalog(tmp_path / "Filings.db")
+    conn = connect_write(catalog.path)
+    try:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(filings)")]
+    finally:
+        conn.close()
+    after_blob = set(columns[columns.index("archive_content") + 1:])
+    read: set[str] = set()
+
+    def recording_connect(*args, **kwargs):
+        connection = connect_write(*args, **kwargs)
+
+        def authorizer(action, table, column, *_):
+            if action == sqlite3.SQLITE_READ and table == "filings":
+                read.add(column)
+            return sqlite3.SQLITE_OK
+
+        connection.set_authorizer(authorizer)
+        return connection
+
+    monkeypatch.setattr(catalog_module, "connect_write", recording_connect)
+    catalog.coverage_summary()
+    catalog.form_coverage()
+
+    assert read and not read & after_blob
 
 
 def test_listed_facts_carry_context_periods(tmp_path):
@@ -389,3 +428,44 @@ def test_export_company_filings_requires_authentication():
     with pytest.raises(HTTPException) as exc_info:
         filings_api.export_company_filings(request, "E12345")
     assert exc_info.value.status_code == 401
+
+
+def test_report_files_are_named_by_their_own_headings():
+    from src.filings.report_files import describe_report_files
+
+    def page(*headings: str) -> bytes:
+        return ("<html><body>" + "".join(f"<p>{heading}</p>" for heading in headings) + "</body></html>").encode()
+
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("XBRL/PublicDoc/0105310_honbun_x.htm", page("２【財務諸表等】", "（１）【財務諸表】", "①【貸借対照表】"))
+        archive.writestr("XBRL/PublicDoc/0101010_honbun_x.htm", page("第一部【企業情報】", "第1【企業の概況】", "1【主要な経営指標等の推移】"))
+        archive.writestr("XBRL/PublicDoc/0000000_header_x.htm", page("【表紙】", "【提出書類】"))
+        archive.writestr("XBRL/PublicDoc/0102012_honbun_x.htm", page("５【重要な契約等】", "６【研究開発活動】"))
+        archive.writestr("XBRL/PublicDoc/0109010_honbun_x.htm", page("【ファンドの状況】"))
+        archive.writestr("XBRL/AuditDoc/jpaud-aar-cn-001_x.htm", page("独立監査人の監査報告書"))
+    members = [
+        {"artifact_id": name, "member_path": f"XBRL/{folder}/{name}.htm", "size_bytes": 1}
+        for folder, name in (
+            ("PublicDoc", "0105310_honbun_x"),
+            ("PublicDoc", "0101010_honbun_x"),
+            ("PublicDoc", "0000000_header_x"),
+            ("PublicDoc", "0102012_honbun_x"),
+            ("PublicDoc", "0109010_honbun_x"),
+            ("AuditDoc", "jpaud-aar-cn-001_x"),
+        )
+    ]
+
+    files = describe_report_files(stream.getvalue(), members)
+
+    assert [(item["label"], item["group"]) for item in files] == [
+        ("Cover page", "cover"),
+        ("Company overview", "business"),
+        ("Material contracts · Research and development", "business"),
+        ("Balance sheet (parent company)", "financials"),
+        ("ファンドの状況", "business"),
+        ("Auditor's report (non-consolidated)", "audit"),
+    ]
+    assert files[1]["heading"] == "企業の概況"
+    assert files[3]["heading"] == "貸借対照表"
+    assert describe_report_files(None, members[:1])[0]["label"] == "Section 0105310"

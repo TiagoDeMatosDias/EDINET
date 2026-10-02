@@ -75,22 +75,22 @@ Run Compare to produce a side-by-side matrix. The result uses each company's lat
 
 ### Filing Explorer
 
-The default `/filings` page intentionally shows only the shared company finder and a compact coverage summary. It does not load a filing list until a company is selected. Coverage includes unique filings, companies with filings, parsed filings, and retained archive packages.
+`/filings` opens on the archive at a glance: how many reports and filers it holds, the submission date range, and how many reports carry data-quality notes. Report-type tabs (annual reports, semi-annual and quarterly reports, amendments, funds and trusts, foreign companies) show how many of each are retained and filter everything below them; `[` and `]` step through them. The latest filings from every filer are listed newest first with the English company name, ticker, and EDINET code where the research database knows the filer, and recently opened filings sit above the list.
 
-<img src="images/web-filings.png" alt="Filing Explorer search and coverage statistics" width="900">
+Find a company (`F`) to list its reports instead, with links to its analysis (`A`) and an **Export all** download of every retained archive. The company and report type live in the URL, so the browser's back button and shared links return to the same view. `J` jumps into a list, `↑`/`↓` move between filings, and `Enter` opens one.
 
-Search by company name, ticker, EDINET code, industry, or market, then choose a filing. The dedicated viewer includes:
+<img src="images/web-filings.png" alt="Filing Explorer with archive summary, report types, and the latest filings" width="900">
 
-- Report — sanitized source HTML reconstructed from the retained ZIP;
-- Sections — narrative sections with Japanese and English panes;
-- Statements — numeric XBRL facts organized into statement layouts;
-- Audit — archive and parse provenance;
-- Taxonomy — filing taxonomy information;
-- Quality — parser and data-quality issues.
+The filing viewer names the company and the report (form, fiscal period, filing time, size, and parse status), steps to the company's older or newer report with `[` and `]` while keeping the open tab, and links back to the company's filings (`L`) and analysis (`A`). Its four tabs (`1`–`4`) are:
+
+- **Report** — the original EDINET documents, listed in statutory order and named by their own headings (Company overview, Consolidated cash flow statement, Auditor's report, …) with the Japanese heading beside each. Choose Japanese, side by side, or English (`T`; the choice is remembered), and `J`/`K` move between documents.
+- **Sections** — the narrative text with an outline grouped by document, search across the Japanese and English text (`F`), and English alongside (`T`).
+- **Statements** — every statement and note table built from the filing's own XBRL linkbases, grouped into business results, financial statements, notes, and other disclosures. Currency amounts share one unit per table, per-share amounts, share counts, and ratios keep their own, a change column compares the latest period with the prior one, and **CSV** exports the table with unrounded values.
+- **Details** — data-quality notes, the parse record, the package contents by folder, and the taxonomy concepts the filing reports, summarised by taxonomy and filterable.
 
 ### Japanese and English side by side
 
-Translation never replaces the Japanese source. Sections and report HTML keep the original on the left and place a complete English result alongside it.
+Translation never replaces the Japanese source. Sections and report documents keep the original on the left and place a complete English result alongside it. Report documents are translated only when you ask for English; a whole-document translation that cannot be completed leaves each section translatable on its own.
 
 <img src="images/web-filing-translation.png" alt="Japanese and English filing sections shown side by side" width="900">
 

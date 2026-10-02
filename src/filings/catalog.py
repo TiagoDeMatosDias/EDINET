@@ -64,6 +64,8 @@ class FilingCatalog:
                 );
                 CREATE INDEX IF NOT EXISTS idx_filings_company_date
                     ON filings(edinet_code, submitted_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_filings_submitted
+                    ON filings(submitted_at DESC);
                 CREATE TABLE IF NOT EXISTS artifacts (
                     artifact_id TEXT PRIMARY KEY,
                     doc_id TEXT NOT NULL REFERENCES filings(doc_id) ON DELETE CASCADE,
@@ -353,60 +355,65 @@ class FilingCatalog:
             (edinet_code, max(1, min(limit, 500)), max(0, offset)),
         )
 
-    def list_recent(self, company_code: str | None = None, limit: int = 100, offset: int = 0) -> list[sqlite3.Row]:
+    def list_recent(
+        self,
+        company_code: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        form_codes: Iterable[str] | None = None,
+    ) -> list[sqlite3.Row]:
+        """Newest submissions first, optionally for one company or some EDINET form codes."""
         cap = max(1, min(limit, 500))
+        clauses: list[str] = []
+        params: list[Any] = []
         if company_code:
-            return self._all(
-                f"SELECT {_FILING_METADATA_COLUMNS} FROM filings "
-                "WHERE edinet_code = ? ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
-                (company_code, cap, max(0, offset)),
-            )
+            clauses.append("edinet_code = ?")
+            params.append(company_code)
+        forms = [code for code in (form_codes or ()) if code]
+        if forms:
+            clauses.append(f"form_code IN ({','.join('?' * len(forms))})")
+            params.extend(forms)
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         return self._all(
-            f"SELECT {_FILING_METADATA_COLUMNS} FROM filings "
+            f"SELECT {_FILING_METADATA_COLUMNS} FROM filings {where}"
             "ORDER BY submitted_at DESC LIMIT ? OFFSET ?",
-            (cap, max(0, offset)),
+            (*params, cap, max(0, offset)),
         )
 
-    def coverage(self) -> list[sqlite3.Row]:
+    def form_coverage(self) -> list[sqlite3.Row]:
+        """Filings and companies per EDINET form code, largest first."""
         return self._all(
-            "SELECT status, COUNT(*) AS filing_count, COUNT(DISTINCT edinet_code) AS company_count FROM filings GROUP BY status ORDER BY status",
+            "SELECT form_code, COUNT(*) AS filings, "
+            "COUNT(DISTINCT NULLIF(TRIM(COALESCE(edinet_code, '')), '')) AS companies "
+            "FROM filings GROUP BY form_code ORDER BY filings DESC",
             (),
         )
 
-    def coverage_summary(self) -> dict[str, int]:
-        """Return compact filing and company counts for the Filing Explorer landing page."""
+    def coverage_summary(self) -> dict[str, Any]:
+        """Return compact filing and company counts for the Filing Explorer landing page.
+
+        Every column read here sits before ``archive_content`` in ``filings`` or comes
+        from an index, so the summary never pages through the retained archives
+        (columns stored after the BLOB, such as ``status``, would read every archive).
+        """
         row = self._one(
             """
             SELECT
-                COUNT(DISTINCT doc_id) AS unique_filings,
+                COUNT(*) AS unique_filings,
                 COUNT(DISTINCT NULLIF(TRIM(COALESCE(edinet_code, '')), '')) AS unique_companies,
-                COUNT(DISTINCT NULLIF(TRIM(COALESCE(archive_sha256, '')), '')) AS unique_archives,
-                SUM(CASE WHEN status = 'parsed' THEN 1 ELSE 0 END) AS parsed_filings,
-                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_filings,
+                MIN(NULLIF(submitted_at, '')) AS first_submitted,
+                MAX(NULLIF(submitted_at, '')) AS last_submitted,
                 (SELECT COUNT(DISTINCT doc_id) FROM quality_issues) AS filings_with_issues
             FROM filings
             """,
             (),
         )
-        if row is None:
-            return {
-                "unique_filings": 0,
-                "unique_companies": 0,
-                "unique_archives": 0,
-                "parsed_filings": 0,
-                "error_filings": 0,
-                "filings_with_issues": 0,
-            }
         return {
-            key: int(row[key] or 0)
-            for key in (
-                "unique_filings",
-                "unique_companies",
-                "unique_archives",
-                "parsed_filings",
-                "error_filings",
-                "filings_with_issues",
-            )
+            "unique_filings": int(row["unique_filings"] or 0) if row else 0,
+            "unique_companies": int(row["unique_companies"] or 0) if row else 0,
+            "filings_with_issues": int(row["filings_with_issues"] or 0) if row else 0,
+            "first_submitted": row["first_submitted"] if row else None,
+            "last_submitted": row["last_submitted"] if row else None,
         }
 
     def list_artifacts(self, doc_id: str) -> list[sqlite3.Row]:

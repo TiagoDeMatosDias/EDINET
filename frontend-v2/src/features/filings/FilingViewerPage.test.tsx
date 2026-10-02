@@ -37,7 +37,7 @@ function stubViewerBackend(translationStatus = 200) {
     authorizations.push(new Headers(init?.headers).get('Authorization'))
     if (path === '/api/filings/S100TEST') {
       return jsonResponse({
-        filing: { doc_id: 'S100TEST', submitter_name: 'Test Company', status: 'parsed', archive_sha256: 'abc' },
+        filing: { doc_id: 'S100TEST', edinet_code: 'E00001', submitter_name: 'テスト株式会社', period_start: '2025-04-01', period_end: '2026-03-31', form_code: '030000', status: 'parsed', archive_sha256: 'abc' },
         artifacts: [],
       })
     }
@@ -85,7 +85,18 @@ function stubViewerBackend(translationStatus = 200) {
       return jsonResponse({ sections: [{ section_id: 'section-1', title: '事業', text: '日本語の本文', ordinal: 1 }], count: 1 })
     }
     if (path === '/api/filings/S100TEST/quality') return jsonResponse({ issues: [] })
-    if (path === '/api/filings/S100TEST/htm-files') return jsonResponse({ files: [] })
+    if (path === '/api/filings/S100TEST/htm-files') {
+      return jsonResponse({ files: [
+        { artifact_id: 'cover', member_path: 'XBRL/PublicDoc/0000000_header.htm', filename: '0000000_header', size_bytes: 2048, label: 'Cover page', heading: '表紙', code: '0000000', group: 'cover' },
+        { artifact_id: 'overview', member_path: 'XBRL/PublicDoc/0101010_honbun.htm', filename: '0101010_honbun', size_bytes: 4096, label: 'Company overview', heading: '企業の概況', code: '0101010', group: 'business' },
+      ] })
+    }
+    if (path === '/api/filings/S100TEST/html/overview') return jsonResponse({ html: '<html><head></head><body><p>本文</p></body></html>' })
+    if (path === '/api/filings/S100TEST/html/overview?translate=true') return jsonResponse({ html: '<html><head></head><body><p>本文</p></body></html>', html_en: '<html><head></head><body><p>Body</p></body></html>' })
+    if (path === '/api/filings?company_code=E00001&limit=500') {
+      const row = (doc_id: string, period_end: string) => ({ doc_id, edinet_code: 'E00001', company_name: 'TEST COMPANY', ticker: '99990', period_end, form_code: '030000', status: 'parsed' })
+      return jsonResponse({ filings: [row('S100NEWER', '2027-03-31'), row('S100TEST', '2026-03-31'), row('S100OLDER', '2025-03-31')] })
+    }
     return jsonResponse({})
   }))
   return requests
@@ -95,13 +106,14 @@ describe('filing document translation', () => {
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+    window.localStorage.clear()
   })
 
   it('loads one complete document translation and displays it beside the original', async () => {
     const requests = stubViewerBackend()
     renderViewer()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Sections' }))
+    fireEvent.click(await screen.findByRole('tab', { name: /Sections/ }))
 
     expect(await screen.findByText('Complete English body')).toBeInTheDocument()
     expect(screen.getByText('日本語の本文')).toBeInTheDocument()
@@ -113,7 +125,7 @@ describe('filing document translation', () => {
     const requests = stubViewerBackend(503)
     renderViewer()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Sections' }))
+    fireEvent.click(await screen.findByRole('tab', { name: /Sections/ }))
 
     expect(await screen.findByText('日本語の本文')).toBeInTheDocument()
     expect(await screen.findByRole('alert')).toHaveTextContent('residual Japanese remains')
@@ -133,16 +145,16 @@ describe('filing statements and downloads', () => {
     stubViewerBackend()
     renderViewer()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Statements' }))
+    fireEvent.click(await screen.findByRole('tab', { name: /Statements/ }))
 
     const income = await screen.findByRole('region', { name: 'Consolidated statement of income' })
     const headers = Array.from(income.querySelectorAll('thead th')).map(cell => cell.textContent)
-    expect(headers).toEqual(['Line item', 'Unit', '2026-03-3112 months', '2025-03-3112 months'])
-    expect(screen.getByText('1 sparsely reported period is hidden.', { exact: false })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Show all periods' }))
+    expect(headers).toEqual(['JPY thousands', '2026-03-3112 months', '2025-03-3112 months', 'Change'])
+    expect(Array.from(income.querySelectorAll('tbody td')).map(cell => cell.textContent)).toEqual(['1,200', '1,100', '+9.1%', '90', '80', '+12.5%'])
+    fireEvent.click(screen.getByRole('button', { name: 'Show 1 sparse period' }))
     expect(Array.from(income.querySelectorAll('thead th')).length).toBe(5)
 
-    fireEvent.click(screen.getByRole('button', { name: /Notes segment information \(1\)/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Segment information \(1\)/ }))
     const segments = await screen.findByRole('region', { name: 'Notes segment information (1)' })
     expect(Array.from(segments.querySelectorAll('thead th')).map(cell => cell.textContent)[1]).toBe('Operating segments axis')
     expect(screen.getByText('Automotive')).toBeInTheDocument()
@@ -152,13 +164,13 @@ describe('filing statements and downloads', () => {
     stubViewerBackend()
     renderViewer()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Statements' }))
+    fireEvent.click(await screen.findByRole('tab', { name: /Statements/ }))
     await screen.findByRole('region', { name: 'Consolidated statement of income' })
     fireEvent.change(screen.getByRole('textbox', { name: 'Filter line items' }), { target: { value: 'profit' } })
 
     const income = screen.getByRole('region', { name: 'Consolidated statement of income' })
-    expect(Array.from(income.querySelectorAll('tbody tr')).map(row => row.querySelector('td')?.textContent)).toEqual(['Profit'])
-    expect(screen.queryByRole('button', { name: /Notes segment information/ })).not.toBeInTheDocument()
+    expect(Array.from(income.querySelectorAll('tbody tr')).map(row => row.querySelector('th')?.textContent)).toEqual(['Profit'])
+    expect(screen.queryByRole('button', { name: /Segment information/ })).not.toBeInTheDocument()
   })
 
   it('downloads the filing archive with the bearer token instead of an anchor navigation', async () => {
@@ -176,5 +188,39 @@ describe('filing statements and downloads', () => {
     expect(authorizations[index]).toBe('Bearer token-123')
     expect(screen.queryByRole('link', { name: 'ZIP' })).not.toBeInTheDocument()
     click.mockRestore()
+  })
+})
+
+describe('filing report documents and navigation', () => {
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    window.localStorage.clear()
+  })
+
+  it('opens the first business document by name and translates only when asked', async () => {
+    const requests = stubViewerBackend()
+    renderViewer()
+
+    expect(await screen.findByRole('heading', { name: 'Company overview' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Cover page/ })).toBeInTheDocument()
+    expect(await screen.findByTitle('Company overview (Japanese original)')).toBeInTheDocument()
+    expect(requests.some(path => path.includes('translate=true'))).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Side by side' }))
+
+    expect(await screen.findByTitle('Company overview (English translation)')).toBeInTheDocument()
+    expect(requests.filter(path => path.includes('translate=true')).length).toBe(1)
+  })
+
+  it('names the company in English and links the older and newer reports', async () => {
+    stubViewerBackend()
+    renderViewer()
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'TEST COMPANY' })).toBeInTheDocument()
+    expect(screen.getByText('テスト株式会社')).toBeInTheDocument()
+    expect(screen.getAllByText('Annual securities report').length).toBeGreaterThan(0)
+    expect(screen.getByRole('link', { name: /FY 2025-03/ })).toHaveAttribute('href', '/filings/S100OLDER?company=E00001')
+    expect(screen.getByRole('link', { name: /FY 2027-03/ })).toHaveAttribute('href', '/filings/S100NEWER?company=E00001')
   })
 })

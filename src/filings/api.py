@@ -29,6 +29,7 @@ from src.orchestrator.common.sqlite import connect_read
 from .acquisition import EdinetAcquisitionError, EdinetDownloadClient
 from .archive import ArchiveMemberNotFoundError, UnsafeArchiveError
 from .catalog import FilingCatalog
+from .report_files import describe_report_files
 from .runtime import catalog
 from .statements import build_statement_tables, read_linkbases
 from .translate import (
@@ -181,17 +182,56 @@ def export_company_filings(request: Request, edinet_code: str) -> Response:
     )
 
 
+def _company_directory(codes: Iterable[str]) -> dict[str, dict[str, str]]:
+    """English names and tickers for EDINET codes, from the Standardized database when present."""
+    wanted = sorted({code for code in codes if code})
+    if not wanted:
+        return {}
+    try:
+        conn = connect_read(get_db2())
+    except (OSError, sqlite3.Error, TypeError):
+        return {}
+    directory: dict[str, dict[str, str]] = {}
+    try:
+        placeholders = ",".join("?" * len(wanted))
+        for code, name, ticker in conn.execute(
+            f"SELECT Company_Code, Company_Name, Company_Ticker FROM CompanyInfo WHERE Company_Code IN ({placeholders})",
+            wanted,
+        ):
+            directory[str(code)] = {"company_name": str(name or ""), "ticker": str(ticker or "")}
+    except sqlite3.Error as exc:
+        logger.info("Company names unavailable for the filing list: %s", exc)
+    finally:
+        conn.close()
+    return directory
+
+
+def _with_company_names(rows: list[Any]) -> list[dict[str, Any]]:
+    records = [_record(row) for row in rows]
+    directory = _company_directory(str(record.get("edinet_code") or "") for record in records)
+    for record in records:
+        record.update(directory.get(str(record.get("edinet_code") or ""), {}))
+    return records
+
+
 @router.get("")
-def list_filings(company_code: str | None = None, limit: int = 100, offset: int = 0) -> dict[str, Any]:
-    rows = catalog.list_recent(company_code.strip() if company_code else None, limit, offset)
-    return {"filings": [_record(row) for row in rows], "limit": min(max(limit, 1), 500), "offset": max(offset, 0)}
+def list_filings(
+    company_code: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    form: str | None = None,
+) -> dict[str, Any]:
+    """Newest filings first; ``form`` takes comma-separated EDINET form codes."""
+    forms = [code.strip() for code in (form or "").split(",") if code.strip()]
+    rows = catalog.list_recent(company_code.strip() if company_code else None, limit, offset, forms)
+    return {"filings": _with_company_names(rows), "limit": min(max(limit, 1), 500), "offset": max(offset, 0)}
 
 
 @router.get("/coverage")
 def filing_coverage() -> dict[str, Any]:
     return {
         "summary": catalog.coverage_summary(),
-        "coverage": [_record(row) for row in catalog.coverage()],
+        "forms": [_record(row) for row in catalog.form_coverage()],
     }
 
 
@@ -206,14 +246,15 @@ def get_filing(request: Request, doc_id: str) -> dict[str, Any]:
         try:
             from src.research.runtime import store as research_store
 
+            company = _company_directory([str(filing.get("edinet_code") or "")]).get(str(filing.get("edinet_code") or ""), {})
             research_store.record_recent_work(
                 user.user_id,
                 "filing",
                 f"filing:{doc_id}",
-                str(filing.get("submitter_name") or filing.get("edinet_code") or doc_id),
+                str(company.get("company_name") or filing.get("submitter_name") or filing.get("edinet_code") or doc_id),
                 " · ".join(
                     value for value in (
-                        str(filing.get("period_end") or "").strip(),
+                        f"FY {str(filing.get('period_end') or '')[:7]}" if filing.get("period_end") else "",
                         str(filing.get("form_code") or "XBRL").strip(),
                         doc_id,
                     ) if value
@@ -397,7 +438,7 @@ def list_xbrl_eligible(
 ) -> dict[str, Any]:
     """List documents that have CSV data but are missing XBRL archives.
 
-    Set *doc_type_code* to filter by EDINET form code (030000=annual, 07A000=quarterly).
+    Set *doc_type_code* to filter by EDINET document type (120=annual securities report, 140=quarterly, 160=semi-annual).
     Leave empty for all document types.
     """
     if not isinstance(getattr(request.state, "user", None), AuthenticatedUser):
@@ -457,7 +498,7 @@ def trigger_xbrl_backfill(
 ) -> dict[str, Any]:
     """Download and archive XBRL packages for all eligible documents.
 
-    Set *doc_type_code* to filter by EDINET form code (030000=annual, 07A000=quarterly).
+    Set *doc_type_code* to filter by EDINET document type (120=annual securities report, 140=quarterly, 160=semi-annual).
     Leave empty for all document types. Requires operator or admin permission.
     """
     _require_operator(request)
@@ -616,36 +657,23 @@ def get_filing_html(
     return result
 
 
+@lru_cache(maxsize=32)
+def _report_files(doc_id: str, archive_sha256: str) -> list[dict[str, Any]]:
+    """Labelled HTML members of one retained archive (cached per archive)."""
+    members = [
+        _record(a) for a in catalog.list_artifacts(doc_id)
+        if str(a["member_path"]).lower().endswith((".htm", ".html"))
+    ]
+    return describe_report_files(catalog.get_archive_content(doc_id), members)
+
+
 @router.get("/{doc_id}/htm-files")
 def list_htm_files(doc_id: str) -> dict[str, Any]:
-    """List all HTM/HTML files available for a filing, with descriptions."""
-    if catalog.get_filing(doc_id) is None:
+    """List a filing's HTML documents in report order, named by their own headings."""
+    filing = catalog.get_filing(doc_id)
+    if filing is None:
         raise HTTPException(status_code=404, detail="Filing not found")
-
-    artifacts = catalog.list_artifacts(doc_id)
-    htm_files = []
-    for a in artifacts:
-        path = str(a["member_path"])
-        if not path.lower().endswith((".htm", ".html")):
-            continue
-        # Derive a label from the filename
-        name = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
-        # Parse EDINET naming: 0000000_header_... or 0101010_honbun_...
-        label = name
-        if "_honbun_" in name:
-            section_num = name.split("_honbun_")[0]
-            label = f"Section {section_num}"
-        elif "_header_" in name:
-            label = "Cover Page"
-        htm_files.append({
-            "artifact_id": a["artifact_id"],
-            "member_path": path,
-            "label": label,
-            "filename": name,
-            "size_bytes": a["size_bytes"],
-        })
-
-    return {"files": htm_files}
+    return {"files": _report_files(doc_id, str(filing["archive_sha256"] or ""))}
 
 
 # -- translation --

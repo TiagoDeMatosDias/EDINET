@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Search, X } from 'lucide-react'
-import { useDeferredValue, useState } from 'react'
+import { useDeferredValue, useState, type Ref } from 'react'
 
 import { apiRequest, queryString } from '../api/client'
 import type { SecuritySearchResult } from '../api/types'
@@ -37,6 +37,8 @@ interface CompanyPickerProps {
   clearOnSelect?: boolean
   requireCompanyCode?: boolean
   disabled?: boolean
+  /** Lets a page focus the finder from a keyboard shortcut. */
+  inputRef?: Ref<HTMLInputElement>
 }
 
 export function CompanyPicker({
@@ -47,9 +49,11 @@ export function CompanyPicker({
   clearOnSelect = false,
   requireCompanyCode = true,
   disabled = false,
+  inputRef,
 }: CompanyPickerProps) {
   const [typedQuery, setTypedQuery] = useState('')
   const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(0)
   const search = useCompanySearch(typedQuery)
   const selectedText = selected?.company_name || selected?.ticker || selected?.company_code || ''
   const query = selected && !clearOnSelect ? selectedText : typedQuery
@@ -69,6 +73,26 @@ export function CompanyPicker({
   }
 
   const results = search.data?.results ?? []
+  const choosable = results.filter(company => !requireCompanyCode || company.company_code)
+  const activeIndex = Math.min(active, Math.max(0, choosable.length - 1))
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Escape') {
+      if (open) setOpen(false)
+      else event.currentTarget.blur()
+      return
+    }
+    if (event.key === 'Enter') {
+      if (open && choosable[activeIndex]) {
+        event.preventDefault()
+        choose(choosable[activeIndex])
+      }
+      return
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    event.preventDefault()
+    setOpen(true)
+    if (choosable.length) setActive((activeIndex + (event.key === 'ArrowDown' ? 1 : -1) + choosable.length) % choosable.length)
+  }
   return (
     <div
       className="company-picker"
@@ -81,8 +105,12 @@ export function CompanyPicker({
       <div className="company-picker-input">
         <Search aria-hidden="true" />
         <input
+          ref={inputRef}
           className="input"
+          role="combobox"
           aria-label={label}
+          aria-expanded={open && query.trim().length >= 2}
+          aria-autocomplete="list"
           value={query}
           disabled={disabled}
           placeholder={placeholder}
@@ -91,7 +119,9 @@ export function CompanyPicker({
             setTypedQuery(event.target.value)
             if (selected) onSelect(null)
             setOpen(true)
+            setActive(0)
           }}
+          onKeyDown={onKeyDown}
         />
         {selected && <button type="button" className="icon-button" aria-label={`Clear ${label}`} onClick={clear}><X /></button>}
       </div>
@@ -104,6 +134,10 @@ export function CompanyPicker({
               type="button"
               role="option"
               key={`${company.company_code ?? 'ticker'}-${company.ticker}-${company.company_name}`}
+              aria-selected={choosable[activeIndex] === company}
+              className={choosable[activeIndex] === company ? 'active' : undefined}
+              tabIndex={-1}
+              onMouseEnter={() => { const index = choosable.indexOf(company); if (index !== -1) setActive(index) }}
               disabled={requireCompanyCode && !company.company_code}
               onMouseDown={event => event.preventDefault()}
               onClick={() => choose(company)}
