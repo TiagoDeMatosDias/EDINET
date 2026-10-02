@@ -1047,6 +1047,7 @@ def run_screening_backtest_set(
     ranking_algorithm: str = "none",
     ranking_rules: list[dict] | None = None,
     computed_columns: list[dict] | None = None,
+    criteria_match: str = "all",
     durations: list[str] | None = None,
     benchmark_ticker: str = "",
     benchmark_mode: str = "ticker",
@@ -1087,6 +1088,7 @@ def run_screening_backtest_set(
         ranking_algorithm=ranking_algorithm,
         ranking_rules=ranking_rules,
         computed_columns=computed_columns,
+        criteria_match=criteria_match,
     )
 
     if screen_df is None or screen_df.empty:
@@ -1588,6 +1590,7 @@ def run_screening_backtest_rolling(
     ranking_algorithm: str = "none",
     ranking_rules: list[dict] | None = None,
     computed_columns: list[dict] | None = None,
+    criteria_match: str = "all",
     benchmark_ticker: str = "",
     benchmark_mode: str = "ticker",
     base_currency: str = "",
@@ -1700,6 +1703,7 @@ def run_screening_backtest_rolling(
                 ranking_rules=ranking_rules,
                 computed_columns=computed_columns,
                 available_metrics=available_metrics,
+                criteria_match=criteria_match,
             )
         except Exception as e:
             logger.warning(

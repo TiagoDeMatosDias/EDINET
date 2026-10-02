@@ -5,6 +5,8 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../hooks/useHealth'
 import { BrandLockup } from './Brand'
 import { GlobalCompanySearch } from './GlobalCompanySearch'
+import { GlobalHotkeys } from './GlobalHotkeys'
+import { pageShortcutFor } from './pageShortcuts'
 import { useAuth } from '../features/auth/authContext'
 
 const navigation = [
@@ -25,7 +27,11 @@ function Navigation({ onNavigate }: { onNavigate?: () => void }) {
     ? [...navigation.slice(0, 5), pipelineNavigation, ...navigation.slice(5)]
     : navigation
   return <nav className="primary-nav" aria-label="Primary navigation">
-    {items.map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/overview'} onClick={onNavigate}><Icon aria-hidden="true" /><span>{item.label}</span></NavLink> })}
+    {items.map(item => {
+      const Icon = item.icon
+      const key = pageShortcutFor(item.to)?.key.toUpperCase()
+      return <NavLink key={item.to} to={item.to} end={item.to === '/overview'} onClick={onNavigate} title={key ? `${item.label} (G then ${key})` : undefined}><Icon aria-hidden="true" /><span>{item.label}</span></NavLink>
+    })}
     {auth.user && <NavLink to="/account" end onClick={onNavigate}><Settings aria-hidden="true" /><span>Account</span></NavLink>}
     {auth.user?.role === 'admin' && <NavLink to="/admin" end onClick={onNavigate}><Shield aria-hidden="true" /><span>Admin</span></NavLink>}
   </nav>
@@ -107,6 +113,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="app-content">
       <header className="topbar"><button className="icon-button mobile-only" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button><GlobalCompanySearch /><div className="topbar-actions"><div className={health.isError ? 'health health--error' : 'health'}>{health.isError ? <CircleX /> : <CircleCheck />}<span>{health.isError ? 'Backend unavailable' : auth.user?.role === 'admin' && health.data?.jobs_active ? `${health.data.jobs_active} job active` : 'Data service ready'}</span></div><AuthSection /></div></header>
       <main id="main-content" key={location.pathname}>{children}</main>
+      <GlobalHotkeys isAdmin={auth.user?.role === 'admin'} />
       <nav className="mobile-nav" aria-label="Mobile primary navigation">{mobileNavigation.map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/overview'}><Icon /><span>{item.label}</span></NavLink> })}</nav>
     </div>
   </div>

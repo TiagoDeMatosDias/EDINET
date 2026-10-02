@@ -897,6 +897,20 @@ class ResearchStore:
             )
         return {"screen_id": screen_id, "user_id": user_id, "name": name.strip(), "definition_json": definition_json, "created_at": now, "updated_at": now, "version": 1}
 
+    def update_saved_screen(self, user_id: str, screen_id: str, name: str, definition_json: str) -> dict[str, Any]:
+        """Replace a saved screen's definition in place, keeping its id and creation time."""
+        now = _timestamp()
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            result = conn.execute(
+                """UPDATE saved_screens SET name = ?, definition_json = ?, updated_at = ?, version = version + 1
+                   WHERE user_id = ? AND screen_id = ?""",
+                (name.strip(), definition_json, now, user_id, screen_id),
+            )
+            if result.rowcount != 1:
+                raise KeyError(screen_id)
+            row = conn.execute("SELECT * FROM saved_screens WHERE screen_id = ?", (screen_id,)).fetchone()
+        return dict(row)
+
     def list_saved_screens(self, user_id: str) -> list[dict[str, Any]]:
         conn = self._connection()
         try:

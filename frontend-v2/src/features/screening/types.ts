@@ -27,7 +27,14 @@ export interface Criterion {
   left_side?: ExpressionToken[]
   right_side?: ExpressionToken[]
   left_expression?: string
+  /** Rules sharing a group id form one term, combined by ``group_match``. */
+  group?: string | null
+  group_match?: 'any' | 'all'
+  /** Disabled rules stay in the screen but are not applied. */
+  enabled?: boolean
 }
+
+export type CriteriaMatch = 'all' | 'any'
 
 export interface ComputedColumn {
   name: string
@@ -38,14 +45,31 @@ export interface ComputedColumn {
   denominator_table?: string
   denominator_column?: string
   formula?: string | null
+  /** ``percent`` shows fractions such as yields as percentages. */
+  format?: 'percent' | 'number' | null
 }
 
 export interface SavedScreen {
   name?: string
   criteria?: Criterion[]
+  criteria_match?: CriteriaMatch
   columns?: string[]
   computed_columns?: ComputedColumn[]
   screening_date?: string | null
   ranking_algorithm?: string
   ranking_rules?: Array<Record<string, unknown>>
 }
+
+export interface SavedScreenSummary {
+  screen_id: string
+  name: string
+  updated_at?: string | null
+  created_at?: string | null
+  rule_count: number
+  column_count: number
+  criteria_match?: CriteriaMatch
+  screening_date?: string | null
+}
+
+/** ``{"Table.Column": "percent"}`` for catalog columns with a declared display format. */
+export type ColumnFormats = Record<string, string>

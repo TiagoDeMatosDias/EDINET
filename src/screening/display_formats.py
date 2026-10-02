@@ -88,3 +88,16 @@ def result_column_formats(columns: list[str], db_path: str | None = None) -> dic
         for reference in references
         if (display_format := column_format(reference, declared))
     }
+
+
+def catalog_column_formats(metrics: Mapping[str, list[str]], db_path: str | None = None) -> dict[str, str]:
+    """Declared formats for every ``Table.Column`` the screener offers, keyed by reference."""
+    declared = taxonomy_formats(db_path) if db_path else {}
+    formats: dict[str, str] = {}
+    for table, columns in metrics.items():
+        for column in columns:
+            reference = f"{table}.{column}"
+            display_format = column_format(reference, declared)
+            if display_format:
+                formats[reference] = display_format
+    return formats

@@ -290,7 +290,22 @@ def _capture_with_playwright(
         capture(page, "/overview", "web-dashboard.png")
         capture(page, "/pipeline", "web-pipeline.png")
 
-        capture(page, "/screen", "web-screening.png")
+        page.goto(f"{base_url}/screen", wait_until="networkidle")
+        dismiss_local_warning(page)
+        # Build a two-rule screen the way a user would: N, type to find a metric, Enter.
+        for index, (metric, comparison, value) in enumerate([("ReturnOnEquity", ">", "0.08"), ("PERatio", "<", "20")]):
+            page.evaluate("document.activeElement && document.activeElement.blur()")
+            page.keyboard.press("n")
+            page.keyboard.type(metric)
+            page.keyboard.press("Enter")
+            page.get_by_role("combobox", name="Rule comparison").nth(index).select_option(comparison)
+            page.get_by_role("textbox", name="Filter value").nth(index).fill(value)
+        page.get_by_label("Screen name").fill("Profitable at a reasonable price")
+        page.keyboard.press("Control+Enter")
+        page.wait_for_selector(".results-grid", timeout=60_000)
+        page.wait_for_selector(".screening-running", state="detached", timeout=60_000)
+        page.wait_for_timeout(800)
+        page.screenshot(path=str(output_dir / "web-screening.png"))
 
         capture(page, "/analyze/E00001", "web-security-analysis.png", wait_ms=1_500)
         capture(page, "/backtest", "web-backtesting.png")

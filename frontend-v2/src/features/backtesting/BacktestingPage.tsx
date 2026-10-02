@@ -61,7 +61,7 @@ export default function BacktestingPage() {
   const run = useMutation({ mutationFn: async () => {
     if (mode === 'csv') return apiPost<{ id: string; aggregate: BacktestSummary }>('/api/backtesting/run-from-csv', { csv_content: csvContent, benchmark_ticker: benchmark, benchmark_mode: 'ticker', base_currency: baseCurrency, durations, initial_capital: capital, risk_free_rate: 0 })
     if (mode === 'screen') {
-      const draft = JSON.parse(localStorage.getItem('shade.screening.draft') ?? '{}') as { criteria?: Array<Record<string, unknown>>; columns?: string[] }
+      const draft = JSON.parse(localStorage.getItem('shade.screening.draft') ?? '{}') as { criteria?: Array<Record<string, unknown>>; criteria_match?: 'all' | 'any'; columns?: string[] }
       if (!draft.criteria?.length) throw new Error('Build or load a screen before starting this backtest.')
       if (!durations.length || !weightingModes.length) throw new Error('Select at least one holding period and weighting method.')
       const controller = new AbortController()
@@ -70,6 +70,7 @@ export default function BacktestingPage() {
       try {
         return await apiStream('/api/backtesting/run-rolling', {
           criteria: draft.criteria.map(criterion => Object.fromEntries(Object.entries(criterion).filter(([key]) => key !== 'id'))),
+          criteria_match: draft.criteria_match ?? 'all',
           columns: draft.columns ?? [],
           computed_columns: [],
           cadence,

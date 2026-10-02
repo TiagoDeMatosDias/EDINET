@@ -1,16 +1,17 @@
-import { formatCompactNumber } from '../analysis/numberFormat'
+function compact(value: number) {
+  const magnitude = Math.abs(value)
+  const units: Array<[number, string]> = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M']]
+  const unit = units.find(([scale]) => magnitude >= scale)
+  if (!unit) return value.toLocaleString('en-US', { maximumFractionDigits: magnitude >= 100 ? 0 : 2 })
+  return `${(value / unit[0]).toLocaleString('en-US', { maximumFractionDigits: 2 })}${unit[1]}`
+}
 
-/** Display format a column declares (see the screening API's ``column_formats``). */
-export type ColumnFormat = 'percent'
-
-/** Display text for one screening result cell. */
-export function formatResultValue(value: unknown, format?: ColumnFormat | string): string {
+/** A result cell as text: percents from fractions, large amounts abbreviated, missing as a dash. */
+export function cellText(value: unknown, format?: string) {
   if (value == null || value === '') return '—'
   if (typeof value === 'boolean') return value ? 'Yes' : 'No'
   if (typeof value !== 'number') return String(value)
   if (!Number.isFinite(value)) return '—'
-  // Ratios are stored as fractions (0.035 = 3.5%).
   if (format === 'percent') return `${(value * 100).toFixed(1)}%`
-  if (Math.abs(value) >= 1_000_000) return formatCompactNumber(value)
-  return value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+  return compact(value)
 }

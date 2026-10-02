@@ -188,3 +188,30 @@ def test_split_action_updates_stock_quantity_and_cost_basis() -> None:
     assert holding["total_cost"] == 100.0
     assert holding["avg_cost"] == 5.0
     assert holding["market_price"] is None
+
+
+def test_catch_up_refresh_fills_only_rows_never_derived() -> None:
+    conn = _price_db()
+    conn.execute(
+        "INSERT INTO Stock_Prices(Date, Ticker, Currency, Price, Price_Basis) "
+        "VALUES ('2024-06-14', 'X', 'JPY', 100, 'raw')"
+    )
+    conn.execute(
+        "INSERT INTO Stock_Splits(ticker, split_date, ratio_from, ratio_to, "
+        "confirmation, price_basis) VALUES ('X', '2024-06-15', 1, 2, 'confirmed', 'raw')"
+    )
+    assert refresh_split_adjusted_prices(conn) == 1
+    # A later row arrives without a refresh, and an unknown-basis row stays underived.
+    conn.execute(
+        "INSERT INTO Stock_Prices(Date, Ticker, Currency, Price, Price_Basis) "
+        "VALUES ('2024-06-17', 'X', 'JPY', 50, 'raw')"
+    )
+    conn.execute(
+        "INSERT INTO Stock_Prices(Date, Ticker, Currency, Price, Price_Basis) "
+        "VALUES ('2024-06-18', 'X', 'JPY', 51, 'unknown')"
+    )
+
+    assert refresh_split_adjusted_prices(conn, only_missing=True) == 1
+    rows = conn.execute("SELECT Adjusted_Price FROM Stock_Prices ORDER BY Date").fetchall()
+    assert [row[0] for row in rows] == [50.0, 50.0, None]
+    assert refresh_split_adjusted_prices(conn, only_missing=True) == 0

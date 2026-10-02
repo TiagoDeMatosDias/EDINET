@@ -100,6 +100,7 @@ def refresh_split_adjusted_prices(
     conn: sqlite3.Connection,
     ticker: str | None = None,
     prices_table: str = "Stock_Prices",
+    only_missing: bool = False,
 ) -> int:
     """Refresh the SQL-friendly split-adjusted read model.
 
@@ -107,6 +108,11 @@ def refresh_split_adjusted_prices(
     marked raw receive a derived factor; adjusted rows are copied at factor
     1.0, and unknown rows remain NULL so consumers can distinguish “not safe to
     adjust” from a real zero.
+
+    ``only_missing`` fills rows that have never been derived and leaves the
+    rest alone. Every writer of prices or splits refreshes what it changed, so
+    readers (such as a screening run) only need this cheap catch-up instead of
+    rewriting every price row.
     """
     columns = ensure_price_provenance_columns(conn, prices_table)
     if "Split_Adjustment_Factor" not in columns or "Adjusted_Price" not in columns:
@@ -153,8 +159,17 @@ def refresh_split_adjusted_prices(
             continue
         by_ticker.setdefault(str(split_ticker), []).append((str(split_date), ratio))
 
-    where = "" if ticker is None else " WHERE Ticker = ?"
-    params = () if ticker is None else (ticker,)
+    conditions: list[str] = []
+    params: tuple[str, ...] = ()
+    if ticker is not None:
+        conditions.append("Ticker = ?")
+        params = (ticker,)
+    if only_missing:
+        conditions.append(
+            "Adjusted_Price IS NULL AND Price IS NOT NULL "
+            "AND LOWER(COALESCE(Price_Basis, 'raw')) IN ('raw', 'adjusted')"
+        )
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = conn.execute(
         f"SELECT rowid, Ticker, Date, Price, Price_Basis FROM { _quote_identifier(prices_table) }{where}",
         params,

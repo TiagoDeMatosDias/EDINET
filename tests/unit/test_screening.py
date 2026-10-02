@@ -2048,3 +2048,61 @@ def test_computed_expression_column_supports_metrics_values_and_parentheses(samp
     )
     values = dict(zip(df["CompanyName"], df["Adjusted EPS"], strict=True))
     assert values == {"Alpha Corp": 320, "Beta Co": 180, "Gamma Ltd": 620}
+
+
+# ---------------------------------------------------------------------------
+# Tests — combining criteria with groups
+# ---------------------------------------------------------------------------
+
+_GROUP_COLUMNS = ["CompanyInfo.CompanyName"]
+
+
+def _names(df):
+    return sorted(df["CompanyName"])
+
+
+def test_run_screening_combines_a_group_with_any_and_keeps_parameter_order(sample_db):
+    # The ungrouped rule sits between the group's members: its LIKE parameter
+    # must still bind to its own condition once the group is pulled together.
+    criteria = [
+        {"table": "Valuation", "column": "PriceToBook", "operator": "<", "value": 1.0, "group": "g", "group_match": "any"},
+        {"table": "CompanyInfo", "column": "CompanyName", "operator": "LIKE", "value": "%a%", "comparison_mode": "like"},
+        {"table": "Quality", "column": "ReturnOnEquity", "operator": ">", "value": 0.18, "group": "g", "group_match": "any"},
+    ]
+
+    df = run_screening(sample_db, criteria, _GROUP_COLUMNS, period="2024")
+
+    assert _names(df) == ["Beta Co", "Gamma Ltd"]
+
+
+def test_run_screening_matches_any_of_several_all_groups(sample_db):
+    criteria = [
+        {"table": "CompanyInfo", "column": "Industry", "operator": "=", "value": "Retail", "group": "cheap", "group_match": "all"},
+        {"table": "Valuation", "column": "PriceToBook", "operator": "<", "value": 1.0, "group": "cheap", "group_match": "all"},
+        {"table": "CompanyInfo", "column": "Industry", "operator": "=", "value": "Industrial", "group": "quality", "group_match": "all"},
+        {"table": "Quality", "column": "ReturnOnEquity", "operator": ">", "value": 0.18, "group": "quality", "group_match": "all"},
+    ]
+
+    df = run_screening(sample_db, criteria, _GROUP_COLUMNS, period="2024", criteria_match="any")
+
+    assert _names(df) == ["Beta Co", "Gamma Ltd"]
+
+
+def test_run_screening_requires_every_rule_by_default_and_skips_disabled_rules(sample_db):
+    criteria = [
+        {"table": "Quality", "column": "ReturnOnEquity", "operator": ">", "value": 0.12},
+        {"table": "CompanyInfo", "column": "Industry", "operator": "=", "value": "Industrial"},
+        {"table": "Quality", "column": "ReturnOnEquity", "operator": ">", "value": 0.5, "enabled": False},
+    ]
+
+    df = run_screening(sample_db, criteria, _GROUP_COLUMNS, period="2024")
+
+    assert _names(df) == ["Alpha Corp", "Gamma Ltd"]
+
+
+def test_build_screening_query_rejects_unknown_match_modes():
+    criterion = {"table": "Valuation", "column": "PERatio", "operator": ">", "value": 1}
+    with pytest.raises(ValueError, match="criteria_match"):
+        build_screening_query([criterion], ["CompanyInfo.Company_Code"], criteria_match="some")
+    with pytest.raises(ValueError, match="group_match"):
+        build_screening_query([{**criterion, "group": "g", "group_match": "most"}], ["CompanyInfo.Company_Code"])

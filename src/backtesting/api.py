@@ -261,6 +261,7 @@ class CSVBacktestRequest(BaseModel):
 
 class RollingScreeningRequest(BaseModel):
     criteria: list[dict]
+    criteria_match: Literal["all", "any"] = "all"
     columns: list[str]
     computed_columns: list[dict] = []
     cadence: str = "monthly"
@@ -640,6 +641,7 @@ async def run_rolling(
                 _bt.run_screening_backtest_rolling,
                 db_path=db,
                 criteria=request.criteria,
+                criteria_match=request.criteria_match,
                 columns=request.columns,
                 cadence=request.cadence,
                 durations=request.durations,

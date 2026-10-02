@@ -31,7 +31,7 @@ Open `/overview` after entering the workspace. It shows backend health, active a
 
 <img src="images/web-dashboard.png" alt="Workspace overview" width="900">
 
-The sidebar contains Overview, Screen, Analyze, Backtest, Portfolio, Data pipeline, Filings, Compare, and Research. Account and Admin appear when the authenticated role allows them.
+The sidebar contains Overview, Screen, Analyze, Backtest, Portfolio, Data pipeline, Filings, Compare, and Research. Account and Admin appear when the authenticated role allows them. From the keyboard, press `G` then a letter to switch pages: `O` Overview, `S` Screen, `A` Analyze, `B` Backtest, `P` Portfolio, `D` Data pipeline (admins), `F` Filings, `C` Compare, `R` Research. A hint lists the letters after `G`. `/` searches companies and `?` lists the shortcuts for the current page.
 
 The header company finder searches across the best data currently available. It accepts company name, ticker, EDINET code, industry, and market text. The same finder is reused in Analysis, Comparison, Filings, and Research, so a ticker or company selected in one workflow resolves to the same canonical company code elsewhere. If one configured database is missing or only partly populated, search returns results from the remaining usable sources instead of failing the whole request.
 
@@ -39,11 +39,21 @@ The header company finder searches across the best data currently available. It 
 
 ### Screening
 
-Screening builds table-first expressions over company, price, statement, ratio, rolling, tag, and corporate-action fields. `Stock_Splits` is linked through each filing's `Company_Code` to `CompanyInfo.Company_Ticker`, so split-date rules apply to the right company. The `Split event` rule includes or excludes companies by split recency: by default it matches confirmed splits within the last 365 days counted back from the as-of date (or today), and its Advanced panel exposes confirmation status and an exact cutoff date. Legacy raw `Stock_Splits` filters keep working for saved screens and now share the same semantics (confirmed-only, capped at the as-of date). The `+ Rule` menu offers intent-named rule templates. Rules can compare complete expressions on both sides, including metrics, literals, arithmetic operators, tags, and validated parentheses. Select result columns independently, add derived fields, save definitions, export CSV, or send the current draft into a point-in-time rolling backtest.
+A screen is a list of rules, and the results fill the rest of the window below them. Each rule reads as a sentence: a metric, a comparison (`>`, `≥`, `<`, `≤`, `=`, `≠`, between, is one of, contains, is empty, has a value), and a value or a second metric. The metric picker searches every table at once and also offers formulas such as P/E, P/B, P/S, dividend yield, earnings yield, and market cap. Percentage metrics are typed as percentages (`15` means 15%).
 
-<img src="images/web-screening.png" alt="Company screen builder" width="900">
+Rules combine in two levels. The screen matches companies that pass **all** or **any** of its rules, and a **group** of rules inside it matches **any** or **all** of its own rules. Together these express both "A and (B or C)" and "(A and B) or (C and D)". Untick a rule to set it aside without deleting it. The `⋯` menu on a rule duplicates it, moves it into or out of a group, or adds arithmetic to the metric. A rule whose left side already has arithmetic or parentheses is edited as a full expression, with metrics, literals, `+ − × ÷`, tags, and validated parentheses on both sides. A rule that cannot run yet is flagged with the reason.
 
-Use the optional as-of date when the result must be limited to data that was available by a historical date. The backtest handoff reruns the saved screening logic at each rebalance period instead of applying today's result list retroactively.
+The `Split event` rule includes or excludes companies by split recency. By default it matches confirmed splits within the last 365 days, counted back from the as-of date (or today). Its Advanced panel exposes confirmation status and an exact cutoff date. `Stock_Splits` is linked through each filing's `Company_Code` to `CompanyInfo.Company_Ticker`, so split rules apply to the right company. Legacy raw `Stock_Splits` filters in older saved screens keep the same semantics: confirmed splits only, capped at the as-of date.
+
+Results lead with the company name, which links to Analysis, with ticker and EDINET code beneath. Headers explain each column on hover and sort on click. `Columns` chooses output columns, adds whole column sets (overview, valuation, quality, growth, dividends, size), and defines derived columns. The default overview set covers industry, price, ROE, net margin, equity ratio, 3-year sales growth, net sales, market cap, P/E, P/B, and dividend yield.
+
+`Screens` opens saved screens, which show their rule and column counts and when they changed, along with starter screens and a blank screen. Saving under the name of the open screen updates it. Saving under another existing name asks before replacing it. Screens can be exported to CSV, sent to Compare, or handed to a point-in-time rolling backtest.
+
+Keyboard: `N` adds a rule and opens its metric search, `Shift+N` adds a group, `O` opens screens, `D` changes the as-of date, `C` opens columns, and `B` collapses the rules. `Ctrl+Enter` runs and `Ctrl+S` saves, even while typing. `↓` or `J` moves into the results from anywhere on the page. `J`/`K` or the arrow keys move from company to company across pages, `Enter` opens the company in Analysis, `Shift+Enter` opens it in a new tab, and `[`/`]` change pages. A company opened from the results shows its position ("3 of 984"). `Shift+J`/`Shift+K` step to the next or previous screened company, and `G S` returns to the results with the cursor on the last company viewed. `?` lists every shortcut.
+
+<img src="images/web-screening.png" alt="Company screen builder with two rules and their results" width="900">
+
+The as-of date (`D`) limits a screen to data that was available by a historical date. Type a date (`2023-06-30`), a month or year (`2023-06`, `2023`, read as its last day), or a distance back (`18m`, `5y`). You can also pick latest, a preset, or a recently used date. Choosing a date reruns the screen. The backtest handoff reruns the saved screening logic at each rebalance period instead of applying today's result list retroactively.
 
 ### Company Analysis
 

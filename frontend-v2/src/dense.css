@@ -11,8 +11,6 @@
 .dense-page .field { gap: 3px; font-size: .76rem; }
 .dense-page .field > span, .field-label { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; }
 .compact-stack { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.inline-control { display: flex; gap: 5px; }
-.inline-control .button { flex: 0 0 auto; }
 .inline-status { padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); font-size: .8rem; }
 
 .metric-strip { display: grid; grid-template-columns: repeat(8, minmax(105px, 1fr)); gap: 6px; }
@@ -24,41 +22,6 @@
 .text-button { display: inline-flex; align-items: center; gap: 3px; padding: 0; border: 0; color: var(--primary); background: none; cursor: pointer; }
 .text-button svg { width: 11px; height: 11px; }
 
-.screen-toolbar { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(280px, 1.15fr) 160px auto; align-items: end; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
-.toolbar-summary { align-self: center; color: var(--muted); font-size: .76rem; white-space: nowrap; }
-.screen-builder-grid { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(310px, .8fr); gap: 10px; align-items: start; }
-.criteria-list { max-height: 390px; overflow: auto; display: flex; flex-direction: column; gap: 7px; padding-right: 2px; }
-.criterion-editor { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-subtle); }
-.criterion-toolbar { display: grid; grid-template-columns: 24px 130px 28px; justify-content: space-between; align-items: center; gap: 6px; padding: 4px 6px; border-bottom: 1px solid var(--border); }
-.criterion-toolbar > span { display: grid; width: 20px; height: 20px; place-items: center; border-radius: var(--radius); color: var(--muted); background: transparent; font-family: var(--font-mono); font-size: .72rem; font-weight: 500; }
-.criterion-toolbar select { min-height: 26px; border: 0; color: var(--muted); background: transparent; font-size: .73rem; }
-.criterion-toolbar .icon-button { width: 25px; min-height: 25px; }
-.expression-rule { display: grid; grid-template-columns: minmax(0, 1fr) 70px minmax(0, 1fr); align-items: end; gap: 6px; padding: 6px; }
-.expression-side { min-width: 0; }
-.expression-label { display: block; margin-bottom: 3px; color: var(--muted); font-size: .66rem; font-weight: 500; text-transform: uppercase; }
-.expression-tokens { display: flex; align-items: center; gap: 3px; min-height: 31px; overflow-x: auto; }
-.expr-token { display: inline-flex; align-items: center; flex: 0 0 auto; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
-.expr-token--column { border-color: rgb(28 27 25 / 38%); background: rgb(28 27 25 / 6%); }
-.expr-token--value { border-color: rgb(43 58 85 / 38%); background: rgb(43 58 85 / 7%); }
-.expr-token--op { border-color: rgb(176 48 31 / 52%); background: rgb(176 48 31 / 10%); }
-.expr-token input, .expr-token select { height: 28px; padding: 3px 6px; border: 0; outline: none; background: transparent; font-size: .73rem; }
-.expr-metric { width: 190px; }
-.expr-value { width: 76px; }
-.expr-op { width: 45px; }
-.expr-remove { display: grid; width: 21px; height: 28px; place-items: center; border: 0; border-left: 1px solid var(--border); color: var(--muted); background: transparent; cursor: pointer; }
-.expr-remove svg { width: 11px; }
-.expression-add { display: inline-flex; gap: 2px; flex: 0 0 auto; }
-.expression-add button { display: inline-flex; align-items: center; gap: 2px; height: 28px; padding: 3px 5px; border: 1px dashed var(--border-strong); border-radius: var(--radius); color: var(--muted); background: transparent; font-size: .67rem; cursor: pointer; }
-.expression-add svg { width: 10px; }
-.comparison-select { height: 31px; padding: 3px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); font-weight: 500; text-align: center; }
-.simple-rule { display: grid; grid-template-columns: minmax(180px, 1fr) auto minmax(130px, 1fr) auto minmax(100px, 1fr); align-items: center; gap: 6px; padding: 6px; }
-.simple-rule .input { min-height: 30px; }
-.column-picker--dense { max-height: 170px; margin-top: 6px; grid-template-columns: 1fr; overflow: auto; }
-.column-picker--dense .check { font-size: .7rem; overflow-wrap: anywhere; }
-.derived-column { display: grid; grid-template-columns: minmax(90px, .7fr) minmax(130px, 1fr) 16px minmax(130px, 1fr) 28px; align-items: center; gap: 4px; }
-.derived-column .input { min-width: 0; font-size: .7rem; }
-.results-card .table-scroll { max-height: 410px; overflow: auto; }
-.results-card .data-grid th { position: sticky; top: 0; z-index: 1; }
 
 .segmented { display: flex; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius); }
 .segmented button { min-height: 27px; padding: 3px 9px; border: 0; border-radius: var(--radius); color: var(--muted); background: transparent; cursor: pointer; }
@@ -98,8 +61,6 @@
 .fixed-table .data-grid th { position: sticky; top: 0; z-index: 1; }
 
 @media (min-width: 1101px) and (min-height: 800px) {
-  .criteria-list { max-height: 200px; }
-  .results-card .table-scroll { max-height: 145px; }
   .portfolio-value-chart, .mini-chart { height: 235px; }
   .activity-grid--dense { grid-template-columns: repeat(9, minmax(78px, 1fr)); }
   .analytics-chart { height: 185px; }
@@ -107,19 +68,13 @@
 
 @media (max-width: 1100px) {
   .metric-strip, .metric-strip--wrap { grid-template-columns: repeat(4, minmax(100px, 1fr)); }
-  .screen-builder-grid, .portfolio-overview-grid { grid-template-columns: 1fr; }
+  .portfolio-overview-grid { grid-template-columns: 1fr; }
   .portfolio-overview-grid > :last-child { grid-column: auto; }
-  .screen-toolbar { grid-template-columns: 1fr 1fr; }
-  .toolbar-summary { white-space: normal; }
 }
 
 @media (max-width: 720px) {
   .metric-strip, .metric-strip--wrap { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .screen-toolbar, .expression-rule, .analytics-grid { grid-template-columns: 1fr; }
-  .expression-rule { align-items: stretch; }
-  .comparison-select { width: 75px; }
-  .criteria-list { max-height: none; }
-  .expr-metric { width: 150px; }
+  .analytics-grid { grid-template-columns: 1fr; }
   .allocation-grid { grid-template-columns: 1fr; }
   .mini-chart { height: 230px; }
   .activity-grid--dense { grid-template-columns: repeat(2, 1fr); }

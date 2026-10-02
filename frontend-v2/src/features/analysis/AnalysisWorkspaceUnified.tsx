@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, BarChart3, Download, ExternalLink, GitCompare, Keyboard, Plus, RefreshCw, X } from 'lucide-react'
+import { BarChart3, Download, ExternalLink, GitCompare, Keyboard, Plus, RefreshCw, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
@@ -12,6 +12,7 @@ import { Tip } from '../../components/Tooltip'
 import { useHotkeys } from '../../hooks/useHotkeys'
 import { formatMetricValue, groupMetrics, type MetricDefinition } from '../../metrics'
 import { useAuth } from '../auth/authContext'
+import { ScreenTrailNav } from '../screening/ScreenTrailNav'
 import { downloadTextFile, safeFileName } from './downloads'
 import { FilingsPanel } from './FilingsPanel'
 import { FinancialHistoryWorkspace } from './FinancialHistoryWorkspace'
@@ -32,6 +33,11 @@ const SHORTCUTS: ShortcutGroup[] = [
     { keys: ['/'], label: 'Search companies' },
     { keys: ['?'], label: 'Show or hide this list' },
     { keys: ['Esc'], label: 'Close a menu or leave a field' },
+  ] },
+  { title: 'Opened from a screen', shortcuts: [
+    { keys: ['Shift+J'], label: 'Next company in the screen results' },
+    { keys: ['Shift+K'], label: 'Previous company in the screen results' },
+    { keys: ['G S'], label: 'Back to the results' },
   ] },
   { title: 'This company', shortcuts: [
     { keys: ['1', '2', '3'], label: 'Jump to Overview, Financials, Filings' },
@@ -388,7 +394,7 @@ export default function AnalysisWorkspaceUnified() {
       {SECTIONS.map((section, index) => <a key={section.id} href={`#${section.id}`} className={activeSection === section.id ? 'active' : undefined} aria-current={activeSection === section.id ? 'location' : undefined} onClick={event => { event.preventDefault(); jumpTo(section.id) }}><kbd>{index + 1}</kbd>{section.label}</a>)}
       <span className="analysis-nav__spacer" />
       <div className="analysis-nav__actions">
-        {params.get('from') === 'screen' && <Link className="button button--ghost button--small" to="/screen"><ArrowLeft aria-hidden="true" />Screening</Link>}
+        {params.get('from') === 'screen' && <ScreenTrailNav current={canonicalCode} />}
         <button type="button" className="button button--secondary button--small" disabled={!history.data} onClick={downloadReport} title={history.data ? 'Download a Markdown report with the snapshot and full financial history' : 'Financial history is still loading'}><Download aria-hidden="true" />Report</button>
         {canonicalCode && <Link className="button button--secondary button--small" to={`/compare?companies=${encodeURIComponent(canonicalCode)}`} title="Compare with peers (P)"><GitCompare aria-hidden="true" />Compare</Link>}
         {ticker && <Link className="button button--primary button--small" to={`/backtest?symbol=${encodeURIComponent(ticker)}`} title="Backtest this ticker (B)"><BarChart3 aria-hidden="true" />Backtest</Link>}

@@ -800,6 +800,54 @@ def _validate_stock_price_expr(expr: str) -> str:
     return stripped
 
 
+def _match_joiner(match: object, label: str) -> str:
+    """SQL connective for an ``"all"``/``"any"`` match setting."""
+    value = str(match or "all").strip().lower()
+    if value not in ("all", "any"):
+        raise ValueError(f"{label} must be 'all' or 'any', not {match!r}")
+    return " AND " if value == "all" else " OR "
+
+
+def _combine_criteria_conditions(
+    marks: list[tuple[dict, int, int]],
+    conditions: list[str],
+    criteria_params: list,
+    params_offset: int,
+    top_joiner: str,
+) -> tuple[str, list]:
+    """Join per-criterion conditions into groups and one top-level condition.
+
+    ``marks`` holds each criterion with the index of its first condition and
+    parameter. Terms keep the order in which their first criterion appears, and
+    parameters are re-sequenced to follow the SQL text.
+    """
+    terms: list[dict] = []
+    groups: dict[str, dict] = {}
+    for index, (crit, condition_start, param_start) in enumerate(marks):
+        condition_end = marks[index + 1][1] if index + 1 < len(marks) else len(conditions)
+        param_end = marks[index + 1][2] if index + 1 < len(marks) else params_offset + len(criteria_params)
+        sql = " AND ".join(conditions[condition_start:condition_end])
+        values = criteria_params[param_start - params_offset:param_end - params_offset]
+        group_key = str(crit.get("group") or "").strip()
+        if not group_key:
+            terms.append({"members": [(sql, values)], "joiner": " AND "})
+            continue
+        if group_key not in groups:
+            groups[group_key] = {
+                "members": [],
+                "joiner": _match_joiner(crit.get("group_match") or "any", "group_match"),
+            }
+            terms.append(groups[group_key])
+        groups[group_key]["members"].append((sql, values))
+    term_sql: list[str] = []
+    ordered_params: list = []
+    for term in terms:
+        term_sql.append("(" + term["joiner"].join(f"({sql})" for sql, _ in term["members"]) + ")")
+        for _, values in term["members"]:
+            ordered_params.extend(values)
+    return "(" + top_joiner.join(term_sql) + ")", ordered_params
+
+
 def build_screening_query(
     criteria: list[dict],
     columns: list[str],
@@ -809,8 +857,15 @@ def build_screening_query(
     column_aliases: dict[str, str] | None = None,
     computed_columns: list[dict] | None = None,
     use_adjusted_price: bool = False,
+    criteria_match: str = "all",
 ) -> tuple[str, list]:
     """Build a parameterised SQL query for screening.
+
+    Criteria combine by ``criteria_match``: ``"all"`` (every rule must hold) or
+    ``"any"``. Criteria that share a ``group`` value form one term combined by
+    the group's ``group_match`` (``"any"`` by default, or ``"all"``), so a
+    screen can express both ``A AND (B OR C)`` and ``(A AND B) OR (C AND D)``.
+    Criteria with ``enabled`` set to ``False`` are ignored.
 
     Args:
         criteria: List of filter dicts, each with keys ``table``, ``column``,
@@ -841,6 +896,8 @@ def build_screening_query(
         ValueError: If an invalid table, column, or operator is specified.
     """
     params: list = []
+    criteria = [crit for crit in criteria if crit.get("enabled") is not False]
+    top_joiner = _match_joiner(criteria_match, "criteria_match")
 
     # --- Determine which tables to join ---
     needed_tables: set[str] = set()
@@ -1226,7 +1283,12 @@ def build_screening_query(
         where_parts.append("SUBSTR(f.periodEnd, 1, 4) = ?")
         params.append(period)
 
+    # Each criterion appends one condition and its parameters; remember where
+    # each starts so they can be regrouped below without reordering parameters.
+    criteria_params_start = len(params)
+    criterion_marks: list[tuple[dict, int, int]] = []
     for crit in criteria:
+        criterion_marks.append((crit, len(where_parts), len(params)))
         comparison_mode = crit.get("comparison_mode", "fixed")
         if comparison_mode == "recent_split":
             where_parts.append(
@@ -1448,6 +1510,13 @@ def build_screening_query(
             where_parts.append(f"{col_ref} {op} ?")
             params.append(crit["value"])
 
+    if criterion_marks:
+        combined_sql, combined_params = _combine_criteria_conditions(
+            criterion_marks, where_parts, params[criteria_params_start:], criteria_params_start, top_joiner,
+        )
+        where_parts = where_parts[:criterion_marks[0][1]] + [combined_sql]
+        params = params[:criteria_params_start] + combined_params
+
     where_clause = ""
     if where_parts:
         where_clause = "WHERE " + " AND ".join(where_parts)
@@ -1563,7 +1632,9 @@ def _prepare_screening_database(db_path: str) -> None:
     with transaction(db_path) as conn:
         ensure_split_tables(None, conn=conn)
         ensure_price_provenance_columns(conn, "Stock_Prices")
-        refresh_split_adjusted_prices(conn)
+        # Price and split writers keep the read model current; a full refresh
+        # here rewrote every price row (30 s on a full database) on every run.
+        refresh_split_adjusted_prices(conn, only_missing=True)
         fs_info = conn.execute("PRAGMA table_info(FinancialStatements)").fetchall()
         fs_columns = [row[1] for row in fs_info]
         code_column = _resolve_matching_column(
@@ -1597,6 +1668,7 @@ def run_screening(
     ranking_rules: list[dict] | None = None,
     computed_columns: list[dict] | None = None,
     available_metrics: dict[str, list[str]] | None = None,
+    criteria_match: str = "all",
 ) -> pd.DataFrame:
     """Execute a screening query and return formatted results.
 
@@ -1614,6 +1686,8 @@ def run_screening(
         computed_columns: Optional list of computed column specs.
         available_metrics: Pre-computed metrics from get_available_metrics.
             If None, computed fresh from the database.
+        criteria_match: ``"all"`` or ``"any"``; how criteria and criteria
+            groups combine (see ``build_screening_query``).
 
     Returns:
         DataFrame with screening results.
@@ -1636,6 +1710,7 @@ def run_screening(
         column_aliases=column_aliases,
         computed_columns=computed_columns,
         use_adjusted_price=True,
+        criteria_match=criteria_match,
     )
 
     logger.info("Running screening query with %d criteria", len(criteria))
@@ -1902,6 +1977,7 @@ def export_screening_to_backtest_csv(
     ranking_rules: list[dict] | None = None,
     historical: bool = False,
     computed_columns: list[dict] | None = None,
+    criteria_match: str = "all",
 ) -> str:
     """Export screening results in the CSV format used by run_backtest_set."""
     if max_companies <= 0:
@@ -1941,6 +2017,7 @@ def export_screening_to_backtest_csv(
             ranking_algorithm=ranking_algorithm,
             ranking_rules=ranking_rules,
             computed_columns=computed_columns,
+            criteria_match=criteria_match,
         )
         export_df = _resolve_backtest_export_frame(df, year, max_companies)
         if not export_df.empty:

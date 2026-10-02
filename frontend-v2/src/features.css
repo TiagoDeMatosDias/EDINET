@@ -1,8 +1,6 @@
 .rule-row, .holding-row { display: grid; grid-template-columns: 34px repeat(5, minmax(120px, 1fr)) 38px; gap: 10px; align-items: end; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-subtle); }
 .rule-number, .step-index { width: 28px; height: 28px; display: grid; place-items: center; align-self: center; border-radius: 0; color: var(--muted); background: transparent; font-family: var(--font-mono); font-size: .78rem; font-weight: 500; }
 .rule-remove { align-self: end; color: var(--danger); }
-.column-picker { max-height: 310px; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 16px; overflow: auto; }
-.column-picker .check { min-width: 0; padding: 5px; overflow-wrap: anywhere; }
 .search-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; margin-top: 16px; }
 .search-results button, .step-library button { display: flex; align-items: center; gap: 11px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: var(--surface); text-align: left; cursor: pointer; }
 .search-results button:hover, .step-library button:hover { border-color: var(--primary); background: var(--primary-soft); }

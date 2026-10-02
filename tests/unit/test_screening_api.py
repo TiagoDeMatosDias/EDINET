@@ -519,6 +519,60 @@ def test_save_list_load_delete_screening():
     assert resp.status_code == 404
 
 
+def test_save_overwrites_only_when_asked_and_lists_screen_summaries():
+    rule = {"table": "Valuation", "column": "PERatio", "operator": "<", "value": 15}
+    grouped = [
+        {**rule, "group": "g1", "group_match": "any"},
+        {**rule, "value": 9, "group": "g1", "group_match": "any"},
+        {**rule, "value": 99, "enabled": False},
+    ]
+    try:
+        first = client.post("/api/screening/save", json={"name": "overwrite_me", "criteria": [rule], "columns": ["CompanyInfo.Company_Code"]})
+        assert first.status_code == 200 and first.json()["updated"] is False
+
+        clash = client.post("/api/screening/save", json={"name": "overwrite_me", "criteria": grouped, "columns": []})
+        assert clash.status_code == 409
+
+        replaced = client.post("/api/screening/save", json={
+            "name": "overwrite_me", "criteria": grouped, "criteria_match": "any",
+            "columns": ["CompanyInfo.Company_Code"], "overwrite": True,
+        })
+        assert replaced.status_code == 200 and replaced.json()["updated"] is True
+        assert replaced.json()["screen_id"] == first.json()["screen_id"]
+
+        loaded = client.get("/api/screening/saved/overwrite_me").json()
+        assert loaded["criteria_match"] == "any"
+        assert [criterion.get("group") for criterion in loaded["criteria"]] == ["g1", "g1", None]
+        assert loaded["criteria"][2]["enabled"] is False
+
+        summary = next(item for item in client.get("/api/screening/saved").json()["items"] if item["name"] == "overwrite_me")
+        assert summary["rule_count"] == 2
+        assert summary["column_count"] == 1
+        assert summary["criteria_match"] == "any"
+        assert summary["updated_at"]
+    finally:
+        client.delete("/api/screening/saved/overwrite_me")
+
+
+def test_run_screening_reports_declared_formats_of_derived_columns(test_db_path):
+    resp = client.post("/api/screening/run", json={
+        "criteria": [],
+        "columns": ["CompanyInfo.Company_Code"],
+        "computed_columns": [{
+            "name": "Earnings yield",
+            "formula_type": "expression",
+            "format": "percent",
+            "expression_tokens": [
+                {"type": "column", "table": "PerShare", "column": "EPS"},
+                {"type": "op", "op": "/"},
+                {"type": "column", "table": "Stock_Prices", "column": "Price"},
+            ],
+        }],
+    })
+    assert resp.status_code == 200
+    assert resp.json()["column_formats"]["Earnings yield"] == "percent"
+
+
 def test_load_nonexistent_screening():
     """Loading nonexistent screening should return 404."""
     resp = client.get("/api/screening/saved/nonexistent_screening_xyz")

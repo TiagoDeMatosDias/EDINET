@@ -1,14 +1,21 @@
 import { X } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useContext, useEffect, useRef } from 'react'
+
+import { AuthContext } from '../features/auth/authContext'
+import { pageShortcuts } from './pageShortcuts'
 
 export interface ShortcutGroup {
   title: string
   shortcuts: Array<{ keys: string[]; label: string }>
 }
 
-/** A keyboard reference opened with "?"; Escape or the backdrop closes it and focus returns where it was. */
+/**
+ * A keyboard reference opened with "?"; Escape or the backdrop closes it and focus returns where it was.
+ * Every list ends with the "G then a letter" page shortcuts, which work everywhere.
+ */
 export function ShortcutsDialog({ groups, onClose }: { groups: ShortcutGroup[]; onClose: () => void }) {
   const closeButton = useRef<HTMLButtonElement>(null)
+  const pages = pageShortcuts(useContext(AuthContext)?.user?.role === 'admin')
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
     closeButton.current?.focus()
@@ -38,6 +45,10 @@ export function ShortcutsDialog({ groups, onClose }: { groups: ShortcutGroup[]; 
           <h3>{group.title}</h3>
           <dl>{group.shortcuts.map(shortcut => <div key={shortcut.label}><dt>{shortcut.keys.map((key, index) => <span key={key}>{index > 0 && <span className="shortcuts-dialog__or">/</span>}<kbd>{key}</kbd></span>)}</dt><dd>{shortcut.label}</dd></div>)}</dl>
         </section>)}
+        <section className="shortcuts-dialog__pages">
+          <h3>Go to a page, from anywhere: <kbd>G</kbd> then</h3>
+          <dl>{pages.map(page => <div key={page.key}><dt><kbd>{page.key.toUpperCase()}</kbd></dt><dd>{page.label}</dd></div>)}</dl>
+        </section>
       </div>
       <p className="shortcuts-dialog__foot">Shortcuts pause while you type in a field. Press <kbd>Esc</kbd> to leave the field.</p>
     </div>

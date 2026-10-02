@@ -25,7 +25,7 @@ from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
 from src.orchestrator.common.db_config import get_db2
 from src.research.runtime import store as _research_store
-from src.screening.display_formats import result_column_formats
+from src.screening.display_formats import catalog_column_formats, result_column_formats
 from src.screening.persistence import normalize_screening_date
 from src.utilities.runtime_paths import state_dir
 from src.web_app.security import get_settings
@@ -97,6 +97,16 @@ class ScreeningCriterion(BaseModel):
     right_side: list[dict] | None = Field(default=None, description="Expression tokens for expression mode")
     left_side: list[dict] | None = Field(default=None, description="Left-side expression tokens for full_expression mode")
     left_expression: str | None = Field(default=None, description="Left-side arithmetic expression for stock_price mode")
+    group: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Criteria sharing a group id combine by group_match into one term of the screen",
+    )
+    group_match: Literal["any", "all"] = Field(
+        default="any",
+        description="How criteria in this criterion's group combine: any (OR) or all (AND)",
+    )
+    enabled: bool = Field(default=True, description="Disabled criteria are kept in the screen but not applied")
 
 
 class RankingRule(BaseModel):
@@ -115,6 +125,10 @@ class ComputedColumn(BaseModel):
     denominator_table: str = Field(default="", description="Denominator table")
     denominator_column: str = Field(default="", description="Denominator column")
     formula: str | None = Field(default=None, description="Custom SQL expression using table aliases")
+    format: Literal["percent", "number"] | None = Field(
+        default=None,
+        description="Display format of the result: percent for fractions such as yields",
+    )
 
 
 class ScreeningDateRequest(BaseModel):
@@ -132,8 +146,12 @@ class ScreeningDateRequest(BaseModel):
         return normalize_screening_date(value)
 
 
+CriteriaMatch = Literal["all", "any"]
+
+
 class ScreeningRunRequest(ScreeningDateRequest):
     criteria: list[ScreeningCriterion] = Field(default_factory=list)
+    criteria_match: CriteriaMatch = Field(default="all", description="Whether all or any criteria terms must hold")
     columns: list[str] = Field(default_factory=list)
     computed_columns: list[ComputedColumn] = Field(default_factory=list)
     period: str | None = Field(default=None, description="Year filter (e.g. '2020')")
@@ -146,6 +164,8 @@ class ScreeningRunRequest(ScreeningDateRequest):
 class ScreeningSaveRequest(ScreeningDateRequest):
     name: str = Field(..., description="Screening configuration name")
     criteria: list[ScreeningCriterion] = Field(default_factory=list)
+    criteria_match: CriteriaMatch = Field(default="all")
+    overwrite: bool = Field(default=False, description="Replace the saved screen with this name if it exists")
     columns: list[str] = Field(default_factory=list)
     computed_columns: list[ComputedColumn] = Field(default_factory=list)
     period: str | None = Field(default=None)
@@ -155,6 +175,7 @@ class ScreeningSaveRequest(ScreeningDateRequest):
 
 class ScreeningExportRequest(ScreeningDateRequest):
     criteria: list[ScreeningCriterion] = Field(default_factory=list)
+    criteria_match: CriteriaMatch = Field(default="all")
     columns: list[str] = Field(default_factory=list)
     computed_columns: list[ComputedColumn] = Field(default_factory=list)
     period: str | None = Field(default=None)
@@ -221,6 +242,11 @@ def _criteria_to_dicts(criteria: list[ScreeningCriterion]) -> list[dict]:
             d["left_side"] = c.left_side
         if c.left_expression is not None:
             d["left_expression"] = c.left_expression
+        if c.group:
+            d["group"] = c.group
+            d["group_match"] = c.group_match
+        if not c.enabled:
+            d["enabled"] = False
         result.append(d)
     return result
 
@@ -249,6 +275,7 @@ def _screening_definition(payload: ScreeningRunRequest) -> dict[str, Any]:
     """Return the serialisable screen definition stored with a result."""
     return {
         "criteria": _criteria_to_dicts(payload.criteria),
+        "criteria_match": payload.criteria_match,
         "columns": list(payload.columns),
         "computed_columns": _computed_column_specs(payload.computed_columns),
         "screening_date": payload.screening_date,
@@ -347,8 +374,9 @@ def update_prices(
 @router.get("/metrics")
 def get_metrics() -> dict:
     """Return available screening tables and their columns."""
-    metrics = _screening.get_available_metrics(_resolve_db())
-    return {"tables": metrics}
+    resolved = _resolve_db()
+    metrics = _screening.get_available_metrics(resolved)
+    return {"tables": metrics, "formats": catalog_column_formats(metrics, resolved)}
 
 
 @router.get("/periods")
@@ -437,18 +465,7 @@ def run_screening_endpoint(
         logger.info("screening/run criteria/ranking converted (%.2fs)", _t.monotonic() - _t1)
 
         all_columns = list(payload.columns)
-        computed_specs = []
-        for cc in payload.computed_columns:
-            computed_specs.append({
-                "name": cc.name,
-                "formula_type": cc.formula_type,
-                "expression_tokens": cc.expression_tokens,
-                "numerator_table": cc.numerator_table,
-                "numerator_column": cc.numerator_column,
-                "denominator_table": cc.denominator_table,
-                "denominator_column": cc.denominator_column,
-                "formula": cc.formula,
-            })
+        computed_specs = _computed_column_specs(payload.computed_columns)
 
         # Build the SQL for display before executing
         _t1 = _t.monotonic()
@@ -470,13 +487,17 @@ def run_screening_endpoint(
             ranking_rules=ranking_dicts,
             computed_columns=computed_specs,
             available_metrics=available,
+            criteria_match=payload.criteria_match,
         )
         logger.info("screening/run query executed (%.2fs)", _t.monotonic() - _t1)
 
         _t1 = _t.monotonic()
         result = _df_to_json(df)
         result["error"] = None
-        result["column_formats"] = result_column_formats(list(payload.columns), resolved)
+        result["column_formats"] = {
+            **result_column_formats(list(payload.columns), resolved),
+            **_computed_column_formats(payload.computed_columns),
+        }
         if isinstance(user, AuthenticatedUser):
             stored = _persist_screening_result(user, payload, result)
             if stored:
@@ -525,7 +546,14 @@ def get_last_result(request: Request) -> dict[str, Any]:
                     db_path = _resolve_db()
                 except HTTPException:
                     db_path = None
-                stored["result"]["column_formats"] = result_column_formats(list(definition.get("columns") or []), db_path)
+                stored["result"]["column_formats"] = {
+                    **result_column_formats(list(definition.get("columns") or []), db_path),
+                    **{
+                        str(column.get("name")): str(column.get("format"))
+                        for column in definition.get("computed_columns") or []
+                        if column.get("name") and column.get("format") not in (None, "number")
+                    },
+                }
         return {"result": stored}
     except Exception as exc:  # noqa: BLE001 - an empty cache is still a valid state
         logger.warning("Could not load latest screening result for %s: %s", user.user_id, exc)
@@ -537,7 +565,10 @@ def list_saved(request: Request) -> dict:
     """List saved screening configurations for the authenticated user."""
     user = _require_user(request)
     screens = _research_store.list_saved_screens(user.user_id)
-    return {"screenings": [s["name"] for s in screens]}
+    return {
+        "screenings": [s["name"] for s in screens],
+        "items": [_saved_screen_summary(s) for s in screens],
+    }
 
 
 @router.get("/saved/{identifier}")
@@ -560,38 +591,32 @@ def load_saved(request: Request, identifier: str) -> dict:
 def save_screening(http_request: Request, payload: ScreeningSaveRequest = Body(...)) -> dict:
     """Save a screening configuration for the authenticated user."""
     user = _require_user(http_request)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="A screen name is required")
     try:
-        import json
-        criteria_dicts = _criteria_to_dicts(payload.criteria)
-        ranking_dicts = _ranking_rules_to_dicts(payload.ranking_rules)
-        computed_specs = []
-        for cc in payload.computed_columns:
-            computed_specs.append({
-                "name": cc.name,
-                "formula_type": cc.formula_type,
-                "expression_tokens": cc.expression_tokens,
-                "numerator_table": cc.numerator_table,
-                "numerator_column": cc.numerator_column,
-                "denominator_table": cc.denominator_table,
-                "denominator_column": cc.denominator_column,
-                "formula": cc.formula,
-            })
         definition = {
-            "name": payload.name,
-            "criteria": criteria_dicts,
+            "name": name,
+            "criteria": _criteria_to_dicts(payload.criteria),
+            "criteria_match": payload.criteria_match,
             "columns": payload.columns,
             "period": payload.period,
             "ranking_algorithm": payload.ranking_algorithm,
-            "ranking_rules": ranking_dicts,
-            "computed_columns": computed_specs,
+            "ranking_rules": _ranking_rules_to_dicts(payload.ranking_rules),
+            "computed_columns": _computed_column_specs(payload.computed_columns),
             "screening_date": payload.screening_date,
         }
-        screen = _research_store.create_saved_screen(
-            user.user_id,
-            payload.name,
-            json.dumps(definition, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-        )
-        return {"saved": True, "screen_id": screen["screen_id"]}
+        definition_json = json.dumps(definition, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        existing = next((s for s in _research_store.list_saved_screens(user.user_id) if s["name"] == name), None)
+        if existing is not None:
+            if not payload.overwrite:
+                raise HTTPException(status_code=409, detail="A screening with this name already exists")
+            screen = _research_store.update_saved_screen(user.user_id, existing["screen_id"], name, definition_json)
+            return {"saved": True, "screen_id": screen["screen_id"], "updated": True}
+        screen = _research_store.create_saved_screen(user.user_id, name, definition_json)
+        return {"saved": True, "screen_id": screen["screen_id"], "updated": False}
+    except HTTPException:
+        raise
     except Exception as e:
         if "UNIQUE" in str(e).upper():
             raise HTTPException(status_code=409, detail="A screening with this name already exists") from e
@@ -651,9 +676,34 @@ def _computed_column_specs(columns: list[ComputedColumn]) -> list[dict]:
             "denominator_table": column.denominator_table,
             "denominator_column": column.denominator_column,
             "formula": column.formula,
+            "format": column.format,
         }
         for column in columns
     ]
+
+
+def _computed_column_formats(columns: list[ComputedColumn]) -> dict[str, str]:
+    """Declared formats of derived result columns, keyed by their names."""
+    return {column.name: column.format for column in columns if column.format and column.format != "number"}
+
+
+def _saved_screen_summary(screen: dict[str, Any]) -> dict[str, Any]:
+    """Name, timestamps, and the shape of a saved screen for pickers."""
+    try:
+        definition = json.loads(screen.get("definition_json") or "{}")
+    except (TypeError, ValueError):
+        definition = {}
+    criteria = definition.get("criteria") or []
+    return {
+        "screen_id": screen.get("screen_id"),
+        "name": screen.get("name"),
+        "updated_at": screen.get("updated_at"),
+        "created_at": screen.get("created_at"),
+        "rule_count": sum(1 for criterion in criteria if criterion.get("enabled", True) is not False),
+        "column_count": len(definition.get("columns") or []) + len(definition.get("computed_columns") or []),
+        "criteria_match": definition.get("criteria_match") or "all",
+        "screening_date": definition.get("screening_date"),
+    }
 
 
 def _enforce_export_limit(content: str) -> str:
@@ -679,6 +729,7 @@ def _export_csv_content(
         ranking_algorithm=request.ranking_algorithm,
         ranking_rules=ranking_rules,
         computed_columns=computed_columns,
+        criteria_match=request.criteria_match,
     )
     stream = io.StringIO()
     dataframe.to_csv(stream, index=False)
@@ -708,6 +759,7 @@ def _export_backtest_content(
             ranking_rules=ranking_rules,
             historical=request.historical,
             computed_columns=computed_columns,
+            criteria_match=request.criteria_match,
         )
         if output_path.stat().st_size > get_settings().max_export_bytes:
             raise HTTPException(
