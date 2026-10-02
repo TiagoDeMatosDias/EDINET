@@ -311,5 +311,6 @@ def test_overview_reports_price_and_reporting_currencies(db):
     assert data["metadata"]["reporting_currency"] == "USD"
     assert data["metric_definitions"]["MarketCap"] == {
         "label": "Market cap", "group": "Market", "format": "money", "currency": "price",
+        "description": "Latest price × shares issued as of the latest annual filing date.",
     }
     assert data["metric_definitions"]["Revenue"]["currency"] == "reporting"

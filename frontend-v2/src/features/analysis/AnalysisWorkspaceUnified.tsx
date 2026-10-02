@@ -1,95 +1,223 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CategoryScale, Chart as ChartJS, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip } from 'chart.js'
-import { ArrowLeft, BarChart3, Download, ExternalLink, Plus, RefreshCw, X } from 'lucide-react'
-import { useState } from 'react'
-import { Line } from 'react-chartjs-2'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { ArrowLeft, BarChart3, Download, ExternalLink, GitCompare, Keyboard, Plus, RefreshCw, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
-import { ApiError, apiPost, apiRequest, authenticatedFetch, queryString } from '../../api/client'
+import { ApiError, apiPost, apiRequest, queryString } from '../../api/client'
 import type { SecurityHistory, SecurityOverview } from '../../api/types'
-import { BRAND_COLORS } from '../../brand'
-import { useAuth } from '../auth/authContext'
-import { formatMetricValue, groupMetrics, metricDefinition } from '../../metrics'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
-import { Card, Metric, PageHeader } from '../../components/Page'
-import { downloadBlob } from '../../api/download'
+import { PageHeader } from '../../components/Page'
+import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
+import { Tip } from '../../components/Tooltip'
+import { useHotkeys } from '../../hooks/useHotkeys'
+import { formatMetricValue, groupMetrics, type MetricDefinition } from '../../metrics'
+import { useAuth } from '../auth/authContext'
 import { downloadTextFile, safeFileName } from './downloads'
+import { FilingsPanel } from './FilingsPanel'
 import { FinancialHistoryWorkspace } from './FinancialHistoryWorkspace'
 import { buildCompanyReport, type SnapshotGroup } from './markdownReport'
-import { filterPriceHistory, PRICE_RANGE_OPTIONS, type PriceHistoryRow, type PriceRangeKey } from './priceHistoryRanges'
+import { PricePanel } from './PricePanel'
+import type { PriceHistoryRow } from './priceHistoryRanges'
+import './analysis.css'
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Legend, Tooltip)
-const PRICE_COLOR = BRAND_COLORS.ink
-// The headline strip is a curated pick; labels and formats come from the
-// server's metric definitions like the grouped snapshot below it.
-const HEADLINE_METRICS = ['LatestPrice', 'MarketCap', 'PERatio', 'PriceToBook', 'PriceToSales', 'ReturnOnEquity', 'ReturnOnAssets', 'DividendsYield', 'CurrentRatio', 'DebtToEquity', 'OperatingMargin', 'PayoutRatio']
+const SECTIONS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'financials', label: 'Financials' },
+  { id: 'filings', label: 'Filings' },
+] as const
+type SectionId = typeof SECTIONS[number]['id']
+
+const SHORTCUTS: ShortcutGroup[] = [
+  { title: 'Anywhere', shortcuts: [
+    { keys: ['/'], label: 'Search companies' },
+    { keys: ['?'], label: 'Show or hide this list' },
+    { keys: ['Esc'], label: 'Close a menu or leave a field' },
+  ] },
+  { title: 'This company', shortcuts: [
+    { keys: ['1', '2', '3'], label: 'Jump to Overview, Financials, Filings' },
+    { keys: ['-', '='], label: 'Widen or narrow the price range' },
+    { keys: ['T'], label: 'Add a tag' },
+    { keys: ['P'], label: 'Compare with peers' },
+    { keys: ['B'], label: 'Backtest this ticker' },
+    { keys: ['O'], label: 'Open the latest filing' },
+  ] },
+  { title: 'Financial statements', shortcuts: [
+    { keys: ['[', ']'], label: 'Previous or next statement' },
+    { keys: ['V'], label: 'Cycle Values, YoY, Common size' },
+    { keys: ['F'], label: 'Filter lines' },
+    { keys: ['E'], label: 'Show or hide empty lines' },
+    { keys: ['C'], label: 'Switch bars and lines' },
+    { keys: ['X'], label: 'Clear the chart' },
+    { keys: ['↑', '↓'], label: 'Move between lines (also J, K)' },
+    { keys: ['Space'], label: 'Chart or un-chart the focused line' },
+  ] },
+]
+
+/** Dense panels abbreviate magnitudes: "¥23.66 Trillion" → "¥23.66T". */
+function abbreviate(text: string) {
+  return text.replace(/ (Trillion|Billion|Million|Thousand)$/, (_, unit: string) => unit[0])
+}
 
 function stringOrNull(value: unknown) {
   return typeof value === 'string' && value ? value : null
 }
 
-interface FilingSummary {
-  doc_id: string
-  submitted_at?: string | null
-  period_end?: string | null
-  status: string
+function numberOrNull(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function PriceChart({ ticker }: { ticker: string }) {
-  const [range, setRange] = useState<PriceRangeKey>('all')
-  const prices = useQuery({
-    queryKey: ['security-prices', ticker],
-    enabled: Boolean(ticker),
-    queryFn: () => apiRequest<{ prices: PriceHistoryRow[] }>(`/api/security/price-history${queryString({ ticker, adjusted: true })}`),
+const longDate = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+
+function formatDay(value: unknown) {
+  const text = stringOrNull(value)
+  if (!text) return ''
+  const time = Date.parse(`${text.slice(0, 10)}T00:00:00Z`)
+  return Number.isFinite(time) ? longDate.format(time) : text
+}
+
+/** Exchange code for Japanese quote sites: "7203.T" → "7203". */
+function localCode(yahooSymbol: string) {
+  return /^([0-9A-Z]{4})\.T$/.exec(yahooSymbol)?.[1] ?? ''
+}
+
+function Quote({ market, metrics, formatMetric, refresh }: { market: Record<string, unknown>; metrics: Record<string, number | null>; formatMetric: (key: string, value: number | null | undefined) => string; refresh?: ReactNode }) {
+  const price = numberOrNull(market.latest_price) ?? metrics.LatestPrice ?? null
+  if (price === null) return null
+  const previous = numberOrNull(market.previous_price)
+  const change = numberOrNull(market.change_pct_1d)
+  const low = numberOrNull(market.range_52w_low)
+  const high = numberOrNull(market.range_52w_high)
+  const position = low !== null && high !== null && high > low ? Math.min(100, Math.max(0, ((price - low) / (high - low)) * 100)) : null
+  const sign = (value: number) => value > 0 ? '+' : value < 0 ? '−' : ''
+  return <div className="quote">
+    <div className="quote__main">
+      <strong className="quote__price">{formatMetric('LatestPrice', price)}</strong>
+      {change !== null && <span className={`quote__change ${change < 0 ? 'neg' : 'pos'}`}>
+        {previous !== null && <>{sign(price - previous)}{formatMetric('LatestPrice', Math.abs(price - previous))} </>}
+        ({sign(change)}{Math.abs(change * 100).toFixed(2)}%)
+      </span>}
+      <span className="quote__date">{market.latest_price_date ? `Close ${formatDay(market.latest_price_date)}` : ''}{refresh}</span>
+    </div>
+    <dl className="quote__facts">
+      {metrics.MarketCap != null && <div><dt><Tip content="Latest price × shares issued as of the latest annual filing date.">Market cap</Tip></dt><dd title={formatMetric('MarketCap', metrics.MarketCap)}>{abbreviate(formatMetric('MarketCap', metrics.MarketCap))}</dd></div>}
+      {position !== null && <div className="quote__range">
+        <dt><Tip content="Lowest and highest close over the past 52 weeks; the marker shows where the latest close sits.">52-week range</Tip></dt>
+        <dd>
+          <span>{formatMetric('LatestPrice', low)}</span>
+          <span className="range-track" role="img" aria-label={`Latest close at ${Math.round(position)}% of the 52-week range`}><span className="range-track__marker" style={{ left: `${position}%` }} /></span>
+          <span>{formatMetric('LatestPrice', high)}</span>
+        </dd>
+      </div>}
+    </dl>
+  </div>
+}
+
+function KeyStats({ metrics, definitions, format, period, hasPrice }: { metrics: Record<string, number | null>; definitions: Record<string, MetricDefinition>; format: (key: string, value: number | null | undefined) => string; period: string; hasPrice: boolean }) {
+  const groups = groupMetrics(Object.keys(definitions), definitions).filter(group => group.group !== 'Market')
+  return <div className="key-stats">
+    {groups.map(({ group, metrics: keys }) => {
+      const empty = keys.every(key => metrics[key] == null)
+      return <section className="key-stats__group" key={group}>
+        <h3>{group}</h3>
+        {empty
+          ? <p className="key-stats__none">{group === 'Valuation' && !hasPrice ? 'Needs a market price' : 'Not reported in the stored filings'}</p>
+          : <dl>{keys.map(key => {
+            const definition = definitions[key]
+            return <div key={key} className={metrics[key] == null ? 'is-empty' : undefined}>
+              <dt><Tip content={<span className="tip-lines"><strong>{definition.label}</strong>{definition.description && <span>{definition.description}</span>}{definition.format !== 'money' && period && key !== 'LatestPrice' && <span>Fiscal year ending {period}.</span>}</span>}>{definition.label}</Tip></dt>
+              <dd title={format(key, metrics[key])}>{abbreviate(format(key, metrics[key]))}</dd>
+            </div>
+          })}</dl>}
+      </section>
+    })}
+  </div>
+}
+
+interface RecentCompany { work_id: string; kind: string; title: string; subtitle?: string | null; href: string; occurred_at: string }
+
+/** The starting point when no company is open: pick up where you left off, or search. */
+function StartAnalysis() {
+  const recent = useQuery({
+    queryKey: ['recent-work'],
+    queryFn: () => apiRequest<{ items: RecentCompany[] }>('/api/research/recent-work?limit=50'),
+    retry: false,
   })
-  const rows = prices.data?.prices ?? []
-  if (prices.isLoading) return <LoadingState label="Loading prices" />
-  if (!rows.length) return <EmptyState title="No price history" description="No prices found." />
-  const visible = filterPriceHistory(rows, range)
-  const basisLabels = [...new Set(visible.map(row => row.price_basis).filter(Boolean))]
-  const providerLabels = [...new Set(visible.map(row => row.provider).filter(Boolean))]
-  const data = {
-    labels: visible.map(row => row.trade_date ?? row.Date ?? row.date ?? ''),
-    datasets: [{ data: visible.map(row => row.Price ?? row.price ?? null), borderColor: PRICE_COLOR, fill: false, pointRadius: 0, tension: .2 }],
-  }
-  const options = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false }, ticks: { autoSkip: true, maxTicksLimit: 9, maxRotation: 0 } }, y: { position: 'right' as const } } }
-  return <div className="price-history-workspace"><div className="price-range-toolbar"><div className="price-range-buttons" role="group" aria-label="Price history range">{PRICE_RANGE_OPTIONS.map(option => <button key={option.key} type="button" className={range === option.key ? 'active' : ''} aria-pressed={range === option.key} onClick={() => setRange(option.key)}>{option.label}</button>)}</div><span>{visible.length.toLocaleString()} prices</span>{basisLabels.length > 0 && <span title="Price basis recorded with each source row">Basis: {basisLabels.join(', ')}</span>}{providerLabels.length > 0 && <span title="Price provider recorded with each source row">Source: {providerLabels.join(', ')}</span>}</div><div className="price-chart"><Line data={data} options={options} /></div></div>
+  const companies = (recent.data?.items ?? []).filter(item => item.kind === 'company').slice(0, 12)
+  return <div className="stack dense-page analysis-empty-page">
+    <PageHeader eyebrow="Company research" title="Analyze a company" description="Search by name, ticker, EDINET code, or industry to open prices, statements, ratios, and filings." />
+    {companies.length > 0 && <section className="panel recent-companies" aria-labelledby="recent-companies-title">
+      <header className="panel__header"><h3 id="recent-companies-title">Recently viewed</h3><span className="panel__meta">Press <kbd>/</kbd> to search for another</span></header>
+      <ul>{companies.map(item => <li key={item.work_id}><Link to={item.href}><strong>{item.title}</strong><small>{item.subtitle}</small><span className="muted">{formatDay(item.occurred_at)}</span></Link></li>)}</ul>
+    </section>}
+    {!companies.length && !recent.isLoading && <EmptyState title="Press / to search" description="Enter a name, ticker, EDINET code, or industry in the search bar above and choose a result." />}
+  </div>
 }
 
-function FilingSummaryCard({ companyCode }: { companyCode: string }) {
-  const filings = useQuery({ queryKey: ['company-filings', companyCode], queryFn: () => apiRequest<{ filings: FilingSummary[] }>(`/api/filings/company/${encodeURIComponent(companyCode)}`) })
-  const [exporting, setExporting] = useState(false)
-  const [exportError, setExportError] = useState('')
-  const exportAll = async () => {
-    setExporting(true)
-    setExportError('')
-    try {
-      const response = await authenticatedFetch(`/api/filings/company/${encodeURIComponent(companyCode)}/export`)
-      if (!response.ok) throw new Error(response.status === 404 ? 'No filing archives are available to export.' : `Export failed (${response.status})`)
-      const blob = await response.blob()
-      downloadBlob(`${safeFileName(companyCode)}-filings.zip`, blob)
-    } catch (error) {
-      setExportError(error instanceof Error ? error.message : 'Export failed')
-    } finally {
-      setExporting(false)
-    }
-  }
-  return <Card
-    title="XBRL filings"
-    description="Retained EDINET type-1 reports for this company."
-    actions={filings.data && filings.data.filings.length > 0
-      ? <button className="button button--secondary" disabled={exporting} onClick={() => void exportAll()} title="Download a ZIP containing every retained filing archive"><Download />{exporting ? 'Preparing…' : 'Export all filings'}</button>
-      : undefined}
-  >{filings.isLoading && <LoadingState label="Loading filings" />}{filings.data?.filings.slice(0, 8).map(filing => <Link className="filing-row" key={filing.doc_id} to={`/filings/${encodeURIComponent(filing.doc_id)}?from=analysis&company=${encodeURIComponent(companyCode)}`}><span><strong>{filing.period_end || 'Period unavailable'}</strong><small>{filing.doc_id}</small></span><span><small>{filing.submitted_at || 'Submission unavailable'} · {filing.status}</small></span></Link>)}{filings.data && !filings.data.filings.length && <EmptyState title="No archived XBRL reports" description="Type-1 filing packages will appear after acquisition." />}{exportError && <p className="form-error" role="alert" style={{ margin: '8px 0 0' }}>{exportError}</p>}<Link className="button button--ghost" to={`/filings?company=${encodeURIComponent(companyCode)}&from=analysis`}>Open Filing Explorer</Link></Card>
+function Section({ id, title, aside, children, hideTitle = false }: { id: SectionId; title: string; aside?: ReactNode; children: ReactNode; hideTitle?: boolean }) {
+  return <section id={id} className="analysis-section" aria-labelledby={`${id}-title`}>
+    <header className={hideTitle ? 'analysis-section__header sr-only' : 'analysis-section__header'}>
+      <h2 id={`${id}-title`} tabIndex={-1}>{title}</h2>
+      {aside}
+    </header>
+    {children}
+  </section>
 }
 
-function SnapshotMetrics({ metrics, groups, format }: { metrics: Record<string, number | null>; groups: SnapshotGroup[]; format: (key: string, value: number | null | undefined) => string }) {
-  return <div className="company-snapshot-groups">{groups.map(group => <section className="company-snapshot-group" key={group.title}><h3>{group.title}</h3><dl className="company-snapshot-metrics">{group.metrics.map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{format(key, metrics[key])}</dd></div>)}</dl></section>)}</div>
+function useActiveSection(ready: boolean) {
+  const [active, setActive] = useState<SectionId>('overview')
+  useEffect(() => {
+    if (!ready || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(entries => {
+      const visible = entries.filter(entry => entry.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)
+      if (visible[0]) setActive(visible[0].target.id as SectionId)
+    }, { rootMargin: '-120px 0px -55% 0px' })
+    SECTIONS.forEach(section => { const element = document.getElementById(section.id); if (element) observer.observe(element) })
+    return () => observer.disconnect()
+  }, [ready])
+  return active
+}
+
+function jumpTo(id: SectionId) {
+  const section = document.getElementById(id)
+  if (!section) return
+  section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  section.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true })
+}
+
+function Profile({ description, provenance, facts, links, tags }: { description: string; provenance: string; facts: Array<[string, ReactNode, string?]>; links: Array<{ label: string; href: string; external?: boolean; hint: string }>; tags: ReactNode }) {
+  const [expanded, setExpanded] = useState(false)
+  const long = description.length > 420
+  return <div className="profile">
+    <div className="profile__about">
+      <h3>Business</h3>
+      {description
+        ? <p className={long && !expanded ? 'profile__description is-clamped' : 'profile__description'}>{description}</p>
+        : <p className="profile__description muted">No business description in the stored filings or external profile.</p>}
+      <div className="profile__about-foot">
+        {long && <button type="button" className="text-button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</button>}
+        {provenance && <small className="muted">Source: {provenance}</small>}
+      </div>
+    </div>
+    <dl className="profile__facts">
+      {facts.map(([label, value, hint]) => <div key={label}><dt>{hint ? <Tip content={hint}>{label}</Tip> : label}</dt><dd>{value || <span className="muted">—</span>}</dd></div>)}
+    </dl>
+    <div className="profile__side">
+      <h3>Research</h3>
+      <ul className="profile__links">
+        {links.map(link => <li key={link.href}>{link.external
+          ? <a href={link.href} target="_blank" rel="noreferrer" title={link.hint}>{link.label}<ExternalLink aria-hidden="true" /></a>
+          : <Link to={link.href} title={link.hint}>{link.label}</Link>}</li>)}
+      </ul>
+      <h3>Your tags</h3>
+      {tags}
+    </div>
+  </div>
 }
 
 export default function AnalysisWorkspaceUnified() {
   const { companyCode: routeCompanyCode } = useParams()
   const [params] = useSearchParams()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const companyCode = routeCompanyCode ?? ''
   const tickerParam = params.get('ticker') ?? ''
@@ -102,6 +230,7 @@ export default function AnalysisWorkspaceUnified() {
   })
   const company = overview.data?.company ?? {}
   const metrics = overview.data?.metrics ?? {}
+  const market = overview.data?.market ?? {}
   const canonicalCode = String(company.edinet_code ?? company.company_code ?? companyCode ?? '')
   const name = String(company.company_name ?? lookup ?? 'Company')
   const ticker = String(company.ticker ?? '')
@@ -111,36 +240,77 @@ export default function AnalysisWorkspaceUnified() {
     queryFn: () => apiRequest<SecurityHistory>(`/api/security/history${queryString({ company_code: canonicalCode, periods: 16 })}`),
     retry: false,
   })
+  const prices = useQuery({
+    queryKey: ['security-prices', ticker],
+    enabled: Boolean(ticker),
+    queryFn: () => apiRequest<{ prices: PriceHistoryRow[] }>(`/api/security/price-history${queryString({ ticker, adjusted: true })}`),
+  })
   const metricPeriod = String(overview.data?.metadata?.comparison_metric_period_end ?? overview.data?.metadata?.last_financial_period_end ?? '')
   const auth = useAuth()
   // Provider refreshes write shared market data; the API allows operators and admins only.
   // With authentication disabled the server treats every request as the local admin.
   const canRefreshPrice = auth.status?.mode === 'disabled' || auth.user?.role === 'admin' || auth.user?.role === 'operator'
-  const updatePrice = useMutation({ mutationFn: () => apiPost('/api/security/update-price', { ticker }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-overview', lookupKey] }) })
+  const updatePrice = useMutation({
+    mutationFn: () => apiPost('/api/security/update-price', { ticker }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['security-overview', lookupKey] })
+      void queryClient.invalidateQueries({ queryKey: ['security-prices', ticker] })
+    },
+  })
   const [newTag, setNewTag] = useState('')
+  const tagInput = useRef<HTMLInputElement>(null)
   const tags = useQuery({ queryKey: ['company-tags', canonicalCode], enabled: Boolean(canonicalCode), queryFn: () => apiRequest<{ tags: string[] }>(`/api/tags/${encodeURIComponent(canonicalCode)}`) })
-  const addTag = useMutation({ mutationFn: (tag: string) => apiRequest(`/api/tags/${encodeURIComponent(canonicalCode)}/${encodeURIComponent(tag)}`, { method: 'POST' }), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['company-tags', canonicalCode] }); void queryClient.invalidateQueries({ queryKey: ['research-tags'] }) } })
-  const removeTag = useMutation({ mutationFn: (tag: string) => apiRequest(`/api/tags/${encodeURIComponent(canonicalCode)}/${encodeURIComponent(tag)}`, { method: 'DELETE' }), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['company-tags', canonicalCode] }); void queryClient.invalidateQueries({ queryKey: ['research-tags'] }) } })
+  const invalidateTags = () => { void queryClient.invalidateQueries({ queryKey: ['company-tags', canonicalCode] }); void queryClient.invalidateQueries({ queryKey: ['research-tags'] }) }
+  const addTag = useMutation({ mutationFn: (tag: string) => apiRequest(`/api/tags/${encodeURIComponent(canonicalCode)}/${encodeURIComponent(tag)}`, { method: 'POST' }), onSuccess: invalidateTags })
+  const removeTag = useMutation({ mutationFn: (tag: string) => apiRequest(`/api/tags/${encodeURIComponent(canonicalCode)}/${encodeURIComponent(tag)}`, { method: 'DELETE' }), onSuccess: invalidateTags })
+  const [showShortcuts, setShowShortcuts] = useState(false)
+  const closeShortcuts = useCallback(() => setShowShortcuts(false), [])
+  const ready = Boolean(overview.data)
+  const activeSection = useActiveSection(ready)
+  const header = useRef<HTMLDivElement>(null)
+  const [headerHidden, setHeaderHidden] = useState(false)
+  useEffect(() => {
+    const element = header.current
+    if (!ready || !element || typeof IntersectionObserver === 'undefined') return
+    // Once the company header scrolls away, the sticky section bar carries the name and price.
+    const observer = new IntersectionObserver(([entry]) => setHeaderHidden(!entry.isIntersecting), { rootMargin: '-110px 0px 0px 0px' })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [ready])
+  useHotkeys({
+    '?': () => setShowShortcuts(true),
+    1: () => jumpTo('overview'),
+    2: () => jumpTo('financials'),
+    3: () => jumpTo('filings'),
+    t: () => { tagInput.current?.focus(); tagInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
+    p: () => { if (canonicalCode) navigate(`/compare?companies=${encodeURIComponent(canonicalCode)}`) },
+    b: () => { if (ticker) navigate(`/backtest?symbol=${encodeURIComponent(ticker)}`) },
+  }, ready && !showShortcuts)
 
-  if (!lookup) return <div className="stack dense-page analysis-empty-page"><PageHeader eyebrow="Company research" title="Analyze a company" description="Use the company search above to open price, statements, ratios, and trends." /><EmptyState title="Search for a company above" description="Enter a name, ticker, EDINET code, or industry and choose a result." /></div>
+  if (!lookup) return <StartAnalysis />
   if (overview.isLoading) return <LoadingState label="Loading company analysis" />
   if (overview.isError && overview.error instanceof ApiError && overview.error.status === 404) {
-    return <div className="stack dense-page analysis-empty-page"><PageHeader eyebrow="Company research" title="Company not found" description={`No company in the research database matches “${lookup}”.`} /><EmptyState title="Search for the company above" description="Enter a name, ticker, EDINET code, or industry and choose a result." /></div>
+    return <div className="stack dense-page analysis-empty-page"><PageHeader eyebrow="Company research" title="Company not found" description={`No company in the research database matches “${lookup}”.`} /><EmptyState title="Press / to search" description="Enter a name, ticker, EDINET code, or industry and choose a result." /></div>
   }
   if (overview.isError) return <ErrorState error={overview.error} retry={() => overview.refetch()} />
+
   const metricDefinitions = overview.data?.metric_definitions ?? {}
-  const currencies = { price: stringOrNull(overview.data?.market?.price_currency), reporting: stringOrNull(overview.data?.metadata?.reporting_currency) }
+  const currencies = { price: stringOrNull(market.price_currency), reporting: stringOrNull(overview.data?.metadata?.reporting_currency) }
   const formatMetric = (key: string, value: number | null | undefined) => formatMetricValue(metricDefinitions[key], value, currencies)
+  const formatPrice = (value: number) => formatMetricValue(metricDefinitions.LatestPrice, value, currencies)
   const snapshotGroups: SnapshotGroup[] = groupMetrics(Object.keys(metricDefinitions), metricDefinitions)
     .map(({ group, metrics: keys }) => ({ title: group, metrics: keys.map(key => [key, metricDefinitions[key].label] as [string, string]) }))
-  const metricKeys = HEADLINE_METRICS.map(key => [key, metricDefinition(key, metricDefinitions).label])
   const qualityFlags = overview.data?.metadata?.data_quality_flags
   const tickerOnly = Array.isArray(qualityFlags) && qualityFlags.includes('ticker_only_no_company_record')
   const yahooSymbol = String(company.yahoo_symbol ?? '')
+  const exchangeCode = localCode(yahooSymbol)
   // The filing's own business description comes first; the external profile is a labelled fallback.
   const descriptionSource = company.description_source as { kind?: string; label?: string; symbol?: string } | null | undefined
   const businessDescription = String((descriptionSource?.kind === 'external' ? company.yahoo_description : company.description_summary || company.description) ?? '').trim()
   const descriptionProvenance = businessDescription && descriptionSource?.label ? [descriptionSource.label, descriptionSource.symbol].filter(Boolean).join(' · ') : ''
+  const priceRows = prices.data?.prices ?? []
+  const hasPrices = priceRows.length > 1
+  const hasPrice = metrics.LatestPrice != null || numberOrNull(market.latest_price) !== null
   const downloadReport = () => {
     if (!history.data) return
     downloadTextFile(`${safeFileName(name)}-report.md`, buildCompanyReport({
@@ -157,5 +327,102 @@ export default function AnalysisWorkspaceUnified() {
       history: history.data,
     }), 'text/markdown;charset=utf-8')
   }
-  return <div className="stack dense-page analysis-workspace"><PageHeader eyebrow="Company analysis" title={name} description={[ticker, canonicalCode, company.industry, company.market].filter(Boolean).join(' · ')} actions={<div className="button-row">{params.get('from') === 'screen' && <Link className="button button--ghost" to="/screen"><ArrowLeft />Return to Screening</Link>}<button className="button button--secondary" disabled={!history.data} onClick={downloadReport} title={history.data ? 'Download a markdown report with the snapshot and financial history' : 'Financial history is still loading'}><Download />Export report</button>{yahooSymbol && <a className="button button--secondary" href={`https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`} target="_blank" rel="noreferrer"><ExternalLink />Yahoo Finance</a>}<Link className="button button--primary" to={`/backtest?symbol=${ticker}`}><BarChart3 />Backtest</Link></div>} />{tickerOnly && <div className="callout callout--warning" role="status"><strong>No company record matches “{tickerParam}”.</strong> Showing stored price data only. Broker and portfolio symbols do not always match the exchange ticker used in EDINET data; search by company name or EDINET code for statements and filings.</div>}<div className="metric-strip analysis-metric-strip">{metricKeys.map(([key, label]) => <Metric key={key} label={label} value={formatMetric(key, metrics[key])} detail={key === 'LatestPrice' && canRefreshPrice ? <button className="text-button" onClick={() => updatePrice.mutate()}><RefreshCw />Refresh</button> : undefined} />)}</div><div className="analysis-top-grid"><Card title="Price history"><PriceChart ticker={ticker} /></Card><Card title="Company snapshot"><dl className="company-facts"><div><dt>Industry</dt><dd>{String(company.industry ?? '—')}</dd></div><div><dt>Market</dt><dd>{String(company.market ?? '—')}</dd></div><div><dt>Code</dt><dd>{canonicalCode || '—'}</dd></div><div><dt>Ticker</dt><dd>{ticker || '—'}</dd></div></dl>{metricPeriod && <p className="company-snapshot-period">Financial metrics: {metricPeriod}</p>}<SnapshotMetrics metrics={metrics} groups={snapshotGroups} format={formatMetric} /><div className="company-tags"><div className="tag-list">{(tags.data?.tags ?? []).map(tag => <span className="tag" key={tag}>{tag}<button className="icon-button" onClick={() => removeTag.mutate(tag)} aria-label={`Remove tag ${tag}`}><X /></button></span>)}</div><div className="tag-add"><input className="input" placeholder="Add tag…" value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newTag.trim()) { addTag.mutate(newTag.trim()); setNewTag('') } }} /><button className="button button--ghost" disabled={!newTag.trim() || !canonicalCode} onClick={() => { addTag.mutate(newTag.trim()); setNewTag('') }} aria-label="Add tag"><Plus /></button></div></div><div className="company-description-block"><strong>Business description</strong><p className="company-description company-description--compact">{businessDescription || 'No business description available.'}</p>{descriptionProvenance && <small className="company-description-source">Source: {descriptionProvenance}</small>}</div></Card></div><Card className="analysis-history-card" title="Financial history" description="Select metrics in the table to chart them alongside the underlying values."><FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} downloadPrefix={canonicalCode || ticker} /></Card>{canonicalCode && <FilingSummaryCard companyCode={canonicalCode} />}</div>
+  const submitTag = () => {
+    const tag = newTag.trim()
+    if (!tag || !canonicalCode) return
+    addTag.mutate(tag)
+    setNewTag('')
+  }
+  const refresh = canRefreshPrice && ticker
+    ? <button type="button" className="icon-button quote__refresh" disabled={updatePrice.isPending} onClick={() => updatePrice.mutate()} title="Fetch the latest price from the provider" aria-label="Refresh price"><RefreshCw className={updatePrice.isPending ? 'spin' : undefined} /></button>
+    : undefined
+  const facts: Array<[string, ReactNode, string?]> = [
+    ['Industry', String(company.industry ?? '')],
+    ['Market', String(company.market ?? '')],
+    ['EDINET code', canonicalCode, 'Identifier the FSA’s EDINET disclosure system assigns to every filer.'],
+    ['Securities code', ticker, 'Exchange code used for prices (five digits including the check digit).'],
+    ['Reporting currency', currencies.reporting ?? ''],
+    ['Latest fiscal year', metricPeriod ? `Ends ${formatDay(metricPeriod)}` : '', 'Statement-based metrics use the latest annual filing with values.'],
+    ['Price data', hasPrice ? [stringOrNull(market.price_provider), market.price_basis === 'adjusted' ? 'split-adjusted' : stringOrNull(market.price_basis), formatDay(market.latest_price_date)].filter(Boolean).join(' · ') : 'No stored prices'],
+  ]
+  const links = [
+    ...(canonicalCode ? [
+      { label: 'Filing Explorer', href: `/filings?company=${encodeURIComponent(canonicalCode)}&from=analysis`, hint: 'Read the original reports in Japanese and English' },
+      { label: 'Compare with peers', href: `/compare?companies=${encodeURIComponent(canonicalCode)}`, hint: 'Open Comparison with this company preselected (P)' },
+    ] : []),
+    { label: 'Notes and alerts', href: '/research', hint: 'Your research notes, watchlists, and alerts' },
+    ...(yahooSymbol ? [{ label: 'Yahoo Finance', href: `https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`, external: true, hint: 'Quote, news, and profile' }] : []),
+    ...(exchangeCode ? [
+      { label: 'Yahoo! Finance Japan', href: `https://finance.yahoo.co.jp/quote/${encodeURIComponent(yahooSymbol)}`, external: true, hint: 'Japanese quote page with disclosures and forum' },
+      { label: 'Kabutan', href: `https://kabutan.jp/stock/?code=${encodeURIComponent(exchangeCode)}`, external: true, hint: 'Japanese earnings summaries and news' },
+    ] : []),
+  ]
+  const tagEditor = <div className="tag-editor">
+    {(tags.data?.tags ?? []).map(tag => <span className="tag" key={tag}><Link to="/research" title="Open your tags in Research">{tag}</Link><button type="button" className="icon-button" onClick={() => removeTag.mutate(tag)} aria-label={`Remove tag ${tag}`}><X /></button></span>)}
+    <form className="tag-editor__add" onSubmit={event => { event.preventDefault(); submitTag() }}>
+      <input ref={tagInput} className="input" placeholder="Add tag" aria-label="Add a tag" value={newTag} onChange={event => setNewTag(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { setNewTag(''); event.currentTarget.blur() } }} disabled={!canonicalCode} />
+      <button type="submit" className="icon-button" disabled={!newTag.trim() || !canonicalCode} aria-label="Add tag"><Plus /></button>
+      <kbd aria-hidden="true">T</kbd>
+    </form>
+  </div>
+
+  return <div className="analysis">
+    <div ref={header} className="analysis-header">
+      <div className="analysis-header__id">
+        <span className="eyebrow">Company analysis</span>
+        <h1>{name}</h1>
+        <p className="analysis-header__meta">
+          {[ticker && <Tip key="ticker" content="Securities code">{ticker}</Tip>, canonicalCode && <Tip key="code" content="EDINET code">{canonicalCode}</Tip>, company.industry ? String(company.industry) : null, company.market ? String(company.market) : null].filter(Boolean).map((part, index) => <span key={index}>{part}</span>)}
+        </p>
+      </div>
+      <Quote market={market} metrics={metrics} formatMetric={formatMetric} refresh={refresh} />
+    </div>
+    {updatePrice.isError && <div className="callout callout--warning" role="alert">Price refresh failed: {updatePrice.error instanceof Error ? updatePrice.error.message : 'unknown error'}</div>}
+    {tickerOnly && <div className="callout callout--warning" role="status"><strong>No company record matches “{tickerParam}”.</strong> Showing stored price data only. Broker and portfolio symbols do not always match the exchange ticker used in EDINET data; search by company name or EDINET code for statements and filings.</div>}
+
+    <nav className="analysis-nav" aria-label="Analysis sections">
+      <span className={headerHidden ? 'analysis-nav__id is-visible' : 'analysis-nav__id'} aria-hidden={!headerHidden}>
+        <strong>{name}</strong>
+        {hasPrice && <span className="mono">{formatMetric('LatestPrice', metrics.LatestPrice ?? numberOrNull(market.latest_price))}</span>}
+      </span>
+      {SECTIONS.map((section, index) => <a key={section.id} href={`#${section.id}`} className={activeSection === section.id ? 'active' : undefined} aria-current={activeSection === section.id ? 'location' : undefined} onClick={event => { event.preventDefault(); jumpTo(section.id) }}><kbd>{index + 1}</kbd>{section.label}</a>)}
+      <span className="analysis-nav__spacer" />
+      <div className="analysis-nav__actions">
+        {params.get('from') === 'screen' && <Link className="button button--ghost button--small" to="/screen"><ArrowLeft aria-hidden="true" />Screening</Link>}
+        <button type="button" className="button button--secondary button--small" disabled={!history.data} onClick={downloadReport} title={history.data ? 'Download a Markdown report with the snapshot and full financial history' : 'Financial history is still loading'}><Download aria-hidden="true" />Report</button>
+        {canonicalCode && <Link className="button button--secondary button--small" to={`/compare?companies=${encodeURIComponent(canonicalCode)}`} title="Compare with peers (P)"><GitCompare aria-hidden="true" />Compare</Link>}
+        {ticker && <Link className="button button--primary button--small" to={`/backtest?symbol=${encodeURIComponent(ticker)}`} title="Backtest this ticker (B)"><BarChart3 aria-hidden="true" />Backtest</Link>}
+        <button type="button" className="icon-button analysis-nav__keys" onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard aria-hidden="true" /></button>
+      </div>
+    </nav>
+
+    <Section id="overview" title="Overview" hideTitle>
+      <div className={hasPrices ? 'overview-grid' : 'overview-grid overview-grid--no-price'}>
+        {ticker && (hasPrices || prices.isLoading) && <section className="panel panel--price" aria-label="Price history">
+          {prices.isLoading ? <LoadingState label="Loading prices" /> : <PricePanel rows={priceRows} formatPrice={formatPrice} />}
+        </section>}
+        <section className="panel panel--stats" aria-labelledby="key-stats-title">
+          <header className="panel__header">
+            <h3 id="key-stats-title">Key statistics</h3>
+            {metricPeriod && <Tip content="Statement-based figures come from the latest annual filing with values; valuation uses the latest stored price." className="panel__meta">FY ending {formatDay(metricPeriod)}</Tip>}
+          </header>
+          {!hasPrice && <p className="panel__note">{ticker ? 'No stored prices for this ticker yet, so valuation ratios are unavailable.' : 'Not listed: there is no market price, so valuation ratios do not apply.'}</p>}
+          <KeyStats metrics={metrics} definitions={metricDefinitions} format={formatMetric} period={metricPeriod} hasPrice={hasPrice} />
+        </section>
+        <section className="panel panel--profile" aria-label="Company profile">
+          <Profile description={businessDescription} provenance={descriptionProvenance} facts={facts} links={links} tags={tagEditor} />
+        </section>
+      </div>
+    </Section>
+
+    <Section id="financials" title="Financial statements" aside={<span className="analysis-section__note">Annual figures from XBRL filings. Click lines to chart them.</span>}>
+      <FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} downloadPrefix={canonicalCode || ticker} currency={currencies.reporting} />
+    </Section>
+
+    {canonicalCode && <Section id="filings" title="Filings" aside={<span className="analysis-section__note">Retained EDINET annual reports with their XBRL data.</span>}>
+      <FilingsPanel companyCode={canonicalCode} />
+    </Section>}
+
+    {showShortcuts && <ShortcutsDialog groups={SHORTCUTS} onClose={closeShortcuts} />}
+  </div>
 }

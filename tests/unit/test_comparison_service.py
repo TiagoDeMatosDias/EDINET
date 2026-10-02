@@ -216,3 +216,10 @@ def test_metrics_endpoint_describes_standard_metrics(monkeypatch):
     assert response["definitions"]["ReturnOnEquity"]["format"] == "percent"
     groups = [definition["group"] for definition in response["definitions"].values()]
     assert groups == sorted(groups, key=groups.index), "definitions are grouped in display order"
+
+
+def test_every_standard_metric_explains_how_it_is_calculated():
+    from src.comparison.service import METRIC_DEFINITIONS
+
+    missing = [key for key, definition in METRIC_DEFINITIONS.items() if not definition.get("description", "").strip()]
+    assert missing == [], "the analysis page shows each description as the metric's tooltip"

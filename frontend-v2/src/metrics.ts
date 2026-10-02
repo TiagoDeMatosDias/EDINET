@@ -9,6 +9,8 @@ export interface MetricDefinition {
   /** ``money`` amounts are in the ``price`` or ``reporting`` currency; ``percent`` values are fractions. */
   format?: 'money' | 'percent'
   currency?: 'price' | 'reporting'
+  /** How the value is calculated, for tooltips. */
+  description?: string
 }
 
 /** A company's currencies: its share price's and its financial statements'. */

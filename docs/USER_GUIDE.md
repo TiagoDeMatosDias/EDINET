@@ -47,18 +47,17 @@ Use the optional as-of date when the result must be limited to data that was ava
 
 ### Company Analysis
 
-Choose a company from the global search or open `/analyze/:companyCode`. The analysis workspace includes:
+Choose a company from the global search (press `/` from anywhere, then `↑`/`↓` and `Enter`) or open `/analyze/:companyCode`. The page has three sections, reachable from the sticky section bar or with `1`, `2`, and `3`:
 
-- current price, valuation, quality, income, balance-sheet, cash-flow, and per-share snapshot metrics;
-- price history and reporting-period context;
-- a full financial-history table with selectable chart metrics;
-- tags and a Favorite action;
-- archived filing links;
-- Yahoo Finance and backtest handoffs.
+- **Overview** — the latest close with its one-day move, market cap, and 52-week range in the header; a split-adjusted price chart (1M to All, remembered per browser, `-`/`=` to widen or narrow) whose hover readout shows the date, close, and move since the start of the range; key statistics grouped as valuation, quality, income, and balance sheet, each with a tooltip saying how it is calculated (ROE and ROA are three-year averages); and the company profile with its business description, identifiers, research links (Filing Explorer, Comparison, Yahoo Finance, Yahoo! Finance Japan, Kabutan), and your tags (`T` adds one). Unlisted companies show statement-based statistics without an empty price panel.
+- **Financial statements** — one tab per statement table with values, and rolling multi-year averages and growth rates alongside (`[`/`]` switch tabs). Lines appear in filing order with components nested under their subtotal, concepts EDINET renamed between years (for example *Capital stock* and *Share capital*) are combined into one line, and lines the company never reported stay hidden until you ask for them (`E`). Each line shows a trend sparkline, the latest year-on-year change, and its compound annual growth. Switch between reported values, year-on-year change, and common size (`V`); click lines or press `Space` on the focused line to chart up to six of them as bars or lines (`C`); `F` filters lines and **CSV** exports the lines shown with unrounded values.
+- **Filings** — the retained EDINET annual reports with fiscal period, form, submission time, document ID, archive size, and parse status; `O` opens the latest. Export all downloads every retained archive with a manifest.
+
+Press `?` on the page for the full list of keyboard shortcuts. Shortcuts pause while a field has focus. **Report** downloads a Markdown report with the snapshot and the full financial history; **Compare** (`P`) and **Backtest** (`B`) hand the company to those workspaces.
 
 <img src="images/web-security-analysis.png" alt="Company analysis with a populated financial snapshot" width="900">
 
-Favorite is an ordinary private tag named `Favorite`; it is not stored in a separate favorites subsystem.
+Favorites are ordinary private tags (for example one named `Favorite`); they are not stored in a separate favorites subsystem.
 
 ## Compare companies and arbitrary metrics
 

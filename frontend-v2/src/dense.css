@@ -60,21 +60,9 @@
 .results-card .table-scroll { max-height: 410px; overflow: auto; }
 .results-card .data-grid th { position: sticky; top: 0; z-index: 1; }
 
-.analysis-summary-grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(280px, .75fr); gap: 10px; }
-.price-chart { height: 215px; }
-.company-description--compact { max-height: 135px; margin: 0; overflow: auto; font-size: .82rem; line-height: 1.45; }
-.analysis-links { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 9px; color: var(--muted); font-size: .75rem; }
-.analysis-links a { color: var(--primary); }
-.financial-workspace { min-width: 0; }
-.financial-toolbar { display: grid; grid-template-columns: minmax(220px, .7fr) auto minmax(180px, .5fr); align-items: center; gap: 7px; margin-bottom: 8px; }
 .segmented { display: flex; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius); }
 .segmented button { min-height: 27px; padding: 3px 9px; border: 0; border-radius: var(--radius); color: var(--muted); background: transparent; cursor: pointer; }
 .segmented button.active { color: var(--paper); background: var(--primary); font-weight: 500; }
-.metric-selector { max-height: 315px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); padding: 5px; }
-.metric-selector .check { padding: 3px; font-size: .72rem; }
-.financial-chart { height: 315px; min-width: 0; }
-.financial-table .table-scroll { max-height: 360px; overflow: auto; }
-.financial-table .data-grid th { position: sticky; top: 0; z-index: 1; }
 .search-results--compact { max-height: 430px; overflow: auto; }
 
 .portfolio-overview-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(330px, .8fr); gap: 10px; }
@@ -112,9 +100,6 @@
 @media (min-width: 1101px) and (min-height: 800px) {
   .criteria-list { max-height: 200px; }
   .results-card .table-scroll { max-height: 145px; }
-  .price-chart { height: 170px; }
-  .metric-selector, .financial-chart { height: 245px; max-height: 245px; }
-  .financial-table .table-scroll { max-height: 285px; }
   .portfolio-value-chart, .mini-chart { height: 235px; }
   .activity-grid--dense { grid-template-columns: repeat(9, minmax(78px, 1fr)); }
   .analytics-chart { height: 185px; }
@@ -122,7 +107,7 @@
 
 @media (max-width: 1100px) {
   .metric-strip, .metric-strip--wrap { grid-template-columns: repeat(4, minmax(100px, 1fr)); }
-  .screen-builder-grid, .portfolio-overview-grid, .analysis-summary-grid { grid-template-columns: 1fr; }
+  .screen-builder-grid, .portfolio-overview-grid { grid-template-columns: 1fr; }
   .portfolio-overview-grid > :last-child { grid-column: auto; }
   .screen-toolbar { grid-template-columns: 1fr 1fr; }
   .toolbar-summary { white-space: normal; }
@@ -130,7 +115,7 @@
 
 @media (max-width: 720px) {
   .metric-strip, .metric-strip--wrap { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .screen-toolbar, .expression-rule, .financial-toolbar, .analytics-grid { grid-template-columns: 1fr; }
+  .screen-toolbar, .expression-rule, .analytics-grid { grid-template-columns: 1fr; }
   .expression-rule { align-items: stretch; }
   .comparison-select { width: 75px; }
   .criteria-list { max-height: none; }

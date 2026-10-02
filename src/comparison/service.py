@@ -9,33 +9,97 @@ from typing import Any
 # and ``label`` drive both the comparison matrix and the analysis snapshot;
 # ``direction`` says which way is favourable when companies are compared (size
 # metrics and payout have none); ``format`` is ``money`` or ``percent`` (stored
-# as a fraction), and money is in the ``price`` or ``reporting`` currency.
+# as a fraction), and money is in the ``price`` or ``reporting`` currency;
+# ``description`` says how the value is calculated, for tooltips.
 _PRICE_MONEY = {"format": "money", "currency": "price"}
 _REPORTED_MONEY = {"format": "money", "currency": "reporting"}
 _PERCENT = {"format": "percent"}
 
 METRIC_DEFINITIONS: dict[str, dict[str, str]] = {
-    "LatestPrice": {"label": "Price", "group": "Market", **_PRICE_MONEY},
-    "MarketCap": {"label": "Market cap", "group": "Market", **_PRICE_MONEY},
-    "PERatio": {"label": "P/E", "group": "Valuation", "direction": "lower"},
-    "PriceToBook": {"label": "P/B", "group": "Valuation", "direction": "lower"},
-    "PriceToSales": {"label": "P/S", "group": "Valuation", "direction": "lower"},
-    "EnterpriseValueToSales": {"label": "EV/Sales", "group": "Valuation", "direction": "lower"},
-    "DividendsYield": {"label": "Dividend yield", "group": "Valuation", "direction": "higher", **_PERCENT},
-    "PayoutRatio": {"label": "Payout ratio", "group": "Valuation", **_PERCENT},
-    "ReturnOnEquity": {"label": "ROE", "group": "Quality", "direction": "higher", **_PERCENT},
-    "ReturnOnAssets": {"label": "Return on assets", "group": "Quality", "direction": "higher", **_PERCENT},
-    "DebtToEquity": {"label": "Debt/equity", "group": "Quality", "direction": "lower"},
-    "CurrentRatio": {"label": "Current ratio", "group": "Quality", "direction": "higher"},
-    "GrossMargin": {"label": "Gross margin", "group": "Quality", "direction": "higher", **_PERCENT},
-    "OperatingMargin": {"label": "Operating margin", "group": "Quality", "direction": "higher", **_PERCENT},
-    "NetMargin": {"label": "Net margin", "group": "Quality", "direction": "higher", **_PERCENT},
-    "Revenue": {"label": "Revenue", "group": "Income", **_REPORTED_MONEY},
-    "OperatingIncome": {"label": "Operating income", "group": "Income", **_REPORTED_MONEY},
-    "NetIncome": {"label": "Net income", "group": "Income", **_REPORTED_MONEY},
-    "TotalAssets": {"label": "Total assets", "group": "Balance sheet", **_REPORTED_MONEY},
-    "TotalEquity": {"label": "Shareholders' equity", "group": "Balance sheet", **_REPORTED_MONEY},
-    "SharesOutstanding": {"label": "Shares outstanding", "group": "Balance sheet"},
+    "LatestPrice": {
+        "label": "Price", "group": "Market", **_PRICE_MONEY,
+        "description": "Latest stored closing price, adjusted for share splits.",
+    },
+    "MarketCap": {
+        "label": "Market cap", "group": "Market", **_PRICE_MONEY,
+        "description": "Latest price × shares issued as of the latest annual filing date.",
+    },
+    "PERatio": {
+        "label": "P/E", "group": "Valuation", "direction": "lower",
+        "description": "Price-to-earnings: latest price ÷ basic earnings per share from the latest annual filing.",
+    },
+    "PriceToBook": {
+        "label": "P/B", "group": "Valuation", "direction": "lower",
+        "description": "Price-to-book: latest price ÷ net assets per share from the latest annual filing.",
+    },
+    "PriceToSales": {
+        "label": "P/S", "group": "Valuation", "direction": "lower",
+        "description": "Price-to-sales: latest price ÷ sales per share from the latest annual filing.",
+    },
+    "EnterpriseValueToSales": {
+        "label": "EV/Sales", "group": "Valuation", "direction": "lower",
+        "description": "Enterprise value ÷ annual revenue, from the stored valuation snapshot.",
+    },
+    "DividendsYield": {
+        "label": "Dividend yield", "group": "Valuation", "direction": "higher", **_PERCENT,
+        "description": "Annual dividend paid per share ÷ latest price.",
+    },
+    "PayoutRatio": {
+        "label": "Payout ratio", "group": "Valuation", **_PERCENT,
+        "description": "Share of earnings paid out as dividends: dividend per share ÷ basic earnings per share.",
+    },
+    "ReturnOnEquity": {
+        "label": "ROE", "group": "Quality", "direction": "higher", **_PERCENT,
+        "description": "Return on equity: net income ÷ shareholders' equity, averaged over the last three fiscal years.",
+    },
+    "ReturnOnAssets": {
+        "label": "ROA", "group": "Quality", "direction": "higher", **_PERCENT,
+        "description": "Return on assets: net income ÷ total assets, averaged over the last three fiscal years.",
+    },
+    "DebtToEquity": {
+        "label": "Debt/equity", "group": "Quality", "direction": "lower",
+        "description": "Leverage: total liabilities ÷ shareholders' equity. Below 1 means equity funds more than creditors.",
+    },
+    "CurrentRatio": {
+        "label": "Current ratio", "group": "Quality", "direction": "higher",
+        "description": "Liquidity: current assets ÷ current liabilities. Above 1 means short-term assets cover short-term obligations.",
+    },
+    "GrossMargin": {
+        "label": "Gross margin", "group": "Quality", "direction": "higher", **_PERCENT,
+        "description": "(Revenue − cost of sales) ÷ revenue.",
+    },
+    "OperatingMargin": {
+        "label": "Operating margin", "group": "Quality", "direction": "higher", **_PERCENT,
+        "description": "Operating income ÷ revenue: profit from the core business before interest and taxes.",
+    },
+    "NetMargin": {
+        "label": "Net margin", "group": "Quality", "direction": "higher", **_PERCENT,
+        "description": "Net income ÷ revenue.",
+    },
+    "Revenue": {
+        "label": "Revenue", "group": "Income", **_REPORTED_MONEY,
+        "description": "Net sales (or operating revenue) for the latest fiscal year.",
+    },
+    "OperatingIncome": {
+        "label": "Operating income", "group": "Income", **_REPORTED_MONEY,
+        "description": "Operating profit for the latest fiscal year.",
+    },
+    "NetIncome": {
+        "label": "Net income", "group": "Income", **_REPORTED_MONEY,
+        "description": "Profit for the latest fiscal year.",
+    },
+    "TotalAssets": {
+        "label": "Total assets", "group": "Balance sheet", **_REPORTED_MONEY,
+        "description": "Total assets at the latest fiscal year end.",
+    },
+    "TotalEquity": {
+        "label": "Shareholders' equity", "group": "Balance sheet", **_REPORTED_MONEY,
+        "description": "Shareholders' equity at the latest fiscal year end.",
+    },
+    "SharesOutstanding": {
+        "label": "Shares outstanding", "group": "Balance sheet",
+        "description": "Shares issued as of the latest annual filing date, adjusted for share splits.",
+    },
 }
 
 DEFAULT_METRICS = list(METRIC_DEFINITIONS)

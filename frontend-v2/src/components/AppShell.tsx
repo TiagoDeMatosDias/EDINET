@@ -1,5 +1,5 @@
 import { BarChart3, BriefcaseBusiness, Building2, CircleCheck, CircleX, FileText, GitCompare, Home, LogIn, Menu, PanelLeftClose, Search, Settings, Shield, StickyNote, UserCircle, Workflow, X } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 
 import { useHealth } from '../hooks/useHealth'
@@ -94,6 +94,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const location = useLocation()
   const auth = useAuth()
   const mobileNavigation = navigation.slice(0, 5)
+  // Pages remount per path; start each one at the top instead of the previous page's scroll position.
+  useEffect(() => { window.scrollTo(0, 0) }, [location.pathname])
 
   return <div className={collapsed ? 'app-shell app-shell--collapsed' : 'app-shell'}>
     <aside className={mobileOpen ? 'sidebar sidebar--open' : 'sidebar'}>

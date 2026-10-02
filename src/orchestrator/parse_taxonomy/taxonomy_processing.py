@@ -315,8 +315,17 @@ def _pick_primary_label(candidates: list[dict], language: str) -> str | None:
     return filtered[0].get("label_text")
 
 
+def _member_names(archive: zipfile.ZipFile) -> list[str]:
+    """Member names with ``/`` separators; some EDINET archives are written with ``\\``."""
+    return [name.replace("\\", "/") for name in archive.namelist()]
+
+
 def _load_xml_from_zip(archive: zipfile.ZipFile, member_name: str) -> ET.Element:
-    with archive.open(member_name) as handle:
+    try:
+        handle = archive.open(member_name)
+    except KeyError:
+        handle = archive.open(member_name.replace("/", "\\"))
+    with handle:
         return ET.parse(handle).getroot()
 
 
@@ -607,7 +616,7 @@ def _dictionary_rows_exist(conn: sqlite3.Connection, release_id: str) -> bool:
 
 def _parse_concept_dictionary(archive: zipfile.ZipFile, release_id: str) -> dict[str, list[tuple]]:
     """Concept rows for every taxonomy in the archive, keyed by namespace prefix."""
-    names = archive.namelist()
+    names = _member_names(archive)
     roots = sorted({
         name.split("/")[1]
         for name in names
@@ -1784,10 +1793,10 @@ def _persist_taxonomy_package(
     archive_bytes: bytes,
     downloaded_at: str,
 ) -> dict[str, int]:
-    del archive_name, archive_path, downloaded_at
+    del archive_path, downloaded_at
 
     with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
-        names = archive.namelist()
+        names = _member_names(archive)
         prefix_root = namespace_prefix.split("_", 1)[0]
         concept_xsd_paths = [
             name
@@ -1816,6 +1825,13 @@ def _persist_taxonomy_package(
         labels_by_concept = _parse_labels(archive, release_id, namespace_prefix, label_paths)
         arcs, primary_metadata = _parse_presentation_arcs(archive, release_id, namespace_prefix, pre_paths, roles)
         dictionary_rows = _parse_concept_dictionary(archive, release_id)
+
+    if not concepts:
+        # Replacing a release with nothing would silently delete its rows.
+        raise ValueError(
+            f"{archive_name} contains no {namespace_prefix} concepts; its layout may have "
+            f"changed. The stored rows for release {release_id} were left unchanged."
+        )
 
     for concept_qname, concept in concepts.items():
         labels = labels_by_concept.get(concept_qname, [])

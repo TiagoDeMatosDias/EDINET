@@ -444,3 +444,30 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* Keyboard keys, hover/focus explanations, and the shortcut reference. */
+kbd { display: inline-block; min-width: 1.6em; padding: 0 .35em; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 3px; color: var(--muted); background: var(--surface); font-family: var(--font-mono); font-size: .64rem; font-weight: 400; line-height: 1.55; text-align: center; vertical-align: middle; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.mono { font-family: var(--font-mono); }
+.tip { cursor: help; text-decoration: underline dotted var(--border-strong); text-underline-offset: 3px; }
+.tip:focus { outline: none; }
+.tip:focus-visible { border-radius: 1px; outline: 2px solid rgb(176 48 31 / 45%); outline-offset: 1px; }
+.tip-bubble { position: fixed; z-index: 1000; max-width: 320px; padding: 7px 10px; border-radius: 3px; color: var(--paper); background: var(--ink); box-shadow: var(--shadow-pop); font-size: .75rem; font-weight: 400; line-height: 1.45; text-align: left; text-transform: none; letter-spacing: 0; white-space: normal; pointer-events: none; }
+.tip-lines { display: grid; gap: 3px; }
+.tip-lines strong { color: var(--paper); font-weight: 500; }
+.tip-lines span { color: #d6d0c2; }
+.global-search-results button.active { background: var(--primary-soft); }
+.global-search-hint { display: flex; align-items: center; gap: 4px; padding: 6px 11px; border-top: 1px solid var(--border); color: var(--muted); font-size: .68rem; }
+.shortcuts-backdrop { position: fixed; inset: 0; z-index: 900; display: grid; place-items: center; padding: 20px; background: rgb(28 27 25 / 28%); }
+.shortcuts-dialog { width: min(760px, 100%); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-pop); }
+.shortcuts-dialog header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 10px 18px; border-bottom: 1px solid var(--border); }
+.shortcuts-dialog h2 { margin: 0; font-family: var(--font-display); font-size: 1.1rem; }
+.shortcuts-dialog__groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 4px 28px; padding: 12px 18px; }
+.shortcuts-dialog h3 { margin: 6px 0 6px; color: var(--muted); font-size: .66rem; font-weight: 500; letter-spacing: .09em; text-transform: uppercase; }
+.shortcuts-dialog dl { margin: 0; }
+.shortcuts-dialog dl > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 4px 0; border-bottom: 1px dotted var(--border); font-size: .8rem; }
+.shortcuts-dialog dt { display: flex; flex-wrap: wrap; gap: 2px; }
+.shortcuts-dialog dd { margin: 0; }
+.shortcuts-dialog kbd { font-size: .7rem; }
+.shortcuts-dialog__or { margin: 0 2px; color: var(--muted); font-size: .7rem; }
+.shortcuts-dialog__foot { margin: 0; padding: 9px 18px 12px; border-top: 1px solid var(--border); font-size: .74rem; }

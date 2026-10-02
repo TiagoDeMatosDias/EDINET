@@ -1529,3 +1529,30 @@ class TestTaxonomyDictionary(unittest.TestCase):
         self.assertEqual(rows["jpigp_cor:RevenueIFRS"], ("xbrli:monetaryItemType", "Revenue"))
         self.assertEqual(rows["jpigp_cor:EquityToAssetRatioIFRS"], ("num:percentItemType", None))
         self.assertIn("jppfs_cor:CashAndDeposits", rows)
+
+    def test_archives_with_backslash_member_paths_are_parsed(self):
+        output = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(_build_taxonomy_archive_bytes())) as source, zipfile.ZipFile(output, "w") as target:
+            for name in source.namelist():
+                target.writestr(name.replace("/", "\\"), source.read(name))
+
+        stats = self._persist(output.getvalue())
+
+        self.assertEqual(stats["concepts"], 3)
+        self.assertEqual(stats["taxonomy_rows"], 2)
+
+    def test_an_archive_without_concepts_leaves_stored_rows_untouched(self):
+        self._persist(_build_taxonomy_archive_bytes())
+        empty = io.BytesIO()
+        with zipfile.ZipFile(empty, "w") as archive:
+            archive.writestr("samples/2024-11-01/readme.txt", "no taxonomy here")
+
+        with self.assertRaisesRegex(ValueError, "contains no jppfs_cor concepts"):
+            self._persist(empty.getvalue())
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            self.assertEqual(conn.execute("SELECT count(*) FROM Taxonomy").fetchone()[0], 2)
+            self.assertEqual(conn.execute("SELECT count(*) FROM Taxonomy_Dictionary").fetchone()[0], 3)
+        finally:
+            conn.close()

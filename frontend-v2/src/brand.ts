@@ -30,3 +30,10 @@ export const SEMANTIC_CHART_COLORS = {
 export const CHART_GRID_COLOR = '#E4DFD3'
 export const FONT_SANS = "'Zen Kaku Gothic New', ui-sans-serif, system-ui, sans-serif"
 export const FONT_MONO = "'IBM Plex Mono', ui-monospace, SFMono-Regular, Consolas, monospace"
+
+/**
+ * Categorical series colours for multi-series charts, in fixed assignment order: indigo,
+ * vermilion, teal, ochre, plum, moss. Checked against the paper surface for lightness band,
+ * chroma, colour-vision-deficiency separation, and contrast; keep this order when charting.
+ */
+export const SERIES_COLORS = ['#3460A8', '#C4462C', '#13917A', '#BE8410', '#A9568F', '#55891F'] as const
