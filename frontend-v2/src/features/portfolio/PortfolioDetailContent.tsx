@@ -2,8 +2,10 @@ import { ArrowUpRight, Building2, ChevronLeft, ChevronRight, WalletCards } from 
 
 import { LoadingState } from '../../components/Feedback'
 import { Metric } from '../../components/Page'
+import { CashEffect } from './ActivityCells'
+import { fxLegs } from './activityModel'
 import { HoldingPriceChart } from './PortfolioCharts'
-import { displayValue, formatDay, heldFor, holdingName, isCash, money, percent, priceNote, quantity, signedPercent, titleCase, transactionCashEffect } from './portfolioFormat'
+import { displayValue, formatDay, heldFor, holdingName, isCash, money, percent, priceNote, quantity, signedPercent, titleCase } from './portfolioFormat'
 import { DetailList } from './PortfolioPrimitives'
 import type { Holding, HoldingHistoryPoint, PortfolioDetail, PortfolioSummary } from './portfolioTypes'
 
@@ -70,19 +72,24 @@ function HoldingDetails(props: Props & { holding: Holding }) {
 
 function TransactionDetails({ row }: { row: Extract<PortfolioDetail, { kind: 'transaction' }>['transaction'] }) {
   const native = row.currency || 'EUR'
+  const trade = row.activity_type === 'TRADE'
+  const conversion = fxLegs(row)
+  const booked = row.report_date && row.report_date !== row.trade_date ? row.report_date : null
   return <div className="drawer-stack"><section className="drawer-section"><h3>{titleCase(row.activity_type ?? 'Activity')}</h3><p className="drawer-description">{row.description || 'No description was supplied by the imported source.'}</p><DetailList rows={[
-    { label: 'Trade date', value: formatDay(row.trade_date) },
+    { label: trade ? 'Trade date' : 'Date', value: formatDay(row.trade_date) },
+    ...(booked ? [{ label: 'Booked by the broker', value: formatDay(booked), tip: 'Corrections keep the date of the record they correct but are booked later.' }] : []),
     { label: 'Settlement date', value: formatDay(row.settle_date) },
     { label: 'Symbol', value: row.symbol || '—' },
-    { label: 'Asset category', value: row.asset_category || '—' },
+    { label: 'Asset category', value: conversion ? 'Currency conversion' : row.asset_category || '—' },
     { label: 'Side', value: row.buy_sell || '—' },
     { label: 'Quantity', value: Number(row.quantity) ? quantity(row.quantity) : '—' },
-    { label: 'Trade price', value: row.activity_type === 'TRADE' ? money(row.trade_price, native, 2) : '—' },
-    { label: 'Gross trade value', value: row.activity_type === 'TRADE' ? money(row.trade_money, native, 2) : '—' },
+    { label: conversion ? 'Exchange rate' : 'Trade price', value: trade ? (conversion ? String(row.trade_price ?? '—') : money(row.trade_price, native, 2)) : '—' },
+    { label: 'Gross trade value', value: trade ? money(row.trade_money, native, 2) : '—' },
     { label: 'Reported amount', value: money(row.amount, native, 2) },
-    { label: 'Cash effect', value: money(transactionCashEffect(row), native, 2) },
-    { label: 'Commission', value: money(row.commission, native, 2) },
+    { label: 'Cash effect', value: <CashEffect row={row} /> },
+    { label: 'Commission', value: money(row.commission, row.commission_currency || native, 2), tip: conversion ? 'Charged separately from the conversion, in the currency shown.' : undefined },
     { label: 'Taxes', value: money(row.taxes, native, 2) },
+    ...(row.account_id ? [{ label: 'Account', value: row.account_id }] : []),
     { label: 'Source file', value: row.source_file || '—' },
   ]} /></section></div>
 }

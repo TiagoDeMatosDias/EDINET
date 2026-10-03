@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import { ErrorState, LoadingState } from '../../components/Feedback'
 import { Field, Metric } from '../../components/Page'
 import { Tip } from '../../components/Tooltip'
-import { displayValue, formatDay, heldDays, heldFor, holdingName, isCash, money, percent, priceNote, quantity, signedPercent } from './portfolioFormat'
+import { displayValue, formatDay, heldDays, heldFor, holdingName, isCash, money, nativeMoney, percent, priceNote, quantity, signedPercent } from './portfolioFormat'
 import { SectionCard } from './PortfolioPrimitives'
 import { PortfolioTable, type TableColumn } from './PortfolioTable'
 import type { Holding, PortfolioDetail, PortfolioSummary } from './portfolioTypes'
@@ -39,7 +39,14 @@ function HoldingCell({ holding }: { holding: Holding }) {
 function useColumns(currency: string, onOpenDetail: Props['onOpenDetail'], onAnalyze: Props['onAnalyze']) {
   return useMemo<TableColumn<HoldingRow>[]>(() => [
     { id: 'symbol', header: 'Holding', rowHeader: true, sortValue: row => row.symbol, cell: row => <HoldingCell holding={row} />, className: 'pf-col-holding' },
-    { id: 'shares', header: 'Shares', numeric: true, tip: 'Shares (or units) held now, after any share splits.', sortValue: row => isCash(row) ? null : row.quantity, cell: row => isCash(row) || row.is_open === false ? '—' : <Tip content={row.avg_cost ? `Average cost ${money(row.avg_cost, row.currency ?? currency, 2)} a share` : 'Shares held'} focusable={false}><span>{quantity(row.quantity)}</span></Tip> },
+    { id: 'shares', header: 'Shares', numeric: true, tip: 'Shares (or units) held now, after any share splits. For cash, the balance in its own currency.', sortValue: row => isCash(row) ? null : row.quantity, cell: row => {
+      if (isCash(row)) {
+        const balance = row.market_value_native ?? row.quantity
+        return <Tip content={`Cash in ${row.currency}: worth ${money(displayValue(row), currency, 2)}`} focusable={false}><span>{nativeMoney(balance, row.currency ?? currency)}</span></Tip>
+      }
+      if (row.is_open === false) return '—'
+      return <Tip content={row.avg_cost ? `Average cost ${money(row.avg_cost, row.currency ?? currency, 2)} a share` : 'Shares held'} focusable={false}><span>{quantity(row.quantity)}</span></Tip>
+    } },
     { id: 'held', header: 'Held', numeric: true, tip: 'How long the holding has been in the portfolio without a break. After a full sale and a later purchase, only the latest period counts.', sortValue: row => isCash(row) ? null : heldDays(row.performance), cell: row => {
       if (isCash(row) || !row.performance?.held_since) return '—'
       const periods = row.performance.num_holding_periods ?? 1

@@ -466,6 +466,12 @@ def _migration_7(conn: sqlite3.Connection) -> None:
     _add_column(conn, "Portfolio_Holdings", "price_currency", "TEXT")
 
 
+def _migration_8(conn: sqlite3.Connection) -> None:
+    """Keep when the broker booked a record and the currency of its commission."""
+    _add_column(conn, "Transactions", "report_date", "TEXT")
+    _add_column(conn, "Transactions", "commission_currency", "TEXT")
+
+
 _MIGRATIONS = (
     (1, _migration_1),
     (2, _migration_2),
@@ -474,6 +480,7 @@ _MIGRATIONS = (
     (5, _migration_5),
     (6, _migration_6),
     (7, _migration_7),
+    (8, _migration_8),
 )
 
 

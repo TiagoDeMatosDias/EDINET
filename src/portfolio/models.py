@@ -49,6 +49,8 @@ class UploadResponse(BaseModel):
     total_entries: int
     inserted: int
     skipped: int
+    # Records already stored that gained details from this file.
+    updated: int = 0
     by_activity: dict[str, int] = Field(default_factory=dict)
     new_tickers_fetched: list[str] = Field(default_factory=list)
     ticker_fetch_failures: list[str] = Field(default_factory=list)

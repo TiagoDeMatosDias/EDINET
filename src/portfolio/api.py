@@ -55,12 +55,16 @@ from src.portfolio.price_fetcher import _build_currency_map, ensure_prices_for_t
 from src.portfolio.scenarios import ScenarioShock, apply_scenario
 from src.portfolio.tax_lots import LotLedger, TaxLot
 from src.portfolio.transactions import (
+    EmptySelection,
     delete_by_source,
+    delete_selection,
     get_activity_summary,
     get_date_range,
+    get_import_files,
     get_transactions,
     get_unique_symbols,
     insert_entries,
+    summarize_selection,
 )
 from src.web_app.security import get_settings
 
@@ -193,6 +197,7 @@ async def upload_xml(request: Request, file: Annotated[UploadFile, File()]):
         total_entries=len(entries),
         inserted=result["inserted"],
         skipped=result["skipped"],
+        updated=result.get("updated", 0),
         by_activity=result["by_activity"],
         new_tickers_fetched=price_result["fetched"],
         ticker_fetch_failures=price_result["failed"],
@@ -244,6 +249,54 @@ async def delete_transactions(request: Request, source_file: str):
     user = _account(request)
     deleted = await asyncio.to_thread(delete_by_source, get_db3(), source_file, owner_user_id=user.user_id)
     return {"deleted": deleted}
+
+
+class DeleteTransactionsRequest(BaseModel):
+    """Which of the account's records to delete; criteria combine with AND.
+
+    Without ``confirm`` nothing is deleted and the response previews the
+    records that would be.  An empty selection is refused rather than read
+    as "everything"; clearing all data needs ``everything``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    everything: bool = False
+    ids: list[int] = Field(default_factory=list, max_length=20_000)
+    source_files: list[str] = Field(default_factory=list, max_length=500)
+    start_date: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    confirm: bool = False
+
+
+@router.get("/imports")
+async def import_files(request: Request):
+    """Imported files with their record counts and date spans."""
+    user = _account(request)
+    return await asyncio.to_thread(get_import_files, get_db3(), owner_user_id=user.user_id)
+
+
+@router.post("/transactions/delete")
+async def delete_transactions_selection(request: Request, payload: DeleteTransactionsRequest):
+    """Preview, or with ``confirm`` delete, a set of the account's records and rebuild the ledger."""
+    user = _account(request)
+    selection = {
+        "everything": payload.everything,
+        "ids": payload.ids,
+        "source_files": payload.source_files,
+        "start_date": payload.start_date,
+        "end_date": payload.end_date,
+    }
+    try:
+        preview = await asyncio.to_thread(summarize_selection, get_db3(), owner_user_id=user.user_id, **selection)
+    except EmptySelection as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not payload.confirm:
+        return {"preview": preview}
+    deleted = await asyncio.to_thread(delete_selection, get_db3(), owner_user_id=user.user_id, **selection)
+    # Holdings, daily values, and history follow from the remaining records.
+    rebuilt = await asyncio.to_thread(build_portfolio_state, get_db3(), get_db2(), owner_user_id=user.user_id)
+    return {"deleted": deleted, "remaining": preview["remaining"], **rebuilt}
 
 
 @router.get("/activity-summary", response_model=ActivitySummaryResponse)

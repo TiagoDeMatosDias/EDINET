@@ -57,6 +57,32 @@ describe('PortfolioTable', () => {
     expect(onOrderChange).toHaveBeenLastCalledWith([ROWS[1], ROWS[2], ROWS[0]])
   })
 
+  it('sorts dates newest first and only flips a table that starts sorted by that column', () => {
+    const DAYS = [{ symbol: 'B', day: '2024-02-01' }, { symbol: 'A', day: '2024-01-01' }, { symbol: 'C', day: '2024-03-01' }]
+    const columns: TableColumn<{ symbol: string; day: string }>[] = [
+      { id: 'symbol', header: 'Holding', rowHeader: true, sortValue: row => row.symbol, cell: row => row.symbol },
+      { id: 'day', header: 'Date', sortFirst: 'desc', sortValue: row => row.day, cell: row => row.day },
+    ]
+    render(<PortfolioTable label="Days" rows={DAYS} columns={columns} rowKey={row => row.symbol} initialSort={{ column: 'day', direction: 'desc' }} />)
+    const order = () => within(screen.getByRole('table', { name: 'Days' })).getAllByRole('rowheader').map(cell => cell.textContent)
+    const header = screen.getByRole('columnheader', { name: 'Date' })
+    expect(order()).toEqual(['C', 'B', 'A'])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Date' }))
+    expect(order()).toEqual(['A', 'B', 'C'])
+    expect(header).toHaveAttribute('aria-sort', 'ascending')
+    fireEvent.click(screen.getByRole('button', { name: 'Date' }))
+    expect(order()).toEqual(['C', 'B', 'A'])
+    expect(header).toHaveAttribute('aria-sort', 'descending')
+
+    // Another column cycles through both directions and back to the table's own order.
+    fireEvent.click(screen.getByRole('button', { name: 'Holding' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Holding' }))
+    expect(order()).toEqual(['C', 'B', 'A'])
+    fireEvent.click(screen.getByRole('button', { name: 'Holding' }))
+    expect(header).toHaveAttribute('aria-sort', 'descending')
+  })
+
   it('starts on a remembered row with focus, for coming back from Analysis', () => {
     render(<PortfolioTable label="Holdings" rows={ROWS} columns={COLUMNS} rowKey={row => row.symbol} initialCursor="CCC" />)
     expect(focusedSymbol()).toBe('CCC')

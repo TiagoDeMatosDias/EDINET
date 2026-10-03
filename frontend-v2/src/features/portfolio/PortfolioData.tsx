@@ -38,7 +38,7 @@ const COLUMNS: TableColumn<HoldingDataStatus>[] = [
   { id: 'symbol', header: 'Holding', rowHeader: true, sortValue: row => row.symbol, cell: row => <strong>{row.symbol}</strong> },
   { id: 'weight', header: 'Weight', numeric: true, sortValue: row => row.weight, cell: row => percent(row.weight) },
   { id: 'status', header: 'Status', sortValue: row => row.status, cell: row => <span className={`pf-badge is-${row.status}`}>{STATUS_TEXT[row.status]}</span> },
-  { id: 'date', header: 'Price used', tip: 'The date of the close that values the holding on the valuation date.', sortValue: row => row.price_date, cell: row => row.price_source === 'cost' ? 'Average cost' : formatDay(row.price_date) },
+  { id: 'date', header: 'Price used', sortFirst: 'desc', tip: 'The date of the close that values the holding on the valuation date.', sortValue: row => row.price_date, cell: row => row.price_source === 'cost' ? 'Average cost' : formatDay(row.price_date) },
   { id: 'age', header: 'Age', numeric: true, tip: 'Days between that close and the valuation date.', sortValue: row => row.stale_days, cell: row => row.stale_days == null ? '—' : `${row.stale_days} d` },
   { id: 'source', header: 'Quote', tip: 'The stored ticker and the currency its prices are in.', sortValue: row => row.price_ticker, cell: row => row.price_ticker ? <span>{row.price_ticker} · {row.quote_currency ?? '?'}{row.converted && <small> → {row.currency}</small>}</span> : '—' },
   { id: 'history', header: 'History', tip: 'Years with only weekly prices make daily statistics approximate there.', cell: row => row.weekly_years.length ? `Weekly ${row.weekly_years[0]}–${row.weekly_years[row.weekly_years.length - 1]}` : 'Daily' },

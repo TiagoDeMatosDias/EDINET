@@ -132,4 +132,12 @@ describe('PortfolioWorkspace keyboard', () => {
     expect(screen.queryByRole('button', { name: 'Remove AAA' })).not.toBeInTheDocument()
     expect(localStorage.getItem('portfolio.incomeCompanies')).toBe('[]')
   })
+
+  it('asks for an import when there are no records, as after clearing everything', async () => {
+    const backend = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input).startsWith('/api/portfolio/activity-summary') ? json({ by_activity: {} }) : backend(input, init)))
+    renderWorkspace()
+    expect(await screen.findByText('Import IBKR Flex Query XML')).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Portfolio sections' })).not.toBeInTheDocument()
+  })
 })

@@ -1,3 +1,4 @@
+import { fxLegs } from './activityModel'
 import type { Holding, PerformanceRange, PieData, PortfolioSummary, Transaction } from './portfolioTypes'
 
 export function money(value: unknown, currency = 'EUR', digits = 0) {
@@ -8,6 +9,13 @@ export function money(value: unknown, currency = 'EUR', digits = 0) {
     currency,
     maximumFractionDigits: digits,
   }).format(parsed)
+}
+
+/** An amount in its currency's usual precision: ¥56,103 but $646.15. */
+export function nativeMoney(value: unknown, currency = 'EUR') {
+  const parsed = Number(value)
+  if (value == null || value === '' || !Number.isFinite(parsed)) return '—'
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(parsed)
 }
 
 /** Large amounts in charts and tight cells: €261.8k, ¥1.2M. */
@@ -91,7 +99,9 @@ export function titleCase(value: string) {
   return value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, letter => letter.toUpperCase())
 }
 
+/** The record's cash movement in its own currency; a currency conversion moves two (see ``fxLegs``). */
 export function transactionCashEffect(row: Transaction) {
+  if (fxLegs(row)) return undefined
   const candidates = row.activity_type === 'TRADE'
     ? [row.net_cash, row.proceeds, row.trade_money, row.amount]
     : [row.amount, row.net_cash]
@@ -177,4 +187,11 @@ export function performanceStart(range: string, endDate?: string) {
   const years = range === '5y' ? 5 : range === '3y' ? 3 : 1
   end.setUTCFullYear(end.getUTCFullYear() - years)
   return end.toISOString().slice(0, 10)
+}
+
+/** What an import did: records already stored are skipped, but can gain details older imports lacked. */
+export function importSummary(files: number, { inserted, skipped, updated }: { inserted: number; skipped: number; updated: number }) {
+  const parts = [`${inserted.toLocaleString()} new record${inserted === 1 ? '' : 's'}`]
+  if (skipped) parts.push(`${skipped.toLocaleString()} already stored${updated ? ` (${updated.toLocaleString()} gained details)` : ''}`)
+  return `Imported ${files} file${files === 1 ? '' : 's'}: ${parts.join(', ')}.`
 }

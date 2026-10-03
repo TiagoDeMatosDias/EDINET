@@ -1,9 +1,10 @@
 import { useState } from 'react'
 
 import { LoadingState } from '../../components/Feedback'
+import { CashEffect } from './ActivityCells'
 import { BENCHMARK_COLOR, PORTFOLIO_COLOR, REFERENCE_COLOR } from './chartTheme'
 import { AnnualReturnsChart, DrawdownChart, GrowthChart, SeriesLegend, ValueChart, WeightBars } from './PortfolioCharts'
-import { displayValue, formatDay, holdingName, money, percent, signedPercent, titleCase, transactionCashEffect } from './portfolioFormat'
+import { displayValue, formatDay, holdingName, money, percent, signedPercent, titleCase } from './portfolioFormat'
 import { ExploreButton, SectionCard } from './PortfolioPrimitives'
 import type { Holding, Performance, PieData, PortfolioDetail, PortfolioSummary, PortfolioTab, Transaction } from './portfolioTypes'
 
@@ -43,11 +44,10 @@ function Allocation({ holdings, currencies, summary, currency, onOpenDetail }: P
 function LatestActivity({ transactions, onOpenDetail, onTab }: Pick<Props, 'transactions' | 'onOpenDetail' | 'onTab'>) {
   return <SectionCard title="Latest activity" actions={<ExploreButton label="All activity (5)" onClick={() => onTab('activity')} />}>
     <ul className="pf-activity">{transactions.slice(0, 7).map((row, index) => {
-      const effect = transactionCashEffect(row)
       return <li key={`${row.id ?? index}-${row.trade_date}`}>
         <button type="button" onClick={() => onOpenDetail({ kind: 'transaction', transaction: row })}>
           <span><strong>{row.symbol || titleCase(row.activity_type ?? '')}</strong><small>{formatDay(row.trade_date)} · {titleCase(row.activity_type ?? '')}</small></span>
-          <b className={Number(effect) < 0 ? 'number-negative' : undefined}>{money(effect, row.currency ?? 'EUR', 2)}</b>
+          <b><CashEffect row={row} /></b>
         </button>
       </li>
     })}</ul>

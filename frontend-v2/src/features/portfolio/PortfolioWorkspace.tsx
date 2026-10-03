@@ -18,7 +18,7 @@ import { PortfolioHoldings } from './PortfolioHoldings'
 import { PortfolioIncome, type IncomeView } from './PortfolioIncome'
 import { PortfolioOverview } from './PortfolioOverview'
 import { PortfolioPerformance } from './PortfolioPerformance'
-import { buildPortfolioSummary, compactMoney, decimal, formatDay, holdingAnalysisHref, holdingName, isCash, money, percent, performanceStart, RANGES, signedPercent } from './portfolioFormat'
+import { buildPortfolioSummary, compactMoney, decimal, formatDay, holdingAnalysisHref, holdingName, importSummary, isCash, money, percent, performanceStart, RANGES, signedPercent } from './portfolioFormat'
 import { StatButton } from './PortfolioPrimitives'
 import { readPortfolioTrail, trailEntry, writePortfolioTrail } from './portfolioTrail'
 import type {
@@ -27,6 +27,7 @@ import type {
   DataQuality,
   Holding,
   HoldingHistoryPoint,
+  ImportFile,
   IncomeData,
   Performance,
   PerformanceRange,
@@ -59,6 +60,10 @@ const SHORTCUTS: ShortcutGroup[] = [
     { keys: ['Shift+R'], label: 'Refresh market prices, then rebuild (operators)' },
     { keys: ['I'], label: 'Import an IBKR Flex Query file' },
     { keys: ['?'], label: 'Show or hide this list' },
+  ] },
+  { title: 'Activity records', shortcuts: [
+    { keys: ['Space'], label: 'Select or unselect the record' },
+    { keys: ['Del'], label: 'Delete the selected records (asks first)' },
   ] },
   { title: 'Holdings and activity lists', shortcuts: [
     { keys: ['↓', 'J'], label: 'Enter the list, then move down' },
@@ -98,8 +103,9 @@ function detailMeta(detail: PortfolioDetail | null) {
 
 function DataStatus({ quality, onOpen }: { quality?: DataQuality; onOpen: () => void }) {
   if (!quality) return null
-  const errors = quality.issues.filter(issue => issue.level === 'error').length
-  const warnings = quality.issues.filter(issue => issue.level === 'warning').length
+  const issues = quality.issues ?? []
+  const errors = issues.filter(issue => issue.level === 'error').length
+  const warnings = issues.filter(issue => issue.level === 'warning').length
   const label = errors ? `${errors} data problem${errors === 1 ? '' : 's'}` : warnings ? `${warnings} data warning${warnings === 1 ? '' : 's'}` : 'Data checks pass'
   const Icon = errors || warnings ? AlertTriangle : CheckCircle2
   return <button type="button" className={`pf-status ${errors ? 'is-error' : warnings ? 'is-warning' : 'is-ok'}`} onClick={onOpen} title="Open Data & method (6)">
@@ -148,6 +154,7 @@ export default function PortfolioWorkspace() {
   const quality = useQuery({ queryKey: ['portfolio-data-quality', currency], queryFn: () => apiRequest<DataQuality>(`/api/portfolio/data-quality${suffix}`), retry: false })
   const dateRange = useQuery({ queryKey: ['portfolio-date-range'], queryFn: () => apiRequest<{ min_date?: string | null; max_date?: string | null }>('/api/portfolio/date-range'), retry: false })
   const activity = useQuery({ queryKey: ['portfolio-activity'], queryFn: () => apiRequest<{ by_activity: Record<string, number> }>('/api/portfolio/activity-summary'), retry: false })
+  const imports = useQuery({ queryKey: ['portfolio-imports'], queryFn: () => apiRequest<ImportFile[]>('/api/portfolio/imports'), retry: false, enabled: tab === 'activity' })
   const transactions = useQuery({ queryKey: ['portfolio-transactions'], queryFn: () => apiRequest<Transaction[]>('/api/portfolio/transactions?limit=10000'), retry: false })
   const holdings = useQuery({
     queryKey: ['portfolio-holdings', currency, includeClosed],
@@ -212,13 +219,19 @@ export default function PortfolioWorkspace() {
     if (!files?.length) return
     setStatus(`Importing ${files.length} file${files.length === 1 ? '' : 's'}…`)
     try {
+      const totals = { inserted: 0, skipped: 0, updated: 0 }
       for (const file of Array.from(files)) {
         const form = new FormData()
         form.set('file', file)
-        await apiRequest('/api/portfolio/upload', { method: 'POST', body: form })
+        const result = await apiRequest<Partial<typeof totals>>('/api/portfolio/upload', { method: 'POST', body: form })
+        totals.inserted += result?.inserted ?? 0
+        totals.skipped += result?.skipped ?? 0
+        totals.updated += result?.updated ?? 0
       }
-      setStatus(`${files.length} file${files.length === 1 ? '' : 's'} imported. Rebuilding…`)
-      await rebuild.mutateAsync()
+      const imported = importSummary(files.length, totals)
+      setStatus(`${imported} Rebuilding…`)
+      const rebuilt = await rebuild.mutateAsync()
+      setStatus(`${imported} Rebuilt ${rebuilt.holdings_count ?? 0} holdings.`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Import failed')
     }
@@ -228,7 +241,9 @@ export default function PortfolioWorkspace() {
   const openHoldings = useMemo(() => (holdings.data ?? []).filter(holding => holding.is_open !== false && !isCash(holding)), [holdings.data])
   const stepList = holdingOrder.length ? holdingOrder.filter(holding => !isCash(holding)) : openHoldings
   const benchmarkLabel = performance.data?.benchmark?.available ? performance.data.benchmark.ticker : undefined
-  const unavailable = holdings.isError && activity.isError
+  // No records at all (a new account, or after clearing everything): ask for an import.
+  const noRecords = activity.isSuccess && !Object.values(activity.data?.by_activity ?? {}).some(count => count > 0)
+  const unavailable = (holdings.isError && activity.isError) || noRecords
 
   const openAnalysis = useCallback((holding: Holding) => {
     if (isCash(holding)) return
@@ -320,7 +335,7 @@ export default function PortfolioWorkspace() {
       </div>
     </header>
     {status && <div className="inline-status" role="status">{status}</div>}
-    {unavailable ? <Card title="Connect portfolio activity"><label className="file-drop"><FileUp /><strong>Import IBKR FlexQuery XML</strong><input type="file" accept=".xml,text/xml" multiple onChange={event => void uploadFiles(event.target.files)} /></label></Card> : <>
+    {unavailable ? <Card title="Import your portfolio" description="Choose one or more IBKR Flex Query XML files (trades, cash transactions, and corporate actions). They are rebuilt into daily values, holdings, and income."><label className="file-drop"><FileUp /><strong>Import IBKR Flex Query XML</strong><input type="file" accept=".xml,text/xml" multiple onChange={event => void uploadFiles(event.target.files)} /></label></Card> : <>
       <div className="portfolio-pulse">
         <StatButton label="Portfolio value" tip="Market value of every holding and cash balance on the valuation date, in the display currency." value={holdings.isLoading ? '—' : money(summary.totalValue, currency)} detail={lastPoint ? `${signedPercent(lastPoint.invested ? lastPoint.value / lastPoint.invested - 1 : null, 0)} on ${compactMoney(lastPoint.invested, currency)} put in` : `${summary.positionCount} holdings`} onClick={() => setTab('holdings')} />
         <StatButton label="Total return" tip="Time-weighted: daily returns with deposits and withdrawals removed, chained over the period. It measures the investments, not the timing of your deposits." value={signedPercent(performanceData?.total_return)} detail={bench ? `${bench.ticker} ${signedPercent(bench.total_return)}` : 'Time-weighted'} tone={Number(performanceData?.total_return) >= 0 ? 'positive' : 'negative'} onClick={() => setTab('performance')} />
@@ -346,7 +361,22 @@ export default function PortfolioWorkspace() {
         hotkeys={pageKeysActive}
         onAnalyze={company => navigate(holdingAnalysisHref({ symbol: company.symbol, performance: { edinet_code: company.edinet_code } }))}
       />}
-      {tab === 'activity' && <PortfolioActivity data={transactions.data ?? []} activity={activity.data?.by_activity ?? {}} dateRange={dateRange.data} isLoading={transactions.isLoading} error={transactions.error} hotkeys={pageKeysActive} onOpenDetail={openDetail} />}
+      {tab === 'activity' && <PortfolioActivity
+        data={transactions.data ?? []}
+        activity={activity.data?.by_activity ?? {}}
+        dateRange={dateRange.data}
+        imports={imports.data}
+        isLoading={transactions.isLoading}
+        error={transactions.error}
+        hotkeys={pageKeysActive}
+        onOpenDetail={openDetail}
+        onDeleted={async (result, selection) => {
+          setStatus(selection.kind === 'everything'
+            ? `Cleared all ${result.deleted.toLocaleString()} portfolio records.`
+            : `Deleted ${result.deleted.toLocaleString()} record${result.deleted === 1 ? '' : 's'}; ${result.remaining.toLocaleString()} remain. Rebuilt ${result.holdings_count} holdings over ${result.daily_rows.toLocaleString()} days.`)
+          await invalidate()
+        }}
+      />}
       {tab === 'data' && <PortfolioData quality={quality.data} isLoading={quality.isLoading} performance={performanceData} benchmarks={benchmarks.data ?? []} currency={currency} canRefresh={canRefresh} busy={busy} riskFreeOverride={riskFreeOverride} onRiskFreeOverride={setRiskFreeOverride} onRefresh={() => refresh.mutate()} onRebuild={() => rebuild.mutate()} />}
     </>}
     <PortfolioDrawer open={Boolean(detail)} eyebrow={metadata.eyebrow} title={metadata.title} description={metadata.description} onClose={closeDetail}>

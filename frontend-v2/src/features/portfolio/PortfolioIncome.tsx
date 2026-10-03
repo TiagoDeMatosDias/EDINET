@@ -69,7 +69,7 @@ function rangeCompany(company: IncomeCompany, payments: IncomePayment[], total: 
 function CompanyDetail({ company, payments, currency, onAnalyze }: { company: IncomeCompany; payments: IncomePayment[]; currency: string; onAnalyze: (company: IncomeCompany) => void }) {
   const dividends = payments.filter(row => row.type !== 'Tax adjustment')
   const columns: TableColumn<IncomePayment>[] = [
-    { id: 'date', header: 'Paid', sortValue: row => row.date, cell: row => <span className="mono">{row.date}</span> },
+    { id: 'date', header: 'Paid', sortFirst: 'desc', sortValue: row => row.date, cell: row => <span className="mono">{row.date}</span> },
     { id: 'type', header: 'Type', cell: row => row.type + (row.in_lieu_native ? ' (part in lieu)' : '') },
     { id: 'per_share', header: 'Per share', numeric: true, sortValue: row => row.per_share, cell: row => row.per_share ? money(row.per_share, row.currency, 4) : '—' },
     { id: 'shares', header: 'Shares', numeric: true, tip: 'Shares the payment was made on (gross ÷ amount per share).', sortValue: row => row.shares, cell: row => row.shares ? quantity(row.shares) : '—' },

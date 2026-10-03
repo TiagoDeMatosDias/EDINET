@@ -462,6 +462,7 @@ def build_portfolio_state(
             (owner_user_id,),
         ).fetchall()
         transactions = [dict(r) for r in rows]
+        account_currency = _account_currency(transactions)
 
         if not transactions:
             logger.info("No transactions found — nothing to build")
@@ -526,6 +527,7 @@ def build_portfolio_state(
                 _apply_transaction(
                     txn, holdings, cash_by_currency, flows, broker_fx,
                     lambda amount, currency, day=date_str: amount * eur_per_unit(currency, day),
+                    account_currency,
                 )
                 txn_index += 1
 
@@ -666,6 +668,16 @@ def build_portfolio_state(
         conn2.close()
 
 
+def _account_currency(transactions: list[dict]) -> str:
+    """The account's base currency: the one the broker converts at exactly 1."""
+    counts: dict[str, int] = {}
+    for txn in transactions:
+        currency = (txn.get("currency") or "").strip()
+        if currency and txn.get("fx_rate_to_base") == 1:
+            counts[currency] = counts.get(currency, 0) + 1
+    return max(counts, key=counts.__getitem__) if counts else "EUR"
+
+
 def _apply_transaction(
     txn: dict,
     holdings: dict[tuple[str, str], dict],
@@ -673,6 +685,7 @@ def _apply_transaction(
     flows: dict[str, float],
     broker_fx: dict[str, float],
     to_eur,
+    account_currency: str = "EUR",
 ) -> None:
     """Apply one ledger record to holdings, per-currency cash, and the day's flows.
 
@@ -714,6 +727,10 @@ def _apply_transaction(
                 # Adjust both legs
                 _add_cash(base_ccy.strip(), base_qty)
                 _add_cash(quote_ccy.strip(), -quote_amount)  # opposite sign
+            # The commission is charged separately, usually in the account's
+            # base currency; imports before it was recorded fall back to that.
+            if commission:
+                _add_cash((txn.get("commission_currency") or account_currency).strip(), commission)
             return
 
         is_option = asset_cat == "OPT"
@@ -771,7 +788,7 @@ def _apply_transaction(
         _add_cash(currency, amount)
         flows["inflow"] += to_eur(amount, currency)
 
-    elif activity in ("BROKER_INTEREST", "OTHER_FEE", "COMMISSION_ADJ"):
+    elif activity in ("BROKER_INTEREST", "BOND_INTEREST", "OTHER_FEE", "COMMISSION_ADJ", "OTHER_CASH"):
         _add_cash(currency, amount)
 
     elif activity == "SPINOFF":

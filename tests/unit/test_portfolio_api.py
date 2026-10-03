@@ -90,7 +90,7 @@ class TestUpload:
         assert response.status_code == 200, response.text
         data = response.json()
         assert data["source_file"] == "portfolio.xml"
-        assert data["inserted"] == 8
+        assert data["inserted"] == 9
         assert data["by_activity"]["TRADE"] == 3
 
     def test_upload_non_xml_rejected(self, empty_api_database: str) -> None:
@@ -158,10 +158,11 @@ class TestUpload:
         second = client.post("/api/portfolio/upload", files=upload)
 
         assert first.status_code == 200
-        assert first.json()["inserted"] == 8
+        assert first.json()["inserted"] == 9
         assert second.status_code == 200
         assert second.json()["inserted"] == 0
-        assert second.json()["skipped"] == 8
+        assert second.json()["skipped"] == 9
+        assert second.json()["updated"] == 0
 
 
 class TestReadEndpoints:
@@ -281,3 +282,65 @@ class TestDataQualityAndBenchmarks:
         payment = body["payments"][0]
         assert payment["gross_native"] == pytest.approx(20.0) and payment["tax_native"] == pytest.approx(-3.0)
         assert body["total_net"] == pytest.approx(15.3)
+
+
+class TestDeletingTransactions:
+    def _ids(self, path: str, owner: str = "local") -> list[int]:
+        import sqlite3
+
+        with sqlite3.connect(path) as conn:
+            return [row[0] for row in conn.execute("SELECT id FROM Transactions WHERE owner_user_id = ? ORDER BY id", (owner,))]
+
+    def test_lists_imports_and_previews_without_deleting(self, populated_api_database: str) -> None:
+        imports = client.get("/api/portfolio/imports").json()
+        assert [row["source_file"] for row in imports] == ["synthetic.xml"]
+        before = imports[0]["records"]
+
+        preview = client.post("/api/portfolio/transactions/delete", json={"source_files": ["synthetic.xml"]})
+        assert preview.status_code == 200
+        assert preview.json()["preview"]["records"] == before
+        assert preview.json()["preview"]["remaining"] == 0
+        assert len(self._ids(populated_api_database)) == before
+
+    def test_refuses_an_empty_selection(self, populated_api_database: str) -> None:
+        response = client.post("/api/portfolio/transactions/delete", json={"confirm": True})
+        assert response.status_code == 400
+        assert self._ids(populated_api_database)
+
+    def test_deletes_chosen_records_and_rebuilds(self, populated_api_database: str) -> None:
+        import sqlite3
+
+        ids = self._ids(populated_api_database)
+        with sqlite3.connect(populated_api_database) as conn:
+            dividend = conn.execute("SELECT id FROM Transactions WHERE activity_type = 'DIVIDEND'").fetchone()[0]
+        response = client.post("/api/portfolio/transactions/delete", json={"ids": [dividend], "confirm": True})
+        assert response.status_code == 200
+        assert response.json()["deleted"] == 1
+        assert response.json()["remaining"] == len(ids) - 1
+        assert dividend not in self._ids(populated_api_database)
+        with sqlite3.connect(populated_api_database) as conn:
+            assert conn.execute("SELECT SUM(dividend_income) FROM Portfolio_Daily WHERE owner_user_id = 'local'").fetchone()[0] < 0
+
+    def test_never_deletes_another_accounts_records(self, populated_api_database: str, sample_ibkr_content: str) -> None:
+        insert_entries(populated_api_database, normalize_entries(parse_ibkr_xml(sample_ibkr_content)), source_file="other.xml", owner_user_id="someone-else")
+        theirs = self._ids(populated_api_database, "someone-else")
+        response = client.post("/api/portfolio/transactions/delete", json={"ids": theirs, "confirm": True})
+        assert response.json()["deleted"] == 0
+        assert self._ids(populated_api_database, "someone-else") == theirs
+
+    def test_clearing_everything_empties_the_ledger_and_its_state(self, populated_api_database: str) -> None:
+        import sqlite3
+
+        response = client.post("/api/portfolio/transactions/delete", json={"everything": True, "confirm": True})
+        assert response.status_code == 200
+        assert response.json()["remaining"] == 0
+        assert self._ids(populated_api_database) == []
+        with sqlite3.connect(populated_api_database) as conn:
+            for table in ("Portfolio_Daily", "Portfolio_Holdings", "Holdings_History"):
+                assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE owner_user_id = 'local'").fetchone()[0] == 0
+
+    def test_a_date_range_limits_the_delete(self, populated_api_database: str) -> None:
+        preview = client.post("/api/portfolio/transactions/delete", json={"start_date": "2024-01-08", "end_date": "2024-01-09"}).json()["preview"]
+        assert preview["first_date"] >= "2024-01-08" and preview["last_date"] <= "2024-01-09"
+        assert set(preview["by_type"]) <= {"DIVIDEND", "WITHHOLDING_TAX", "BROKER_INTEREST", "OTHER_CASH"}
+        assert client.post("/api/portfolio/transactions/delete", json={"start_date": "2024-1-8"}).status_code == 422

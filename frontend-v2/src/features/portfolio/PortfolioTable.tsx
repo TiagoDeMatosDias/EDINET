@@ -13,6 +13,8 @@ export interface TableColumn<T> {
   /** Rendered as the row's header cell (the holding's name). */
   rowHeader?: boolean
   sortValue?: (row: T) => number | string | null | undefined
+  /** The first click's direction: numbers default to largest first, text to A–Z; dates want newest first. */
+  sortFirst?: 'asc' | 'desc'
   cell: (row: T) => ReactNode
   className?: string
 }
@@ -48,6 +50,8 @@ export function PortfolioTable<T>({
   hotkeys = true,
   initialSort = null,
   initialCursor,
+  rowKeys,
+  keysHint,
   rowClassName,
   onOrderChange,
 }: {
@@ -65,6 +69,10 @@ export function PortfolioTable<T>({
   initialSort?: TableSort
   /** A row to start on with keyboard focus (coming back to the list). */
   initialCursor?: string
+  /** More keys for the row under the cursor, such as Space to select it. */
+  rowKeys?: Record<string, (row: T) => void>
+  /** Shown with the other keys in the footer. */
+  keysHint?: ReactNode
   rowClassName?: (row: T) => string | undefined
   /** Called with the rows in their displayed order, for stepping through them elsewhere. */
   onOrderChange?: (rows: T[]) => void
@@ -127,9 +135,15 @@ export function PortfolioTable<T>({
 
   const toggleSort = (column: TableColumn<T>) => {
     if (!column.sortValue) return
-    // Numbers sort largest first, text A to Z; a third click restores the original order.
-    const first = column.numeric ? 'desc' : 'asc'
-    setSort(sort?.column !== column.id ? { column: column.id, direction: first } : sort.direction === first ? { column: column.id, direction: first === 'desc' ? 'asc' : 'desc' } : null)
+    // Numbers sort largest first, text A to Z; a third click restores the
+    // table's own order. The column a table starts sorted by just flips.
+    const first = column.sortFirst ?? (column.numeric ? 'desc' : 'asc')
+    const flipped = first === 'desc' ? 'asc' : 'desc'
+    const next: TableSort = sort?.column !== column.id ? { column: column.id, direction: first }
+      : sort.direction !== flipped ? { column: column.id, direction: flipped }
+        : initialSort?.column === column.id ? { column: column.id, direction: first }
+          : initialSort
+    setSort(next)
     setCursor(null)
   }
   const onKeyDown = (event: KeyboardEvent<HTMLTableSectionElement>) => {
@@ -142,10 +156,11 @@ export function PortfolioTable<T>({
       PageDown: () => select(cursorIndex + pageSize, true), PageUp: () => select(cursorIndex - pageSize, true),
       ...(onOpen ? { Enter: () => { if (current) onOpen(current) } } : {}),
       ...(onSecondary ? { a: () => { if (current) onSecondary(current) } } : {}),
+      ...Object.fromEntries(Object.entries(rowKeys ?? {}).map(([key, action]) => [key, () => { if (current) action(current) }])),
     }
     const action = keys[event.key]
-    // Enter on a link or button inside a row keeps its own meaning.
-    if (!action || (event.key === 'Enter' && (event.target as HTMLElement).tagName !== 'TR')) return
+    // Enter and Space on a link or button inside a row keep their own meaning.
+    if (!action || ((event.key === 'Enter' || event.key === ' ') && (event.target as HTMLElement).tagName !== 'TR')) return
     event.preventDefault()
     event.stopPropagation()
     action()
@@ -190,7 +205,7 @@ export function PortfolioTable<T>({
       </table>
     </div>
     <footer className="pf-table__foot">
-      {(hotkeys || onOpen) ? <span className="pf-table__keys" aria-hidden="true"><kbd>↓</kbd><kbd>J</kbd> browse{onOpen && <> · <kbd>Enter</kbd> {openLabel}</>}{onSecondary && secondaryLabel && <> · <kbd>A</kbd> {secondaryLabel}</>}{pages > 1 && <> · <kbd>[</kbd><kbd>]</kbd> pages</>}</span> : <span>{sorted.length.toLocaleString()} rows</span>}
+      {(hotkeys || onOpen) ? <span className="pf-table__keys" aria-hidden="true"><kbd>↓</kbd><kbd>J</kbd> browse{onOpen && <> · <kbd>Enter</kbd> {openLabel}</>}{onSecondary && secondaryLabel && <> · <kbd>A</kbd> {secondaryLabel}</>}{keysHint && <> · {keysHint}</>}{pages > 1 && <> · <kbd>[</kbd><kbd>]</kbd> pages</>}</span> : <span>{sorted.length.toLocaleString()} rows</span>}
       {pages > 1 && <span className="pf-table__pages" aria-label="Table pagination">
         <span>{(page * pageSize + 1).toLocaleString()}–{Math.min((page + 1) * pageSize, sorted.length).toLocaleString()} of {sorted.length.toLocaleString()}</span>
         <button type="button" className="icon-button" aria-label="Previous page" disabled={page === 0} onClick={() => goToPage(page - 1)}><ChevronLeft /></button>

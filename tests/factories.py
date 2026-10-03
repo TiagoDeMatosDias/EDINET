@@ -63,7 +63,7 @@ def sample_ibkr_xml(*, account_id: str = "TEST-ACCOUNT") -> str:
           accountId="{account_id}" type="Broker Interest Paid" currency="EUR"
           dateTime="2024-01-09" amount="2" fxRateToBase="1"
           description="Synthetic interest" />
-        <CashTransaction levelOfDetail="DETAIL" transactionID="ignored-cash"
+        <CashTransaction levelOfDetail="DETAIL" transactionID="unknown-cash"
           accountId="{account_id}" type="Unknown Type" currency="EUR"
           dateTime="2024-01-09" amount="999" />
       </CashTransactions>

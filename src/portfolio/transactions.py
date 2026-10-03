@@ -1,6 +1,7 @@
 """Transaction CRUD for the Transactions table in db3 (Portfolio.db).
 
-Deduplication is on ``transactionID`` — re-uploading the same XML is safe.
+Deduplication is on ``transactionID`` — re-uploading the same XML is safe,
+and fills in details that older imports did not keep.
 """
 
 from __future__ import annotations
@@ -24,7 +25,12 @@ _ENTRY_COLS = [
     "net_cash", "buy_sell", "fx_rate_to_base",
     "strike", "expiry", "put_call", "underlying_symbol",
     "underlying_conid", "multiplier", "action_description", "action_id",
+    "report_date", "commission_currency",
 ]
+
+# Details added after the first imports: re-importing a file fills them in on
+# records already stored, without touching anything else.
+_BACKFILL_COLS = ("report_date", "commission_currency")
 
 
 def insert_entries(
@@ -41,20 +47,22 @@ def insert_entries(
         source_file: Original XML filename for the ``source_file`` column.
 
     Returns:
-        ``{'inserted': N, 'skipped': N, 'by_activity': {...},
-          'new_tickers': [...]}``
+        ``{'inserted': N, 'skipped': N, 'updated': N, 'by_activity': {...},
+          'new_tickers': [...]}`` where *updated* counts stored records that
+        gained details (see ``_BACKFILL_COLS``).
     """
     db_path = db_path or get_db3()
     entries = entries or []
 
     if not entries:
-        return {"inserted": 0, "skipped": 0, "by_activity": {}, "new_tickers": []}
+        return {"inserted": 0, "skipped": 0, "updated": 0, "by_activity": {}, "new_tickers": []}
 
     # Ensure tables exist
     create_tables(db_path)
 
     inserted = 0
     skipped = 0
+    updated = 0
     by_activity: dict[str, int] = defaultdict(int)
     new_tickers: list[str] = []
 
@@ -90,6 +98,17 @@ def insert_entries(
 
             if txn_id in existing_ids:
                 skipped += 1
+                # Only fill what the file has and the stored record lacks.
+                fill = {col: e[col] for col in _BACKFILL_COLS if e.get(col) is not None}
+                if fill:
+                    cursor = conn.execute(
+                        "UPDATE Transactions SET "
+                        + ", ".join(f"{col} = COALESCE({col}, ?)" for col in fill)
+                        + " WHERE transaction_id = ? AND owner_user_id = ? AND ("
+                        + " OR ".join(f"{col} IS NULL" for col in fill) + ")",
+                        [*fill.values(), txn_id, owner_user_id],
+                    )
+                    updated += max(cursor.rowcount, 0)
                 continue
 
             # Build tuple
@@ -116,6 +135,7 @@ def insert_entries(
     return {
         "inserted": inserted,
         "skipped": skipped,
+        "updated": updated,
         "by_activity": dict(by_activity),
         "new_tickers": list(set(new_tickers)),
     }
@@ -139,7 +159,11 @@ def get_transactions(
     the transactions table (~70% smaller payload vs SELECT *).
     """
     if slim:
-        cols = "trade_date, activity_type, symbol, quantity, trade_price, amount, net_cash, currency, buy_sell, commission, description, trade_money, proceeds, source_file"
+        cols = (
+            "id, trade_date, settle_date, report_date, activity_type, asset_category, symbol, "
+            "quantity, trade_price, amount, net_cash, currency, buy_sell, commission, "
+            "commission_currency, taxes, description, trade_money, proceeds, account_id, source_file"
+        )
     else:
         cols = "*"
     db_path = db_path or get_db3()
@@ -233,6 +257,117 @@ def delete_by_source(db_path: str | None = None, source_file: str = "", owner_us
             (source_file, owner_user_id),
         )
         return cursor.rowcount
+
+
+def get_import_files(db_path: str | None = None, owner_user_id: str = "") -> list[dict]:
+    """Imported files with their record counts and date spans, newest import first.
+
+    A record belongs to the file that first imported it: later files that
+    overlap skip the records already stored.
+    """
+    db_path = db_path or get_db3()
+    create_tables(db_path)
+    conn = connect_read(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT COALESCE(source_file, '') AS source_file, COUNT(*) AS records, "
+            "MIN(trade_date) AS first_date, MAX(trade_date) AS last_date, "
+            "MAX(imported_at) AS imported_at, COUNT(DISTINCT symbol) AS symbols "
+            "FROM Transactions WHERE owner_user_id = ? "
+            "GROUP BY COALESCE(source_file, '') ORDER BY MAX(imported_at) DESC, source_file",
+            (owner_user_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
+class EmptySelection(ValueError):
+    """A delete must name what to delete; nothing chosen never means everything."""
+
+
+def _selection(
+    owner_user_id: str,
+    *,
+    everything: bool = False,
+    ids: list[int] | None = None,
+    source_files: list[str] | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> tuple[str, list]:
+    """WHERE clause for a set of the owner's records; criteria combine with AND."""
+    where = ["owner_user_id = ?"]
+    params: list = [owner_user_id]
+    if ids:
+        where.append(f"id IN ({','.join('?' for _ in ids)})")
+        params.extend(int(value) for value in ids)
+    if source_files:
+        where.append(f"COALESCE(source_file, '') IN ({','.join('?' for _ in source_files)})")
+        params.extend(source_files)
+    if start_date:
+        where.append("trade_date >= ?")
+        params.append(start_date)
+    if end_date:
+        where.append("trade_date <= ?")
+        params.append(end_date)
+    if len(where) == 1 and not everything:
+        raise EmptySelection("Choose records, files, dates, or everything to delete")
+    return " AND ".join(where), params
+
+
+def summarize_selection(db_path: str | None = None, owner_user_id: str = "", **selection) -> dict:
+    """What a delete would remove: counts by type, the date span, files, and symbols."""
+    db_path = db_path or get_db3()
+    create_tables(db_path)
+    where, params = _selection(owner_user_id, **selection)
+    conn = connect_read(db_path)
+    try:
+        by_type = {
+            row[0]: row[1]
+            for row in conn.execute(
+                f"SELECT activity_type, COUNT(*) FROM Transactions WHERE {where} GROUP BY activity_type ORDER BY COUNT(*) DESC",
+                params,
+            ).fetchall()
+        }
+        span = conn.execute(
+            f"SELECT MIN(trade_date), MAX(trade_date), COUNT(DISTINCT symbol) FROM Transactions WHERE {where}",
+            params,
+        ).fetchone()
+        files = [
+            row[0]
+            for row in conn.execute(
+                f"SELECT DISTINCT COALESCE(source_file, '') FROM Transactions WHERE {where} ORDER BY 1",
+                params,
+            ).fetchall()
+        ]
+        total = conn.execute(
+            "SELECT COUNT(*) FROM Transactions WHERE owner_user_id = ?", (owner_user_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    count = sum(by_type.values())
+    return {
+        "records": count,
+        "by_type": by_type,
+        "first_date": span[0],
+        "last_date": span[1],
+        "symbols": span[2] or 0,
+        "source_files": files,
+        "remaining": total - count,
+    }
+
+
+def delete_selection(db_path: str | None = None, owner_user_id: str = "", **selection) -> int:
+    """Delete the owner's chosen records; returns how many were removed."""
+    db_path = db_path or get_db3()
+    create_tables(db_path)
+    where, params = _selection(owner_user_id, **selection)
+    with transaction(db_path) as conn:
+        cursor = conn.execute(f"DELETE FROM Transactions WHERE {where}", params)
+        deleted = cursor.rowcount
+        if selection.get("everything") and len(params) == 1:
+            conn.execute("DELETE FROM Portfolio_Metrics WHERE owner_user_id = ?", (owner_user_id,))
+        return deleted
 
 
 def _get_known_symbols(conn: sqlite3.Connection) -> set[str]:

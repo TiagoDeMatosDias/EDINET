@@ -57,6 +57,8 @@ export type Transaction = {
   id?: number
   trade_date?: string
   settle_date?: string | null
+  /** When the broker booked it; corrections keep the original date but are booked later. */
+  report_date?: string | null
   activity_type?: string
   asset_category?: string | null
   symbol?: string
@@ -68,9 +70,11 @@ export type Transaction = {
   proceeds?: number | null
   net_cash?: number | null
   commission?: number
+  commission_currency?: string | null
   taxes?: number
   currency?: string
   buy_sell?: string | null
+  account_id?: string | null
   source_file?: string
 }
 
@@ -312,6 +316,16 @@ export type IncomeData = {
   total_net: number
   payments: IncomePayment[]
   companies: IncomeCompany[]
+}
+
+/** One imported file and the records that came from it. */
+export type ImportFile = {
+  source_file: string
+  records: number
+  first_date: string | null
+  last_date: string | null
+  imported_at: string | null
+  symbols: number
 }
 
 export type PieData = {

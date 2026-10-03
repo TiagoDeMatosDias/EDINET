@@ -210,6 +210,7 @@ def portfolio_data_quality(
             issues.append({"level": "info", "code": "risk_free_stale", "message": f"The {currency} short-term rate ends {risk_free.dates[-1]}."})
         if inflation is None:
             issues.append({"level": "info", "code": "inflation_missing", "message": f"No consumer price index is stored for {currency}; real returns are unavailable."})
+        issues.extend(_ledger_issues(conn3, owner_user_id))
 
         return {
             "today": today,
@@ -238,6 +239,27 @@ def portfolio_data_quality(
     finally:
         conn3.close()
         conn2.close()
+
+
+def _ledger_issues(conn3: sqlite3.Connection, owner_user_id: str) -> list[dict]:
+    """Records the cash ledger can only partly account for."""
+    issues: list[dict] = []
+    other = conn3.execute(
+        "SELECT COUNT(*) FROM Transactions WHERE owner_user_id = ? AND activity_type = 'OTHER_CASH'",
+        (owner_user_id,),
+    ).fetchone()[0]
+    if other:
+        issues.append({"level": "warning", "code": "other_cash", "message": f"{other} cash record(s) have a type the importer does not recognise. They move cash, but are not counted as deposits or income."})
+    columns = {str(row[1]) for row in conn3.execute("PRAGMA table_info(Transactions)")}
+    if "commission_currency" in columns:
+        unknown = conn3.execute(
+            "SELECT COUNT(*) FROM Transactions WHERE owner_user_id = ? AND activity_type = 'TRADE' "
+            "AND asset_category = 'CASH' AND commission != 0 AND commission_currency IS NULL",
+            (owner_user_id,),
+        ).fetchone()[0]
+        if unknown:
+            issues.append({"level": "info", "code": "reimport_details", "message": f"{unknown} currency conversion(s) were imported before commission currencies were recorded, so their commissions are assumed to be in the account's base currency. Import the same Flex Query files again to record the details; nothing is duplicated."})
+    return issues
 
 
 def held_refresh_tickers(db3_path: str, owner_user_id: str = "") -> list[str]:

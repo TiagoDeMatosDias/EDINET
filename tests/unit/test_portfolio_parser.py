@@ -56,7 +56,7 @@ def test_file_wrapper_parses_all_supported_categories(sample_ibkr_file) -> None:
 
     assert set(result) == {"trades", "cash_transactions", "corp_actions"}
     assert len(result["trades"]) == 3
-    assert len(result["cash_transactions"]) == 4
+    assert len(result["cash_transactions"]) == 5
     assert len(result["corp_actions"]) == 1
 
 
@@ -86,6 +86,7 @@ def test_cash_types_and_timestamp_are_normalized(sample_ibkr_content: str) -> No
         "DIVIDEND",
         "WITHHOLDING_TAX",
         "BROKER_INTEREST",
+        "OTHER_CASH",
     }
     assert by_type["DIVIDEND"]["amount"] == 20
     assert by_type["WITHHOLDING_TAX"]["amount"] == -3
@@ -109,12 +110,14 @@ def test_spinoff_fields_are_normalized(sample_ibkr_content: str) -> None:
             "currency": "USD",
             "trade_date": "2024-01-10",
             "settle_date": None,
+            "report_date": None,
             "quantity": 2.0,
             "trade_price": None,
             "trade_money": None,
             "amount": 0,
             "proceeds": None,
             "commission": 0,
+            "commission_currency": None,
             "taxes": 0,
             "net_cash": None,
             "buy_sell": None,
@@ -131,14 +134,16 @@ def test_spinoff_fields_are_normalized(sample_ibkr_content: str) -> None:
     ]
 
 
-def test_unsupported_detail_levels_and_types_are_ignored(
+def test_unsupported_detail_levels_are_ignored_and_unknown_cash_is_kept(
     sample_ibkr_content: str,
 ) -> None:
     entries = normalize_entries(parse_ibkr_xml(sample_ibkr_content))
-    transaction_ids = {entry["transaction_id"] for entry in entries}
+    by_id = {entry["transaction_id"]: entry for entry in entries}
 
-    assert "ignored-order" not in transaction_ids
-    assert "ignored-cash" not in transaction_ids
+    assert "ignored-order" not in by_id
+    # Every cash record moves cash, so an unknown type is kept, not dropped.
+    assert by_id["unknown-cash"]["activity_type"] == "OTHER_CASH"
+    assert by_id["unknown-cash"]["amount"] == 999
 
 
 def test_normalized_entries_have_unique_ids_and_iso_dates(
@@ -147,7 +152,7 @@ def test_normalized_entries_have_unique_ids_and_iso_dates(
     entries = normalize_entries(parse_ibkr_xml(sample_ibkr_content))
     ids = [entry["transaction_id"] for entry in entries]
 
-    assert len(entries) == 8
+    assert len(entries) == 9
     assert len(ids) == len(set(ids))
     assert all(entry["activity_type"] for entry in entries)
     assert all(entry["currency"] for entry in entries)

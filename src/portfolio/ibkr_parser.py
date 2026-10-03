@@ -41,12 +41,23 @@ class InvalidPortfolioXML(ValueError):
 _CASH_TYPE_MAP: dict[str, str] = {
     "Dividends":                  "DIVIDEND",
     "Withholding Tax":            "WITHHOLDING_TAX",
+    "871(m) Withholding":         "WITHHOLDING_TAX",
     "Payment In Lieu Of Dividends": "PIL_DIVIDEND",
     "Deposits/Withdrawals":       "DEPOSIT_WITHDRAWAL",
+    "Deposits & Withdrawals":     "DEPOSIT_WITHDRAWAL",
     "Broker Interest Paid":       "BROKER_INTEREST",
+    "Broker Interest Received":   "BROKER_INTEREST",
+    "Bond Interest Paid":         "BOND_INTEREST",
+    "Bond Interest Received":     "BOND_INTEREST",
     "Other Fees":                 "OTHER_FEE",
+    "Broker Fees":                "OTHER_FEE",
+    "Advisor Fees":               "OTHER_FEE",
     "Commission Adjustments":     "COMMISSION_ADJ",
 }
+
+# Any other cash movement still moves cash: it is kept under this type rather
+# than dropped, so balances reconcile with the broker's.
+_OTHER_CASH = "OTHER_CASH"
 
 # Mapping from XML CorporateAction type → activity_type  
 _CORP_TYPE_MAP: dict[str, str] = {
@@ -117,12 +128,14 @@ def _parse_trade(el: ET.Element) -> dict | None:
         "currency":          _safe_str(el.get("currency")),
         "trade_date":        _safe_str(el.get("tradeDate")),
         "settle_date":       _extract_date(_safe_str(el.get("settleDateTarget"))),
+        "report_date":       _extract_date(_safe_str(el.get("reportDate"))) or None,
         "quantity":          _safe_float(el.get("quantity")) or 0,
         "trade_price":       _safe_float(el.get("tradePrice")),
         "trade_money":       _safe_float(el.get("tradeMoney")),
         "amount":            0,
         "proceeds":          _safe_float(el.get("proceeds")),
         "commission":        _safe_float(el.get("ibCommission")) or 0,
+        "commission_currency": _safe_str(el.get("ibCommissionCurrency")) or None,
         "taxes":             _safe_float(el.get("taxes")) or 0,
         "net_cash":          _safe_float(el.get("netCash")),
         "buy_sell":          _safe_str(el.get("buySell")),
@@ -151,9 +164,9 @@ def _parse_cash_transaction(el: ET.Element) -> dict | None:
     xml_type = _safe_str(el.get("type"))
     activity_type = _CASH_TYPE_MAP.get(xml_type)
     if activity_type is None:
-        logger.debug("Unrecognized CashTransaction type '%s' (txID=%s)", 
-                      xml_type, el.get("transactionID", "?"))
-        return None
+        logger.warning("Unrecognized CashTransaction type '%s' (txID=%s) kept as %s",
+                       xml_type, el.get("transactionID", "?"), _OTHER_CASH)
+        activity_type = _OTHER_CASH
 
     return {
         "transaction_id":    _safe_str(el.get("transactionID")),
@@ -168,12 +181,16 @@ def _parse_cash_transaction(el: ET.Element) -> dict | None:
         "currency":          _safe_str(el.get("currency")),
         "trade_date":        _extract_date(_safe_str(el.get("dateTime"))),
         "settle_date":       _extract_date(_safe_str(el.get("settleDate"))),
+        # When the broker booked it: corrections keep the original dateTime
+        # but are booked months later.
+        "report_date":       _extract_date(_safe_str(el.get("reportDate"))) or None,
         "quantity":          0,
         "trade_price":       None,
         "trade_money":       None,
         "amount":            _safe_float(el.get("amount")) or 0,
         "proceeds":          None,
         "commission":        0,
+        "commission_currency": None,
         "taxes":             0,
         "net_cash":          None,
         "buy_sell":          None,
@@ -219,12 +236,14 @@ def _parse_corp_action(el: ET.Element) -> dict | None:
         "currency":          _safe_str(el.get("currency")),
         "trade_date":        _extract_date(_safe_str(el.get("dateTime"))),
         "settle_date":       None,
+        "report_date":       _extract_date(_safe_str(el.get("reportDate"))) or None,
         "quantity":          _safe_float(el.get("quantity")) or 0,
         "trade_price":       None,
         "trade_money":       None,
         "amount":            _safe_float(el.get("amount")) or 0,
         "proceeds":          _safe_float(el.get("proceeds")),
         "commission":        0,
+        "commission_currency": None,
         "taxes":             0,
         "net_cash":          None,
         "buy_sell":          None,
