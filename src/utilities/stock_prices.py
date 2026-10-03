@@ -637,7 +637,32 @@ def _parse_yahoo_chart_payload(payload: dict) -> tuple[pd.DataFrame, list[dict]]
             "Close": close_values[:row_count],
         }
     )
+    # The listing's trading currency: CSPX.L trades in USD even when a broker
+    # books the holding in EUR, so the stored row must say what the price is.
+    reported_currency = (result.get("meta") or {}).get("currency")
+    if reported_currency:
+        price_df.attrs["currency"] = str(reported_currency)
     return price_df, _extract_split_events(result)
+
+
+# Yahoo quotes some listings in a currency's minor unit (London in pence).
+_MINOR_CURRENCY_UNITS = {"GBp": ("GBP", 100.0), "GBX": ("GBP", 100.0), "ZAc": ("ZAR", 100.0), "ILA": ("ILS", 100.0)}
+
+
+def _apply_reported_currency(normalized: pd.DataFrame, raw_history) -> pd.DataFrame:
+    """Carry the provider's reported currency onto *normalized*, in major units."""
+    reported = getattr(raw_history, "attrs", {}).get("currency") if raw_history is not None else None
+    if not reported:
+        return normalized
+    code, divisor = _MINOR_CURRENCY_UNITS.get(str(reported), (str(reported).upper(), 1.0))
+    if divisor != 1.0 and not normalized.empty:
+        attrs = dict(normalized.attrs)
+        normalized = normalized.copy()
+        normalized["Close"] = normalized["Close"] / divisor
+        normalized.attrs.update(attrs)
+    normalized.attrs["currency"] = code
+    normalized.attrs["reported_currency"] = str(reported)
+    return normalized
 
 
 def _fetch_yahoo_history(
@@ -882,6 +907,7 @@ def _load_provider_history(
                 price_basis,
                 source_revision,
             )
+            normalized = _apply_reported_currency(normalized, raw_history)
             if normalized.empty:
                 raise RuntimeError("provider returned no usable price rows")
             return provider_name, normalized, split_events
@@ -934,6 +960,7 @@ def _load_provider_history(
                         "chart-events-v1" if provider_name.startswith("Yahoo")
                         else "stooq-csv-v1",
                     )
+                    normalized = _apply_reported_currency(normalized, raw_history)
                     if normalized.empty:
                         raise RuntimeError("provider returned no usable price rows")
                     return provider_name + f" (as {suffixed})", normalized, split_events
@@ -1002,8 +1029,13 @@ def _append_price_rows(
     source_revision: str | None = None,
     retrieved_at: str | None = None,
     split_events: list[dict] | None = None,
+    replace_other_currencies: bool = False,
 ) -> None:
-    """Normalise and append price rows with explicit source provenance."""
+    """Normalise and append price rows with explicit source provenance.
+
+    With *replace_other_currencies*, a security keeps one price per date:
+    rows for the same dates under another currency label are removed.
+    """
     columns = ensure_price_provenance_columns(conn, prices_table)
     if not columns:
         _create_prices_table(conn, prices_table)
@@ -1088,6 +1120,12 @@ def _append_price_rows(
             "WHERE Date = ? AND Ticker = ? AND Currency = ?",
             key_rows,
         )
+        if replace_other_currencies:
+            conn.executemany(
+                f"DELETE FROM {quoted_table} "
+                "WHERE Date = ? AND Ticker = ? AND Currency != ?",
+                key_rows,
+            )
         conn.executemany(
             f"INSERT INTO {quoted_table} ({quoted_columns}) VALUES ({placeholders})",
             rows,
@@ -1435,15 +1473,141 @@ def _invalidate_split_cache_for(ticker: str) -> None:
         logger.debug("Could not invalidate split cache", exc_info=True)
 
 
-def load_ticker_data(ticker, prices_table, conn, currency: str = "JPY") -> bool:
+_AS_LISTING = re.compile(r"\(as ([^)]+)\)")
+
+
+def yahoo_listing_currency(provider_symbol: str) -> str | None:
+    """Ask Yahoo which currency *provider_symbol* trades in (``GBp`` stays as reported)."""
+    start = (pd.Timestamp.today().normalize() - pd.Timedelta(days=14)).strftime("%Y-%m-%d")
+    history, _events = _fetch_yahoo_history(provider_symbol, start_date=start)
+    return history.attrs.get("currency")
+
+
+def _relabel_rows(conn, table: str, ticker: str, where: str, params: tuple, currency: str, divisor: float) -> int:
+    """Move matching rows of *ticker* to *currency*, keeping rows already stored under it."""
+    conn.execute(
+        f"DELETE FROM {table} AS old WHERE Ticker = ? AND Currency != ? AND {where} "
+        f"AND EXISTS (SELECT 1 FROM {table} AS kept WHERE kept.Ticker = old.Ticker "
+        "AND kept.Date = old.Date AND kept.Currency = ?)",
+        (ticker, currency, *params, currency),
+    )
+    cursor = conn.execute(
+        f"UPDATE {table} SET Currency = ?, Price = Price / ? "
+        f"WHERE Ticker = ? AND Currency != ? AND {where}",
+        (currency, divisor, ticker, currency, *params),
+    )
+    return max(cursor.rowcount, 0)
+
+
+def repair_price_currency_labels(
+    conn,
+    prices_table: str,
+    ticker: str,
+    *,
+    listing_currency: Callable[[str], str | None] | None = None,
+) -> int:
+    """Correct the currency label of stored prices for *ticker*; return rows changed.
+
+    Two mistakes are repaired:
+
+    * rows fetched from another listing (``Yahoo Finance chart (as CSPX.L)``)
+      but stored under the broker's currency.  With *listing_currency*, each
+      listing's currency is looked up and its rows relabelled (pence become
+      pounds).
+    * a non-Tokyo ticker whose newer rows were stored as JPY by the old
+      default although they continue the earlier series' prices: those rows
+      take the earlier currency again.
+    """
+    table = _quote_identifier(prices_table)
+    changed = 0
+    if listing_currency is not None:
+        try:
+            providers = conn.execute(
+                f"SELECT DISTINCT Provider FROM {table} WHERE Ticker = ? AND Provider LIKE '%(as %)'",
+                (ticker,),
+            ).fetchall()
+        except sqlite3.OperationalError:  # a table without provenance columns
+            providers = []
+        for (provider,) in providers:
+            match = _AS_LISTING.search(str(provider or ""))
+            if not match:
+                continue
+            try:
+                reported = listing_currency(match.group(1))
+            except Exception as exc:  # noqa: BLE001 - a lookup failure leaves the rows as they are
+                logger.info("Could not confirm the currency of %s: %s", match.group(1), exc)
+                continue
+            if not reported:
+                continue
+            code, divisor = _MINOR_CURRENCY_UNITS.get(str(reported), (str(reported).upper(), 1.0))
+            changed += _relabel_rows(conn, table, ticker, "Provider = ?", (provider,), code, divisor)
+
+    if not tse_code(ticker):
+        rows = conn.execute(
+            f"SELECT Date, Currency, Price FROM {table} WHERE Ticker = ? ORDER BY Date",
+            (ticker,),
+        ).fetchall()
+        previous: tuple[str, float] | None = None
+        for _date, currency, price in rows:
+            if currency == "JPY" and previous and previous[0] != "JPY":
+                earlier_currency, earlier_price = previous
+                ratio = (price or 0) / earlier_price if earlier_price else 0
+                if _BASIS_CHANGE_LOW <= ratio <= _BASIS_CHANGE_HIGH:
+                    changed += _relabel_rows(conn, table, ticker, "Currency = 'JPY'", (), earlier_currency, 1.0)
+                break
+            if currency and price:
+                previous = (currency, float(price))
+    if changed:
+        logger.info("Corrected the currency label of %d stored prices for %s", changed, ticker)
+    return changed
+
+
+def stored_ticker_currency(conn, prices_table: str, ticker: str) -> str | None:
+    """Return the currency of *ticker*'s most recent stored price, if any."""
+    try:
+        row = conn.execute(
+            f"SELECT Currency FROM {_quote_identifier(prices_table)} "
+            "WHERE Ticker = ? AND Currency IS NOT NULL AND TRIM(Currency) != '' "
+            "ORDER BY Date DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return str(row[0]).strip().upper() if row and row[0] else None
+
+
+def resolve_price_currency(
+    ticker: str,
+    *,
+    reported: str | None = None,
+    requested: str | None = None,
+    stored: str | None = None,
+) -> str:
+    """Choose the currency label for newly fetched prices.
+
+    The provider's own report wins (a ``CSPX.L`` quote is USD whatever the
+    broker booked); then what is already stored for the ticker (after
+    repair), then the caller's expectation.  Only Tokyo codes default to JPY:
+    labelling a European ETF's euro prices as yen made every later reader
+    convert them wrongly.
+    """
+    for candidate in (reported, stored, requested):
+        if candidate and str(candidate).strip():
+            return str(candidate).strip().upper()
+    return "JPY" if tse_code(ticker) else "USD"
+
+
+def load_ticker_data(ticker, prices_table, conn, currency: str | None = None) -> bool:
     """Download and store historical price data for a single ticker.
 
     Japanese tickers prefer JPX for recent updates and fall back to Stooq/Yahoo
-    when JPX is unavailable or cannot cover the requested range.
+    when JPX is unavailable or cannot cover the requested range.  *currency*
+    is the expected currency; the provider's reported currency overrides it.
     """
     try:
         ensure_price_provenance_columns(conn, prices_table)
         quoted_table = _quote_identifier(prices_table)
+        repair_price_currency_labels(conn, prices_table, ticker)
         last_date_query = (
             f"SELECT MAX(Date) AS Last_Date FROM {quoted_table} WHERE Ticker = ?"
         )
@@ -1532,14 +1696,27 @@ def load_ticker_data(ticker, prices_table, conn, currency: str = "JPY") -> bool:
             ]
             _record_provider_splits(conn, ticker, provider_events)
 
+        currency = resolve_price_currency(
+            ticker,
+            reported=out_data.attrs.get("currency"),
+            requested=currency,
+            stored=stored_ticker_currency(conn, prices_table, ticker),
+        )
         _append_price_rows(
             conn, prices_table, ticker, out_data, currency,
+            replace_other_currencies=True,
             provider=provider_name,
             price_basis=out_data.attrs.get("price_basis", "unknown"),
             provider_symbol=out_data.attrs.get("provider_symbol", ticker),
             source_revision=out_data.attrs.get("source_revision"),
             split_events=split_events,
         )
+        reported = out_data.attrs.get("reported_currency")
+        if reported:
+            # Earlier rows from this same listing carry whatever label the
+            # caller guessed then; the listing's report settles it.
+            code, divisor = _MINOR_CURRENCY_UNITS.get(str(reported), (str(reported).upper(), 1.0))
+            _relabel_rows(conn, quoted_table, ticker, "Provider = ?", (provider_name,), code, divisor)
         refresh_split_adjusted_prices(conn, ticker=ticker, prices_table=prices_table)
         logger.info(
             "Successfully stored %s price records for ticker %s using %s",

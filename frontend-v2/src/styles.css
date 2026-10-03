@@ -77,6 +77,14 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .primary-nav a.active { color: var(--text); }
 .primary-nav a.active::before { background: var(--vermilion); }
 .app-shell--collapsed .primary-nav a.active { box-shadow: inset 0 -1px 0 var(--vermilion); }
+.primary-nav__key { margin-left: auto; opacity: .75; transition: color .12s, border-color .12s, opacity .12s; }
+.primary-nav a:hover .primary-nav__key, .primary-nav a.active .primary-nav__key { opacity: 1; }
+.primary-nav--keys .primary-nav__key { border-color: var(--vermilion); color: var(--vermilion); opacity: 1; }
+.primary-nav__hint { margin: 6px 0 0 24px; color: var(--muted); font-size: .7rem; }
+.primary-nav__hint kbd { margin: 0 2px; }
+.app-shell--collapsed .primary-nav a { position: relative; }
+.app-shell--collapsed .primary-nav__key { position: absolute; top: 1px; right: 0; min-width: 0; padding: 0 .3em; font-size: .56rem; line-height: 1.4; }
+.app-shell--collapsed .primary-nav__hint { display: none; }
 .sidebar-collapse { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 8px 4px; border: 0; border-radius: var(--radius); color: var(--muted); background: transparent; font-size: .8rem; cursor: pointer; }
 .sidebar-collapse:hover { color: var(--text); }
 .sidebar-collapse svg { width: 16px; height: 16px; stroke-width: 1.5; }
@@ -196,6 +204,12 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .table-sort { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; color: inherit; background: transparent; font-size: .76rem; font-weight: 500; cursor: pointer; }
 .table-sort svg { width: 13px; height: 13px; }
 .table-empty { padding: 40px 20px; color: var(--muted); text-align: center; }
+.table-pagination { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 42px; padding: 7px 10px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 94%, transparent); backdrop-filter: blur(5px); font-size: .7rem; }
+.table-pagination > span { margin-right: auto; color: var(--muted); }
+.table-pagination > strong { min-width: 92px; text-align: center; }
+.table-pagination > button { width: 28px; height: 28px; display: inline-grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius); color: var(--primary); background: var(--surface); cursor: pointer; }
+.table-pagination > button:disabled { opacity: .4; cursor: not-allowed; }
+.table-pagination svg { width: 14px; }
 .numeric { text-align: right; font-family: var(--font-mono); font-size: .92em; font-variant-numeric: tabular-nums; }
 .company-cell { display: flex; flex-direction: column; gap: 3px; min-width: 210px; }
 .company-cell small { color: var(--muted); }
@@ -321,6 +335,7 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
   .app-shell { display: block; }
   .sidebar { position: fixed; left: 0; width: min(300px, 86vw); transform: translateX(-102%); transition: transform .2s ease; }
   .sidebar--open { transform: translateX(0); }
+  .primary-nav__key, .primary-nav__hint { display: none; }
   .backdrop { position: fixed; inset: 0; z-index: 25; display: block; border: 0; background: rgb(28 27 25 / 40%); }
   .desktop-only { display: none; }
   .mobile-only { display: inline-grid; }
@@ -358,6 +373,13 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 kbd { display: inline-block; min-width: 1.6em; padding: 0 .35em; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 3px; color: var(--muted); background: var(--surface); font-family: var(--font-mono); font-size: .64rem; font-weight: 400; line-height: 1.55; text-align: center; vertical-align: middle; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .mono { font-family: var(--font-mono); }
+
+/* Period choices beside a chart (Analysis prices, Portfolio performance); - and = step through them. */
+.range-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 1px; }
+.range-buttons button { min-width: 32px; min-height: 26px; padding: 2px 6px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font-family: var(--font-mono); font-size: .72rem; cursor: pointer; }
+.range-buttons button:hover { color: var(--text); }
+.range-buttons button.active { border-bottom-color: var(--vermilion); color: var(--text); }
+.range-buttons__keys { display: inline-flex; gap: 2px; margin-left: 6px; }
 .tip { cursor: help; text-decoration: underline dotted var(--border-strong); text-underline-offset: 3px; }
 .tip:focus { outline: none; }
 .tip:focus-visible { border-radius: 1px; outline: 2px solid rgb(176 48 31 / 45%); outline-offset: 1px; }

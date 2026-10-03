@@ -21,19 +21,21 @@ const navigation = [
 ]
 const pipelineNavigation = { to: '/pipeline', label: 'Data pipeline', icon: Workflow }
 
-function Navigation({ onNavigate }: { onNavigate?: () => void }) {
+/** The sidebar links, each with its "G then a letter" shortcut; the letters light up while G waits for one. */
+function Navigation({ onNavigate, keysActive = false }: { onNavigate?: () => void; keysActive?: boolean }) {
   const auth = useAuth()
   const items = auth.user?.role === 'admin'
     ? [...navigation.slice(0, 5), pipelineNavigation, ...navigation.slice(5)]
     : navigation
-  return <nav className="primary-nav" aria-label="Primary navigation">
+  return <nav className={keysActive ? 'primary-nav primary-nav--keys' : 'primary-nav'} aria-label="Primary navigation">
     {items.map(item => {
       const Icon = item.icon
       const key = pageShortcutFor(item.to)?.key.toUpperCase()
-      return <NavLink key={item.to} to={item.to} end={item.to === '/overview'} onClick={onNavigate} title={key ? `${item.label} (G then ${key})` : undefined}><Icon aria-hidden="true" /><span>{item.label}</span></NavLink>
+      return <NavLink key={item.to} to={item.to} end={item.to === '/overview'} onClick={onNavigate} title={key ? `${item.label} (G then ${key})` : undefined}><Icon aria-hidden="true" /><span>{item.label}</span>{key && <kbd className="primary-nav__key" aria-hidden="true">{key}</kbd>}</NavLink>
     })}
     {auth.user && <NavLink to="/account" end onClick={onNavigate}><Settings aria-hidden="true" /><span>Account</span></NavLink>}
     {auth.user?.role === 'admin' && <NavLink to="/admin" end onClick={onNavigate}><Shield aria-hidden="true" /><span>Admin</span></NavLink>}
+    <p className="primary-nav__hint">Press <kbd>G</kbd> then a letter</p>
   </nav>
 }
 
@@ -96,6 +98,7 @@ function AuthSection() {
 export function AppShell({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
+  const [keysActive, setKeysActive] = useState(false)
   const health = useHealth()
   const location = useLocation()
   const auth = useAuth()
@@ -106,14 +109,14 @@ export function AppShell({ children }: { children: ReactNode }) {
   return <div className={collapsed ? 'app-shell app-shell--collapsed' : 'app-shell'}>
     <aside className={mobileOpen ? 'sidebar sidebar--open' : 'sidebar'}>
       <div className="brand"><BrandLockup showTagline /><button className="icon-button mobile-only" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
-      <Navigation onNavigate={() => setMobileOpen(false)} />
+      <Navigation onNavigate={() => setMobileOpen(false)} keysActive={keysActive} />
       <button className="sidebar-collapse desktop-only" onClick={() => setCollapsed(value => !value)}><PanelLeftClose aria-hidden="true" /><span>{collapsed ? 'Expand' : 'Collapse'}</span></button>
     </aside>
     {mobileOpen && <button className="backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
     <div className="app-content">
       <header className="topbar"><button className="icon-button mobile-only" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button><GlobalCompanySearch /><div className="topbar-actions"><div className={health.isError ? 'health health--error' : 'health'}>{health.isError ? <CircleX /> : <CircleCheck />}<span>{health.isError ? 'Backend unavailable' : auth.user?.role === 'admin' && health.data?.jobs_active ? `${health.data.jobs_active} job active` : 'Data service ready'}</span></div><AuthSection /></div></header>
       <main id="main-content" key={location.pathname}>{children}</main>
-      <GlobalHotkeys isAdmin={auth.user?.role === 'admin'} />
+      <GlobalHotkeys isAdmin={auth.user?.role === 'admin'} onPendingChange={setKeysActive} />
       <nav className="mobile-nav" aria-label="Mobile primary navigation">{mobileNavigation.map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/overview'}><Icon /><span>{item.label}</span></NavLink> })}</nav>
     </div>
   </div>

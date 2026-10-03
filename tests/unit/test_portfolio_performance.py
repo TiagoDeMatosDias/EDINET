@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from src.portfolio.performance import (
     avg_loss,
@@ -189,3 +190,77 @@ class TestCalculateMetrics:
         result = calculate_metrics(str(path), db2_path=market_db_path)
 
         assert result == {"start_date": "", "end_date": "", "base_currency": "EUR"}
+
+
+def _daily_ledger(path: Path, rows: list[tuple[str, float, float]]) -> str:
+    create_tables(str(path))
+    with sqlite3.connect(path) as conn:
+        conn.executemany(
+            "INSERT INTO Portfolio_Daily (date, total_value, net_inflow, dividend_income) VALUES (?, ?, ?, 0)",
+            rows,
+        )
+    return str(path)
+
+
+def _weekday_dates(start: str, count: int) -> list[str]:
+    from datetime import date, timedelta
+
+    day = date.fromisoformat(start)
+    out: list[str] = []
+    while len(out) < count:
+        if day.weekday() < 5:
+            out.append(day.isoformat())
+        day += timedelta(days=1)
+    return out
+
+
+class TestPerformanceInputs:
+    def test_the_first_deposit_is_not_a_monthly_loss(self, tmp_path: Path, market_db_path: str) -> None:
+        # The old monthly map counted a same-day deposit against the month (−63.6%).
+        path = _daily_ledger(tmp_path / "first-month.db", [
+            ("2020-12-14", 99.13, 100.0),
+            ("2020-12-15", 99.13, 0.0),
+            ("2020-12-31", 99.13, 0.0),
+            ("2021-01-04", 101.11, 0.0),
+        ])
+        result = calculate_metrics(path, db2_path=market_db_path, risk_free_rate=0.0)
+        months = {row["month"]: row["portfolio"] for row in result["monthly_returns"]}
+        assert months["2020-12"] == pytest.approx(0.0)
+        assert months["2021-01"] == pytest.approx(101.11 / 99.13 - 1)
+
+    def test_stored_short_rate_sets_the_cash_return(self, tmp_path: Path, market_db_path: str) -> None:
+        market = tmp_path / "market.db"
+        import shutil
+
+        shutil.copy(market_db_path, market)
+        with sqlite3.connect(market) as conn:
+            conn.execute("INSERT INTO Stock_Prices (Date, Ticker, Currency, Price) VALUES ('2023-12-01', 'RiskFree_EUR', 'EUR', 3.65)")
+        dates = _weekday_dates("2024-01-01", 60)
+        path = _daily_ledger(tmp_path / "rates.db", [(day, 100.0 * (1 + 0.001 * (index % 7 - 3)), 100.0 if index == 0 else 0.0) for index, day in enumerate(dates)])
+        result = calculate_metrics(path, db2_path=str(market))
+        assert result["risk_free"]["kind"] == "series"
+        assert result["risk_free"]["ticker"] == "RiskFree_EUR"
+        assert result["risk_free_rate"] == pytest.approx(0.0365, rel=0.05)
+        missing = calculate_metrics(path, db2_path=market_db_path)
+        assert missing["risk_free"]["kind"] == "missing"
+        assert any(warning["code"] == "risk_free_missing" for warning in missing["warnings"])
+
+    def test_a_benchmark_identical_to_the_portfolio(self, tmp_path: Path, market_db_path: str) -> None:
+        conn = sqlite3.connect(market_db_path)
+        bench = dict(conn.execute("SELECT Date, Price FROM Stock_Prices WHERE Ticker = 'BENCH' AND Date BETWEEN '2024-01-01' AND '2024-12-31'").fetchall())
+        conn.close()
+        dates = sorted(bench)
+        rows = [(day, bench[day], bench[dates[0]] if index == 0 else 0.0) for index, day in enumerate(dates)]
+        path = _daily_ledger(tmp_path / "bench.db", rows)
+        result = calculate_metrics(path, db2_path=market_db_path, risk_free_rate=0.0, benchmark_ticker="BENCH")
+        benchmark = result["benchmark"]
+        assert benchmark["available"] is True
+        assert benchmark["total_return"] == pytest.approx(result["total_return"], rel=1e-9)
+        assert benchmark["beta"] == pytest.approx(1.0)
+        assert benchmark["tracking_error"] == pytest.approx(0.0, abs=1e-9)
+        assert result["series"][-1]["benchmark"] == pytest.approx(result["series"][-1]["cumulative_return"], abs=1e-6)
+
+    def test_an_unknown_benchmark_is_reported_not_raised(self, populated_db3: str, market_db_path: str) -> None:
+        result = calculate_metrics(populated_db3, db2_path=market_db_path, benchmark_ticker="NOPE")
+        assert result["benchmark"]["available"] is False
+        assert any(warning["code"] == "benchmark_missing" for warning in result["warnings"])

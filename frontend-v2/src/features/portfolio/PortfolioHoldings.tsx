@@ -1,15 +1,15 @@
-import type { ColumnDef } from '@tanstack/react-table'
-import { Building2, Eye, Search, WalletCards } from 'lucide-react'
+import { AlertTriangle, ArrowUpRight, Building2, Eye, Search, WalletCards } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
-import { DataTable } from '../../components/DataTable'
 import { ErrorState, LoadingState } from '../../components/Feedback'
-import { Card, Field, Metric } from '../../components/Page'
-import { money, percent, quantity } from './portfolioFormat'
-import { ExploreButton } from './PortfolioPrimitives'
+import { Field, Metric } from '../../components/Page'
+import { Tip } from '../../components/Tooltip'
+import { displayValue, formatDay, heldDays, heldFor, holdingName, isCash, money, percent, priceNote, quantity, signedPercent } from './portfolioFormat'
+import { SectionCard } from './PortfolioPrimitives'
+import { PortfolioTable, type TableColumn } from './PortfolioTable'
 import type { Holding, PortfolioDetail, PortfolioSummary } from './portfolioTypes'
 
-type HoldingRow = Holding & { portfolioWeight: number }
+type HoldingRow = Holding & { weight: number }
 
 type Props = {
   data: Holding[]
@@ -18,74 +18,95 @@ type Props = {
   includeClosed: boolean
   isLoading: boolean
   error?: unknown
+  hotkeys?: boolean
+  returnTo?: string
   onIncludeClosed: (value: boolean) => void
   onOpenDetail: (detail: PortfolioDetail) => void
+  onAnalyze: (holding: Holding) => void
+  onOrderChange?: (rows: Holding[]) => void
 }
 
-function holdingName(holding: Holding) {
-  return holding.performance?.name || holding.asset_category || ''
-}
-
-function isCash(holding: Holding) {
-  return holding.asset_category === 'CASH' || holding.symbol.startsWith('CASH')
-}
-
-function HoldingCell({ holding, onOpenDetail }: { holding: Holding; onOpenDetail: Props['onOpenDetail'] }) {
+function HoldingCell({ holding }: { holding: Holding }) {
   const Icon = isCash(holding) ? WalletCards : Building2
-  return <button className="company-link" onClick={() => onOpenDetail({ kind: 'holding', holding })}>
-    <Icon /><span><strong>{holding.symbol}</strong><small>{holdingName(holding)}</small></span>
-  </button>
+  const note = priceNote(holding)
+  return <span className="pf-holding">
+    <Icon aria-hidden="true" />
+    <span><strong>{holding.symbol}{holding.is_open === false && <em> closed</em>}</strong><small>{holdingName(holding)}</small></span>
+    {note && note.level !== 'info' && <Tip content={note.text} className={`pf-holding__flag is-${note.level}`}><AlertTriangle aria-label={note.text} /></Tip>}
+  </span>
 }
 
-function useColumns(currency: string, onOpenDetail: Props['onOpenDetail']) {
-  return useMemo<ColumnDef<HoldingRow>[]>(() => [
-    { accessorKey: 'symbol', header: 'Holding', cell: ({ row }) => <HoldingCell holding={row.original} onOpenDetail={onOpenDetail} /> },
-    { accessorKey: 'portfolioWeight', header: 'Weight', cell: info => percent(info.getValue()) },
-    { accessorKey: 'quantity', header: 'Quantity', cell: info => quantity(info.getValue()) },
-    { accessorKey: 'market_price', header: 'Price', cell: info => money(info.getValue(), String(info.row.original.currency ?? currency), 2) },
-    { accessorKey: 'market_value', header: `Value (${currency})`, cell: info => money(info.getValue(), currency) },
-    { id: 'pnl', header: 'P&L', accessorFn: row => row.performance?.pnl_display, cell: info => <span className={Number(info.getValue()) >= 0 ? 'number-positive' : 'number-negative'}>{money(info.getValue(), currency)}</span> },
-    { id: 'return', header: 'Return', accessorFn: row => row.performance?.total_return_display ?? row.performance?.total_return_native, cell: info => percent(info.getValue()) },
-    { id: 'annualized', header: 'Annualized', accessorFn: row => row.performance?.annualized_return, cell: info => percent(info.getValue()) },
-    { id: 'income', header: 'Income', accessorFn: row => row.performance?.dividends_display, cell: info => money(info.getValue(), currency) },
-    { id: 'details', header: 'Details', enableSorting: false, cell: ({ row }) => <button className="portfolio-row-action" aria-label={`View ${row.original.symbol} details`} onClick={() => onOpenDetail({ kind: 'holding', holding: row.original })}><Eye /></button> },
-  ], [currency, onOpenDetail])
-}
-
-function HoldingSummary({ summary, currency }: Pick<Props, 'summary' | 'currency'>) {
-  return <div className="portfolio-section-metrics">
-    <Metric label="Invested value" value={money(summary.investedValue, currency)} />
-    <Metric label="Cost basis" value={money(summary.costBasis, currency)} />
-    <Metric label="Open P&L" value={money(summary.pnl, currency)} />
-    <Metric label="Positions" value={summary.positionCount.toLocaleString()} />
-    <Metric label="Top weight" value={percent(summary.topHolding?.weight)} detail={summary.topHolding?.symbol} />
-    <Metric label="Cash weight" value={percent(summary.cashWeight)} />
-  </div>
+function useColumns(currency: string, onOpenDetail: Props['onOpenDetail'], onAnalyze: Props['onAnalyze']) {
+  return useMemo<TableColumn<HoldingRow>[]>(() => [
+    { id: 'symbol', header: 'Holding', rowHeader: true, sortValue: row => row.symbol, cell: row => <HoldingCell holding={row} />, className: 'pf-col-holding' },
+    { id: 'shares', header: 'Shares', numeric: true, tip: 'Shares (or units) held now, after any share splits.', sortValue: row => isCash(row) ? null : row.quantity, cell: row => isCash(row) || row.is_open === false ? '—' : <Tip content={row.avg_cost ? `Average cost ${money(row.avg_cost, row.currency ?? currency, 2)} a share` : 'Shares held'} focusable={false}><span>{quantity(row.quantity)}</span></Tip> },
+    { id: 'held', header: 'Held', numeric: true, tip: 'How long the holding has been in the portfolio without a break. After a full sale and a later purchase, only the latest period counts.', sortValue: row => isCash(row) ? null : heldDays(row.performance), cell: row => {
+      if (isCash(row) || !row.performance?.held_since) return '—'
+      const periods = row.performance.num_holding_periods ?? 1
+      const text = row.is_open === false ? `Held ${formatDay(row.performance.held_since)} to ${formatDay(row.performance.held_until)}` : `Since ${formatDay(row.performance.held_since)}`
+      return <Tip content={periods > 1 ? `${text}; held ${periods} separate times` : text} focusable={false}><span>{heldFor(row.performance)}</span></Tip>
+    } },
+    { id: 'weight', header: 'Weight', numeric: true, tip: 'Share of the portfolio’s value, cash included.', sortValue: row => row.weight, cell: row => <span className="pf-weight"><i style={{ width: Math.max(1, Math.min(56, row.weight * 100)) }} aria-hidden="true" />{percent(row.weight)}</span> },
+    { id: 'value', header: `Value (${currency})`, numeric: true, sortValue: row => displayValue(row), cell: row => money(displayValue(row), currency) },
+    { id: 'price', header: 'Price', numeric: true, tip: 'Latest close in the holding’s own currency.', sortValue: row => row.market_price, cell: row => {
+      if (isCash(row) || row.market_price == null) return '—'
+      const note = priceNote(row)
+      return <Tip content={note?.text ?? (row.price_date ? `Close on ${formatDay(row.price_date)}${row.price_ticker && row.price_ticker !== row.symbol ? ` (${row.price_ticker})` : ''}` : 'Price date unknown — rebuild to record it')} focusable={false}><span className={note && note.level !== 'info' ? `pf-price is-${note.level}` : 'pf-price'}>{money(row.market_price, row.currency ?? currency, 2)}</span></Tip>
+    } },
+    { id: 'pnl', header: 'Unrealized', numeric: true, tip: 'Value less the cost of the shares still held.', sortValue: row => row.performance?.pnl_display, cell: row => row.performance ? <span className={Number(row.performance.pnl_display) < 0 ? 'number-negative' : undefined}>{money(row.performance.pnl_display, currency)}</span> : '—' },
+    { id: 'return', header: 'Return', numeric: true, tip: 'Unrealized gain on the shares still held, in the display currency, as a share of their cost.', sortValue: row => row.performance?.total_return_display, cell: row => signedPercent(row.performance?.total_return_display) },
+    { id: 'annual', header: 'Per year', numeric: true, tip: 'That return compounded per year since the current holding period began.', sortValue: row => row.performance?.annualized_return, cell: row => signedPercent(row.performance?.annualized_return) },
+    { id: 'income', header: 'Dividends', numeric: true, tip: 'Net dividends received, converted on each payment date.', sortValue: row => row.performance?.dividends_display, cell: row => row.performance?.dividends_display ? money(row.performance.dividends_display, currency) : '—' },
+    { id: 'total', header: 'Total P&L', numeric: true, tip: 'Unrealized plus realized gains plus net dividends, over every holding period.', sortValue: row => row.performance?.total_pnl_display, cell: row => row.performance?.total_pnl_display != null ? <span className={row.performance.total_pnl_display < 0 ? 'number-negative' : undefined}>{money(row.performance.total_pnl_display, currency)}</span> : '—' },
+    { id: 'actions', header: '', cell: row => <span className="pf-row-actions">
+      <button type="button" className="icon-button" aria-label={`View ${row.symbol} details`} title="Details (Enter)" onClick={() => onOpenDetail({ kind: 'holding', holding: row })}><Eye /></button>
+      {!isCash(row) && <button type="button" className="icon-button" aria-label={`Open ${row.symbol} in Analysis`} title="Open in Analysis (A)" onClick={() => onAnalyze(row)}><ArrowUpRight /></button>}
+    </span> },
+  ], [currency, onAnalyze, onOpenDetail])
 }
 
 export function PortfolioHoldings(props: Props) {
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('all')
-  const rows = props.data.map(holding => ({
-    ...holding,
-    portfolioWeight: props.summary.totalValue ? Number(holding.market_value ?? 0) / props.summary.totalValue : 0,
-  }))
+  const total = props.summary.totalValue
+  const rows = useMemo<HoldingRow[]>(() => props.data.map(holding => ({ ...holding, weight: total ? displayValue(holding) / total : 0 })), [props.data, total])
   const categories = [...new Set(rows.map(row => row.asset_category).filter(Boolean) as string[])].sort()
-  const filtered = rows.filter(row => {
-    const term = search.trim().toLowerCase()
-    const matchesSearch = !term || `${row.symbol} ${holdingName(row)}`.toLowerCase().includes(term)
-    return matchesSearch && (category === 'all' || row.asset_category === category)
-  })
-  const columns = useColumns(props.currency, props.onOpenDetail)
+  const term = search.trim().toLowerCase()
+  const filtered = useMemo(() => rows.filter(row => (!term || `${row.symbol} ${holdingName(row)}`.toLowerCase().includes(term)) && (category === 'all' || row.asset_category === category)), [category, rows, term])
+  const columns = useColumns(props.currency, props.onOpenDetail, props.onAnalyze)
+  const totalPnl = rows.filter(row => row.is_open !== false).reduce((sum, row) => sum + Number(row.performance?.total_pnl_display ?? 0), 0)
+  const income = rows.reduce((sum, row) => sum + Number(row.performance?.dividends_display ?? 0), 0)
   return <div className="portfolio-section-stack">
-    <HoldingSummary summary={props.summary} currency={props.currency} />
-    <Card title="Position ledger" description={`${filtered.length} of ${rows.length} positions shown`} actions={<ExploreButton label="Exposure details" onClick={() => props.onOpenDetail({ kind: 'allocation' })} />}>
+    <div className="portfolio-section-metrics">
+      <Metric label="Invested" value={money(props.summary.investedValue, props.currency)} detail={`${props.summary.positionCount} holdings`} />
+      <Metric label="Cost of shares held" value={money(props.summary.costBasis, props.currency)} />
+      <Metric label="Unrealized P&L" value={money(props.summary.pnl, props.currency)} detail={props.summary.costBasis ? signedPercent(props.summary.pnl / props.summary.costBasis) : undefined} />
+      <Metric label="Dividends received" value={money(income, props.currency)} detail="Holdings shown" />
+      <Metric label="Total P&L, open holdings" value={money(totalPnl, props.currency)} detail="Unrealized, realized, dividends" />
+      <Metric label="Cash" value={money(props.summary.cashValue, props.currency)} detail={percent(props.summary.cashWeight)} />
+    </div>
+    <SectionCard title="Holdings" description={`${filtered.length} of ${rows.length} shown · values in ${props.currency}, prices in each holding’s currency`}>
       <div className="portfolio-table-toolbar">
-        <Field label="Find a position"><div className="input-with-icon"><Search /><input className="input" value={search} placeholder="Symbol or company" onChange={event => setSearch(event.target.value)} /></div></Field>
+        <Field label="Find a holding"><div className="input-with-icon"><Search /><input className="input" data-portfolio-find value={search} placeholder="Symbol or name" onChange={event => setSearch(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { setSearch(''); event.currentTarget.blur() } }} /><kbd className="input-kbd" aria-hidden="true">F</kbd></div></Field>
         <Field label="Asset class"><select className="select" value={category} onChange={event => setCategory(event.target.value)}><option value="all">All asset classes</option>{categories.map(value => <option key={value} value={value}>{value}</option>)}</select></Field>
-        <label className="portfolio-check"><input type="checkbox" checked={props.includeClosed} onChange={event => props.onIncludeClosed(event.target.checked)} /><span>Include closed positions</span></label>
+        <label className="portfolio-check"><input type="checkbox" checked={props.includeClosed} onChange={event => props.onIncludeClosed(event.target.checked)} /><span>Include closed holdings</span></label>
       </div>
-      {props.isLoading ? <LoadingState label="Loading positions" /> : props.error ? <ErrorState error={props.error} /> : <div className="portfolio-table-frame"><DataTable data={filtered} columns={columns} emptyText="No positions match these filters." dense /></div>}
-    </Card>
+      {props.isLoading ? <LoadingState label="Loading holdings" /> : props.error ? <ErrorState error={props.error} /> : <PortfolioTable
+        label="Holdings"
+        rows={filtered}
+        columns={columns}
+        rowKey={row => row.symbol}
+        initialSort={{ column: 'value', direction: 'desc' }}
+        initialCursor={props.returnTo}
+        hotkeys={props.hotkeys}
+        onOpen={row => props.onOpenDetail({ kind: 'holding', holding: row })}
+        onSecondary={row => props.onAnalyze(row)}
+        secondaryLabel="analysis"
+        onOrderChange={props.onOrderChange}
+        rowClassName={row => row.is_open === false ? 'is-closed' : undefined}
+        emptyText="No holdings match these filters."
+      />}
+      <p className="pf-footnote">Click a row or press Enter for details. A opens the company in Analysis, where Shift+J and Shift+K step through your holdings in this order.</p>
+    </SectionCard>
   </div>
 }

@@ -20,6 +20,7 @@ from datetime import timedelta
 from src.orchestrator.common.db_config import get_db2, get_db3
 from src.orchestrator.common.sqlite import connect_read, connect_write
 from src.portfolio import option_pricing as _op
+from src.portfolio.market_data import is_share_split
 from src.portfolio.schema import create_tables
 from src.utilities.price_provenance import table_columns
 
@@ -340,6 +341,11 @@ def _load_confirmed_split_events(
             multiplier = float(ratio_to) / float(ratio_from)
         except (TypeError, ValueError, ZeroDivisionError):
             continue
+        if not is_share_split(ratio_from, ratio_to):
+            # A spinoff price adjustment, not new shares: the provider's old
+            # closes are restated by it, but the ledger quantity is not.
+            logger.debug("Ignoring %s:%s on %s for ledger quantities", ratio_to, ratio_from, ticker)
+            continue
         if multiplier > 0:
             events[str(ticker)].append((str(split_date), multiplier))
     return events
@@ -385,6 +391,24 @@ def _apply_split_actions(
 # Public API
 # ---------------------------------------------------------------------------
 
+def _alias_split_events(
+    events: dict[str, list[tuple[str, float]]],
+    symbols: set[str],
+) -> dict[str, list[tuple[str, float]]]:
+    """Key split events by the broker symbol too (``59840`` events also apply to ``5984.T``)."""
+    from src.portfolio.market_data import price_ticker_candidates
+
+    aliased = dict(events)
+    for symbol in symbols:
+        if not symbol or symbol in aliased:
+            continue
+        for candidate in price_ticker_candidates(symbol)[1:]:
+            if candidate in events:
+                aliased[symbol] = events[candidate]
+                break
+    return aliased
+
+
 def build_portfolio_state(
     db3_path: str | None = None,
     db2_path: str | None = None,
@@ -395,16 +419,25 @@ def build_portfolio_state(
 ) -> dict:
     """Rebuild portfolio state from scratch.
 
+    Every calendar day from the first transaction is valued in EUR: holdings
+    at their latest close (in the listing's currency, converted to the
+    holding's), and holdings and per-currency cash at that day's ECB
+    reference rate.  The broker's ``fxRateToBase`` is only a fallback for a
+    currency without ECB data, so currency moves show up on the days they
+    happen rather than when the next transaction arrives.
+
     Args:
         db3_path: Path to Portfolio.db (default ``get_db3()``).
         db2_path: Path to Standardized.db (default ``get_db2()``).
         start_date: Override earliest date (YYYY-MM-DD). None = auto.
         end_date: Override latest date (YYYY-MM-DD). None = today.
-        base_currency: Account base currency for FX conversion (default EUR).
+        base_currency: Kept for callers; stored values are always EUR and
+            converted to a display currency when read.
 
     Returns:
         ``{'daily_rows': N, 'holdings_count': N}``
     """
+    from src.portfolio.market_data import MarketData
 
     db3_path = db3_path or get_db3()
     db2_path = db2_path or get_db2()
@@ -449,22 +482,32 @@ def build_portfolio_state(
         last_date = _parse_date(end_date) or Date.today()
 
         # 2. Walk forward
+        market = MarketData(conn2)
         holdings: dict[tuple[str, str], dict] = {}  # (symbol, asset_category) → holding dict
-        cash_balance = 0.0
-        cash_by_currency: dict[str, float] = {"EUR": 0.0}  # per-currency cash tracking
+        cash_by_currency: dict[str, float] = {"EUR": 0.0}
+        broker_fx: dict[str, float] = {}  # currency → latest fxRateToBase (fallback only)
         cumulative_return = 1.0
         prev_total_value = 0.0
-        fx_rates: dict[str, float] = {}  # currency → latest fxRateToBase
-        split_events = _load_confirmed_split_events(conn2)
+        split_events = _alias_split_events(
+            _load_confirmed_split_events(conn2),
+            {(t.get("symbol") or "").strip() for t in transactions},
+        )
         txn_index = 0
         daily_rows = 0
         hh_rows = 0
 
+        def eur_per_unit(currency: str, day: str) -> float:
+            per_eur = market.per_eur(currency or "EUR", day)
+            if per_eur:
+                return 1.0 / per_eur
+            return broker_fx.get(currency, 1.0)
+
+        import json as _json
+
         current_date = first_date
         while current_date <= last_date:
             date_str = current_date.isoformat()
-            daily_dividend = 0.0
-            daily_inflow = 0.0
+            flows = {"inflow": 0.0, "income": 0.0}
 
             # Apply corporate actions before trades and valuation for the
             # effective date. Quantities/cost bases then match as-traded
@@ -480,52 +523,43 @@ def build_portfolio_state(
                 if txn_date < current_date:
                     txn_index += 1
                     continue
-
-                _apply_transaction(txn, holdings, cash_balance_ref := [cash_balance],
-                                   cash_ccy_ref := [cash_by_currency],
-                                   daily_inflow_ref := [daily_inflow],
-                                   daily_div_ref := [daily_dividend],
-                                   fx_rates)
-                cash_balance = cash_balance_ref[0]
-                cash_by_currency = cash_ccy_ref[0]
-                daily_inflow = daily_inflow_ref[0]
-                daily_dividend = daily_div_ref[0]
+                _apply_transaction(
+                    txn, holdings, cash_by_currency, flows, broker_fx,
+                    lambda amount, currency, day=date_str: amount * eur_per_unit(currency, day),
+                )
                 txn_index += 1
 
-            # --- Price current holdings ---
-            stock_value_native = 0.0
-            option_value_native = 0.0
-            for _key, h in holdings.items():
-                if h["quantity"] == 0:
-                    continue
-
-                price = _price_holding(h, date_str, conn2)
-                if price is not None:
-                    h["market_price"] = price
-                    multiplier = h.get("multiplier", 1) or 1
-                    value = price * abs(h["quantity"]) * multiplier
-                    h["market_value"] = value
-
-                    if h["is_option"]:
-                        option_value_native += value
-                    else:
-                        stock_value_native += value
-
-            # Convert to base currency
-            # For proper multi-currency: sum (value * fx_rate[currency])
+            # --- Price current holdings and value them in EUR ---
             stock_value_base = 0.0
             option_value_base = 0.0
             for h in holdings.values():
-                if h.get("market_value") and h["quantity"] != 0:
-                    fx = fx_rates.get(h["currency"], 1.0)
+                if h["quantity"] == 0:
+                    continue
+                priced = _price_holding(h, date_str, market)
+                if priced is not None:
+                    price, price_date, source = priced
+                    h["market_price"] = price
+                    h["price_date"] = price_date
+                    h["price_source"] = source
+                    multiplier = h.get("multiplier", 1) or 1
+                    h["market_value"] = price * abs(h["quantity"]) * multiplier
+                h["fx_rate"] = eur_per_unit(h["currency"], date_str)
+                if h.get("market_value"):
+                    value_base = h["market_value"] * h["fx_rate"]
                     if h["is_option"]:
-                        option_value_base += h["market_value"] * fx
+                        option_value_base += value_base
                     else:
-                        stock_value_base += h["market_value"] * fx
+                        stock_value_base += value_base
 
-            total_value = cash_balance + stock_value_base + option_value_base
+            cash_value = sum(
+                amount * eur_per_unit(currency, date_str)
+                for currency, amount in cash_by_currency.items()
+            )
+            total_value = cash_value + stock_value_base + option_value_base
+            daily_inflow = flows["inflow"]
 
-            # Compute daily return and cumulative return (robust Modified Dietz)
+            # Daily return with external flows at the start of the day
+            # (Modified Dietz for one day).
             if prev_total_value > 0:
                 denom = prev_total_value + daily_inflow
                 if abs(denom) > 0.01:  # avoid division by near-zero
@@ -540,19 +574,16 @@ def build_portfolio_state(
                 daily_return = 0.0
                 # cumulative_return stays at 1.0 until first real data point
 
-            # Store in Portfolio_Daily
-            import json as _json
-            cash_ccy_json = _json.dumps(cash_by_currency) if cash_by_currency else "{}"
             conn3.execute(
                 """INSERT OR REPLACE INTO Portfolio_Daily
                    (date, owner_user_id, total_value, cash_balance, stock_value, option_value,
                     daily_return, cumulative_return, dividend_income, net_inflow,
                     cash_ccy_json)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (date_str, owner_user_id, total_value, cash_balance, stock_value_base,
+                (date_str, owner_user_id, total_value, cash_value, stock_value_base,
                  option_value_base, daily_return,
-                 cumulative_return - 1, daily_dividend, daily_inflow,
-                 cash_ccy_json),
+                 cumulative_return - 1, flows["income"], daily_inflow,
+                 _json.dumps(cash_by_currency)),
             )
             daily_rows += 1
 
@@ -560,21 +591,23 @@ def build_portfolio_state(
             for _key, h in holdings.items():
                 if h["quantity"] != 0:
                     mv_native = h.get("market_value")
-                    cur_rate = fx_rates.get(h["currency"], 1.0)
+                    cur_rate = h.get("fx_rate") or eur_per_unit(h["currency"], date_str)
                     mv_base = mv_native * cur_rate if mv_native is not None else None
                     conn3.execute(
                         """INSERT OR REPLACE INTO Holdings_History
                            (date, symbol, asset_category, owner_user_id, quantity, market_price,
                             market_value, market_value_native, currency, fx_rate,
-                            is_option, strike, expiry, put_call, underlying)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            is_option, strike, expiry, put_call, underlying,
+                            price_date, price_source)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (date_str, h["symbol"], h["asset_category"], owner_user_id,
                          h["quantity"], h.get("market_price"),
                          mv_base, mv_native, h["currency"],
                          cur_rate,
                          1 if h["is_option"] else 0,
                          h.get("strike"), h.get("expiry"),
-                         h.get("put_call"), h.get("underlying")),
+                         h.get("put_call"), h.get("underlying"),
+                         h.get("price_date"), h.get("price_source")),
                     )
                     hh_rows += 1
 
@@ -594,21 +627,24 @@ def build_portfolio_state(
                                  h["symbol"], h["expiry"])
                     continue
             mv_native = h.get("market_value")
-            cur_rate = fx_rates.get(h["currency"], 1.0)
+            cur_rate = h.get("fx_rate") or 1.0
             mv_base = mv_native * cur_rate if mv_native is not None else None
             conn3.execute(
                 """INSERT OR REPLACE INTO Portfolio_Holdings
                    (symbol, asset_category, owner_user_id, quantity, avg_cost, market_price,
                     market_value, market_value_native, currency, fx_rate,
-                    is_option, strike, expiry, put_call, underlying)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    is_option, strike, expiry, put_call, underlying,
+                    price_date, price_source, price_ticker, price_currency)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (h["symbol"], h["asset_category"], owner_user_id, h["quantity"],
                  h.get("avg_cost"), h.get("market_price"),
                  mv_base, mv_native, h["currency"],
                  cur_rate,
                  1 if h["is_option"] else 0,
                  h.get("strike"), h.get("expiry"),
-                 h.get("put_call"), h.get("underlying")),
+                 h.get("put_call"), h.get("underlying"),
+                 h.get("price_date"), h.get("price_source"),
+                 h.get("price_ticker"), h.get("price_currency")),
             )
 
         conn3.commit()
@@ -633,33 +669,33 @@ def build_portfolio_state(
 def _apply_transaction(
     txn: dict,
     holdings: dict[tuple[str, str], dict],
-    cash_balance: list[float],
-    cash_ccy: list[dict[str, float]],
-    daily_inflow: list[float],
-    daily_div: list[float],
-    fx_rates: dict[str, float],
+    cash: dict[str, float],
+    flows: dict[str, float],
+    broker_fx: dict[str, float],
+    to_eur,
 ) -> None:
-    """Modify holdings, cash, daily_inflow, and daily_div in-place."""
+    """Apply one ledger record to holdings, per-currency cash, and the day's flows.
+
+    *flows* collects the day's external flows (``inflow``: deposits less
+    withdrawals, in EUR at the day's ECB rate via *to_eur(amount, currency)*,
+    the rate the cash itself is valued at) and net dividend income
+    (``income``).  Cash is kept per currency and valued daily.
+    """
     def _add_cash(ccy: str, amount: float) -> None:
-        """Add amount to total cash (EUR) AND per-currency cash tracker."""
-        fx = fx_rates.get(ccy, 1.0)
-        cash_balance[0] += amount * fx
-        ccy_map = cash_ccy[0]
-        ccy_map[ccy] = ccy_map.get(ccy, 0.0) + amount
+        cash[ccy] = cash.get(ccy, 0.0) + amount
 
     activity = txn["activity_type"]
     symbol = (txn.get("symbol") or "").strip()
     asset_cat = (txn.get("asset_category") or "STK").strip()
-    currency = txn.get("currency", "")
-    fx = txn.get("fx_rate_to_base") or 1.0
+    currency = txn.get("currency", "") or "EUR"
     qty = txn.get("quantity") or 0
     amount = txn.get("amount") or 0
     commission = txn.get("commission") or 0
     trade_price = txn.get("trade_price")
 
-    # Update FX rate for this currency
-    if currency:
-        fx_rates[currency] = fx
+    # The broker's rate is the fallback for currencies without ECB data.
+    if txn.get("fx_rate_to_base"):
+        broker_fx[currency] = txn["fx_rate_to_base"]
 
     key = (symbol, asset_cat)
 
@@ -704,11 +740,14 @@ def _apply_transaction(
         h = holdings[key]
         if txn.get("buy_sell") == "BUY":
             h["quantity"] += qty
-            # Update cost basis
+            # Cost basis in the holding's currency, commission included.
             if trade_price and qty > 0:
-                h["total_cost"] += qty * trade_price * multiplier + commission * fx
+                h["total_cost"] += qty * trade_price * multiplier + abs(commission)
         else:  # SELL
-            h["quantity"] -= abs(qty)
+            sold = abs(qty)
+            if h["quantity"] > 0 and h["total_cost"]:
+                h["total_cost"] -= h["total_cost"] * min(sold, h["quantity"]) / h["quantity"]
+            h["quantity"] -= sold
             if h["quantity"] <= 0:
                 h["total_cost"] = 0
                 if h["quantity"] < 0:
@@ -721,29 +760,18 @@ def _apply_transaction(
         net_cash = txn.get("net_cash") or 0
         _add_cash(currency, net_cash)
 
-    elif activity == "DIVIDEND":
+    elif activity in ("DIVIDEND", "PIL_DIVIDEND", "WITHHOLDING_TAX"):
+        # Withholding tax is netted against the gross dividend.  Income is
+        # converted at the broker's booking rate, matching its statements.
         _add_cash(currency, amount)
-        daily_div[0] += amount * fx
-
-    elif activity == "PIL_DIVIDEND":
-        _add_cash(currency, amount)
-        daily_div[0] += amount * fx
-
-    elif activity == "WITHHOLDING_TAX":
-        _add_cash(currency, amount)
-        daily_div[0] += amount * fx  # netted against gross dividend
+        booked = txn.get("fx_rate_to_base")
+        flows["income"] += amount * booked if booked else to_eur(amount, currency)
 
     elif activity == "DEPOSIT_WITHDRAWAL":
         _add_cash(currency, amount)
-        daily_inflow[0] += amount * fx
+        flows["inflow"] += to_eur(amount, currency)
 
-    elif activity == "BROKER_INTEREST":
-        _add_cash(currency, amount)
-
-    elif activity == "OTHER_FEE":
-        _add_cash(currency, amount)
-
-    elif activity == "COMMISSION_ADJ":
+    elif activity in ("BROKER_INTEREST", "OTHER_FEE", "COMMISSION_ADJ"):
         _add_cash(currency, amount)
 
     elif activity == "SPINOFF":
@@ -774,43 +802,48 @@ def _apply_transaction(
 def _price_holding(
     h: dict,
     date_str: str,
-    conn2: sqlite3.Connection,
-) -> float | None:
-    """Price a single holding for a given date.
+    market,
+) -> tuple[float, str | None, str] | None:
+    """Price one holding on *date_str*: ``(price, price date, source)`` or None.
 
-    Stocks use the quote on the same (as-traded) basis as the ledger quantity.
-    Split actions are applied to holdings above, so using a split-adjusted
-    quote here would double-adjust the position.  Options use the same raw
-    underlying convention; their strike/multiplier are adjusted with the
-    contract action where available.
+    Stocks use the latest close on or before the date, as traded and in the
+    holding's currency (``source`` ``market``).  Split actions are applied to
+    holdings above, so a split-adjusted quote would double-adjust the
+    position.  Before a ticker has any stored price the average cost stands
+    in (``cost``).  Options are valued with a binomial model on the
+    underlying's close (``model``).
     """
     if h.get("is_option"):
-        # Need underlying price, strike, T, r, sigma
-        underlying = h.get("underlying") or h["symbol"][:h["symbol"].index(" ")] if " " in h["symbol"] else h["symbol"]
-        S = _get_as_traded_price(conn2, underlying, date_str)
-        if S is None:
+        symbol = h["symbol"]
+        underlying = h.get("underlying") or (symbol[:symbol.index(" ")] if " " in symbol else symbol)
+        quote = market.price(underlying, h["currency"], date_str)
+        if quote is None:
             return None
+        S, price_date, _series = quote
         K = h.get("strike") or 0
         if K == 0:
             return None
         expiry = _parse_date(h.get("expiry"))
         if expiry is None:
-            return 0.01  # very short time → minimal value
+            return 0.01, price_date, "model"  # very short time → minimal value
         T = max((expiry - Date.fromisoformat(date_str)).days / 365.0, 0.0)
         if T <= 0:
-            return 0.0
+            return 0.0, price_date, "model"
         opt_type = "put" if h.get("put_call") == "P" else "call"
-        return _op.binomial_tree(opt_type, S, K, T, 0.05, 0.20)
-    else:
-        price = _get_as_traded_price(conn2, h["symbol"], date_str)
-        if price is not None:
-            return price
-        # Fall back to average cost if no market price available
-        # (common for recently purchased positions where price hasn't been fetched yet)
-        avg = h.get("avg_cost")
-        if avg is not None and avg > 0:
-            return avg
-        return None
+        return _op.binomial_tree(opt_type, S, K, T, 0.05, 0.20), price_date, "model"
+
+    quote = market.price(h["symbol"], h["currency"], date_str)
+    if quote is not None:
+        price, price_date, series = quote
+        h["price_ticker"] = series.ticker
+        h["price_currency"] = series.source_currency
+        return price, price_date, "market"
+    # Fall back to average cost if no market price available
+    # (common for recently purchased positions where price hasn't been fetched yet)
+    avg = h.get("avg_cost")
+    if avg is not None and avg > 0:
+        return avg, None, "cost"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -843,8 +876,17 @@ def get_daily_values(
     return [dict(r) for r in rows]
 
 
-def get_current_holdings(db3_path: str | None = None, owner_user_id: str = "") -> list[dict]:
-    """Return current holdings snapshot with cash balance."""
+def get_current_holdings(
+    db3_path: str | None = None,
+    owner_user_id: str = "",
+    db2_path: str | None = None,
+) -> list[dict]:
+    """Return current holdings snapshot with cash balance.
+
+    With *db2_path*, cash in each currency is valued at the ECB reference
+    rate on the valuation date; otherwise at the rate of a holding in the
+    same currency.
+    """
     db3_path = db3_path or get_db3()
     conn = connect_read(db3_path)
     today = Date.today().isoformat()
@@ -862,10 +904,16 @@ def get_current_holdings(db3_path: str | None = None, owner_user_id: str = "") -
 
     # Add per-currency cash balances from Portfolio_Daily (latest row)
     cash_row = conn.execute(
-        "SELECT cash_balance, cash_ccy_json, total_value FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date DESC LIMIT 1",
+        "SELECT date, cash_balance, cash_ccy_json, total_value FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date DESC LIMIT 1",
         (owner_user_id,),
     ).fetchone()
     conn.close()
+    market = None
+    if db2_path and cash_row:
+        from src.portfolio.market_data import MarketData
+
+        market_conn = connect_read(db2_path)
+        market = MarketData(market_conn)
 
     if cash_row:
         total_val = cash_row["total_value"] or 0
@@ -880,11 +928,14 @@ def get_current_holdings(db3_path: str | None = None, owner_user_id: str = "") -
             for ccy, amount in ccy_map.items():
                 if abs(amount) < 0.001:
                     continue
-                fx = 1.0  # cash stored in native currency amount
-                # Use latest FX rate from the holdings data
+                # EUR per unit: the ECB rate on the valuation date, else a
+                # holding's rate in the same currency.
                 cur_fx = None
+                if market is not None:
+                    per_eur = market.per_eur(ccy, cash_row["date"])
+                    cur_fx = 1.0 / per_eur if per_eur else None
                 for r in result:
-                    if r.get("currency") == ccy and r.get("fx_rate"):
+                    if cur_fx is None and r.get("currency") == ccy and r.get("fx_rate"):
                         cur_fx = r["fx_rate"]
                         break
                 fx = cur_fx or 1.0
@@ -905,6 +956,8 @@ def get_current_holdings(db3_path: str | None = None, owner_user_id: str = "") -
                     "put_call": None,
                     "underlying": None,
                 })
+    if market is not None:
+        market.conn.close()
     return result
 
 
@@ -1034,6 +1087,8 @@ def _compute_holding_periods(
             "longest_holding_days": 0,
             "latest_holding_days": 0,
             "num_holding_periods": 0,
+            "held_since": None,
+            "held_until": None,
         }
 
     from datetime import date as _date
@@ -1044,6 +1099,8 @@ def _compute_holding_periods(
             "longest_holding_days": 1,
             "latest_holding_days": 1,
             "num_holding_periods": 1,
+            "held_since": dates[0].isoformat(),
+            "held_until": dates[0].isoformat(),
         }
 
     streaks: list[int] = []
@@ -1064,6 +1121,10 @@ def _compute_holding_periods(
         "longest_holding_days": max(streaks),
         "latest_holding_days": streaks[-1],
         "num_holding_periods": len(streaks),
+        # The latest continuous holding period: a full sale and later
+        # repurchase starts a new one.
+        "held_since": streak_start.isoformat(),
+        "held_until": prev.isoformat(),
     }
 
 
@@ -1435,11 +1496,15 @@ def get_all_holdings_performance(
     db3_path = db3_path or get_db3()
     db2_path = db2_path or get_db2()
 
-    holdings = get_current_holdings(db3_path, owner_user_id=owner_user_id)
+    holdings = get_current_holdings(db3_path, owner_user_id=owner_user_id, db2_path=db2_path)
     result: list[dict] = []
 
     conn = connect_read(db3_path)
     conn2 = connect_read(db2_path)
+    valuation_row = conn.execute(
+        "SELECT MAX(date) FROM Portfolio_Daily WHERE owner_user_id = ?", (owner_user_id,),
+    ).fetchone()
+    valuation_date = (valuation_row[0] if valuation_row and valuation_row[0] else None) or Date.today().isoformat()
 
     # ── Pre-load FX series to avoid repeated connection opens ──
     _fx_cache: dict[str, dict[str, float]] = {}
@@ -1466,7 +1531,14 @@ def get_all_holdings_performance(
         for h in holdings:
             sym = h["symbol"]
             if h["asset_category"] == "CASH" or sym.startswith("CASH"):
-                result.append({**h, "performance": None})
+                rate = _cached_fx_rate(h.get("currency") or "EUR", display_currency, valuation_date)
+                native = h.get("market_value_native") or 0.0
+                result.append({
+                    **h,
+                    "market_value_display": round(native * rate, 2) if rate else h.get("market_value"),
+                    "valuation_date": valuation_date,
+                    "performance": None,
+                })
                 continue
             symbols.append(sym)
 
@@ -1505,7 +1577,7 @@ def get_all_holdings_performance(
         # ── 5. Batch-fetch holdings history ──
         hist_by_sym: dict[str, list] = defaultdict(list)
         hist_rows = conn.execute(
-            f"SELECT symbol, date, market_value, market_value_native FROM Holdings_History WHERE symbol IN ({placeholders}) AND owner_user_id = ? ORDER BY symbol, date",
+            f"SELECT symbol, date, market_value, market_value_native, market_price FROM Holdings_History WHERE symbol IN ({placeholders}) AND owner_user_id = ? ORDER BY symbol, date",
             [*symbols, owner_user_id],
         ).fetchall()
         for r in hist_rows:
@@ -1520,28 +1592,26 @@ def get_all_holdings_performance(
         for r in cur_rows:
             cur_holdings[r["symbol"]] = dict(r)
 
-        # ── 7. Batch industry lookup ──
+        # ── 7. Batch company lookup: EDINET code, English name, industry ──
+        from src.portfolio.market_data import price_ticker_candidates
+
         industries: dict[str, str | None] = {}
-        for sym in symbols:
-            clean = str(sym).strip()
-            candidates = [clean]
-            if clean.endswith('.T') or clean.endswith('.JP'):
-                base = clean.rsplit('.', 1)[0]
-                if len(base) <= 4 and base.isdigit():
-                    candidates.append(base + '0')
-                candidates.append(base)
-            elif len(clean) == 5 and clean.isdigit():
-                candidates.append(clean[:4])
-            found = None
-            for cand in candidates:
-                row = conn2.execute(
-                    "SELECT Company_Industry FROM CompanyInfo WHERE Company_Ticker = ? LIMIT 1",
-                    (cand,),
-                ).fetchone()
-                if row and row[0]:
-                    found = row[0]
-                    break
-            industries[sym] = found
+        companies: dict[str, dict] = {}
+        company_columns = {str(row[1]) for row in conn2.execute("PRAGMA table_info(CompanyInfo)")}
+        if {"Company_Ticker", "Company_Code"} <= company_columns:
+            name_column = "Company_Name" if "Company_Name" in company_columns else "NULL"
+            industry_column = "Company_Industry" if "Company_Industry" in company_columns else "NULL"
+            for sym in symbols:
+                for cand in price_ticker_candidates(sym):
+                    row = conn2.execute(
+                        f"SELECT Company_Code, {name_column}, {industry_column} FROM CompanyInfo "
+                        "WHERE Company_Ticker = ? LIMIT 1",
+                        (cand,),
+                    ).fetchone()
+                    if row and row[0]:
+                        companies[sym] = {"edinet_code": row[0], "company_name": row[1]}
+                        industries[sym] = row[2]
+                        break
 
         # ── 8. Compute per-symbol performance ──
         for sym in symbols:
@@ -1572,9 +1642,7 @@ def get_all_holdings_performance(
             cv_display = cv_eur
             pnl_display = cv_eur - cost_basis_eur
             if display_currency.upper() != currency.upper():
-                from datetime import date as _date
-                today_str = _date.today().isoformat()
-                rate_now = _cached_fx_rate(currency, display_currency, today_str)
+                rate_now = _cached_fx_rate(currency, display_currency, valuation_date)
                 cv_display = round(cv_native * rate_now, 2) if rate_now and cv_native else 0
                 pnl_display = cv_display - cost_basis_display if cv_display else 0
             elif display_currency.upper() != "EUR":
@@ -1600,21 +1668,26 @@ def get_all_holdings_performance(
             elif display_currency.upper() == currency.upper():
                 div_net_display = div_net_native
 
-            # Returns
+            # Returns: volatility from weekday price changes in the holding's
+            # own currency (value changes would count purchases as returns).
             hist = hist_by_sym.get(sym, [])
             values = [h["market_value"] or 0 for h in hist]
             dr_list = []
-            first_val = next((i for i, v in enumerate(values) if v > 0), None)
-            if first_val is not None:
-                for i in range(first_val + 1, len(values)):
-                    if values[i - 1] > 0 and values[i] > 0:
-                        dr_list.append(values[i] / values[i - 1] - 1)
+            weekday_prices = [
+                h["market_price"] for h in hist
+                if h.get("market_price") and Date.fromisoformat(h["date"]).weekday() < 5
+            ]
+            for previous_price, price in zip(weekday_prices[:-1], weekday_prices[1:], strict=False):
+                if previous_price > 0 and price != previous_price:
+                    dr_list.append(price / previous_price - 1)
+                elif previous_price > 0:
+                    dr_list.append(0.0)
 
             total_return = cv_eur / cost_basis_eur - 1 if cost_basis_eur > 0 and cv_eur else 0
             total_return_native = cv_native / cost_basis_native - 1 if cost_basis_native > 0 and cv_native else 0
             total_return_display_d = cv_display / cost_basis_display - 1 if cost_basis_display > 0 and cv_display else 0
 
-            volatility = float(np.std(dr_list, ddof=1) * np.sqrt(252)) if len(dr_list) >= 2 else 0
+            volatility = float(np.std(dr_list, ddof=1) * np.sqrt(261)) if len(dr_list) >= 2 else 0
             avg_val = float(np.mean([v for v in values if v > 0])) if values else 0
             div_yield = (div_gross_eur - div_tax_eur) / avg_val if avg_val > 0 else 0
 
@@ -1622,8 +1695,7 @@ def get_all_holdings_performance(
             annualized_return = 0.0
             annualized_return_native = 0.0
             if period_start:
-                from datetime import date as _date
-                hold_days = (_date.today() - _date.fromisoformat(period_start)).days
+                hold_days = (Date.fromisoformat(valuation_date) - Date.fromisoformat(period_start)).days
                 years = max(hold_days / 365.25, 0.01)
                 if total_return > -1:
                     annualized_return = (1 + total_return) ** (1 / years) - 1
@@ -1671,12 +1743,23 @@ def get_all_holdings_performance(
                 "longest_holding_days": hold_periods["longest_holding_days"],
                 "latest_holding_days": hold_periods["latest_holding_days"],
                 "num_holding_periods": hold_periods["num_holding_periods"],
-                "name": names.get(sym),
+                "held_since": hold_periods["held_since"],
+                "held_until": hold_periods["held_until"],
+                "name": (companies.get(sym) or {}).get("company_name") or names.get(sym),
+                "broker_description": names.get(sym),
                 "industry": industries.get(sym),
+                "edinet_code": (companies.get(sym) or {}).get("edinet_code"),
+                "total_pnl_display": round(pnl_display + realized_pnl_display + div_net_display, 2),
+                "holding_days": hold_periods["latest_holding_days"],
             }
             # Find the matching holding item
             h_item = next((h for h in holdings if h["symbol"] == sym), {})
-            result.append({**h_item, "performance": perf})
+            result.append({
+                **h_item,
+                "market_value_display": round(cv_display, 2),
+                "valuation_date": valuation_date,
+                "performance": perf,
+            })
 
         return result
     finally:

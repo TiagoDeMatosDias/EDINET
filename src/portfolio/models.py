@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TransactionEntry(BaseModel):
@@ -73,14 +73,18 @@ class HoldingItem(BaseModel):
 
 
 class BenchmarkInfo(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     ticker: str | None = None
+    available: bool | None = None
     total_return: float | None = None
+    annualized_return: float | None = None
     excess_return: float | None = None
     alpha: float | None = None
     beta: float | None = None
+    correlation: float | None = None
     information_ratio: float | None = None
     tracking_error: float | None = None
-    series: list[dict] = Field(default_factory=list)
 
 
 class DividendBreakdown(BaseModel):
@@ -90,27 +94,38 @@ class DividendBreakdown(BaseModel):
 
 
 class ReturnDistribution(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     min: float = 0
     p25: float = 0
     median: float = 0
     p75: float = 0
     max: float = 0
-    skewness: float = 0
-    kurtosis: float = 0
+    skewness: float | None = None
+    kurtosis: float | None = None
     positive_days: int = 0
     negative_days: int = 0
     zero_days: int = 0
 
 
 class ReturnAttribution(BaseModel):
-    total_return: float = 0
-    dividend_yield: float = 0
-    capital_appreciation: float = 0
-    real_return: float = 0
-    inflation_total: float = 0
+    total_return: float | None = None
+    dividend_yield: float | None = None
+    capital_appreciation: float | None = None
+    real_return: float | None = None
+    inflation_total: float | None = None
 
 
 class PerformanceResponse(BaseModel):
+    """Headline statistics plus the series and inputs behind them.
+
+    Further fields (``period``, ``series``, ``monthly_returns``,
+    ``annual_returns``, ``risk_free``, ``inflation``, ``warnings``) pass
+    through unchanged; see ``performance.calculate_metrics``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
     start_date: str
     end_date: str
     base_currency: str

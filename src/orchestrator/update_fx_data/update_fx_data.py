@@ -40,6 +40,19 @@ _FRED_INFLATION_SERIES: dict[str, tuple[str, str]] = {
     # JPN and AUS OECD series discontinued — use DBnomics instead
 }
 
+# Short-term "risk-free" rates (annual percent) used for Sharpe and Sortino
+# ratios and the cash benchmark.  EUR uses the ECB's three-month AAA
+# government yield; the others come from FRED.
+_ECB_RISK_FREE_URL = (
+    "https://data-api.ecb.europa.eu/service/data/YC/"
+    "B.U2.EUR.4F.G_N_A.SV_C_YM.SR_3M?format=csvdata"
+)
+_FRED_RISK_FREE_SERIES: dict[str, tuple[str, str]] = {
+    "DTB3":             ("RiskFree_USD", "USD"),  # 3-month Treasury bill
+    "IUDSOIA":          ("RiskFree_GBP", "GBP"),  # SONIA overnight rate
+    "IRSTCI01JPM156N":  ("RiskFree_JPY", "JPY"),  # call rate (monthly)
+}
+
 # DBnomics IMF/IFS series key → (ticker, currency)
 # Format: "FREQ.REF_AREA.INDICATOR" where INDICATOR = PCPI_IX (CPI index)
 _DBNOMICS_INFLATION_SERIES: dict[str, tuple[str, str]] = {
@@ -349,6 +362,67 @@ def _fetch_all_inflation_prices() -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Risk-free rates — ECB yield curve (EUR) and FRED (USD, GBP, JPY)
+# ---------------------------------------------------------------------------
+
+def _download_ecb_risk_free(session: requests.Session | None = None) -> pd.DataFrame:
+    """Download the euro area three-month AAA government spot yield (percent)."""
+    session = session or requests.Session()
+    logger.info("Downloading ECB three-month yield from %s", _ECB_RISK_FREE_URL)
+    try:
+        response = session.get(_ECB_RISK_FREE_URL, timeout=_REQUEST_TIMEOUT)
+        response.raise_for_status()
+    except Exception as exc:
+        logger.warning("Failed to download the ECB three-month yield: %s", exc)
+        return pd.DataFrame(columns=["Date", "Price"])
+    df = pd.read_csv(io.StringIO(response.text))
+    if df.empty or "TIME_PERIOD" not in df.columns or "OBS_VALUE" not in df.columns:
+        logger.warning("ECB yield curve returned an unexpected format.")
+        return pd.DataFrame(columns=["Date", "Price"])
+    result = pd.DataFrame({
+        "Date": pd.to_datetime(df["TIME_PERIOD"].astype(str), errors="coerce").dt.strftime("%Y-%m-%d"),
+        "Price": pd.to_numeric(df["OBS_VALUE"], errors="coerce"),
+    })
+    return result.dropna(subset=["Date", "Price"])
+
+
+def fetch_risk_free_rates(currencies: set[str] | None = None) -> pd.DataFrame:
+    """Short-term rates in Stock_Prices format (``RiskFree_{CUR}``, Price in percent).
+
+    *currencies* limits the download (``None`` fetches every supported one).
+    """
+    wanted = {code.upper() for code in currencies} if currencies else None
+    session = requests.Session()
+    frames: list[pd.DataFrame] = []
+    if wanted is None or "EUR" in wanted:
+        eur = _download_ecb_risk_free(session=session)
+        if not eur.empty:
+            eur["Ticker"] = "RiskFree_EUR"
+            eur["Currency"] = "EUR"
+            frames.append(eur)
+    for series_id, (ticker, currency) in _FRED_RISK_FREE_SERIES.items():
+        if wanted is not None and currency not in wanted:
+            continue
+        df = _download_fred_cpi(series_id, session=session)
+        if df.empty:
+            logger.warning("Skipping %s — no data from FRED series %s.", ticker, series_id)
+            continue
+        df["Ticker"] = ticker
+        df["Currency"] = currency
+        frames.append(df)
+    if not frames:
+        return pd.DataFrame(columns=["Date", "Ticker", "Currency", "Price"])
+    return pd.concat(frames, ignore_index=True)[["Date", "Ticker", "Currency", "Price"]]
+
+
+def update_risk_free_rates(db_name: str, currencies: set[str] | None = None, prices_table: str = "Stock_Prices") -> int:
+    """Download short-term rates and insert the dates not yet stored; return rows added."""
+    return _insert_new_pairs(
+        fetch_risk_free_rates(currencies), db_name, prices_table, label="risk-free rate records",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Shared insert helper
 # ---------------------------------------------------------------------------
 
@@ -429,14 +503,14 @@ def update_fx_data(
     prices_table: str = "Stock_Prices",
     context=None,
 ) -> dict[str, int]:
-    """Download ECB FX data and insert into the prices table.
+    """Download ECB FX rates, consumer price indexes, and short-term interest rates.
 
     Only new ``(Date, Ticker)`` pairs are inserted.  Returns a dict with
-    ``fx`` and ``inflation`` keys holding the count of rows added for each.
+    ``fx``, ``inflation``, and ``risk_free`` keys holding the rows added.
     """
     logger.info("Starting FX and inflation data update.")
     if context is not None:
-        context.report_progress(0, 2, "Fetching foreign-exchange data")
+        context.report_progress(0, 3, "Fetching foreign-exchange data")
 
     # --- FX rates ---
     fx_df = _fetch_ecb_fx_prices()
@@ -444,20 +518,26 @@ def update_fx_data(
 
     # --- Inflation / CPI ---
     if context is not None:
-        context.report_progress(1, 2, "Fetching inflation data")
+        context.report_progress(1, 3, "Fetching inflation data")
     inflation_df = _fetch_all_inflation_prices()
     inflation_inserted = _insert_new_pairs(
         inflation_df, db_name, prices_table, label="inflation records",
     )
 
+    # --- Short-term interest rates (risk-free) ---
+    if context is not None:
+        context.report_progress(2, 3, "Fetching short-term interest rates")
+    risk_free_inserted = update_risk_free_rates(db_name, prices_table=prices_table)
+
     logger.info(
-        "Update FX Data complete: %d FX rows, %d inflation rows inserted.",
+        "Update FX Data complete: %d FX rows, %d inflation rows, %d interest-rate rows inserted.",
         fx_inserted,
         inflation_inserted,
+        risk_free_inserted,
     )
     if context is not None:
-        context.report_progress(2, 2, "FX and inflation update complete")
-    return {"fx": fx_inserted, "inflation": inflation_inserted}
+        context.report_progress(3, 3, "FX, inflation, and interest-rate update complete")
+    return {"fx": fx_inserted, "inflation": inflation_inserted, "risk_free": risk_free_inserted}
 
 
 def run_update_fx_data(config, overwrite=False, context=None):  # noqa: ARG001

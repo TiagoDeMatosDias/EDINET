@@ -99,8 +99,15 @@ def test_market_prices_and_fx_are_applied(
         for row in get_current_holdings(portfolio_db)
         if row["asset_category"] != "CASH"
     }
+    # Holdings are valued at the ECB reference rate on the valuation date,
+    # not at the broker's rate from the last transaction (0.9).
+    with sqlite3.connect(market_db_path) as market:
+        eur_usd = market.execute(
+            "SELECT Price FROM Stock_Prices WHERE Ticker = 'EUR' AND Currency = 'USD' "
+            "AND Date <= '2024-01-20' ORDER BY Date DESC LIMIT 1"
+        ).fetchone()[0]
     assert holdings["AAA"]["currency"] == "USD"
-    assert holdings["AAA"]["fx_rate"] == pytest.approx(0.9)
+    assert holdings["AAA"]["fx_rate"] == pytest.approx(1 / eur_usd)
     assert holdings["AAA"]["market_price"] > 0
     assert holdings["BBB"]["currency"] == "EUR"
     assert holdings["BBB"]["fx_rate"] == pytest.approx(1.0)

@@ -65,11 +65,6 @@
 /* Price */
 .price-panel { min-height: 300px; display: flex; flex: 1; flex-direction: column; padding: 8px 12px; }
 .price-panel__toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; }
-.range-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 1px; }
-.range-buttons button { min-width: 32px; min-height: 26px; padding: 2px 6px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font-family: var(--font-mono); font-size: .72rem; cursor: pointer; }
-.range-buttons button:hover { color: var(--text); }
-.range-buttons button.active { border-bottom-color: var(--vermilion); color: var(--text); }
-.range-buttons__keys { display: inline-flex; gap: 2px; margin-left: 6px; }
 .price-panel__stats { display: flex; gap: 16px; margin: 0; }
 .price-panel__stats div { display: flex; align-items: baseline; gap: 6px; }
 .price-panel__stats dt { color: var(--muted); font-size: .64rem; letter-spacing: .07em; text-transform: uppercase; }
@@ -219,3 +214,9 @@
   .row-label { max-width: 180px; }
   .price-panel__hint { display: none; }
 }
+
+/* Back to the list a company was opened from (screen results or portfolio), with previous/next. */
+.screen-trail { display: inline-flex; align-items: center; gap: 2px; }
+.screen-trail .icon-button { width: 28px; height: 28px; }
+.screen-trail .icon-button svg { width: 15px; height: 15px; }
+.screen-trail__position { min-width: 64px; color: var(--muted); font-family: var(--font-mono); font-size: .72rem; text-align: center; }

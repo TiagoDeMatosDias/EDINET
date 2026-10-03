@@ -224,10 +224,6 @@
 .derived-column__head .text-button:hover, .derived-column__head .text-button[aria-expanded='true'] { color: var(--text); }
 
 /* Analysis header: back to the results and step through them */
-.screen-trail { display: inline-flex; align-items: center; gap: 2px; }
-.screen-trail .icon-button { width: 28px; height: 28px; }
-.screen-trail .icon-button svg { width: 15px; height: 15px; }
-.screen-trail__position { min-width: 64px; color: var(--muted); font-family: var(--font-mono); font-size: .72rem; text-align: center; }
 
 @media (max-width: 960px), (max-height: 640px) {
   /* The page scrolls instead of the workspace; only the results table keeps its own scroll. */

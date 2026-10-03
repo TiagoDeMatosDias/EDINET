@@ -570,108 +570,37 @@ def get_returns_heatmap(
 
     owner_user_id: str = "",
 ) -> dict:
-    """Monthly portfolio returns as a percentage, computed with Modified Dietz
-    to adjust for cash flows, in *display_currency*.
+    """Monthly time-weighted returns as percentages, in *display_currency*.
+
+    Each month chains the ledger's daily flow-adjusted returns (see
+    :mod:`src.portfolio.analytics`), so a deposit is never a gain and the
+    months compound to the same total as the headline return.
 
     Returns ``{years: [int], months: [int], values: [[float|null]], currency: str}``
     where ``values[y][m]`` is the return *percentage* for *years[y]* in month *months[m]*.
     """
-    conn = connect_read(db3_path)
-    conn.row_factory = sqlite3.Row
+    from src.portfolio import analytics
+    from src.portfolio.market_data import MarketData
 
-    # Portfolio_Daily: total_value, cash_balance, net_inflow, dividend_income
-    # All columns are in base_currency (EUR). We'll convert the final
-    # value to display_currency at each month-end date.
-    daily_rows = conn.execute(
-        "SELECT date, total_value, cash_balance, net_inflow, dividend_income "
-        "FROM Portfolio_Daily WHERE owner_user_id = ? ORDER BY date",
-        (owner_user_id,),
-    ).fetchall()
-
-    conn.close()
-
-    if not daily_rows or len(daily_rows) < 2:
+    conn3 = connect_read(db3_path)
+    conn2 = connect_read(db2_path)
+    try:
+        daily = analytics.load_daily_series(conn3, MarketData(conn2), display_currency, owner_user_id)
+    finally:
+        conn3.close()
+        conn2.close()
+    returns = analytics.flow_adjusted_returns(daily.values, daily.flows)
+    monthly = dict(analytics.period_returns(daily.dates, returns, 7))
+    if not monthly:
         return {"years": [], "months": list(range(1, 13)), "values": [], "currency": display_currency}
-
-    dc = display_currency.upper()
-
-    # Group rows by year-month
-    months_data: dict[tuple[int, int], list[dict]] = defaultdict(list)
-    for r in daily_rows:
-        y = int(r["date"][:4])
-        m = int(r["date"][5:7])
-        months_data[(y, m)].append(dict(r))
-
-    years_all = sorted({y for y, _ in months_data.keys()})
-    values: list[list[float | None]] = []
-
-    for y in years_all:
-        row: list[float | None] = []
-        for m in range(1, 13):
-            entries = months_data.get((y, m), [])
-            if len(entries) < 2:
-                row.append(None)
-                continue
-
-            # Modified Dietz within this month
-            # Get the first and last entries' total_value (EUR base)
-            # Also need start/end FX rate for display currency conversion
-            first = entries[0]
-            last = entries[-1]
-
-            start_val_base = first["total_value"] or 0
-            end_val_base = last["total_value"] or 0
-
-            # Net cash flow and weighted cash flow this month
-            net_cf = 0.0
-            weighted_cf = 0.0
-            n_days = (m == 12) and 31 or 30  # approximate; use actual days
-            try:
-                import datetime
-                if m == 12:
-                    next_month = datetime.date(y + 1, 1, 1)
-                else:
-                    next_month = datetime.date(y, m + 1, 1)
-                month_start = datetime.date(y, m, 1)
-                n_days = (next_month - month_start).days
-            except ValueError:
-                pass
-
-            for entry in entries:
-                inflow = entry.get("net_inflow", 0) or 0
-                if inflow != 0:
-                    net_cf += inflow
-                    # weight = (days_remaining_in_month) / n_days
-                    try:
-                        d = int(entry["date"][8:10])
-                        days_remaining = n_days - d + 1
-                        weight = max(days_remaining, 0) / n_days
-                    except (ValueError, IndexError):
-                        weight = 0.5
-                    weighted_cf += weight * inflow
-
-            denominator = start_val_base + weighted_cf
-            if denominator <= 0:
-                row.append(None)
-                continue
-
-            # Monthly return in base currency (EUR), as percentage
-            monthly_return_pct = round((end_val_base - start_val_base - net_cf) / denominator * 100, 2)
-
-            # Convert to display currency using month-end FX rate
-            if dc != "EUR":
-                # Use the last date of the month for FX conversion
-                # Since return is a ratio (percentage), the conversion is:
-                # formula: R_display = (1 + R_base) * (FX_end/FX_start) - 1
-                # But for simplicity and since FX rates don't swing wildly within a month
-                # we approximate by just returning the base-currency return.
-                # A more accurate approach would apply FX adjustment.
-                pass
-
-            row.append(monthly_return_pct)
-
-        values.append(row)
-
+    years_all = sorted({int(month[:4]) for month in monthly})
+    values = [
+        [
+            round(monthly[f"{year}-{month:02d}"] * 100, 2) if f"{year}-{month:02d}" in monthly else None
+            for month in range(1, 13)
+        ]
+        for year in years_all
+    ]
     return {
         "years": years_all,
         "months": list(range(1, 13)),

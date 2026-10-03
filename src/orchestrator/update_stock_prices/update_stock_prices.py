@@ -49,8 +49,13 @@ def _is_auxiliary_ticker(ticker: str) -> bool:
     return normalized == "EUR" or normalized.startswith("INFLATION_")
 
 
-def _get_ticker_currency(conn, prices_table: str, ticker: str) -> str:
-    """Return the existing currency for a ticker, defaulting to JPY."""
+def _get_ticker_currency(conn, prices_table: str, ticker: str) -> str | None:
+    """Return the existing currency for a ticker, or None to let the fetch decide.
+
+    ``load_ticker_data`` repairs mislabelled rows before it reads the stored
+    currency and prefers the provider's own report, so a guess here would
+    only override better information.
+    """
     table = quote_identifier(prices_table)
     try:
         row = conn.execute(
@@ -61,7 +66,7 @@ def _get_ticker_currency(conn, prices_table: str, ticker: str) -> str:
         ).fetchone()
     except sqlite3.OperationalError:
         row = None
-    return str(row[0]).strip() if row and row[0] else "JPY"
+    return str(row[0]).strip() if row and row[0] else None
 
 
 def _delete_ticker_price_rows(conn, prices_table: str, ticker: str) -> int:
@@ -114,7 +119,7 @@ def _update_ticker(
     prices_table: str,
     ticker: str,
     *,
-    currency: str,
+    currency: str | None,
     overwrite: bool,
     savepoint_id: int,
 ) -> bool:

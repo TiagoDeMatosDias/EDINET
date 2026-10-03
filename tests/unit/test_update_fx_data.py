@@ -398,6 +398,7 @@ class TestUpdateFxDataIntegration(unittest.TestCase):
             "Price": [308.417],
         })
 
+    @patch("src.orchestrator.update_fx_data.update_fx_data.fetch_risk_free_rates", new=lambda *_args, **_kwargs: pd.DataFrame(columns=["Date", "Ticker", "Currency", "Price"]))
     @patch("src.orchestrator.update_fx_data.update_fx_data._fetch_all_inflation_prices")
     @patch("src.orchestrator.update_fx_data.update_fx_data._fetch_ecb_fx_prices")
     def test_inserts_both_fx_and_inflation(self, mock_fx, mock_inflation):
@@ -407,7 +408,7 @@ class TestUpdateFxDataIntegration(unittest.TestCase):
 
         result = update_fx_data(self.db_path, "Stock_Prices")
 
-        self.assertEqual(result, {"fx": 4, "inflation": 1})
+        self.assertEqual(result, {"fx": 4, "inflation": 1, "risk_free": 0})
 
         prices = self._read_prices()
         self.assertEqual(len(prices), 5)
@@ -419,6 +420,7 @@ class TestUpdateFxDataIntegration(unittest.TestCase):
         inf_tickers = set(inf["Ticker"])
         self.assertEqual(inf_tickers, {"Inflation_USD"})
 
+    @patch("src.orchestrator.update_fx_data.update_fx_data.fetch_risk_free_rates", new=lambda *_args, **_kwargs: pd.DataFrame(columns=["Date", "Ticker", "Currency", "Price"]))
     @patch("src.orchestrator.update_fx_data.update_fx_data._fetch_all_inflation_prices")
     @patch("src.orchestrator.update_fx_data.update_fx_data._fetch_ecb_fx_prices")
     def test_dedup_across_runs(self, mock_fx, mock_inflation):
@@ -427,14 +429,15 @@ class TestUpdateFxDataIntegration(unittest.TestCase):
         self._setup_table()
 
         first = update_fx_data(self.db_path, "Stock_Prices")
-        self.assertEqual(first, {"fx": 4, "inflation": 1})
+        self.assertEqual(first, {"fx": 4, "inflation": 1, "risk_free": 0})
 
         second = update_fx_data(self.db_path, "Stock_Prices")
-        self.assertEqual(second, {"fx": 0, "inflation": 0})
+        self.assertEqual(second, {"fx": 0, "inflation": 0, "risk_free": 0})
 
         prices = self._read_prices()
         self.assertEqual(len(prices), 5)
 
+    @patch("src.orchestrator.update_fx_data.update_fx_data.fetch_risk_free_rates", new=lambda *_args, **_kwargs: pd.DataFrame(columns=["Date", "Ticker", "Currency", "Price"]))
     @patch("src.orchestrator.update_fx_data.update_fx_data._fetch_all_inflation_prices")
     @patch("src.orchestrator.update_fx_data.update_fx_data._fetch_ecb_fx_prices")
     def test_handles_empty_inflation(self, mock_fx, mock_inflation):
@@ -446,10 +449,11 @@ class TestUpdateFxDataIntegration(unittest.TestCase):
 
         result = update_fx_data(self.db_path, "Stock_Prices")
 
-        self.assertEqual(result, {"fx": 4, "inflation": 0})
+        self.assertEqual(result, {"fx": 4, "inflation": 0, "risk_free": 0})
         prices = self._read_prices()
         self.assertEqual(len(prices), 4)
 
+    @patch("src.orchestrator.update_fx_data.update_fx_data.fetch_risk_free_rates", new=lambda *_args, **_kwargs: pd.DataFrame(columns=["Date", "Ticker", "Currency", "Price"]))
     @patch("src.orchestrator.update_fx_data.update_fx_data._fetch_all_inflation_prices")
     @patch("src.orchestrator.update_fx_data.update_fx_data._fetch_ecb_fx_prices")
     def test_creates_table_when_not_exists(self, mock_fx, mock_inflation):
@@ -472,3 +476,22 @@ class TestUpdateFxDataIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRiskFreeRates(unittest.TestCase):
+    """Short-term rates for Sharpe ratios, stored as RiskFree_{CUR} in percent."""
+
+    @patch("src.orchestrator.update_fx_data.update_fx_data._download_fred_cpi")
+    @patch("src.orchestrator.update_fx_data.update_fx_data._download_ecb_risk_free")
+    def test_fetches_each_currency_under_its_ticker(self, mock_ecb, mock_fred):
+        from src.orchestrator.update_fx_data.update_fx_data import fetch_risk_free_rates
+
+        mock_ecb.return_value = pd.DataFrame({"Date": ["2026-10-01"], "Price": [2.51]})
+        mock_fred.side_effect = lambda series_id, session=None: pd.DataFrame({"Date": ["2026-10-01"], "Price": [4.0 if series_id == "DTB3" else 1.0]})
+        frame = fetch_risk_free_rates()
+        rates = {row.Ticker: row.Price for row in frame.itertuples()}
+        self.assertEqual(rates["RiskFree_EUR"], 2.51)
+        self.assertEqual(rates["RiskFree_USD"], 4.0)
+        self.assertEqual(set(rates), {"RiskFree_EUR", "RiskFree_USD", "RiskFree_GBP", "RiskFree_JPY"})
+        only_usd = fetch_risk_free_rates({"usd"})
+        self.assertEqual(set(only_usd["Ticker"]), {"RiskFree_USD"})

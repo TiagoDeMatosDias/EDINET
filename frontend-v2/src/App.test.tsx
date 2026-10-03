@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -123,6 +123,23 @@ describe('public pages and workspace shell', () => {
     expect(screen.getAllByRole('link', { name: 'Screen' })[0]).toHaveAttribute('href', '/screen')
     expect(screen.getAllByRole('link', { name: 'Analyze' })[0]).toHaveAttribute('href', '/analyze')
     expect(screen.getByText('Data service ready')).toBeInTheDocument()
+  })
+
+  it('shows each page shortcut in the sidebar and highlights them after G', async () => {
+    stubBackend('disabled')
+    renderApp('/overview')
+    await screen.findByRole('heading', { name: 'Overview' })
+    const sidebar = screen.getByRole('navigation', { name: 'Primary navigation' })
+
+    const screenLink = within(sidebar).getByRole('link', { name: 'Screen' })
+    expect(screenLink).toHaveAttribute('title', 'Screen (G then S)')
+    expect(screenLink.querySelector('kbd')).toHaveTextContent('S')
+    expect(sidebar).toHaveTextContent('Press G then a letter')
+
+    fireEvent.keyDown(document.body, { key: 'g' })
+    expect(sidebar).toHaveClass('primary-nav--keys')
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(sidebar).not.toHaveClass('primary-nav--keys')
   })
 })
 

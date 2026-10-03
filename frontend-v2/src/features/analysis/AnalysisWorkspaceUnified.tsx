@@ -12,6 +12,7 @@ import { Tip } from '../../components/Tooltip'
 import { useHotkeys } from '../../hooks/useHotkeys'
 import { formatMetricValue, groupMetrics, type MetricDefinition } from '../../metrics'
 import { useAuth } from '../auth/authContext'
+import { PortfolioTrailNav } from '../portfolio/PortfolioTrailNav'
 import { ScreenTrailNav } from '../screening/ScreenTrailNav'
 import { downloadTextFile, safeFileName } from './downloads'
 import { FilingsPanel } from './FilingsPanel'
@@ -34,10 +35,10 @@ const SHORTCUTS: ShortcutGroup[] = [
     { keys: ['?'], label: 'Show or hide this list' },
     { keys: ['Esc'], label: 'Close a menu or leave a field' },
   ] },
-  { title: 'Opened from a screen', shortcuts: [
-    { keys: ['Shift+J'], label: 'Next company in the screen results' },
-    { keys: ['Shift+K'], label: 'Previous company in the screen results' },
-    { keys: ['G S'], label: 'Back to the results' },
+  { title: 'Opened from a screen or the portfolio', shortcuts: [
+    { keys: ['Shift+J'], label: 'Next company in the list' },
+    { keys: ['Shift+K'], label: 'Previous company in the list' },
+    { keys: ['G S', 'G P'], label: 'Back to the screen results or the portfolio' },
   ] },
   { title: 'This company', shortcuts: [
     { keys: ['1', '2', '3'], label: 'Jump to Overview, Financials, Filings' },
@@ -296,7 +297,7 @@ export default function AnalysisWorkspaceUnified() {
   if (!lookup) return <StartAnalysis />
   if (overview.isLoading) return <LoadingState label="Loading company analysis" />
   if (overview.isError && overview.error instanceof ApiError && overview.error.status === 404) {
-    return <div className="stack dense-page analysis-empty-page"><PageHeader eyebrow="Company research" title="Company not found" description={`No company in the research database matches “${lookup}”.`} /><EmptyState title="Press / to search" description="Enter a name, ticker, EDINET code, or industry and choose a result." /></div>
+    return <div className="stack dense-page analysis-empty-page"><PageHeader eyebrow="Company research" title="Company not found" description={`No company in the research database matches “${lookup}”.`} actions={params.get('from') === 'portfolio' ? <PortfolioTrailNav current={tickerParam} /> : undefined} /><EmptyState title="Press / to search" description="Enter a name, ticker, EDINET code, or industry and choose a result." /></div>
   }
   if (overview.isError) return <ErrorState error={overview.error} retry={() => overview.refetch()} />
 
@@ -384,7 +385,7 @@ export default function AnalysisWorkspaceUnified() {
       <Quote market={market} metrics={metrics} formatMetric={formatMetric} refresh={refresh} />
     </div>
     {updatePrice.isError && <div className="callout callout--warning" role="alert">Price refresh failed: {updatePrice.error instanceof Error ? updatePrice.error.message : 'unknown error'}</div>}
-    {tickerOnly && <div className="callout callout--warning" role="status"><strong>No company record matches “{tickerParam}”.</strong> Showing stored price data only. Broker and portfolio symbols do not always match the exchange ticker used in EDINET data; search by company name or EDINET code for statements and filings.</div>}
+    {tickerOnly && <div className="callout callout--warning" role="status"><strong>“{tickerParam}” has no EDINET filings, so only its stored prices are shown{market.price_currency ? ` (in ${String(market.price_currency)})` : ''}.</strong> Companies and funds listed outside Japan do not file with EDINET. For a Japanese company, search by its name or EDINET code (/) to see statements and filings.</div>}
 
     <nav className="analysis-nav" aria-label="Analysis sections">
       <span className={headerHidden ? 'analysis-nav__id is-visible' : 'analysis-nav__id'} aria-hidden={!headerHidden}>
@@ -395,6 +396,7 @@ export default function AnalysisWorkspaceUnified() {
       <span className="analysis-nav__spacer" />
       <div className="analysis-nav__actions">
         {params.get('from') === 'screen' && <ScreenTrailNav current={canonicalCode} />}
+        {params.get('from') === 'portfolio' && <PortfolioTrailNav current={canonicalCode || tickerParam} />}
         <button type="button" className="button button--secondary button--small" disabled={!history.data} onClick={downloadReport} title={history.data ? 'Download a Markdown report with the snapshot and full financial history' : 'Financial history is still loading'}><Download aria-hidden="true" />Report</button>
         {canonicalCode && <Link className="button button--secondary button--small" to={`/compare?companies=${encodeURIComponent(canonicalCode)}`} title="Compare with peers (P)"><GitCompare aria-hidden="true" />Compare</Link>}
         {ticker && <Link className="button button--primary button--small" to={`/backtest?symbol=${encodeURIComponent(ticker)}`} title="Backtest this ticker (B)"><BarChart3 aria-hidden="true" />Backtest</Link>}

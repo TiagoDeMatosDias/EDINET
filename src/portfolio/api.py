@@ -12,9 +12,10 @@ from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
 from src.orchestrator.common.db_config import get_db2, get_db3
 from src.orchestrator.common.sqlite import connect_read
@@ -24,11 +25,14 @@ from src.portfolio.currency import (
     get_fx_series,
     get_rate_at_date,
 )
+from src.portfolio.data_quality import held_refresh_tickers, portfolio_data_quality
 from src.portfolio.ibkr_parser import (
     InvalidPortfolioXML,
     normalize_entries,
     parse_ibkr_xml,
 )
+from src.portfolio.income import portfolio_income
+from src.portfolio.market_data import MarketData
 from src.portfolio.models import (
     ActivitySummaryResponse,
     DateRangeResponse,
@@ -631,6 +635,7 @@ async def holdings_with_performance(
                 "avg_cost": cp["total_cost"] / (cp.get("total_sold") or 1) if cp.get("total_sold") else None,
                 "market_price": None,
                 "market_value": 0,
+                "market_value_display": 0,
                 "market_value_native": 0,
                 "currency": cp.get("currency", ""),
                 "fx_rate": None,
@@ -661,9 +666,7 @@ async def holdings_with_performance(
                     "annualized_return_native": round(_ann_ret_native, 6) if _ann_ret_native is not None else None,
                     "annualized_return": round(_ann_ret_display, 6) if _ann_ret_display is not None else None,
                     "fx_return": 0,
-                    "longest_holding_days": _compute_holding_periods(closed_hist.get(cp["symbol"], [])).get("longest_holding_days", 0),
-                    "latest_holding_days": _compute_holding_periods(closed_hist.get(cp["symbol"], [])).get("latest_holding_days", 0),
-                    "num_holding_periods": _compute_holding_periods(closed_hist.get(cp["symbol"], [])).get("num_holding_periods", 0),
+                    **_compute_holding_periods(closed_hist.get(cp["symbol"], [])),
                     "name": cp.get("description"),
                     "industry": None,
                 },
@@ -848,11 +851,162 @@ async def portfolio_performance(
 
 @router.get("/risk-free-rate")
 async def detect_risk_free_rate(base_currency: str = Query("EUR")):
-    """Get auto-detected risk-free rate for a currency."""
+    """The latest stored short-term interest rate for a currency (0 when none is stored)."""
     return {
         "base_currency": base_currency,
         "risk_free_rate": get_risk_free_rate(get_db2(), base_currency),
     }
+
+
+# ---------------------------------------------------------------------------
+# Data quality, benchmarks, and market-data refresh
+# ---------------------------------------------------------------------------
+
+# Index funds to compare against. Accumulating funds reinvest dividends, so
+# their price is a total return; for distributing ones the price omits them.
+BENCHMARK_CHOICES: tuple[tuple[str, str, str], ...] = (
+    ("VWCE", "FTSE All-World", "Vanguard VWCE, accumulating"),
+    ("IWDA", "MSCI World", "iShares IWDA, accumulating"),
+    ("CSPX", "S&P 500", "iShares CSPX, accumulating"),
+    ("SPY", "S&P 500", "SPDR SPY, price only (dividends paid out)"),
+    ("13060", "TOPIX", "NEXT FUNDS 1306, price only (dividends paid out)"),
+    ("13210", "Nikkei 225", "NEXT FUNDS 1321, price only (dividends paid out)"),
+)
+
+
+def _benchmark_choices(db2_path: str) -> list[dict]:
+    conn = connect_read(db2_path)
+    try:
+        market = MarketData(conn)
+        choices = []
+        for ticker, index, detail in BENCHMARK_CHOICES:
+            series = market.price_series(ticker, "")
+            choices.append({
+                "ticker": ticker,
+                "label": index,
+                "detail": detail,
+                "available": bool(series and len(series.dates) > 1),
+                "first_date": series.first_date if series else None,
+                "last_date": series.last_date if series else None,
+                "currency": series.source_currency if series else None,
+            })
+        return choices
+    finally:
+        conn.close()
+
+
+@router.get("/benchmarks")
+async def benchmark_choices(request: Request):
+    """Index funds the portfolio can be compared with, and whether prices are stored."""
+    _account(request)
+    return await asyncio.to_thread(_benchmark_choices, get_db2())
+
+
+@router.get("/income")
+async def income(request: Request, display_currency: str = Query("EUR")):
+    """Every dividend payment with its withholding tax and amount per share, and per-company totals."""
+    user = _account(request)
+    return await asyncio.to_thread(
+        portfolio_income, get_db3(), get_db2(), display_currency, user.user_id,
+    )
+
+
+@router.get("/data-quality")
+async def data_quality(request: Request, display_currency: str = Query("EUR")):
+    """Valuation date, each holding's quote source and age, and data warnings."""
+    user = _account(request)
+    return await asyncio.to_thread(
+        portfolio_data_quality, get_db3(), get_db2(), display_currency, user.user_id,
+    )
+
+
+def _refresh_market_data(db3_path: str, db2_path: str, owner_user_id: str, currency: str, benchmark: str | None) -> dict:
+    """Repair currency labels, fetch new prices and rates, then rebuild the ledger."""
+    from src.orchestrator.common.sqlite import connect_write
+    from src.orchestrator.update_fx_data.update_fx_data import (
+        _fetch_ecb_fx_prices,
+        _insert_new_pairs,
+        update_risk_free_rates,
+    )
+    from src.orchestrator.update_stock_prices.update_stock_prices import _update_ticker
+    from src.portfolio.data_quality import sparse_price_years
+    from src.utilities.stock_prices import (
+        load_ticker_data,
+        repair_price_currency_labels,
+        yahoo_listing_currency,
+    )
+
+    tickers = held_refresh_tickers(db3_path, owner_user_id)
+    if benchmark:
+        tickers.append(benchmark.strip())
+    tickers = list(dict.fromkeys(ticker for ticker in tickers if ticker))
+    updated: list[str] = []
+    failed: list[str] = []
+    refetched: list[str] = []
+    relabelled = 0
+    conn = connect_write(db2_path)
+    try:
+        for index, ticker in enumerate(tickers):
+            try:
+                relabelled += repair_price_currency_labels(
+                    conn, "Stock_Prices", ticker, listing_currency=yahoo_listing_currency,
+                )
+                conn.commit()
+                if sparse_price_years(conn, ticker):
+                    # Weekly history: replace it with the provider's daily series.
+                    if _update_ticker(conn, "Stock_Prices", ticker, currency=None, overwrite=True, savepoint_id=index):
+                        refetched.append(ticker)
+                if load_ticker_data(ticker, "Stock_Prices", conn):
+                    conn.commit()
+                    updated.append(ticker)
+                else:
+                    conn.rollback()
+                    failed.append(ticker)
+            except Exception as exc:  # noqa: BLE001 - one ticker must not stop the rest
+                conn.rollback()
+                logger.warning("Price refresh failed for %s: %s", ticker, exc)
+                failed.append(ticker)
+    finally:
+        conn.close()
+    fx_rows = 0
+    rate_rows = 0
+    try:
+        fx_rows = _insert_new_pairs(_fetch_ecb_fx_prices(), db2_path, "Stock_Prices", label="FX records")
+    except Exception as exc:  # noqa: BLE001 - FX refresh is best effort
+        logger.warning("FX refresh failed: %s", exc)
+    try:
+        rate_rows = update_risk_free_rates(db2_path, {currency.upper(), "EUR"})
+    except Exception as exc:  # noqa: BLE001 - rate refresh is best effort
+        logger.warning("Interest-rate refresh failed: %s", exc)
+    rebuilt = build_portfolio_state(db3_path, db2_path, owner_user_id=owner_user_id)
+    return {
+        "tickers": len(tickers),
+        "updated": updated,
+        "failed": failed,
+        "refetched_daily_history": refetched,
+        "relabelled_prices": relabelled,
+        "fx_rows": fx_rows,
+        "risk_free_rows": rate_rows,
+        **rebuilt,
+    }
+
+
+@router.post("/refresh-market-data")
+async def refresh_market_data(
+    request: Request,
+    base_currency: str = Query("EUR"),
+    benchmark: Optional[str] = Query(None),
+    _operator: AuthenticatedUser = Depends(require_operator),  # noqa: B008
+):
+    """Fetch the latest prices for every holding (and the benchmark), FX and
+    interest rates, correct mislabelled price currencies, and rebuild.
+
+    Writes shared market data, so it is limited to operators and admins.
+    """
+    user = _account(request)
+    return await asyncio.to_thread(
+        _refresh_market_data, get_db3(), get_db2(), user.user_id, base_currency, benchmark,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -866,11 +1020,11 @@ async def backtest_compare(http_request: Request, payload: dict):
     Expects JSON body with: ``model_ticker``, optional ``start_date``,
     ``end_date``, ``risk_free_rate``, ``base_currency``.
     """
-    _account(http_request)
     model_ticker = payload.get("model_ticker")
     if not model_ticker:
         raise HTTPException(400, "model_ticker is required")
 
+    user = _account(http_request)
     result = await asyncio.to_thread(
         calculate_metrics,
         get_db3(), get_db2(),
@@ -879,6 +1033,7 @@ async def backtest_compare(http_request: Request, payload: dict):
         risk_free_rate=payload.get("risk_free_rate"),
         benchmark_ticker=model_ticker,
         base_currency=payload.get("base_currency", "EUR"),
+        owner_user_id=user.user_id,
     )
     return result
 

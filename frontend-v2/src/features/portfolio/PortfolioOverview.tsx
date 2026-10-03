@@ -1,78 +1,93 @@
-import { ArrowDownRight, ArrowUpRight, CalendarDays, Landmark, WalletCards } from 'lucide-react'
+import { useState } from 'react'
 
-import { Card, Metric } from '../../components/Page'
-import { AllocationBreakdown, PortfolioValueChart } from './PortfolioCharts'
-import { money, percent, titleCase } from './portfolioFormat'
-import { ExploreButton, StatButton } from './PortfolioPrimitives'
-import type { Performance, PieData, PortfolioDetail, PortfolioSummary, Transaction, ValueHistory } from './portfolioTypes'
+import { LoadingState } from '../../components/Feedback'
+import { BENCHMARK_COLOR, PORTFOLIO_COLOR, REFERENCE_COLOR } from './chartTheme'
+import { AnnualReturnsChart, DrawdownChart, GrowthChart, SeriesLegend, ValueChart, WeightBars } from './PortfolioCharts'
+import { displayValue, formatDay, holdingName, money, percent, signedPercent, titleCase, transactionCashEffect } from './portfolioFormat'
+import { ExploreButton, SectionCard } from './PortfolioPrimitives'
+import type { Holding, Performance, PieData, PortfolioDetail, PortfolioSummary, PortfolioTab, Transaction } from './portfolioTypes'
 
 type Props = {
-  summary: PortfolioSummary
   performance?: Performance
-  valueHistory?: ValueHistory
+  isLoading: boolean
+  summary: PortfolioSummary
+  holdings: Holding[]
   allocation?: PieData
   currencies?: PieData
-  activity: Record<string, number>
   transactions: Transaction[]
   currency: string
+  benchmarkLabel?: string
   onOpenDetail: (detail: PortfolioDetail) => void
+  onTab: (tab: PortfolioTab) => void
 }
 
-function Snapshot({ performance, summary, currency, onOpenDetail }: Pick<Props, 'performance' | 'summary' | 'currency' | 'onOpenDetail'>) {
-  const attribution = performance?.return_attribution
-  return <div className="overview-snapshot-grid">
-    <StatButton label="Total return" value={percent(performance?.total_return)} detail="Time-weighted" tone={Number(performance?.total_return) >= 0 ? 'positive' : 'negative'} onClick={() => onOpenDetail({ kind: 'performance' })} />
-    <StatButton label="Real return" value={percent(attribution?.real_return)} detail="After inflation" tone={Number(attribution?.real_return) >= 0 ? 'positive' : 'negative'} onClick={() => onOpenDetail({ kind: 'performance' })} />
-    <StatButton label="Portfolio P&L" value={money(summary.pnl, currency)} detail={`${money(summary.costBasis, currency)} cost basis`} tone={summary.pnl >= 0 ? 'positive' : 'negative'} onClick={() => onOpenDetail({ kind: 'performance' })} />
-    <StatButton label="Net dividends" value={money(performance?.dividend_breakdown?.total_net, currency)} detail={percent(attribution?.dividend_yield) + ' return contribution'} onClick={() => onOpenDetail({ kind: 'income' })} />
-  </div>
+function Allocation({ holdings, currencies, summary, currency, onOpenDetail }: Pick<Props, 'holdings' | 'currencies' | 'summary' | 'currency' | 'onOpenDetail'>) {
+  const [view, setView] = useState<'holdings' | 'currencies'>('holdings')
+  const holdingRows = holdings.map(holding => ({ label: holding.symbol, value: displayValue(holding), detail: holdingName(holding) }))
+  const currencyRows = (currencies?.labels ?? []).map((label, index) => ({ label, value: currencies?.values[index] ?? 0, detail: label === currency ? 'Display currency' : 'Currency exposure' }))
+  return <SectionCard
+    title="Allocation"
+    description={view === 'holdings' ? `${summary.positionCount} holdings, cash excluded · largest ${summary.topHolding?.symbol ?? '—'} ${percent(summary.topHolding?.weight)}` : 'Holdings by the currency they are priced in'}
+    actions={<div className="period-tabs" role="group" aria-label="Allocation view">
+      <button type="button" className={`period-tab${view === 'holdings' ? ' active' : ''}`} aria-pressed={view === 'holdings'} onClick={() => setView('holdings')}>Holdings</button>
+      <button type="button" className={`period-tab${view === 'currencies' ? ' active' : ''}`} aria-pressed={view === 'currencies'} onClick={() => setView('currencies')}>Currencies</button>
+    </div>}
+  >
+    {view === 'holdings'
+      ? <WeightBars rows={holdingRows} currency={currency} limit={10} onSelect={symbol => { const holding = holdings.find(item => item.symbol === symbol); if (holding) onOpenDetail({ kind: 'holding', holding }) }} />
+      : <WeightBars rows={currencyRows} currency={currency} />}
+    <p className="pf-footnote">Cash: {money(summary.cashValue, currency)} ({percent(summary.cashWeight)} of the portfolio).</p>
+  </SectionCard>
 }
 
-function PositionWatch({ summary, allocation, currency, onOpenDetail }: Pick<Props, 'summary' | 'allocation' | 'currency' | 'onOpenDetail'>) {
-  const rows = (allocation?.labels ?? []).map((symbol, index) => ({ symbol, value: allocation?.values[index] ?? 0 }))
-    .sort((left, right) => right.value - left.value).slice(0, 5)
-  return <Card title="Position watch" description={`${summary.positionCount} invested positions`} actions={<ExploreButton label="All exposures" onClick={() => onOpenDetail({ kind: 'allocation' })} />}>
-    <div className="position-watch-list">{rows.map(row => <div key={row.symbol}>
-      <span><strong>{row.symbol}</strong><small>{money(row.value, currency)}</small></span>
-      <div><i style={{ width: `${Math.max(2, summary.investedValue ? row.value / summary.investedValue * 100 : 0)}%` }} /></div>
-      <b>{percent(summary.investedValue ? row.value / summary.investedValue : 0)}</b>
-    </div>)}</div>
-  </Card>
-}
-
-function RecentActivity({ activity, transactions, onOpenDetail }: Pick<Props, 'activity' | 'transactions' | 'onOpenDetail'>) {
-  const latest = transactions[0]
-  const total = Object.values(activity).reduce((sum, count) => sum + count, 0)
-  const topTypes = Object.entries(activity).sort((left, right) => right[1] - left[1]).slice(0, 4)
-  return <Card title="Activity pulse" description={`${total.toLocaleString()} imported records`} actions={<ExploreButton label="Activity ledger" onClick={() => onOpenDetail({ kind: 'activity' })} />}>
-    <div className="activity-pulse">
-      <div className="activity-latest"><CalendarDays /><span><small>Latest record</small><strong>{latest?.trade_date ?? '—'}</strong><em>{latest?.symbol ? `${latest.symbol} · ` : ''}{latest?.activity_type ? titleCase(latest.activity_type) : 'No activity'}</em></span></div>
-      <div className="activity-type-list">{topTypes.map(([label, value]) => <div key={label}><span>{titleCase(label)}</span><strong>{value.toLocaleString()}</strong></div>)}</div>
-    </div>
-  </Card>
+function LatestActivity({ transactions, onOpenDetail, onTab }: Pick<Props, 'transactions' | 'onOpenDetail' | 'onTab'>) {
+  return <SectionCard title="Latest activity" actions={<ExploreButton label="All activity (5)" onClick={() => onTab('activity')} />}>
+    <ul className="pf-activity">{transactions.slice(0, 7).map((row, index) => {
+      const effect = transactionCashEffect(row)
+      return <li key={`${row.id ?? index}-${row.trade_date}`}>
+        <button type="button" onClick={() => onOpenDetail({ kind: 'transaction', transaction: row })}>
+          <span><strong>{row.symbol || titleCase(row.activity_type ?? '')}</strong><small>{formatDay(row.trade_date)} · {titleCase(row.activity_type ?? '')}</small></span>
+          <b className={Number(effect) < 0 ? 'number-negative' : undefined}>{money(effect, row.currency ?? 'EUR', 2)}</b>
+        </button>
+      </li>
+    })}</ul>
+  </SectionCard>
 }
 
 export function PortfolioOverview(props: Props) {
-  const { summary, performance, valueHistory, allocation, currencies, currency, onOpenDetail } = props
-  return <div className="portfolio-overview-content">
-    <div className="portfolio-overview-layout">
-      <Card title="Portfolio value" description={`${performance?.start_date ?? '—'} to ${performance?.end_date ?? '—'}`} actions={<ExploreButton label="Value details" onClick={() => onOpenDetail({ kind: 'value' })} />}>
-        <div className="value-card-summary">
-          <div><WalletCards /><span><small>Current value</small><strong>{money(summary.totalValue, currency)}</strong></span></div>
-          <div className={summary.pnl >= 0 ? 'positive' : 'negative'}>{summary.pnl >= 0 ? <ArrowUpRight /> : <ArrowDownRight />}<span><small>Unrealized P&L</small><strong>{money(summary.pnl, currency)}</strong></span></div>
-        </div>
-        <PortfolioValueChart data={valueHistory} currency={currency} />
-      </Card>
-      <Card title="Current allocation" description="Invested assets, excluding cash" actions={<ExploreButton label="Exposure details" onClick={() => onOpenDetail({ kind: 'allocation' })} />}>
-        <AllocationBreakdown data={allocation} currency={currency} label="positions" />
-        <div className="allocation-foot"><Metric label="Cash reserve" value={money(summary.cashValue, currency)} detail={percent(summary.cashWeight)} /><Metric label="Top position" value={summary.topHolding?.symbol ?? '—'} detail={percent(summary.topHolding?.weight)} /><Metric label="Currencies" value={String(currencies?.labels.length ?? 0)} detail="Native exposure" /></div>
-      </Card>
+  const { performance, currency, benchmarkLabel } = props
+  const series = performance?.series ?? []
+  const last = series.at(-1)
+  const bench = performance?.benchmark?.available ? performance.benchmark : undefined
+  return <div className="pf-overview">
+    <div className="pf-overview__main">
+      <SectionCard
+        title="Growth"
+        description={performance?.period ? `Time-weighted return from ${formatDay(performance.period.start)} to ${formatDay(performance.period.end)}` : undefined}
+        actions={<ExploreButton label="Performance (3)" onClick={() => props.onTab('performance')} />}
+      >
+        {props.isLoading ? <LoadingState label="Calculating returns" /> : <>
+          <SeriesLegend items={[
+            { label: 'Portfolio', color: PORTFOLIO_COLOR, value: signedPercent(last?.cumulative_return) },
+            ...(bench ? [{ label: `${bench.ticker} (benchmark)`, color: BENCHMARK_COLOR, value: signedPercent(bench.total_return) }] : []),
+            ...(last?.inflation != null ? [{ label: 'Consumer prices', color: REFERENCE_COLOR, dashed: true, value: signedPercent(last.inflation) }] : []),
+          ]} />
+          <GrowthChart series={series} benchmarkLabel={benchmarkLabel} height={280} showDates={false} />
+          <h3 className="pf-subhead">Below the previous high <span>max {percent(performance?.max_drawdown)}, now {percent(performance?.current_drawdown)}</span></h3>
+          <DrawdownChart series={series} height={130} />
+        </>}
+      </SectionCard>
+      <SectionCard title="Value and money put in" description="Market value against deposits less withdrawals; the gap is your gain">
+        {props.isLoading ? <LoadingState label="Loading values" /> : <ValueChart series={series} currency={currency} height={240} />}
+      </SectionCard>
+      <SectionCard title="Calendar years" description={bench ? `Time-weighted return against ${bench.ticker}; * part of a year` : 'Time-weighted return; * part of a year'}>
+        {bench && <SeriesLegend items={[{ label: 'Portfolio', color: PORTFOLIO_COLOR }, { label: bench.ticker, color: BENCHMARK_COLOR }]} />}
+        <AnnualReturnsChart rows={performance?.annual_returns ?? []} benchmarkLabel={benchmarkLabel} height={220} />
+      </SectionCard>
     </div>
-    <div className="portfolio-overview-lower">
-      <Card title="Performance snapshot" description="Open a metric for the complete calculation" actions={<ExploreButton label="Performance lab" onClick={() => onOpenDetail({ kind: 'performance' })} />}><Snapshot performance={performance} summary={summary} currency={currency} onOpenDetail={onOpenDetail} /></Card>
-      <PositionWatch summary={summary} allocation={allocation} currency={currency} onOpenDetail={onOpenDetail} />
-      <RecentActivity activity={props.activity} transactions={props.transactions} onOpenDetail={onOpenDetail} />
+    <div className="pf-overview__side">
+      <Allocation holdings={props.holdings} currencies={props.currencies} summary={props.summary} currency={currency} onOpenDetail={props.onOpenDetail} />
+      <LatestActivity transactions={props.transactions} onOpenDetail={props.onOpenDetail} onTab={props.onTab} />
     </div>
-    <div className="overview-footnote"><Landmark /><span>Returns are flow-adjusted. Current values use the selected display currency; native currency exposure remains visible in the detail panel.</span></div>
   </div>
 }

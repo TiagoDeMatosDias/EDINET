@@ -687,3 +687,10 @@ def test_ticker_variants_bridge_broker_and_stored_tse_codes(ticker, variants):
     from src.security_analysis.security_analysis import _normalize_ticker_for_query
 
     assert _normalize_ticker_for_query(ticker) == variants
+
+
+def test_get_security_overview_finds_the_company_for_a_broker_ticker(security_db):
+    # CompanyInfo names the EDINET code Company_Code; a ticker lookup must not lose it.
+    overview = get_security_overview(security_db, ticker="1001")
+    assert overview["company"]["company_code"] == "E00001"
+    assert overview["company"]["company_name"] == "Alpha Corp"

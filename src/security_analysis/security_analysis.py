@@ -30,7 +30,9 @@ from src.utilities.price_provenance import table_columns
 from src.utilities.stock_prices import (  # noqa: F401
     _create_prices_table,
     load_ticker_data,
+    repair_price_currency_labels,
     tse_code,
+    yahoo_listing_currency,
 )
 
 from .text import clean_text_block as _clean_text_block
@@ -2155,7 +2157,13 @@ def get_security_overview(db_path: str, company_code: str = "", ticker: str = ""
         for variant in variants:
             company = _load_company_by_ticker(db_path, variant)
             if company is not None:
-                code = company.get("EdinetCode", company.get("company_code", ""))
+                # CompanyInfo names the EDINET code ``Company_Code``; older
+                # snapshots used ``EdinetCode``.
+                code = _safe_str(
+                    company.get("EdinetCode")
+                    or company.get("Company_Code")
+                    or company.get("company_code")
+                )
                 break
 
         if company is not None:
@@ -2637,6 +2645,12 @@ def update_security_price(db_path: str, ticker: str) -> dict[str, Any]:
         ).fetchone()[0]
 
         ok = package_module.load_ticker_data(ticker, schema.prices_table, conn)
+        # A refresh also confirms the currency of stored rows fetched from
+        # another listing (CSPX from CSPX.L is quoted in USD, not EUR).
+        package_module.repair_price_currency_labels(
+            conn, schema.prices_table, ticker,
+            listing_currency=package_module.yahoo_listing_currency,
+        )
         conn.commit()
 
         after_count = conn.execute(

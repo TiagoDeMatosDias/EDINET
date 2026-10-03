@@ -31,7 +31,7 @@ Open `/overview` after entering the workspace. It shows backend health, active a
 
 <img src="images/web-dashboard.png" alt="Workspace overview" width="900">
 
-The sidebar contains Overview, Screen, Analyze, Backtest, Portfolio, Data pipeline, Filings, Compare, and Research. Account and Admin appear when the authenticated role allows them. From the keyboard, press `G` then a letter to switch pages: `O` Overview, `S` Screen, `A` Analyze, `B` Backtest, `P` Portfolio, `D` Data pipeline (admins), `F` Filings, `C` Compare, `R` Research. A hint lists the letters after `G`. `/` searches companies and `?` lists the shortcuts for the current page.
+The sidebar contains Overview, Screen, Analyze, Backtest, Portfolio, Data pipeline, Filings, Compare, and Research. Account and Admin appear when the authenticated role allows them. From the keyboard, press `G` then a letter to switch pages: `O` Overview, `S` Screen, `A` Analyze, `B` Backtest, `P` Portfolio, `D` Data pipeline (admins), `F` Filings, `C` Compare, `R` Research. Each sidebar link shows its letter, and the letters light up while `G` waits for one. `/` searches companies and `?` lists the shortcuts for the current page.
 
 The header company finder searches across the best data currently available. It accepts company name, ticker, EDINET code, industry, and market text. The same finder is reused in Analysis, Comparison, Filings, and Research, so a ticker or company selected in one workflow resolves to the same canonical company code elsewhere. If one configured database is missing or only partly populated, search returns results from the remaining usable sources instead of failing the whole request.
 
@@ -135,11 +135,24 @@ Configure the period, benchmark, base currency, capital, execution costs, and ot
 
 ## Review an imported portfolio
 
-Portfolio imports IBKR FlexQuery XML. Imported transactions are account-owned and can be rebuilt into daily value, holdings, exposure, dividend, and performance views. Currency selection changes display conversion without rewriting source activity.
+Portfolio imports IBKR FlexQuery XML. Imported transactions are account-owned and are rebuilt into a daily ledger: every calendar day each holding is valued at its latest close (in its own currency, even when the stored quote comes from another listing, such as CSPX quoted in USD in London) and every holding and cash balance is converted at that day's ECB euro reference rate. The display currency converts the ledger without rewriting source activity.
 
 <img src="images/web-portfolio.png" alt="Portfolio performance and exposure dashboard" width="900">
 
-Use the tabs for overview, holdings, analytics, and transactions. Authenticated preview APIs also support tax-lot matching, option Greeks, and deterministic equity/FX scenarios; these previews return explicit assumptions and do not mutate imported activity.
+The header shows when the ledger was last valued and whether its data checks pass, with the period (YTD, 1Y, 3Y, 5Y, All), the display currency, and a benchmark (an index fund such as VWCE or CSPX). The six headline figures are the portfolio value against the money put in, the time-weighted total and annual return (with the money-weighted return beside it), volatility, maximum drawdown, and the Sharpe ratio; the info mark on each explains how it is calculated.
+
+- **Overview** charts growth against the benchmark and consumer prices, the fall below each previous high, value against money put in, calendar-year returns, allocation by holding or currency, and the latest activity.
+- **Holdings** lists every position with its shares, how long it has been held (the latest unbroken holding period: after a full sale and a later purchase, the clock restarts), its weight, value, latest close, unrealized and total P&L, and dividends; a warning mark flags a holding valued at cost or with an old quote. Enter opens a holding's details (price history against average cost, P&L, the position record); A opens it in Analysis, where Shift+J and Shift+K step through your holdings and G P returns to the same row.
+- **Performance** compares returns and risk with the benchmark side by side (beta, alpha, tracking error, and capture use weekly returns, because Tokyo, Europe, and New York close hours apart), then shows monthly returns, the daily return distribution, and each holding's contribution by year.
+- **Income** shows every dividend payment with its withholding tax, for the whole portfolio or the companies you choose (press `F`, type a name, `Enter`; `X` shows every payer again; or use Held now and Top 5). Switch between net, gross, and withholding, group by month, quarter, or year, and stack by company or payment currency. The payers table compares each company's dividends, withholding rate, share of income, last twelve months, latest amount per share and its growth on a year ago, yield on cost, and current yield; `Enter` shows one company and `A` adds or removes it. With one company chosen you see its dividend per share for every payment and every year, and its payment ledger (amount per share, shares paid on, gross, withheld, net); with several, their dividend per share indexed to the same start. Dividend growth is weighted by the income each company paid, and counts only complete years. A holding's details link straight to its dividends.
+- **Activity** is the full imported ledger, searchable and filterable.
+- **Data & method** lists what the figures rest on: each holding's quote and its age, quotes converted from another currency, weekly-only price history, unusual whole-portfolio days, the exchange-rate, cash-rate, and inflation series, and how every statistic is calculated. Sharpe and Sortino use the display currency's short-term rate (the euro area three-month AAA yield, the three-month US Treasury bill, SONIA, or the Japanese call rate), stored by the Update FX Data pipeline step; enter your own rate there when no series is stored.
+
+**Rebuild** (R) revalues the ledger from your activity and the stored prices. **Refresh prices** (Shift+R, operators and admins) fetches the latest prices for every holding and the benchmark, replaces weekly-only histories with daily ones, corrects stored prices labelled with the wrong currency, updates exchange and interest rates, and rebuilds.
+
+Keyboard: `1`–`6` switch sections, `-` and `=` lengthen or shorten the period, `C` and `B` choose the currency and benchmark, `F` finds a holding, record, or paying company, `I` imports a file, and `?` lists everything. In the Holdings and Activity lists, `↓` or `J` enters the list, `J`/`K` move, `Enter` opens details, and `[` `]` change pages.
+
+Authenticated preview APIs also support tax-lot matching, option Greeks, and deterministic equity/FX scenarios; these previews return explicit assumptions and do not mutate imported activity.
 
 ## Run the data pipeline
 

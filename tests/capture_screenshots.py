@@ -309,7 +309,9 @@ def _capture_with_playwright(
 
         capture(page, "/analyze/E00001", "web-security-analysis.png", wait_ms=1_500)
         capture(page, "/backtest", "web-backtesting.png")
-        capture(page, "/portfolio", "web-portfolio.png", wait_ms=1_500)
+        # The demo market data has one index series, BENCH; compare against it.
+        page.evaluate("localStorage.setItem('portfolio.benchmark', JSON.stringify('BENCH'))")
+        capture(page, "/portfolio", "web-portfolio.png", wait_ms=2_500)
         capture(page, "/filings", "web-filings.png")
 
         page.goto(f"{base_url}/filings/S100DEMO", wait_until="networkidle")

@@ -1,12 +1,11 @@
-import type { ColumnDef } from '@tanstack/react-table'
 import { Eye, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
-import { DataTable } from '../../components/DataTable'
 import { ErrorState, LoadingState } from '../../components/Feedback'
-import { Card, Field, Metric } from '../../components/Page'
-import { money, quantity, titleCase, transactionCashEffect } from './portfolioFormat'
-import { ExploreButton } from './PortfolioPrimitives'
+import { Field, Metric } from '../../components/Page'
+import { formatDay, money, quantity, titleCase, transactionCashEffect } from './portfolioFormat'
+import { SectionCard } from './PortfolioPrimitives'
+import { PortfolioTable, type TableColumn } from './PortfolioTable'
 import type { PortfolioDetail, Transaction } from './portfolioTypes'
 
 type Props = {
@@ -15,6 +14,7 @@ type Props = {
   dateRange?: { min_date?: string | null; max_date?: string | null }
   isLoading: boolean
   error?: unknown
+  hotkeys?: boolean
   onOpenDetail: (detail: PortfolioDetail) => void
 }
 
@@ -25,15 +25,17 @@ function activityTone(value?: string) {
 }
 
 function useColumns(onOpenDetail: Props['onOpenDetail']) {
-  return useMemo<ColumnDef<Transaction>[]>(() => [
-    { accessorKey: 'trade_date', header: 'Date' },
-    { accessorKey: 'activity_type', header: 'Activity', cell: info => <span className={`activity-badge activity-badge--${activityTone(String(info.getValue()))}`}>{titleCase(String(info.getValue() ?? ''))}</span> },
-    { accessorKey: 'symbol', header: 'Symbol', cell: info => <strong>{String(info.getValue() || '—')}</strong> },
-    { accessorKey: 'description', header: 'Description', cell: info => <span className="transaction-description" title={String(info.getValue() ?? '')}>{String(info.getValue() || '—')}</span> },
-    { accessorKey: 'quantity', header: 'Quantity', cell: info => Number(info.getValue()) ? quantity(info.getValue()) : '—' },
-    { id: 'cash_effect', accessorFn: row => transactionCashEffect(row), header: 'Cash effect', cell: info => <span className={Number(info.getValue()) >= 0 ? 'number-positive' : 'number-negative'}>{money(info.getValue(), String(info.row.original.currency ?? 'EUR'), 2)}</span> },
-    { accessorKey: 'source_file', header: 'Source' },
-    { id: 'details', header: 'Details', enableSorting: false, cell: ({ row }) => <button className="portfolio-row-action" aria-label={`View transaction from ${row.original.trade_date ?? 'unknown date'}`} onClick={() => onOpenDetail({ kind: 'transaction', transaction: row.original })}><Eye /></button> },
+  return useMemo<TableColumn<Transaction>[]>(() => [
+    { id: 'date', header: 'Date', sortValue: row => row.trade_date, cell: row => <span className="mono">{row.trade_date ?? '—'}</span> },
+    { id: 'activity', header: 'Activity', sortValue: row => row.activity_type, cell: row => <span className={`activity-badge activity-badge--${activityTone(row.activity_type)}`}>{titleCase(row.activity_type ?? '')}{row.buy_sell ? ` · ${titleCase(row.buy_sell)}` : ''}</span> },
+    { id: 'symbol', header: 'Symbol', rowHeader: true, sortValue: row => row.symbol, cell: row => <strong>{row.symbol || '—'}</strong> },
+    { id: 'description', header: 'Description', cell: row => <span className="transaction-description" title={row.description ?? ''}>{row.description || '—'}</span> },
+    { id: 'quantity', header: 'Quantity', numeric: true, sortValue: row => row.quantity, cell: row => Number(row.quantity) ? quantity(row.quantity) : '—' },
+    { id: 'cash', header: 'Cash effect', numeric: true, tip: 'Cash in (+) or out (−) of the account, in the record’s currency.', sortValue: row => transactionCashEffect(row), cell: row => {
+      const effect = transactionCashEffect(row)
+      return <span className={Number(effect) < 0 ? 'number-negative' : undefined}>{money(effect, row.currency ?? 'EUR', 2)}</span>
+    } },
+    { id: 'details', header: '', cell: row => <button type="button" className="icon-button" aria-label={`View transaction from ${row.trade_date ?? 'unknown date'}`} title="Details (Enter)" onClick={() => onOpenDetail({ kind: 'transaction', transaction: row })}><Eye /></button> },
   ], [onOpenDetail])
 }
 
@@ -42,12 +44,12 @@ function ActivitySummary({ activity, dateRange }: Pick<Props, 'activity' | 'date
   const income = Number(activity.DIVIDEND ?? 0) + Number(activity.PIL_DIVIDEND ?? 0)
   const fees = Number(activity.OTHER_FEE ?? 0) + Number(activity.COMMISSION_ADJ ?? 0)
   return <div className="portfolio-section-metrics">
-    <Metric label="Imported records" value={total.toLocaleString()} />
+    <Metric label="Imported records" value={total.toLocaleString()} detail={`${formatDay(dateRange?.min_date)} to ${formatDay(dateRange?.max_date)}`} />
     <Metric label="Trades" value={Number(activity.TRADE ?? 0).toLocaleString()} />
-    <Metric label="Income events" value={income.toLocaleString()} />
-    <Metric label="Tax events" value={Number(activity.WITHHOLDING_TAX ?? 0).toLocaleString()} />
-    <Metric label="Cash movements" value={Number(activity.DEPOSIT_WITHDRAWAL ?? 0).toLocaleString()} />
-    <Metric label="Fees & adjustments" value={fees.toLocaleString()} detail={`${dateRange?.min_date ?? '—'} to ${dateRange?.max_date ?? '—'}`} />
+    <Metric label="Dividends" value={income.toLocaleString()} />
+    <Metric label="Withholding tax" value={Number(activity.WITHHOLDING_TAX ?? 0).toLocaleString()} />
+    <Metric label="Deposits & withdrawals" value={Number(activity.DEPOSIT_WITHDRAWAL ?? 0).toLocaleString()} />
+    <Metric label="Fees & adjustments" value={fees.toLocaleString()} />
   </div>
 }
 
@@ -63,12 +65,21 @@ export function PortfolioActivity(props: Props) {
   const columns = useColumns(props.onOpenDetail)
   return <div className="portfolio-section-stack">
     <ActivitySummary activity={props.activity} dateRange={props.dateRange} />
-    <Card title="Activity ledger" description={`${filtered.length} of the latest ${props.data.length} records`} actions={<ExploreButton label="Activity summary" onClick={() => props.onOpenDetail({ kind: 'activity' })} />}>
+    <SectionCard title="Activity" description={`${filtered.length.toLocaleString()} of ${props.data.length.toLocaleString()} records, newest first`}>
       <div className="portfolio-table-toolbar">
-        <Field label="Search activity"><div className="input-with-icon"><Search /><input className="input" value={search} placeholder="Symbol, description, or source" onChange={event => setSearch(event.target.value)} /></div></Field>
+        <Field label="Search activity"><div className="input-with-icon"><Search /><input className="input" data-portfolio-find value={search} placeholder="Symbol, description, or source" onChange={event => setSearch(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { setSearch(''); event.currentTarget.blur() } }} /><kbd className="input-kbd" aria-hidden="true">F</kbd></div></Field>
         <Field label="Activity type"><select className="select" value={activityType} onChange={event => setActivityType(event.target.value)}><option value="all">All activity</option>{activityTypes.map(value => <option key={value} value={value}>{titleCase(value)}</option>)}</select></Field>
       </div>
-      {props.isLoading ? <LoadingState label="Loading activity" /> : props.error ? <ErrorState error={props.error} /> : <div className="portfolio-table-frame"><DataTable data={filtered} columns={columns} emptyText="No activity matches these filters." dense pageSize={50} /></div>}
-    </Card>
+      {props.isLoading ? <LoadingState label="Loading activity" /> : props.error ? <ErrorState error={props.error} /> : <PortfolioTable
+        label="Activity"
+        rows={filtered}
+        columns={columns}
+        rowKey={row => String(row.id ?? `${row.trade_date}-${row.symbol}-${row.amount}`)}
+        pageSize={50}
+        hotkeys={props.hotkeys}
+        onOpen={row => props.onOpenDetail({ kind: 'transaction', transaction: row })}
+        emptyText="No activity matches these filters."
+      />}
+    </SectionCard>
   </div>
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildPortfolioSummary, performanceStart, sliceValueHistory, transactionCashEffect } from './portfolioFormat'
-import type { Holding, ValueHistory } from './portfolioTypes'
+import { buildPortfolioSummary, holdingAnalysisHref, performanceStart, priceNote, signedPercent, transactionCashEffect } from './portfolioFormat'
+import type { Holding } from './portfolioTypes'
 
 describe('portfolio formatting helpers', () => {
   it('summarizes open positions, cash, allocation, cost, and profit', () => {
@@ -33,30 +33,29 @@ describe('portfolio formatting helpers', () => {
 
   it('maps period choices to deterministic start dates', () => {
     expect(performanceStart('all', '2026-07-31')).toBeUndefined()
-    expect(performanceStart('ytd', '2026-07-31')).toBe('2026-01-01')
+    // Year to date runs from the previous year's last close.
+    expect(performanceStart('ytd', '2026-07-31')).toBe('2025-12-31')
     expect(performanceStart('1y', '2026-07-31')).toBe('2025-07-31')
     expect(performanceStart('5y', '2026-07-31')).toBe('2021-07-31')
   })
 
-  it('keeps every historical series aligned when applying a range', () => {
-    const history: ValueHistory = {
-      dates: ['2024-01-01', '2024-01-02', '2024-01-03'],
-      holdings: { AAA: [10, 11, 12], BBB: [20, 21, 22] },
-      portfolio_values: [30, 32, 34],
-      net_inflows: [30, 0, 0],
-      daily_returns: [0, 0.01, 0.02],
-      cumulative_returns: [0, 0.01, 0.0302],
-    }
+  it('signs changes in words and symbols, not colour alone', () => {
+    expect(signedPercent(0.1234)).toBe('+12.3%')
+    expect(signedPercent(-0.05)).toBe('−5.0%')
+    expect(signedPercent(0)).toBe('0.0%')
+    expect(signedPercent(null)).toBe('—')
+  })
 
-    expect(sliceValueHistory(history, '2024-01-02')).toEqual({
-      ...history,
-      dates: ['2024-01-02', '2024-01-03'],
-      holdings: { AAA: [11, 12], BBB: [21, 22] },
-      portfolio_values: [32, 34],
-      net_inflows: [0, 0],
-      daily_returns: [0.01, 0.02],
-      cumulative_returns: [0.01, 0.0302],
-    })
+  it('opens Tokyo holdings by EDINET code and others by ticker, marked as coming from the portfolio', () => {
+    expect(holdingAnalysisHref({ symbol: '5984.T', performance: { edinet_code: 'E01437' } })).toBe('/analyze/E01437?from=portfolio')
+    expect(holdingAnalysisHref({ symbol: 'AFL' })).toBe('/analyze?ticker=AFL&from=portfolio')
+  })
+
+  it('flags quotes valued at cost, stale quotes, and quotes converted from another currency', () => {
+    expect(priceNote({ symbol: 'X', price_source: 'cost' })?.level).toBe('error')
+    expect(priceNote({ symbol: 'X', price_source: 'market', price_date: '2026-05-21', valuation_date: '2026-10-02' })?.level).toBe('warning')
+    expect(priceNote({ symbol: 'CSPX', currency: 'EUR', price_currency: 'USD', price_date: '2026-10-02', valuation_date: '2026-10-02' })).toEqual({ level: 'info', text: 'Quoted in USD and converted to EUR at ECB rates' })
+    expect(priceNote({ symbol: 'AFL', currency: 'USD', price_currency: 'USD', price_date: '2026-10-01', valuation_date: '2026-10-02' })).toBeNull()
   })
 
   it('uses net cash for trades and reported amount for income events', () => {

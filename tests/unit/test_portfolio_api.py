@@ -231,3 +231,53 @@ class TestReadEndpoints:
         response = client.get("/api/portfolio/risk-free-rate?base_currency=EUR")
         assert response.status_code == 200
         assert response.json()["risk_free_rate"] >= 0
+
+
+class TestDataQualityAndBenchmarks:
+    def test_data_quality_reports_the_valuation_and_each_holding(self, populated_api_database: str) -> None:
+        response = client.get("/api/portfolio/data-quality?display_currency=EUR")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["valuation_date"] == "2024-01-20"
+        assert {row["symbol"] for row in body["holdings"]} >= {"AAA", "BBB"}
+        assert all(row["price_source"] for row in body["holdings"])
+        assert any(issue["code"] == "valuation_behind" for issue in body["issues"])
+
+    def test_benchmark_choices_say_whether_prices_are_stored(self, populated_api_database: str) -> None:
+        response = client.get("/api/portfolio/benchmarks")
+        assert response.status_code == 200
+        choices = {choice["ticker"]: choice for choice in response.json()}
+        assert choices["VWCE"]["available"] is False
+
+    def test_performance_includes_the_series_and_inputs(self, populated_api_database: str) -> None:
+        response = client.get("/api/portfolio/performance?base_currency=EUR&benchmark_ticker=BENCH")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["series"] and {"date", "cumulative_return", "drawdown", "value", "invested"} <= set(body["series"][0])
+        assert body["benchmark"]["ticker"] == "BENCH"
+        assert body["risk_free"]["kind"] in {"series", "missing"}
+
+    def test_refreshing_market_data_is_operator_only(self, populated_api_database: str, monkeypatch) -> None:
+        from src.auth.dependencies import current_user
+        from src.auth.models import AuthenticatedUser
+
+        calls: list[str] = []
+        monkeypatch.setattr("src.portfolio.api._refresh_market_data", lambda *args: calls.append("refresh") or {})
+        member = AuthenticatedUser("member-1", "member", None, "member", "active")
+        app.dependency_overrides[current_user] = lambda: member
+        try:
+            response = client.post("/api/portfolio/refresh-market-data")
+        finally:
+            app.dependency_overrides.pop(current_user, None)
+        assert response.status_code == 403
+        assert calls == []
+
+    def test_income_groups_dividends_with_their_withholding(self, populated_api_database: str) -> None:
+        response = client.get("/api/portfolio/income?display_currency=EUR")
+        assert response.status_code == 200
+        body = response.json()
+        assert [company["symbol"] for company in body["companies"]] == ["AAA"]
+        assert body["companies"][0]["withholding_rate"] == pytest.approx(0.15)
+        payment = body["payments"][0]
+        assert payment["gross_native"] == pytest.approx(20.0) and payment["tax_native"] == pytest.approx(-3.0)
+        assert body["total_net"] == pytest.approx(15.3)

@@ -456,6 +456,16 @@ def _migration_6(conn: sqlite3.Connection) -> None:
     _execute_ddl(conn, _DDL_SCREENING_RESULTS)
 
 
+def _migration_7(conn: sqlite3.Connection) -> None:
+    """Record where each valuation came from: the quote's date and source."""
+    _add_column(conn, "Holdings_History", "price_date", "TEXT")
+    _add_column(conn, "Holdings_History", "price_source", "TEXT")
+    _add_column(conn, "Portfolio_Holdings", "price_date", "TEXT")
+    _add_column(conn, "Portfolio_Holdings", "price_source", "TEXT")
+    _add_column(conn, "Portfolio_Holdings", "price_ticker", "TEXT")
+    _add_column(conn, "Portfolio_Holdings", "price_currency", "TEXT")
+
+
 _MIGRATIONS = (
     (1, _migration_1),
     (2, _migration_2),
@@ -463,6 +473,7 @@ _MIGRATIONS = (
     (4, _migration_4),
     (5, _migration_5),
     (6, _migration_6),
+    (7, _migration_7),
 )
 
 
