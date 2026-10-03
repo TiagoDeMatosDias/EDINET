@@ -14,9 +14,18 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from src.auth.models import AuthenticatedUser
+from src.research.positions import POSITION_TAGS
 from src.research.runtime import store as _research_store
 
 router = APIRouter(prefix="/api/tags", tags=["tags"])
+
+
+def _refuse_position_tag(tag: str) -> None:
+    if tag.strip() in POSITION_TAGS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"“{tag.strip()}” follows your portfolio: it changes when you open or close a position.",
+        )
 
 
 def _require_user(request: Request) -> AuthenticatedUser:
@@ -104,6 +113,7 @@ def create_tag(request: Request, payload: TagCreateRequest) -> TagDefinitionResp
 @router.patch("/{tag_name}", response_model=TagDefinitionResponse)
 def rename_tag(request: Request, tag_name: str, payload: TagRenameRequest) -> TagDefinitionResponse:
     user = _require_user(request)
+    _refuse_position_tag(tag_name)
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Tag name is required")
@@ -119,6 +129,7 @@ def rename_tag(request: Request, tag_name: str, payload: TagRenameRequest) -> Ta
 @router.delete("/{tag_name}", response_model=TagDefinitionResponse)
 def delete_tag(request: Request, tag_name: str) -> TagDefinitionResponse:
     user = _require_user(request)
+    _refuse_position_tag(tag_name)
     if not _research_store.delete_tag(user.user_id, tag_name):
         raise HTTPException(status_code=404, detail="Tag not found")
     return TagDefinitionResponse(ok=True, name=tag_name.strip())
@@ -157,6 +168,7 @@ def add_tag(request: Request, company_code: str, tag: str) -> TagMutationRespons
     cleaned = tag.strip()
     if not cleaned or len(cleaned) > 80:
         raise HTTPException(status_code=400, detail="Tag must be 1–80 characters.")
+    _refuse_position_tag(cleaned)
 
     existing = _research_store.list_company_tags(user.user_id, code)
     if not any(t["tag"] == cleaned for t in existing):
@@ -175,6 +187,7 @@ def remove_tag(request: Request, company_code: str, tag: str) -> TagMutationResp
     cleaned = tag.strip()
     if not cleaned or len(cleaned) > 80:
         raise HTTPException(status_code=400, detail="Tag must be 1–80 characters.")
+    _refuse_position_tag(cleaned)
 
     existing = _research_store.list_company_tags(user.user_id, code)
     remaining = [t["tag"] for t in existing if t["tag"] != cleaned]

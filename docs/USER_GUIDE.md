@@ -59,7 +59,7 @@ The as-of date (`D`) limits a screen to data that was available by a historical 
 
 Choose a company from the global search (press `/` from anywhere, then `↑`/`↓` and `Enter`) or open `/analyze/:companyCode`. The page has three sections, reachable from the sticky section bar or with `1`, `2`, and `3`:
 
-- **Overview** — the latest close with its one-day move, market cap, and 52-week range in the header; a split-adjusted price chart (1M to All, remembered per browser, `-`/`=` to widen or narrow) whose hover readout shows the date, close, and move since the start of the range; key statistics grouped as valuation, quality, income, and balance sheet, each with a tooltip saying how it is calculated (ROE and ROA are three-year averages); and the company profile with its business description, identifiers, research links (Filing Explorer, Comparison, Yahoo Finance, Yahoo! Finance Japan, Kabutan), and your tags (`T` adds one). Unlisted companies show statement-based statistics without an empty price panel.
+- **Overview** — the latest close with its one-day move, market cap, and 52-week range in the header; a split-adjusted price chart (1M to All, remembered per browser, `-`/`=` to widen or narrow) whose hover readout shows the date, close, and move since the start of the range; key statistics grouped as valuation, quality, income, and balance sheet, each with a tooltip saying how it is calculated (ROE and ROA are three-year averages); and the company profile with its business description, identifiers, and research links (Filing Explorer, Comparison, option pricing, credit and bonds, Yahoo Finance, Yahoo! Finance Japan, Kabutan). Below them, **Your research** is the same panel as on the Research page (also for a holding without EDINET filings, opened by ticker): thesis status, target price with the gap to today's price, review date, thesis, tags (`T`), notes (`N`), and alerts. Once you set a status or target, it also appears beside the company name in the header. Unlisted companies show statement-based statistics without an empty price panel.
 - **Financial statements** — one tab per statement table with values, and rolling multi-year averages and growth rates alongside (`[`/`]` switch tabs). Lines appear in filing order with components nested under their subtotal, concepts EDINET renamed between years (for example *Capital stock* and *Share capital*) are combined into one line, and lines the company never reported stay hidden until you ask for them (`E`). Each line shows a trend sparkline, the latest year-on-year change, and its compound annual growth. Switch between reported values, year-on-year change, and common size (`V`); click lines or press `Space` on the focused line to chart up to six of them as bars or lines (`C`); `F` filters lines and **CSV** exports the lines shown with unrounded values.
 - **Filings** — the retained EDINET annual reports with fiscal period, form, submission time, document ID, archive size, and parse status; `O` opens the latest. Export all downloads every retained archive with a manifest.
 
@@ -67,19 +67,23 @@ Press `?` on the page for the full list of keyboard shortcuts. Shortcuts pause w
 
 <img src="images/web-security-analysis.png" alt="Company analysis with a populated financial snapshot" width="900">
 
-Favorites are ordinary private tags (for example one named `Favorite`); they are not stored in a separate favorites subsystem.
 
 ## Compare companies and arbitrary metrics
 
-Comparison accepts 2–12 companies through the shared company finder. Start with the standard market, valuation, quality, income, and balance-sheet metrics, then remove anything irrelevant with the X on its metric chip.
+Comparison lines up 2–12 companies metric by metric. Add companies with the finder (`A`), or send them from Screening or Analysis (`P` on a company opens Comparison with it). The comparison runs as soon as two companies are chosen, and the address bar always holds the current set, so **Link** copies it, a refresh keeps it, and a link only lists the metrics you hid (`hide=`) or added (`add=`).
 
-The Add metric panel exposes searchable table and column controls. It accepts numeric statement or analytical columns as `Table.Column` references, so comparisons are not limited to a fixed metric list.
+- **Companies** lists the set in order, one row each with its ticker, industry, and latest fiscal year; each company keeps its colour in every chart. `[` and `]` move the company under the cursor, `Shift+X` removes it.
+- **Suggested peers** lists the listed companies that share an industry with the set, closest in market cap first, with market cap, size relative to the nearest chosen company (the dot is that company's colour), P/E, P/B, ROE, and yield. `P` goes to the list, `↑`/`↓` move, and `Enter` adds a peer; `Shift+P` or **Add 3 closest** adds without leaving the table.
+- **Metrics** shows every standard metric as a toggle in its group (click a group name to toggle all of it). Search (`M`) adds any numeric statement or analytical column as a `Table.Column` reference, so comparisons are not limited to the standard list. Showing or hiding a standard metric does not recalculate anything.
+- **Comparison table** puts metrics down and companies across, with a median column from three companies. Where a direction is meaningful, cells are tinted from vermilion (worst) to indigo (best) and the best value is bold; a negative P/E or leverage ratio ranks last. Size metrics carry a bar relative to the largest company. `J`/`K` (or `↑`/`↓`) move between metrics, `H`/`L` (or `←`/`→`) between companies, `Enter` opens the company in Analysis, `S` sorts companies by the metric (best first), `X` hides it, `R` shows ranks, and `E` shows metrics no company reports. Notes warn when fiscal years end in different months or amounts are in different currencies. **CSV** (`D`) downloads the table with unformatted values.
+- **Charts** rank the companies on the metric under the cursor (with the median as a dashed line), plot any two metrics against each other (P/B against ROE to start, with median lines splitting the quadrants), and trace a statement metric by fiscal year: revenue, profits, margins, ROE, leverage, liquidity, assets, equity, or an added column. **Index** (`I`) rebases each company to 100 in its first year, to compare growth between companies of different sizes.
+- **Saved** (`O`) keeps named comparisons; `Ctrl+S` saves the current one. With no companies chosen, the page lists saved and recent comparisons to pick up.
 
-<img src="images/web-comparison-metrics.png" alt="Arbitrary comparison metric picker" width="900">
+Press `?` for every shortcut; `1`–`4` jump to Companies, Metrics, Table, and Charts.
 
-Run Compare to produce a side-by-side matrix. The result uses each company's latest available price and financial period, highlights the best value in each row, and can show peer percentiles. Common-size income and balance-sheet tables appear below the main matrix.
+<img src="images/web-comparison.png" alt="Side-by-side financial comparison with peers, metric toggles, the ranked table, and charts" width="900">
 
-<img src="images/web-comparison.png" alt="Side-by-side financial comparison" width="900">
+<img src="images/web-comparison-metrics.png" alt="Searching every numeric column to add a comparison metric" width="900">
 
 ## Read EDINET filings
 
@@ -108,18 +112,40 @@ Translation runs locally through Argos Translate. It translates complete section
 
 Validated translations are cached in the `filing_translations` table inside `Filings.db`. Cache rows are translator-versioned; incomplete rows from an older implementation are ignored.
 
-## Organize research with tags
+## Research: your companies, notes, alerts, and pricing
 
-Research at `/research` stores private account-owned state:
+Research at `/research` holds your private, account-owned research and two calculators. Its five tabs are reachable with `1` to `5` (or `←`/`→` in the tab list); the address bar keeps the tab and the chosen company, so `/research?company=E02144` or `/research?tab=bonds&company=E02144` can be bookmarked or linked. Press `?` for the shortcuts of the tab in use.
 
-- tags, including favorites and named watchlists;
-- company-linked or general notes with revision checks;
-- thesis status, target value/currency, and review date;
-- in-app metric alerts.
+**Companies** lists every company you follow: one you have tagged, written a note on, given a status or target, or set an alert on. Each row shows the status (Watch, Buy, Hold, Sell), the latest price, the gap to your target, when it is due for review (overdue in red), P/E, dividend yield, and its notes and alerts, with alerts that hold today marked. Sort by any column, filter by text (`F`), by tag (chips, or `[`/`]` to step through them), or by status, reviews due, or triggered alerts. `J`/`K` move through the list and `O` (or `Enter` in the list) opens the company's Analysis page. **Compare** (`C`) opens the companies listed in Comparison, and **CSV** (`D`) downloads them.
 
-<img src="images/web-research.png" alt="Tags, favorites, watchlists, notes, thesis, and alerts" width="900">
+Your portfolio tags its holdings automatically. Every stock or fund you hold now carries **Open position**, and every one you held before but have since sold carries **Closed position**; a company moves from one to the other when the portfolio is rebuilt after a trade (importing a Flex Query, Rebuild, refreshing prices, or deleting records), and again whenever Research loads. The two tags lead the tag chips, show as Open or Closed beside the name, and appear on the company's Analysis page; they cannot be added, removed, renamed, or deleted by hand, and your own tags on the same companies are untouched. Tokyo-listed holdings are filed under their EDINET company. Other holdings — US shares, European funds — are kept under their portfolio symbol: they get notes, tags, a thesis, alerts, and option pricing like any company, and open in Analysis by ticker, but have no statements, so no peers or credit profile.
 
-Create a tag once, select it, then add a company through the same shared company finder. Tags are available from Analysis and Screening as well; there is no separate favorites/watchlist database model in the current UI.
+Beside the list, the chosen company's research panel edits everything in place: click a status (`S` focuses it), type a target and currency, pick a review date, write the thesis (`E`; `Ctrl+Enter` saves), add tags (`T`; existing tags are suggested), write a note (`N`; its first line becomes the title), and add an alert. Add a company that is not yet followed with `A`; it joins the list as soon as you record anything about it. With a tag filter on, the tag can be renamed or deleted for every company.
+
+<img src="images/web-research.png" alt="Research: followed companies with status, target gap, and review dates beside a company's research panel" width="900">
+
+**Notes** lists every note, newest first, with its company. Search them (`F`), write one with or without a company (`N`), edit in place (`E`; a note changed in another window is refused rather than overwritten), delete with `X` pressed twice, and download the notes listed as Markdown (`D`). Choosing a company elsewhere on the page narrows the list to its notes.
+
+**Alerts** shows each alert's condition, the current value, how far it is from the threshold, and whether it holds today; triggered alerts come first (`T` shows only those). Alerts watch the Analyze metrics: price, market cap, P/E, P/B, P/S, dividend yield, payout ratio, ROE, ROA, and current ratio. They are checked against the latest stored prices and filings when the page loads.
+
+**Options** prices European options with Black–Scholes (with a continuous dividend yield) and shows, for a call and a put at the chosen strike: price, intrinsic and time value, delta, gamma, vega, theta, rho, the risk-neutral chance of finishing in the money, the breakeven, and an American-exercise value from a 200-step binomial tree. Choose a company (`A`) to start from its latest split-adjusted price, its trailing dividend yield, and its realised volatility over 1 month to 3 years or an exponentially weighted estimate (`V` cycles them); or clear it (`M`) and enter every input yourself. The risk-free rate is an assumption you set per currency and is remembered. Set the expiry as days (`T`, or 30 days to 2 years in one click) or pick the date; the other follows. Enter a market price to solve for implied volatility. `[`/`]` step the strike; the strike ladder (`L`) prices calls and puts across strikes, and a row sets the strike. Strategies (`S`) — covered call, protective put, collar, straddle, strangle, spreads, iron condor, or your own legs — show the net cost, maximum profit and loss, breakevens, the risk-neutral chance of profit, combined Greeks, and a profit-and-loss chart at expiry, today, and halfway, with a one-standard-deviation band. Further charts show value against volatility or time, and the company's realised volatility over three years.
+
+Trading fees are a fee per contract and the contract size (100 shares by default; a share leg counts as one contract), charged once or also when closing or exercising. Every result that depends on cost includes them: the breakevens, the cost per contract, the strategy's fees, maximum profit and loss, chance of profit, and the profit-and-loss chart. The fees and rates you enter are remembered in this browser.
+
+<img src="images/web-research-options.png" alt="Option pricing: Black–Scholes values, a straddle's payoff, and a strike ladder" width="900">
+
+**Bonds & credit** prices a fixed-coupon bond from its coupon and frequency, maturity, face value, risk-free yield, and recovery rate: the price with and without default risk, yield to maturity, credit spread, expected loss, the chance of default by maturity, current yield, modified duration, convexity, DV01, and accrued interest. Default risk comes from the company's Merton model, a credit spread, an annual default rate, or none. A trading fee, as a percentage of face value paid when buying, gives the price with the fee and the yield after it, and the outcomes count it in what you paid. A market price gives its yield (and its yield after the fee) and the default rate it implies. A scenario grid reprices the bond as rates and the spread move, and charts show price against yield (with duration and convexity estimates), the chance of default in each year, and every outcome — default in each coupon period or repayment — with its probability and total return.
+
+With a company chosen (`A`), its credit profile comes from the latest fiscal year's statements and its share price:
+
+- interest-bearing debt (borrowings, bonds, commercial paper), cash, and net debt;
+- interest coverage, and the cost of debt (interest expense over average debt), which also sets the starting coupon;
+- the Merton model's distance to default and its chances of default within one year and by maturity. This model treats equity as a call on the firm's assets and uses short-term liabilities plus half the long-term ones as the default point;
+- Altman's Z and Z″ scores with their safe, grey, and distress zones.
+
+The probabilities are risk-neutral, so they run above historical default rates. Banks, insurers, and securities firms are flagged, because deposits and policy reserves make these models overstate their risk.
+
+Favorites are ordinary private tags (for example one named `Favorite`); tags work in Screening and Analysis as well.
 
 ## Test an investment idea
 

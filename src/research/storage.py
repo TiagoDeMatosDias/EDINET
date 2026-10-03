@@ -201,6 +201,12 @@ class ResearchStore:
             }
             if "version" not in note_columns:
                 conn.execute("ALTER TABLE research_notes ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+            research_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(company_research)").fetchall()
+            }
+            if "thesis" not in research_columns:
+                conn.execute("ALTER TABLE company_research ADD COLUMN thesis TEXT")
             legacy_lists = conn.execute(
                 "SELECT watchlist_id, user_id, name, created_at FROM watchlists"
             ).fetchall()
@@ -573,6 +579,7 @@ class ResearchStore:
         target_value: float | None = None,
         target_currency: str | None = None,
         review_on: str | None = None,
+        thesis: str | None = None,
     ) -> dict[str, Any]:
         now = _timestamp()
         with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
@@ -583,15 +590,28 @@ class ResearchStore:
             version = (int(existing["version"]) + 1) if existing else 1
             conn.execute(
                 """INSERT INTO company_research
-                   (user_id, edinet_code, thesis_status, target_value, target_currency, review_on, version, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   (user_id, edinet_code, thesis_status, target_value, target_currency, review_on, thesis, version, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(user_id, edinet_code) DO UPDATE SET
                    thesis_status=excluded.thesis_status, target_value=excluded.target_value,
                    target_currency=excluded.target_currency, review_on=excluded.review_on,
-                   version=excluded.version, updated_at=excluded.updated_at""",
-                (user_id, edinet_code, thesis_status, target_value, target_currency, review_on, version, now, now),
+                   thesis=excluded.thesis, version=excluded.version, updated_at=excluded.updated_at""",
+                (user_id, edinet_code, thesis_status, target_value, target_currency, review_on, thesis, version, now, now),
             )
         return self.get_company_research(user_id, edinet_code) or {}
+
+    def list_company_research(self, user_id: str) -> list[dict[str, Any]]:
+        conn = self._connection()
+        try:
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM company_research WHERE user_id = ? ORDER BY updated_at DESC",
+                    (user_id,),
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
 
     # -- company tags --
 
@@ -677,6 +697,41 @@ class ResearchStore:
                     (user_id, edinet_code, tag.strip(), now),
                 )
         return self.list_company_tags(user_id, edinet_code)
+
+    def replace_tag_members(self, user_id: str, tag: str, codes: set[str]) -> tuple[set[str], set[str]]:
+        """Make ``codes`` exactly the companies carrying ``tag``; returns those added and those removed.
+
+        A tag left with no companies is removed altogether, so a tag kept in
+        step with outside data only appears while it applies to something.
+        """
+        cleaned = tag.strip()
+        wanted = {code.strip() for code in codes if code.strip()}
+        now = _timestamp()
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            current = {
+                str(row["edinet_code"])
+                for row in conn.execute(
+                    "SELECT edinet_code FROM company_tags WHERE user_id = ? AND tag = ?",
+                    (user_id, cleaned),
+                ).fetchall()
+            }
+            added, removed = wanted - current, current - wanted
+            conn.executemany(
+                "DELETE FROM company_tags WHERE user_id = ? AND tag = ? AND edinet_code = ?",
+                [(user_id, cleaned, code) for code in sorted(removed)],
+            )
+            if wanted:
+                conn.execute(
+                    "INSERT OR IGNORE INTO tag_definitions(user_id, tag, created_at) VALUES (?, ?, ?)",
+                    (user_id, cleaned, now),
+                )
+                conn.executemany(
+                    "INSERT OR IGNORE INTO company_tags(user_id, edinet_code, tag, created_at) VALUES (?, ?, ?, ?)",
+                    [(user_id, code, cleaned, now) for code in sorted(added)],
+                )
+            else:
+                conn.execute("DELETE FROM tag_definitions WHERE user_id = ? AND tag = ?", (user_id, cleaned))
+        return added, removed
 
     def list_company_tags(self, user_id: str, edinet_code: str) -> list[dict[str, Any]]:
         conn = self._connection()

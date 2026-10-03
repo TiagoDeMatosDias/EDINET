@@ -70,6 +70,17 @@ from src.web_app.security import get_settings
 
 logger = logging.getLogger(__name__)
 
+
+def _retag_positions(owner_user_id: str) -> None:
+    """Keep the research tags for open and closed positions in step with the rebuilt holdings."""
+    try:
+        from src.research.positions import sync_from_portfolio
+        from src.research.runtime import store
+
+        sync_from_portfolio(store, owner_user_id)
+    except Exception as exc:  # noqa: BLE001 - tags are a convenience; the rebuild itself succeeded
+        logger.warning("Could not update position tags: %s", exc)
+
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
 _UPLOAD_CHUNK_BYTES = 64 * 1024
@@ -296,6 +307,7 @@ async def delete_transactions_selection(request: Request, payload: DeleteTransac
     deleted = await asyncio.to_thread(delete_selection, get_db3(), owner_user_id=user.user_id, **selection)
     # Holdings, daily values, and history follow from the remaining records.
     rebuilt = await asyncio.to_thread(build_portfolio_state, get_db3(), get_db2(), owner_user_id=user.user_id)
+    await asyncio.to_thread(_retag_positions, user.user_id)
     return {"deleted": deleted, "remaining": preview["remaining"], **rebuilt}
 
 
@@ -872,6 +884,7 @@ async def rebuild_state(
         build_portfolio_state, get_db3(), get_db2(),
         base_currency=base_currency, owner_user_id=user.user_id,
     )
+    await asyncio.to_thread(_retag_positions, user.user_id)
     return RebuildResponse(
         message="Portfolio state rebuilt successfully",
         daily_rows=result["daily_rows"],
@@ -1032,6 +1045,7 @@ def _refresh_market_data(db3_path: str, db2_path: str, owner_user_id: str, curre
     except Exception as exc:  # noqa: BLE001 - rate refresh is best effort
         logger.warning("Interest-rate refresh failed: %s", exc)
     rebuilt = build_portfolio_state(db3_path, db2_path, owner_user_id=owner_user_id)
+    _retag_positions(owner_user_id)
     return {
         "tickers": len(tickers),
         "updated": updated,

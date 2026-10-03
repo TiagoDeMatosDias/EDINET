@@ -50,7 +50,9 @@
 .panel__meta { color: var(--muted); font-size: .72rem; }
 .panel__note { margin: 6px 12px 0; color: var(--muted); font-size: .76rem; }
 .overview-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(440px, 1fr); gap: 10px; }
-.overview-grid--no-price .panel--stats, .panel--profile { grid-column: 1 / -1; }
+.overview-grid--no-price .panel--stats, .panel--profile, .panel--research { grid-column: 1 / -1; }
+.panel--research { scroll-margin-top: 120px; }
+.panel--research .panel__link { margin-left: auto; font-size: .76rem; }
 .panel--price { display: flex; flex-direction: column; }
 
 /* Start page */

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BarChart3, Download, ExternalLink, GitCompare, Keyboard, Plus, RefreshCw, X } from 'lucide-react'
+import { BarChart3, Download, ExternalLink, GitCompare, Keyboard, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
@@ -13,6 +13,8 @@ import { useHotkeys } from '../../hooks/useHotkeys'
 import { formatMetricValue, groupMetrics, type MetricDefinition } from '../../metrics'
 import { useAuth } from '../auth/authContext'
 import { PortfolioTrailNav } from '../portfolio/PortfolioTrailNav'
+import { CompanyResearchPanel } from '../research/CompanyResearchPanel'
+import { ResearchBadge } from '../research/ResearchBadge'
 import { ScreenTrailNav } from '../screening/ScreenTrailNav'
 import { downloadTextFile, safeFileName } from './downloads'
 import { FilingsPanel } from './FilingsPanel'
@@ -44,6 +46,7 @@ const SHORTCUTS: ShortcutGroup[] = [
     { keys: ['1', '2', '3'], label: 'Jump to Overview, Financials, Filings' },
     { keys: ['-', '='], label: 'Widen or narrow the price range' },
     { keys: ['T'], label: 'Add a tag' },
+    { keys: ['N'], label: 'Write a research note' },
     { keys: ['P'], label: 'Compare with peers' },
     { keys: ['B'], label: 'Backtest this ticker' },
     { keys: ['O'], label: 'Open the latest filing' },
@@ -191,7 +194,7 @@ function jumpTo(id: SectionId) {
   section.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true })
 }
 
-function Profile({ description, provenance, facts, links, tags }: { description: string; provenance: string; facts: Array<[string, ReactNode, string?]>; links: Array<{ label: string; href: string; external?: boolean; hint: string }>; tags: ReactNode }) {
+function Profile({ description, provenance, facts, links }: { description: string; provenance: string; facts: Array<[string, ReactNode, string?]>; links: Array<{ label: string; href: string; external?: boolean; hint: string }> }) {
   const [expanded, setExpanded] = useState(false)
   const long = description.length > 420
   return <div className="profile">
@@ -215,8 +218,6 @@ function Profile({ description, provenance, facts, links, tags }: { description:
           ? <a href={link.href} target="_blank" rel="noreferrer" title={link.hint}>{link.label}<ExternalLink aria-hidden="true" /></a>
           : <Link to={link.href} title={link.hint}>{link.label}</Link>}</li>)}
       </ul>
-      <h3>Your tags</h3>
-      {tags}
     </div>
   </div>
 }
@@ -264,12 +265,8 @@ export default function AnalysisWorkspaceUnified() {
       void queryClient.invalidateQueries({ queryKey: ['security-prices', ticker] })
     },
   })
-  const [newTag, setNewTag] = useState('')
   const tagInput = useRef<HTMLInputElement>(null)
-  const tags = useQuery({ queryKey: ['company-tags', canonicalCode], enabled: Boolean(canonicalCode), queryFn: () => apiRequest<{ tags: string[] }>(`/api/tags/${encodeURIComponent(canonicalCode)}`) })
-  const invalidateTags = () => { void queryClient.invalidateQueries({ queryKey: ['company-tags', canonicalCode] }); void queryClient.invalidateQueries({ queryKey: ['research-tags'] }) }
-  const addTag = useMutation({ mutationFn: (tag: string) => apiRequest(`/api/tags/${encodeURIComponent(canonicalCode)}/${encodeURIComponent(tag)}`, { method: 'POST' }), onSuccess: invalidateTags })
-  const removeTag = useMutation({ mutationFn: (tag: string) => apiRequest(`/api/tags/${encodeURIComponent(canonicalCode)}/${encodeURIComponent(tag)}`, { method: 'DELETE' }), onSuccess: invalidateTags })
+  const noteInput = useRef<HTMLTextAreaElement>(null)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const closeShortcuts = useCallback(() => setShowShortcuts(false), [])
   const ready = Boolean(overview.data)
@@ -290,6 +287,7 @@ export default function AnalysisWorkspaceUnified() {
     2: () => jumpTo('financials'),
     3: () => jumpTo('filings'),
     t: () => { tagInput.current?.focus(); tagInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
+    n: () => { noteInput.current?.focus(); noteInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
     p: () => { if (canonicalCode) navigate(`/compare?companies=${encodeURIComponent(canonicalCode)}`) },
     b: () => { if (ticker) navigate(`/backtest?symbol=${encodeURIComponent(ticker)}`) },
   }, ready && !showShortcuts)
@@ -309,6 +307,8 @@ export default function AnalysisWorkspaceUnified() {
     .map(({ group, metrics: keys }) => ({ title: group, metrics: keys.map(key => [key, metricDefinitions[key].label] as [string, string]) }))
   const qualityFlags = overview.data?.metadata?.data_quality_flags
   const tickerOnly = Array.isArray(qualityFlags) && qualityFlags.includes('ticker_only_no_company_record')
+  // Research keys a holding without EDINET filings (a US share, an ETF) by its symbol, as the portfolio does.
+  const researchCode = canonicalCode || (tickerOnly ? tickerParam : '')
   const yahooSymbol = String(company.yahoo_symbol ?? '')
   const exchangeCode = localCode(yahooSymbol)
   // The filing's own business description comes first; the external profile is a labelled fallback.
@@ -334,12 +334,6 @@ export default function AnalysisWorkspaceUnified() {
       history: history.data,
     }), 'text/markdown;charset=utf-8')
   }
-  const submitTag = () => {
-    const tag = newTag.trim()
-    if (!tag || !canonicalCode) return
-    addTag.mutate(tag)
-    setNewTag('')
-  }
   const refresh = canRefreshPrice && ticker
     ? <button type="button" className="icon-button quote__refresh" disabled={updatePrice.isPending} onClick={() => updatePrice.mutate()} title="Fetch the latest price from the provider" aria-label="Refresh price"><RefreshCw className={updatePrice.isPending ? 'spin' : undefined} /></button>
     : undefined
@@ -357,22 +351,14 @@ export default function AnalysisWorkspaceUnified() {
       { label: 'Filing Explorer', href: `/filings?company=${encodeURIComponent(canonicalCode)}&from=analysis`, hint: 'Read the original reports in Japanese and English' },
       { label: 'Compare with peers', href: `/compare?companies=${encodeURIComponent(canonicalCode)}`, hint: 'Open Comparison with this company preselected (P)' },
     ] : []),
-    { label: 'Notes and alerts', href: '/research', hint: 'Your research notes, watchlists, and alerts' },
+    ...(researchCode && ticker ? [{ label: 'Option pricing', href: `/research?tab=options&company=${encodeURIComponent(researchCode)}`, hint: 'Black–Scholes prices and strategies from this company’s price and volatility' }] : []),
+    ...(canonicalCode ? [{ label: 'Credit and bonds', href: `/research?tab=bonds&company=${encodeURIComponent(canonicalCode)}`, hint: 'Default risk (Merton, Altman Z) and a default-adjusted bond price' }] : []),
     ...(yahooSymbol ? [{ label: 'Yahoo Finance', href: `https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/`, external: true, hint: 'Quote, news, and profile' }] : []),
     ...(exchangeCode ? [
       { label: 'Yahoo! Finance Japan', href: `https://finance.yahoo.co.jp/quote/${encodeURIComponent(yahooSymbol)}`, external: true, hint: 'Japanese quote page with disclosures and forum' },
       { label: 'Kabutan', href: `https://kabutan.jp/stock/?code=${encodeURIComponent(exchangeCode)}`, external: true, hint: 'Japanese earnings summaries and news' },
     ] : []),
   ]
-  const tagEditor = <div className="tag-editor">
-    {(tags.data?.tags ?? []).map(tag => <span className="tag" key={tag}><Link to="/research" title="Open your tags in Research">{tag}</Link><button type="button" className="icon-button" onClick={() => removeTag.mutate(tag)} aria-label={`Remove tag ${tag}`}><X /></button></span>)}
-    <form className="tag-editor__add" onSubmit={event => { event.preventDefault(); submitTag() }}>
-      <input ref={tagInput} className="input" placeholder="Add tag" aria-label="Add a tag" value={newTag} onChange={event => setNewTag(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { setNewTag(''); event.currentTarget.blur() } }} disabled={!canonicalCode} />
-      <button type="submit" className="icon-button" disabled={!newTag.trim() || !canonicalCode} aria-label="Add tag"><Plus /></button>
-      <kbd aria-hidden="true">T</kbd>
-    </form>
-  </div>
-
   return <div className="analysis">
     <div ref={header} className="analysis-header">
       <div className="analysis-header__id">
@@ -380,6 +366,7 @@ export default function AnalysisWorkspaceUnified() {
         <h1>{name}</h1>
         <p className="analysis-header__meta">
           {[ticker && <Tip key="ticker" content="Securities code">{ticker}</Tip>, canonicalCode && <Tip key="code" content="EDINET code">{canonicalCode}</Tip>, company.industry ? String(company.industry) : null, company.market ? String(company.market) : null].filter(Boolean).map((part, index) => <span key={index}>{part}</span>)}
+          {researchCode && <ResearchBadge code={researchCode} price={metrics.LatestPrice ?? numberOrNull(market.latest_price)} priceCurrency={currencies.price} onClick={() => { const panel = document.getElementById('your-research'); panel?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }} />}
         </p>
       </div>
       <Quote market={market} metrics={metrics} formatMetric={formatMetric} refresh={refresh} />
@@ -418,8 +405,16 @@ export default function AnalysisWorkspaceUnified() {
           <KeyStats metrics={metrics} definitions={metricDefinitions} format={formatMetric} period={metricPeriod} hasPrice={hasPrice} />
         </section>
         <section className="panel panel--profile" aria-label="Company profile">
-          <Profile description={businessDescription} provenance={descriptionProvenance} facts={facts} links={links} tags={tagEditor} />
+          <Profile description={businessDescription} provenance={descriptionProvenance} facts={facts} links={links} />
         </section>
+        {researchCode && <section id="your-research" className="panel panel--research" aria-labelledby="your-research-title">
+          <header className="panel__header">
+            <h3 id="your-research-title">Your research</h3>
+            <span className="panel__meta">Private to your account · the same notes, tags, and targets as the Research page</span>
+            <Link className="panel__link" to={`/research?company=${encodeURIComponent(researchCode)}`}>Open in Research</Link>
+          </header>
+          <CompanyResearchPanel key={researchCode} code={researchCode} price={metrics.LatestPrice ?? numberOrNull(market.latest_price)} priceCurrency={currencies.price} compact tagRef={tagInput} noteRef={noteInput} keys={{ tag: 'T', note: 'N' }} />
+        </section>}
       </div>
     </Section>
 

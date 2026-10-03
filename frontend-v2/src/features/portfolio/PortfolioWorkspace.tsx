@@ -191,7 +191,8 @@ export default function PortfolioWorkspace() {
     retry: false,
   })
 
-  const invalidate = useCallback(() => queryClient.invalidateQueries({ predicate: query => String(query.queryKey[0]).startsWith('portfolio') }), [queryClient])
+  // A rebuild also re-tags open and closed positions in Research.
+  const invalidate = useCallback(() => queryClient.invalidateQueries({ predicate: query => String(query.queryKey[0]).startsWith('portfolio') || ['research-book', 'research-tags', 'company-tags', 'tags'].includes(String(query.queryKey[0])) }), [queryClient])
   const rebuild = useMutation({
     mutationFn: () => apiRequest<{ daily_rows?: number; holdings_count?: number }>(`/api/portfolio/rebuild${queryString({ base_currency: currency })}`, { method: 'POST' }),
     onMutate: () => setStatus('Rebuilding the portfolio from your activity…'),

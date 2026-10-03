@@ -213,40 +213,9 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .numeric { text-align: right; font-family: var(--font-mono); font-size: .92em; font-variant-numeric: tabular-nums; }
 .company-cell { display: flex; flex-direction: column; gap: 3px; min-width: 210px; }
 .company-cell small { color: var(--muted); }
-.three-column { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
-.research-grid .card { min-height: 260px; }
-.research-row, .research-note { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border); }
+.research-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border); }
 .research-row { flex-direction: column; }
-.research-row small, .research-note small { color: var(--muted); }
-.research-note { display: block; }
-.research-note p { white-space: pre-wrap; }
-.tag-collection { display: flex; flex-wrap: wrap; gap: 8px; }
-.tag-collection-item { display: flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: var(--surface); cursor: pointer; }
-.tag-collection-item:hover, .tag-collection-item.active { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
-.tag-collection-item small { color: var(--muted); }
-.tag-members { padding-top: 8px; border-top: 1px solid var(--border); }
-.tag-members .card-header { padding: 12px 0; border-bottom: 0; }
-.tag-members h3 { margin: 0; font-size: .95rem; }
-.comparison-company-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }
-.comparison-company-chip { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-subtle); }
-.comparison-company-chip > span, .comparison-matrix th small, .comparison-matrix td small { display: block; }
-.comparison-company-chip small, .comparison-matrix th small, .comparison-matrix td small { color: var(--muted); font-size: .72rem; font-weight: 400; }
-.comparison-actions { padding-top: 4px; }
-.comparison-metric-picker-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.comparison-metric-picker-header > div { display: flex; flex-direction: column; gap: 3px; }
-.comparison-metric-picker-header small { color: var(--muted); font-size: .75rem; }
-.comparison-metric-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
-.comparison-metric-chip { display: inline-flex; align-items: center; gap: 7px; min-width: 150px; padding: 6px 7px 6px 9px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-subtle); }
-.comparison-metric-chip > span { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
-.comparison-metric-chip small { max-width: 230px; overflow: hidden; color: var(--muted); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
-.comparison-metric-picker-panel { margin-top: 12px; padding: 11px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-subtle); }
-.comparison-metric-picker-fields { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(190px, 1fr) minmax(150px, .8fr) minmax(220px, 1.3fr); gap: 8px; }
-.comparison-metric-picker-actions { justify-content: flex-end; margin-top: 10px; }
-.comparison-matrix th, .comparison-matrix td { min-width: 145px; }
-.comparison-matrix thead th:not(:first-child), .comparison-matrix td { text-align: right; }
-.comparison-matrix .comparison-group th { color: var(--text); background: var(--surface-subtle); font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; }
-.comparison-matrix td small { margin-top: 4px; }
-.comparison-best { color: var(--indigo); font-weight: 500; background: var(--surface-subtle); }
+.research-row small { color: var(--muted); }
 .mobile-nav, .mobile-only, .backdrop { display: none; }
 
 /* ---- auth banner, status, and dropdown ---- */
@@ -299,9 +268,6 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 /* ---- filing viewer ---- */
 .fact-row--selected { background: var(--primary-soft); padding-inline: 10px; }
 /* ---- research grid ---- */
-.research-grid .research-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-.research-note { padding: 10px 0; border-bottom: 1px solid var(--border); }
-.research-note p { font-size: .82rem; color: var(--text); white-space: pre-wrap; }
 .inline-toggle { display: flex; align-items: center; gap: 6px; font-size: .82rem; color: var(--muted); cursor: pointer; }
 .table-scroll { overflow-x: auto; }
 .fixed-table { max-height: 60vh; overflow: auto; }
@@ -326,8 +292,6 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 @media (max-width: 960px) {
   .card-grid { grid-template-columns: 1fr 1fr; }
   .two-column { grid-template-columns: 1fr; }
-  .three-column { grid-template-columns: 1fr; }
-  .comparison-metric-picker-fields { grid-template-columns: 1fr 1fr; }
 }
 
 @media (max-width: 720px) {
@@ -351,8 +315,6 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
   .card-grid { grid-template-columns: 1fr; }
   .recent-work-grid { grid-template-columns: 1fr; }
   .metric-grid { grid-template-columns: 1fr 1fr; }
-  .comparison-metric-picker-header { align-items: flex-start; flex-direction: column; }
-  .comparison-metric-picker-fields { grid-template-columns: 1fr; }
   .mobile-nav { position: fixed; right: 0; bottom: 0; left: 0; z-index: 22; display: grid; grid-template-columns: repeat(5, 1fr); padding: 6px 4px max(6px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: rgb(243 240 232 / 96%); backdrop-filter: blur(10px); }
   .mobile-nav a { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 5px 2px; border-radius: var(--radius); color: var(--muted); font-size: .65rem; text-decoration: none; }
   .mobile-nav a.active { color: var(--text); box-shadow: inset 0 2px 0 var(--vermilion); }

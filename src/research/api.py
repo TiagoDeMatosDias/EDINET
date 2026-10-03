@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.auth.models import AuthenticatedUser
 
 from .alerts import evaluate_expression
+from .book import BOOK_METRICS, build_book
+from .positions import CLOSED_TAG, OPEN_TAG, POSITION_TAGS, sync_from_portfolio
 from .runtime import store
 
 router = APIRouter(prefix="/api/research", tags=["research"])
@@ -40,7 +42,7 @@ class NoteRequest(BaseModel):
 
     title: str = Field(min_length=1, max_length=200)
     body: str = Field(min_length=1, max_length=100_000)
-    edinet_code: str | None = Field(default=None, max_length=10)
+    edinet_code: str | None = Field(default=None, max_length=32)
 
 
 class NoteUpdateRequest(NoteRequest):
@@ -54,6 +56,7 @@ class CompanyResearchRequest(BaseModel):
     target_value: float | None = None
     target_currency: str | None = Field(default=None, max_length=10)
     review_on: str | None = Field(default=None, max_length=32)
+    thesis: str | None = Field(default=None, max_length=4000)
 
 
 class TagRequest(BaseModel):
@@ -79,7 +82,7 @@ class AlertRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=200)
-    edinet_code: str | None = Field(default=None, max_length=10)
+    edinet_code: str | None = Field(default=None, max_length=32)
     metric: str = Field(min_length=1, max_length=120)
     operator: str = Field(pattern=r"^(>|>=|<|<=|=|!=)$")
     value: float
@@ -212,7 +215,7 @@ def update_note(request: Request, note_id: str, payload: NoteUpdateRequest) -> d
 def get_company_research(request: Request, edinet_code: str) -> dict[str, Any]:
     result = store.get_company_research(_user(request).user_id, edinet_code)
     if result is None:
-        return {"edinet_code": edinet_code, "thesis_status": None, "target_value": None, "target_currency": None, "review_on": None, "version": 0}
+        return {"edinet_code": edinet_code, "thesis_status": None, "target_value": None, "target_currency": None, "review_on": None, "thesis": None, "version": 0}
     return result
 
 
@@ -225,7 +228,56 @@ def update_company_research(request: Request, edinet_code: str, payload: Company
         target_value=payload.target_value,
         target_currency=payload.target_currency,
         review_on=payload.review_on,
+        thesis=(payload.thesis or "").strip() or None,
     )
+
+
+def _market_db() -> str | None:
+    try:
+        from src.web_app.api.security_analysis import _resolve_db
+
+        return _resolve_db()
+    except Exception:  # noqa: BLE001 - research state does not depend on market data
+        return None
+
+
+@router.get("/book")
+def research_book(request: Request) -> dict[str, Any]:
+    """Every company with research state, its live market values, tags, and alerts with today's status."""
+    from src.comparison.service import METRIC_DEFINITIONS
+
+    user_id = _user(request).user_id
+    # Holdings may have changed since the portfolio was last rebuilt here, so re-tag them first.
+    synced = sync_from_portfolio(store, user_id)
+    securities = {item["code"]: item for item in (synced or {}).get("positions", []) if not item["listed_in_japan"]}
+    book = build_book(store, user_id, _market_db(), securities)
+    return {
+        **book,
+        "metric_definitions": {key: METRIC_DEFINITIONS[key] for key in BOOK_METRICS},
+        "position_tags": {"open": OPEN_TAG, "closed": CLOSED_TAG},
+        "positions": None if synced is None else {"open": synced["open"], "closed": synced["closed"]},
+    }
+
+
+@router.post("/position-tags/sync")
+def sync_position_tags(request: Request) -> dict[str, Any]:
+    """Re-tag open and closed positions from the portfolio now."""
+    synced = sync_from_portfolio(store, _user(request).user_id)
+    if synced is None:
+        raise HTTPException(status_code=503, detail="The portfolio database could not be read")
+    return {key: value for key, value in synced.items() if key != "positions"}
+
+
+@router.get("/pricing/{edinet_code}")
+def pricing_inputs(edinet_code: str) -> dict[str, Any]:
+    """A company's price, volatility, dividend yield, and credit lines for the option and bond calculators."""
+    from .pricing import pricing_inputs as load_inputs
+
+    db = _market_db()
+    result = load_inputs(db, edinet_code.strip()) if db else None
+    if result is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return result
 
 
 # -- company tags --
@@ -237,7 +289,11 @@ def list_company_tags(request: Request, edinet_code: str) -> dict[str, Any]:
 
 @router.put("/tags/{edinet_code}")
 def set_company_tags(request: Request, edinet_code: str, payload: TagRequest) -> dict[str, Any]:
-    return {"tags": store.set_company_tags(_user(request).user_id, edinet_code, payload.tags)}
+    user_id = _user(request).user_id
+    # Position tags follow the portfolio: keep them as they are, whatever the request says.
+    held = [row["tag"] for row in store.list_company_tags(user_id, edinet_code) if row["tag"] in POSITION_TAGS]
+    tags = [tag for tag in payload.tags if tag.strip() not in POSITION_TAGS] + held
+    return {"tags": store.set_company_tags(user_id, edinet_code, tags)}
 
 
 # -- watchlist member reorder --

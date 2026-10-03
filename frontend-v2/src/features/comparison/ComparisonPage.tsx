@@ -1,246 +1,396 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { ArrowDown, ArrowLeft, ArrowUp, Plus, X } from 'lucide-react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { ArrowLeft, Check, Download, Keyboard, Link2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
-import { apiPost, apiRequest } from '../../api/client'
-import type { SecuritySearchResult } from '../../api/types'
-import { CompanyPicker, searchCompanies } from '../../components/CompanyPicker'
-import { EmptyState, LoadingState } from '../../components/Feedback'
-import { Card, PageHeader } from '../../components/Page'
-import { formatMetricValue, groupMetrics, metricDefinition, type MetricDefinition } from '../../metrics'
-import { bestValue } from './bestValue'
+import { apiPost, apiRequest, queryString } from '../../api/client'
+import { searchCompanies } from '../../components/CompanyPicker'
+import { ErrorState, LoadingState } from '../../components/Feedback'
+import { PageHeader } from '../../components/Page'
+import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
+import { useHotkeys } from '../../hooks/useHotkeys'
+import { usePersistentState } from '../../hooks/usePersistentState'
+import { groupMetrics, type MetricDefinition } from '../../metrics'
+import { downloadTextFile, safeFileName } from '../analysis/downloads'
+import { RankingChart, ScatterChart, TrendChart } from './ComparisonCharts'
+import { ComparisonMatrix } from './ComparisonMatrix'
+import { companyName, comparisonCsv, currencyNote, describeColumnMetric, emptyMetrics, fiscalYearNote, formatPeriod, MAX_COMPANIES, orderMetrics, parseCodes, shortName, sortCompanies } from './comparisonModel'
+import type { CompanyInfo, ComparisonResponse, MetricCatalogResponse, Peer, PeersResponse, TrendsResponse } from './comparisonTypes'
+import { CompanyPanel } from './CompanyPanel'
+import { ComparisonStart } from './ComparisonStart'
+import { MetricBar } from './MetricBar'
+import { PeersPanel } from './PeersPanel'
+import { SavedComparisons } from './SavedComparisons'
+import './comparison.css'
 
-interface ComparisonCompany {
-  company_code: string
-  company: { company_name?: string; ticker?: string; industry?: string; market?: string }
-  metrics: Record<string, number | null>
-  common_size_income: Record<string, number | null>
-  common_size_balance: Record<string, number | null>
-  percentiles: Record<string, number | null>
-  market?: { price_currency?: string | null }
-  reporting_currency?: string | null
-  period_end?: string | null
-  price_date?: string | null
-  data_quality_flags?: string[]
-}
+const SHORTCUTS: ShortcutGroup[] = [
+  { title: 'Anywhere', shortcuts: [
+    { keys: ['/'], label: 'Search companies' },
+    { keys: ['?'], label: 'Show or hide this list' },
+    { keys: ['Esc'], label: 'Close a menu or leave a field' },
+    { keys: ['1', '2', '3', '4'], label: 'Jump to Companies, Metrics, Table, Charts' },
+  ] },
+  { title: 'Companies', shortcuts: [
+    { keys: ['A'], label: 'Add a company' },
+    { keys: ['P'], label: 'Go to the suggested peers (↑/↓, then Enter adds)' },
+    { keys: ['Shift+P'], label: 'Add the closest peer' },
+    { keys: ['[', ']'], label: 'Move the company earlier or later' },
+    { keys: ['Shift+X'], label: 'Remove the company' },
+    { keys: ['O'], label: 'Open a saved comparison' },
+    { keys: ['Ctrl+S'], label: 'Save this comparison' },
+  ] },
+  { title: 'Table', shortcuts: [
+    { keys: ['↑', '↓'], label: 'Move between metrics (also J, K)' },
+    { keys: ['←', '→'], label: 'Move between companies (also H, L)' },
+    { keys: ['Enter'], label: 'Open the company in Analysis (Shift: new tab)' },
+    { keys: ['S'], label: 'Sort companies by the metric, best first' },
+    { keys: ['X'], label: 'Hide the metric' },
+    { keys: ['M'], label: 'Add a metric' },
+    { keys: ['E'], label: 'Show or hide metrics no company reports' },
+    { keys: ['R'], label: 'Show or hide ranks' },
+    { keys: ['I'], label: 'Index the trend chart to 100' },
+    { keys: ['D'], label: 'Download the table as CSV' },
+  ] },
+]
 
-interface ComparisonResponse {
-  companies: ComparisonCompany[]
-  requested: string[]
-  missing: string[]
-  metrics: string[]
-  metric_definitions?: Record<string, MetricDefinition>
-}
+const DEFAULT_SCATTER = { x: 'PriceToBook', y: 'ReturnOnEquity' }
+// Up to this many companies, the charts sit beside the table on wide screens.
+const SIDE_BY_SIDE = 4
 
-interface MetricCatalogResponse {
-  tables: Record<string, string[]>
-  definitions?: Record<string, MetricDefinition>
-  default_metrics?: string[]
-}
-
-function formatPercent(value: number | null | undefined) {
-  return value == null ? '—' : `${(value * 100).toFixed(0)}%`
-}
-
-function companyLabel(company: ComparisonCompany) {
-  return company.company.company_name || company.company.ticker || company.company_code
-}
-
-function CompanySet({ companies, onChange }: { companies: SecuritySearchResult[]; onChange: (companies: SecuritySearchResult[]) => void }) {
-  const addCompany = (company: SecuritySearchResult | null) => {
-    if (!company?.company_code || companies.some(item => item.company_code === company.company_code)) return
-    onChange([...companies, company])
-  }
-  const removeCompany = (code: string | null) => onChange(companies.filter(company => company.company_code !== code))
-  const moveCompany = (index: number, offset: number) => {
-    const next = [...companies]
-    const target = index + offset
-    if (target < 0 || target >= next.length) return
-    const [item] = next.splice(index, 1)
-    next.splice(target, 0, item)
-    onChange(next)
-  }
-  return (
-    <div className="stack">
-      <CompanyPicker selected={null} onSelect={addCompany} clearOnSelect requireCompanyCode disabled={companies.length >= 12} label="Add company" />
-      <div className="comparison-company-list">
-        {companies.map((company, index) => (
-          <div className="comparison-company-chip" key={company.company_code}>
-            <span><strong>{company.company_name}</strong><small>{[company.ticker, company.company_code].filter(Boolean).join(' · ')}</small></span>
-            <div className="button-row">
-              <button className="icon-button" type="button" disabled={index === 0} onClick={() => moveCompany(index, -1)} aria-label={`Move ${company.company_name} up`}><ArrowUp /></button>
-              <button className="icon-button" type="button" disabled={index === companies.length - 1} onClick={() => moveCompany(index, 1)} aria-label={`Move ${company.company_name} down`}><ArrowDown /></button>
-              <button className="icon-button" type="button" onClick={() => removeCompany(company.company_code)} aria-label={`Remove ${company.company_name}`}><X /></button>
-            </div>
-          </div>
-        ))}
-      </div>
-      {!companies.length && <p className="muted">Add at least two companies to build a comparison.</p>}
-    </div>
-  )
-}
-
-export function MetricPicker({
-  catalog,
-  definitions,
-  isLoading,
-  selected,
-  onChange,
-}: {
-  catalog: Record<string, string[]>
-  definitions?: Record<string, MetricDefinition>
-  isLoading: boolean
-  selected: string[]
-  onChange: (metrics: string[]) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [tableSearch, setTableSearch] = useState('')
-  const [columnSearch, setColumnSearch] = useState('')
-  const [table, setTable] = useState('')
-  const [column, setColumn] = useState('')
-  const tables = useMemo(() => Object.keys(catalog).sort((a, b) => a.localeCompare(b)), [catalog])
-  const filteredTables = useMemo(() => {
-    const query = tableSearch.trim().toLowerCase()
-    return tables.filter(item => !query || item.toLowerCase().includes(query))
-  }, [tableSearch, tables])
-  const activeTable = filteredTables.includes(table) ? table : filteredTables[0] ?? ''
-  const columns = useMemo(() => catalog[activeTable] ?? [], [activeTable, catalog])
-  const filteredColumns = useMemo(() => {
-    const query = columnSearch.trim().toLowerCase()
-    return columns.filter(item => !query || item.toLowerCase().includes(query))
-  }, [columnSearch, columns])
-  const activeColumn = filteredColumns.includes(column) ? column : filteredColumns[0] ?? ''
-  const selectedRef = activeTable && activeColumn ? `${activeTable}.${activeColumn}` : ''
-  const alreadySelected = selectedRef !== '' && selected.includes(selectedRef)
-  const addMetric = () => {
-    if (!selectedRef || alreadySelected) return
-    onChange([...selected, selectedRef])
-  }
-
-  return (
-    <div className="comparison-metric-picker">
-      <div className="comparison-metric-picker-header">
-        <div><strong>{selected.length} metrics selected</strong><small>Choose standard or table-based metrics to compare.</small></div>
-        <button className="button button--secondary" type="button" onClick={() => setOpen(value => !value)}><Plus />Add metric</button>
-      </div>
-      <div className="comparison-metric-list">
-        {selected.map(metric => {
-          const definition = metricDefinition(metric, definitions)
-          return <span className="comparison-metric-chip" key={metric}><span><strong>{definition.label}</strong><small>{metric.includes('.') ? metric : definition.group}</small></span><button className="icon-button" type="button" onClick={() => onChange(selected.filter(item => item !== metric))} aria-label={`Remove metric ${definition.label}`}><X /></button></span>
-        })}
-        {!selected.length && <span className="muted">No metrics selected.</span>}
-      </div>
-      {open && <div className="comparison-metric-picker-panel">
-        <div className="comparison-metric-picker-fields">
-          <label className="field-label">Find table<input className="input" value={tableSearch} onChange={event => setTableSearch(event.target.value)} placeholder="Search tables" /></label>
-          <label className="field-label">Table<select className="select" aria-label="Metric table" value={activeTable} onChange={event => { setTable(event.target.value); setColumn('') }} disabled={isLoading || !filteredTables.length}><option value="">{isLoading ? 'Loading tables…' : 'Select table…'}</option>{filteredTables.map(item => <option key={item} value={item}>{item}</option>)}</select></label>
-          <label className="field-label">Find column<input className="input" value={columnSearch} onChange={event => setColumnSearch(event.target.value)} placeholder="Search columns" disabled={!activeTable} /></label>
-          <label className="field-label">Column<select className="select" aria-label="Metric column" value={activeColumn} onChange={event => setColumn(event.target.value)} disabled={!activeTable || !filteredColumns.length}><option value="">Select column…</option>{filteredColumns.map(item => <option key={item} value={item}>{item}</option>)}</select></label>
-        </div>
-        <div className="button-row comparison-metric-picker-actions"><button className="button button--primary" type="button" disabled={!selectedRef || alreadySelected} onClick={addMetric}>{alreadySelected ? 'Already added' : 'Add selected metric'}</button><button className="button button--ghost" type="button" onClick={() => setOpen(false)}>Done</button></div>
-      </div>}
-    </div>
-  )
-}
-
-function MetricMatrix({ result, showPercentiles }: { result: ComparisonResponse; showPercentiles: boolean }) {
-  const definitions = result.metric_definitions ?? {}
-  return (
-    <Card title="Financial comparison" description="Values use each company's latest available price and reported financial period. Highlights mark the most favourable value where direction is meaningful: lower valuation multiples and leverage, higher returns, margins, yield, and liquidity.">
-      <div className="table-scroll">
-        <table className="data-grid comparison-matrix">
-          <thead><tr><th>Metric</th>{result.companies.map(company => <th key={company.company_code}><strong>{companyLabel(company)}</strong><small>{[company.company.ticker, company.company_code].filter(Boolean).join(' · ')}</small><small>{company.period_end ? `Period ${company.period_end}` : 'Period unavailable'}</small></th>)}</tr></thead>
-          <tbody>
-            {groupMetrics(result.metrics, definitions).map(({ group, metrics }) => <Fragment key={group}>
-              <tr className="comparison-group" key={`${group}-heading`}><th colSpan={result.companies.length + 1}>{group}</th></tr>
-              {metrics.map(metric => {
-                const definition = metricDefinition(metric, definitions)
-                const best = bestValue(definition.direction, result.companies.map(company => company.metrics[metric]))
-                return <tr key={metric}><th>{definition.label}{showPercentiles && <small>Peer percentile</small>}</th>{result.companies.map(company => <td key={company.company_code} className={best != null && company.metrics[metric] === best ? 'comparison-best' : ''}>{formatMetricValue(definition, company.metrics[metric], { price: company.market?.price_currency, reporting: company.reporting_currency })}{showPercentiles && <small>{formatPercent(company.percentiles[metric])}</small>}</td>)}</tr>
-              })}
-            </Fragment>)}
-          </tbody>
-        </table>
-      </div>
-    </Card>
-  )
-}
-
-function CommonSizeTable({ title, companies, field, definitions }: { title: string; companies: ComparisonCompany[]; field: 'common_size_income' | 'common_size_balance'; definitions?: Record<string, MetricDefinition> }) {
-  const keys = Object.keys(companies[0]?.[field] ?? {})
-  return <Card title={title} description="Each row is shown as a percentage of its statement base."><div className="table-scroll"><table className="data-grid"><thead><tr><th>Company</th>{keys.map(key => <th key={key}>{metricDefinition(key, definitions).label}</th>)}</tr></thead><tbody>{companies.map(company => <tr key={company.company_code}><th>{companyLabel(company)}</th>{keys.map(key => <td key={key}>{formatPercent(company[field][key])}</td>)}</tr>)}</tbody></table></div></Card>
+function sameList(a: string[], b: string[]) {
+  return a.length === b.length && a.every((item, index) => item === b[index])
 }
 
 export default function ComparisonPage() {
-  const [params] = useSearchParams()
+  const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
   const fromScreen = params.get('source') === 'screen'
-  const initialCodes = useMemo(() => [...new Set((params.get('companies') ?? '').split(',').map(code => code.trim()).filter(Boolean))].slice(0, 12), [params])
-  const [companies, setCompanies] = useState<SecuritySearchResult[]>([])
-  const [hydrating, setHydrating] = useState(Boolean(initialCodes.length))
-  // ``null`` until the reader changes the selection: the server's standard metrics apply.
-  const [chosenMetrics, setChosenMetrics] = useState<string[] | null>(null)
-  const [showPercentiles, setShowPercentiles] = useState(false)
-  const metricCatalog = useQuery({
+  const codes = useMemo(() => parseCodes(params.get('companies')), [params])
+  const sortedCodes = useMemo(() => [...codes].sort(), [codes])
+  // Links carry only what differs from the standard metrics: ``hide=PERatio,…`` and one ``add=Table.Column`` each.
+  const hidden = useMemo(() => new Set((params.get('hide') ?? '').split(',').filter(Boolean)), [params])
+  const added = useMemo(() => [...new Set(params.getAll('add').filter(Boolean))], [params])
+
+  const catalog = useQuery({
     queryKey: ['comparison-metrics'],
     queryFn: () => apiRequest<MetricCatalogResponse>('/api/comparison/metrics'),
+    staleTime: 10 * 60_000,
   })
-  useEffect(() => {
-    if (!initialCodes.length) return
-    let cancelled = false
-    void Promise.all(initialCodes.map(async code => {
-      const response = await searchCompanies(code, 8)
-      return response.results.find(company => company.company_code === code) ?? null
-    })).then(results => {
-      if (cancelled) return
-      setCompanies(results.filter((company): company is SecuritySearchResult => Boolean(company)))
-      setHydrating(false)
-    }).catch(() => {
-      if (!cancelled) {
-        setCompanies([])
-        setHydrating(false)
+  const standard = useMemo(() => catalog.data?.default_metrics ?? Object.keys(catalog.data?.definitions ?? {}), [catalog.data])
+  const selectedMetrics = useMemo(() => [...standard.filter(metric => !hidden.has(metric)), ...added.filter(metric => !standard.includes(metric))], [added, hidden, standard])
+  const custom = useMemo(() => selectedMetrics.filter(metric => !standard.includes(metric)), [selectedMetrics, standard])
+
+  // Every standard metric is fetched, so showing or hiding one needs no round trip.
+  const snapshot = useQuery({
+    queryKey: ['comparison-snapshot', sortedCodes, custom],
+    queryFn: () => apiPost<ComparisonResponse>('/api/comparison/snapshot', { company_codes: codes, metrics: [...standard, ...custom] }),
+    enabled: codes.length >= 2 && !catalog.isLoading,
+    placeholderData: keepPreviousData,
+    staleTime: 5 * 60_000,
+  })
+  const peers = useQuery({
+    queryKey: ['comparison-peers', sortedCodes],
+    queryFn: () => apiRequest<PeersResponse>(`/api/comparison/peers${queryString({ codes: codes.join(','), limit: 24 })}`),
+    enabled: codes.length > 0,
+    placeholderData: keepPreviousData,
+    staleTime: 5 * 60_000,
+  })
+  const trends = useQuery({
+    queryKey: ['comparison-trends', sortedCodes, custom],
+    queryFn: () => apiPost<TrendsResponse>('/api/comparison/trends', { company_codes: codes, metrics: custom }),
+    enabled: codes.length >= 2,
+    placeholderData: keepPreviousData,
+    staleTime: 5 * 60_000,
+  })
+
+  const [known, setKnown] = useState<Record<string, CompanyInfo>>({})
+  const remember = useCallback((items: CompanyInfo[]) => setKnown(previous => {
+    const next = { ...previous }
+    for (const item of items) next[item.company_code] = { ...previous[item.company_code], ...item }
+    return next
+  }), [])
+  const result = snapshot.data
+  const fromSnapshot = useMemo(() => Object.fromEntries((result?.companies ?? []).map(company => [company.company_code, {
+    company_code: company.company_code,
+    company_name: company.company.company_name,
+    ticker: company.company.ticker,
+    industry: company.company.industry,
+  }])), [result])
+  // Codes from a link (Analysis sends one) are named by a search until a comparison names them.
+  const unnamed = codes.filter(code => !known[code] && !fromSnapshot[code])
+  const lookup = useQuery({
+    queryKey: ['comparison-lookup', unnamed],
+    queryFn: async () => Object.fromEntries((await Promise.all(unnamed.map(async code => {
+      const found = (await searchCompanies(code, 8).catch(() => ({ results: [] }))).results.find(company => company.company_code === code)
+      return found ? [[code, { company_code: code, company_name: found.company_name, ticker: found.ticker, industry: found.industry }]] : []
+    }))).flat()) as Record<string, CompanyInfo>,
+    enabled: unnamed.length > 0 && (codes.length < 2 || !snapshot.isFetching),
+    staleTime: Infinity,
+  })
+  const info: Record<string, CompanyInfo | undefined> = { ...lookup.data, ...known, ...fromSnapshot }
+
+  const update = useCallback((next: { codes?: string[]; metrics?: string[] }) => {
+    setParams(current => {
+      const updated = new URLSearchParams(current)
+      if (next.codes) {
+        if (next.codes.length) updated.set('companies', next.codes.join(','))
+        else updated.delete('companies')
       }
-    })
-    return () => { cancelled = true }
-  }, [initialCodes])
-  const compare = useMutation({
-    mutationFn: (selection: { companies: SecuritySearchResult[]; metrics: string[] }) => apiPost<ComparisonResponse>('/api/comparison/snapshot', {
-      company_codes: selection.companies.map(company => company.company_code),
-      metrics: selection.metrics,
-    }),
-  })
-  const selectedMetrics = chosenMetrics ?? metricCatalog.data?.default_metrics ?? []
-  // An empty request asks the server for its standard metrics (used if the catalog failed to load).
-  const canRun = companies.length >= 2 && (chosenMetrics === null || chosenMetrics.length > 0)
-  const run = () => { if (canRun) compare.mutate({ companies, metrics: chosenMetrics ?? selectedMetrics }) }
-  const result = compare.data
-  return (
-    <div className="stack dense-page">
-      <PageHeader eyebrow="Company research" title="Compare companies" description="Select two to twelve companies by name, ticker, EDINET code, industry, or market." actions={fromScreen && <Link className="button button--ghost" to="/screen"><ArrowLeft />Return to Screening</Link>} />
-      {initialCodes.length > 0 && <p className="callout callout--success">Screen matches were preloaded. Remove or reorder companies before comparing.</p>}
-      <Card title="Company set" description="The same company search used by analysis, filings, and research is used here.">
-        <CompanySet companies={companies} onChange={setCompanies} />
-        <div className="button-row comparison-actions">
-          <button className="button button--primary" disabled={hydrating || compare.isPending || !canRun} onClick={run}>{hydrating ? 'Loading screen matches…' : compare.isPending ? 'Comparing…' : 'Compare'}</button>
-          {companies.length > 0 && <button className="button button--ghost" onClick={() => { setCompanies([]); compare.reset() }}>Clear</button>}
-          <label className="inline-toggle"><input type="checkbox" checked={showPercentiles} onChange={event => setShowPercentiles(event.target.checked)} />Show peer percentiles</label>
-        </div>
-      </Card>
-      <Card title="Metrics" description="Start with the standard metrics, or add any numeric column from a statement table.">
-        <MetricPicker catalog={metricCatalog.data?.tables ?? {}} definitions={metricCatalog.data?.definitions} isLoading={metricCatalog.isLoading} selected={selectedMetrics} onChange={setChosenMetrics} />
-        {metricCatalog.error && <p className="form-error">Could not load the metric catalog; comparisons use the standard metrics.</p>}
-      </Card>
-      {compare.isPending && <LoadingState label="Calculating comparison" />}
-      {compare.error && <p className="form-error">{(compare.error as Error).message}</p>}
-      {result?.missing.length ? <p className="form-error">Could not find: {result.missing.join(', ')}</p> : null}
-      {result && !result.companies.length && <EmptyState title="No companies found" description="Choose companies with available EDINET financial records and try again." />}
-      {result && result.companies.length > 0 && <>
-        <MetricMatrix result={result} showPercentiles={showPercentiles} />
-        <div className="two-column">
-          <CommonSizeTable title="Income structure" companies={result.companies} field="common_size_income" definitions={{ ...metricCatalog.data?.definitions, ...result.metric_definitions }} />
-          <CommonSizeTable title="Balance-sheet structure" companies={result.companies} field="common_size_balance" definitions={{ ...metricCatalog.data?.definitions, ...result.metric_definitions }} />
-        </div>
+      if (next.metrics) {
+        updated.delete('hide')
+        updated.delete('add')
+        const hide = standard.filter(metric => !next.metrics?.includes(metric))
+        if (hide.length) updated.set('hide', hide.join(','))
+        orderMetrics(next.metrics, standard).filter(metric => !standard.includes(metric)).forEach(metric => updated.append('add', metric))
+      }
+      return updated
+    }, { replace: true })
+  }, [setParams, standard])
+
+  const definitions = useMemo<Record<string, MetricDefinition>>(() => ({
+    ...result?.metric_definitions,
+    ...catalog.data?.definitions,
+    ...Object.fromEntries(custom.map(metric => [metric, describeColumnMetric(metric)])),
+  }), [catalog.data, custom, result])
+
+  const [sortMetric, setSortMetric] = useState<string | null>(null)
+  const [showRanks, setShowRanks] = usePersistentState('comparison.ranks', false, [true, false])
+  const [hideEmpty, setHideEmpty] = usePersistentState('comparison.hideEmpty', true, [true, false])
+  const [indexed, setIndexed] = usePersistentState('comparison.indexTrend', false, [true, false])
+  const [scatter, setScatter] = usePersistentState('comparison.scatter', DEFAULT_SCATTER)
+  const [cursor, setCursor] = useState<{ metric: string | null; code: string | null }>({ metric: null, code: null })
+  const [focusRequest, setFocusRequest] = useState(0)
+  const [trendPick, setTrendPick] = useState<{ metric: string; atCursor: string | null } | null>(null)
+  const [showShortcuts, setShowShortcuts] = useState(false)
+  const [saved, setSaved] = useState<{ open: boolean; saving: boolean }>({ open: false, saving: false })
+  const [copied, setCopied] = useState(false)
+
+  const byCode = useMemo(() => new Map((result?.companies ?? []).map(company => [company.company_code, company])), [result])
+  const ordered = codes.map(code => byCode.get(code)).filter((company): company is NonNullable<typeof company> => Boolean(company))
+  const colorIndex = Object.fromEntries(codes.map((code, index) => [code, index]))
+  const activeSort = sortMetric && selectedMetrics.includes(sortMetric) ? sortMetric : null
+  const viewCompanies = activeSort ? sortCompanies(ordered, activeSort, definitions[activeSort]?.direction) : ordered
+  const empty = ordered.length ? emptyMetrics(selectedMetrics, ordered) : new Set<string>()
+  const visible = hideEmpty ? selectedMetrics.filter(metric => !empty.has(metric)) : selectedMetrics
+  // The table groups rows, so the cursor moves in the grouped order.
+  const rows = groupMetrics(visible, definitions).flatMap(group => group.metrics)
+  const viewCodes = viewCompanies.map(company => company.company_code)
+  // The cursor starts on the first metric where better and worse mean something, so the ranking chart opens on it.
+  const cursorMetric = cursor.metric && rows.includes(cursor.metric) ? cursor.metric : rows.find(metric => definitions[metric]?.direction) ?? rows[0] ?? null
+  const cursorCode = cursor.code && codes.includes(cursor.code) ? cursor.code : viewCodes[0] ?? codes[0] ?? null
+  const trendMetrics = trends.data?.metrics ?? []
+  const trendMetric = trendPick && trendPick.atCursor === cursorMetric ? trendPick.metric
+    : cursorMetric && trendMetrics.includes(cursorMetric) ? cursorMetric
+      : trendPick?.metric ?? 'Revenue'
+  const scatterChoices = [...standard, ...custom]
+  const scatterAxes = { x: scatterChoices.includes(scatter.x) ? scatter.x : DEFAULT_SCATTER.x, y: scatterChoices.includes(scatter.y) ? scatter.y : DEFAULT_SCATTER.y }
+
+  const addInput = useRef<HTMLInputElement>(null)
+  const metricInput = useRef<HTMLInputElement>(null)
+  const peersBody = useRef<HTMLTableSectionElement>(null)
+  const companiesSection = useRef<HTMLDivElement>(null)
+  const metricsSection = useRef<HTMLDivElement>(null)
+  const tableSection = useRef<HTMLElement>(null)
+  const chartsSection = useRef<HTMLDivElement>(null)
+
+  const addCompanies = (items: CompanyInfo[]) => {
+    const fresh = items.filter(item => !codes.includes(item.company_code)).slice(0, MAX_COMPANIES - codes.length)
+    if (!fresh.length) return
+    remember(fresh)
+    update({ codes: [...codes, ...fresh.map(item => item.company_code)] })
+  }
+  const addPeers = (items: Peer[]) => addCompanies(items.map(peer => ({ company_code: peer.company_code, company_name: peer.company_name, ticker: peer.ticker, industry: peer.industry })))
+  const removeCompany = (code: string | null) => {
+    if (!code) return
+    const index = viewCodes.indexOf(code)
+    setCursor(current => ({ ...current, code: viewCodes[index + 1] ?? viewCodes[index - 1] ?? null }))
+    update({ codes: codes.filter(item => item !== code) })
+  }
+  const moveCompany = (code: string | null, offset: number) => {
+    if (!code) return
+    const index = codes.indexOf(code)
+    const target = index + offset
+    if (index < 0 || target < 0 || target >= codes.length) return
+    const next = [...codes]
+    next.splice(index, 1)
+    next.splice(target, 0, code)
+    setSortMetric(null)
+    setCursor(current => ({ ...current, code }))
+    update({ codes: next })
+  }
+  const setMetrics = (metrics: string[]) => update({ metrics })
+  const hideMetric = (metric: string | null) => {
+    if (!metric) return
+    const index = rows.indexOf(metric)
+    setCursor(current => ({ ...current, metric: rows[index + 1] ?? rows[index - 1] ?? null }))
+    setMetrics(selectedMetrics.filter(item => item !== metric))
+  }
+  const focusMetric = (metric: string) => setCursor(current => ({ ...current, metric }))
+  const moveRow = (offset: number | 'first' | 'last', focus = false) => {
+    if (!rows.length) return
+    const index = Math.max(0, rows.indexOf(cursorMetric ?? ''))
+    const next = offset === 'first' ? 0 : offset === 'last' ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, index + offset))
+    setCursor(current => ({ ...current, metric: rows[next] }))
+    if (focus) setFocusRequest(count => count + 1)
+  }
+  const moveColumn = (offset: number, focus = false) => {
+    if (!viewCodes.length) return
+    const index = Math.max(0, viewCodes.indexOf(cursorCode ?? ''))
+    setCursor(current => ({ ...current, code: viewCodes[Math.max(0, Math.min(viewCodes.length - 1, index + offset))] }))
+    if (focus) setFocusRequest(count => count + 1)
+  }
+  const toggleSort = (metric: string | null) => { if (metric) setSortMetric(activeSort === metric ? null : metric) }
+  const openCompany = (code: string, newTab = false) => {
+    const path = `/analyze/${encodeURIComponent(code)}`
+    if (newTab) window.open(path, '_blank', 'noopener')
+    else navigate(path)
+  }
+  const download = () => {
+    if (!viewCompanies.length) return
+    const name = viewCompanies.slice(0, 3).map(company => shortName(companyName(company))).join(' vs ')
+    downloadTextFile(`${safeFileName(`comparison ${name}`)}.csv`, comparisonCsv(viewCompanies, rows, definitions), 'text/csv;charset=utf-8')
+  }
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1800)
+    } catch { /* clipboard unavailable: the address bar still has the link */ }
+  }
+  const jump = (section: HTMLElement | null, focus?: () => void) => {
+    section?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
+    focus?.()
+  }
+  const focusPeers = () => {
+    const row = peersBody.current?.querySelector<HTMLElement>('tr[tabindex="0"]')
+    row?.focus({ preventScroll: true })
+    row?.scrollIntoView?.({ block: 'nearest' })
+  }
+  const loadSaved = (savedCodes: string[], metrics: string[]) => {
+    setSortMetric(null)
+    setCursor({ metric: null, code: null })
+    update({ codes: parseCodes(savedCodes.join(',')), metrics: metrics.length ? metrics : standard })
+  }
+  const setSavedOpen = useCallback((open: boolean) => setSaved({ open, saving: false }), [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 's') return
+      event.preventDefault()
+      setSaved({ open: true, saving: true })
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  useHotkeys({
+    '?': () => setShowShortcuts(true),
+    1: () => jump(companiesSection.current, () => addInput.current?.focus({ preventScroll: true })),
+    2: () => jump(metricsSection.current),
+    3: () => jump(tableSection.current, () => setFocusRequest(count => count + 1)),
+    4: () => jump(chartsSection.current),
+    a: () => addInput.current?.focus(),
+    m: () => metricInput.current?.focus(),
+    p: focusPeers,
+    P: () => { const closest = peers.data?.peers.find(peer => !codes.includes(peer.company_code)); if (closest) addPeers([closest]) },
+    j: () => moveRow(1, true),
+    k: () => moveRow(-1, true),
+    l: () => moveColumn(1, true),
+    h: () => moveColumn(-1, true),
+    s: () => toggleSort(cursorMetric),
+    x: () => hideMetric(cursorMetric),
+    X: () => removeCompany(cursorCode),
+    '[': () => moveCompany(cursorCode, -1),
+    ']': () => moveCompany(cursorCode, 1),
+    e: () => setHideEmpty(!hideEmpty),
+    r: () => setShowRanks(!showRanks),
+    i: () => setIndexed(!indexed),
+    d: download,
+    o: () => setSaved({ open: true, saving: false }),
+  }, !showShortcuts && !saved.open)
+
+  const industries = [...new Set(codes.map(code => info[code]?.industry).filter(Boolean))]
+  const notes = [fiscalYearNote(ordered), currencyNote(ordered), result?.missing.length ? `No financial data for ${result.missing.join(', ')}.` : null].filter(Boolean)
+  const loadingFirst = codes.length >= 2 && !result && (snapshot.isLoading || catalog.isLoading)
+  const pendingCodes = codes.filter(code => result && !byCode.has(code) && !result.missing.includes(code))
+  const sideBySide = viewCompanies.length <= SIDE_BY_SIDE
+  const periods = new Set(ordered.map(company => company.period_end ?? ''))
+  const commonPeriod = periods.size === 1 ? ordered[0]?.period_end : null
+
+  return <div className="stack dense-page cmp-page">
+    <PageHeader
+      eyebrow="Company research"
+      title="Compare companies"
+      description={codes.length ? [`${codes.length} ${codes.length === 1 ? 'company' : 'companies'}`, ordered.length ? `${rows.length} metrics` : '', industries.slice(0, 2).join(', ') + (industries.length > 2 ? ` +${industries.length - 2}` : '')].filter(Boolean).join(' · ') : 'Line up two to twelve companies metric by metric, with peers, rankings, and trends.'}
+      actions={<>
+        {fromScreen && <Link className="button button--ghost button--small" to="/screen"><ArrowLeft aria-hidden="true" />Return to Screening</Link>}
+        <SavedComparisons open={saved.open} saving={saved.saving} codes={codes} metrics={sameList(selectedMetrics, standard) ? [] : selectedMetrics} defaultName={codes.map(code => shortName(info[code]?.company_name || code)).slice(0, 4).join(' vs ')} onOpenChange={setSavedOpen} onLoad={loadSaved} />
+        <button type="button" className="button button--secondary button--small" disabled={!codes.length} onClick={() => void copyLink()} title="Copy a link to this comparison">{copied ? <Check aria-hidden="true" /> : <Link2 aria-hidden="true" />}{copied ? 'Copied' : 'Link'}</button>
+        <button type="button" className="button button--secondary button--small" disabled={!viewCompanies.length} onClick={download} title="Download the table as CSV (D)"><Download aria-hidden="true" />CSV</button>
+        <button type="button" className="icon-button" onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard aria-hidden="true" /></button>
       </>}
+    />
+    <div className="cmp-top">
+      <div ref={companiesSection} className="cmp-section">
+        <CompanyPanel
+          codes={codes}
+          info={info}
+          periods={Object.fromEntries(ordered.map(company => [company.company_code, company.period_end]))}
+          cursorCode={ordered.length ? cursorCode : null}
+          inputRef={addInput}
+          actions={codes.length > 0 && <button type="button" className="button button--ghost button--small" onClick={() => { setSortMetric(null); update({ codes: [] }) }}>Clear</button>}
+          onAdd={company => company.company_code && addCompanies([{ company_code: company.company_code, company_name: company.company_name, ticker: company.ticker, industry: company.industry }])}
+          onRemove={removeCompany}
+          onMove={moveCompany}
+          onCursor={code => setCursor(current => ({ ...current, code }))}
+        />
+      </div>
+      <PeersPanel codes={codes} info={info} colorIndex={colorIndex} data={codes.length ? peers.data && { ...peers.data, peers: peers.data.peers.filter(peer => !codes.includes(peer.company_code)) } : undefined} loading={peers.isFetching} error={peers.error} listRef={peersBody} onAdd={addPeers} />
     </div>
-  )
+    <div ref={metricsSection} className="cmp-section">
+      <MetricBar standard={standard} definitions={definitions} selected={selectedMetrics} catalog={catalog.data?.tables ?? {}} searchRef={metricInput} onChange={setMetrics} onFocusMetric={focusMetric} />
+      {catalog.error && <p className="form-error">Could not load the metric catalog; the comparison uses the standard metrics.</p>}
+    </div>
+    {codes.length === 0 && <ComparisonStart onLoad={loadSaved} />}
+    {codes.length === 1 && <p className="cmp-start">Add one more company to see the table, rankings, a scatter plot, and trends.</p>}
+    {loadingFirst && <LoadingState label="Comparing companies" />}
+    {snapshot.error && !result && <ErrorState error={snapshot.error} retry={() => void snapshot.refetch()} />}
+    {codes.length >= 2 && ordered.length > 0 && <div className={sideBySide ? 'cmp-results cmp-results--side' : 'cmp-results'}>
+      <section ref={tableSection} className="panel cmp-panel cmp-table-panel" aria-labelledby="cmp-table-title">
+        <header className="cmp-panel__header">
+          <h2 id="cmp-table-title">Comparison <kbd aria-hidden="true">3</kbd></h2>
+          <span className="cmp-panel__meta">{commonPeriod ? `FY ending ${formatPeriod(commonPeriod)} · ` : ''}<span className="cmp-legend cmp-legend--best" />best <span className="cmp-legend cmp-legend--worst" />worst{activeSort ? ` · sorted by ${definitions[activeSort]?.label ?? activeSort}` : ''}</span>
+          {(snapshot.isFetching || pendingCodes.length > 0) && <span className="cmp-panel__meta cmp-updating" role="status">Updating…</span>}
+          <span className="cmp-panel__spacer" />
+          {activeSort && <button type="button" className="button button--ghost button--small" onClick={() => setSortMetric(null)}>Original order</button>}
+          <label className="inline-toggle" title="Show each company's rank in every row (R)"><input type="checkbox" checked={showRanks} onChange={event => setShowRanks(event.target.checked)} />Ranks</label>
+          <label className="inline-toggle" title="Hide metrics no company reports (E)"><input type="checkbox" checked={hideEmpty} onChange={event => setHideEmpty(event.target.checked)} />Hide empty{empty.size ? ` (${empty.size})` : ''}</label>
+        </header>
+        {notes.length > 0 && <ul className="cmp-notes">{notes.map(note => <li key={note}>{note}</li>)}</ul>}
+        {rows.length ? <ComparisonMatrix
+          companies={viewCompanies}
+          colorIndex={colorIndex}
+          metrics={rows}
+          definitions={definitions}
+          cursorMetric={cursorMetric}
+          cursorCode={cursorCode}
+          showRanks={showRanks}
+          sortMetric={activeSort}
+          focusRequest={focusRequest}
+          onCursor={next => setCursor(current => ({ metric: next.metric ?? current.metric, code: next.code ?? current.code }))}
+          onMoveRow={offset => moveRow(offset)}
+          onMoveColumn={offset => moveColumn(offset)}
+          onOpen={openCompany}
+          onSort={toggleSort}
+          onRemoveMetric={hideMetric}
+        /> : <p className="cmp-panel__empty">No metrics shown. Turn some on above, or press M to search.</p>}
+      </section>
+      <div ref={chartsSection} className="cmp-charts" aria-label="Charts">
+        <RankingChart companies={viewCompanies} metric={cursorMetric} definitions={definitions} colorIndex={colorIndex} />
+        <ScatterChart companies={viewCompanies} axes={scatterAxes} choices={scatterChoices} definitions={definitions} colorIndex={colorIndex} onAxes={setScatter} />
+        <TrendChart companies={viewCompanies} trends={trends.data} loading={trends.isLoading} metric={trendMetric} indexed={indexed} colorIndex={colorIndex} onMetric={metric => setTrendPick({ metric, atCursor: cursorMetric })} onIndexed={setIndexed} />
+      </div>
+    </div>}
+    {showShortcuts && <ShortcutsDialog groups={SHORTCUTS} onClose={() => setShowShortcuts(false)} />}
+  </div>
 }

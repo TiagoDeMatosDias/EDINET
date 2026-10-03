@@ -9,15 +9,18 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.comparison.peers import find_peers
 from src.comparison.service import (
     DEFAULT_METRICS,
     METRIC_DEFINITIONS,
+    TREND_METRICS,
     extract_latest_statement_metrics,
     extract_latest_table_metrics,
     normalize_companies,
+    statement_series,
 )
 from src.orchestrator.common.sqlite import connect_read, quote_identifier
-from src.security_analysis import get_security_overview, get_security_peers, get_security_statements
+from src.security_analysis import get_security_overview, get_security_statements
 
 router = APIRouter(prefix="/api/comparison", tags=["comparison"])
 _MAX_COMPANIES = 12
@@ -46,6 +49,14 @@ class ComparisonRequest(BaseModel):
 
 class HistoryRequest(ComparisonRequest):
     periods: int = Field(default=12, ge=1, le=40)
+
+
+class TrendsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    company_codes: list[str] = Field(min_length=1, max_length=_MAX_COMPANIES)
+    metrics: list[str] = Field(default_factory=list, max_length=50)
+    periods: int = Field(default=10, ge=2, le=20)
 
 
 def _codes(values: list[str]) -> list[str]:
@@ -261,15 +272,28 @@ def metrics() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+def _peer_codes(values: list[str]) -> list[str]:
+    codes = list(dict.fromkeys(code.strip() for value in values for code in value.split(",") if code.strip()))
+    if not 1 <= len(codes) <= _MAX_COMPANIES:
+        raise HTTPException(status_code=400, detail="Provide between 1 and 12 company codes")
+    return codes
+
+
+@router.get("/peers")
+def peers_for_set(
+    codes: list[str] = Query(..., description="Selected company codes, repeated or comma-separated"),
+    limit: int = Query(default=12, ge=1, le=50),
+) -> dict[str, Any]:
+    """Listed companies in the selected companies' industries, closest in market cap first."""
+    return find_peers(_resolve_db(), _peer_codes(codes), limit=limit)
+
+
 @router.get("/peers/{company_code}")
 def peers(company_code: str, limit: int = Query(default=10, ge=1, le=50)) -> dict[str, Any]:
     if not company_code.strip():
         raise HTTPException(status_code=400, detail="company_code is required")
-    try:
-        rows = get_security_peers(_resolve_db(), company_code.strip(), limit=limit)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"company_code": company_code.strip(), "peers": rows}
+    result = find_peers(_resolve_db(), [company_code.strip()], limit=limit)
+    return {"company_code": company_code.strip(), "peers": result["peers"]}
 
 
 @router.post("/snapshot")
@@ -291,7 +315,8 @@ def snapshot(payload: ComparisonRequest, request: Request = None) -> dict[str, A
             research_store.record_recent_work(
                 user.user_id,
                 "comparison",
-                f"comparison:{code_query}:{','.join(metrics)}",
+                # One entry per comparison as it is built up: adding a company updates it.
+                f"comparison:{codes[0]}",
                 "Comparison · " + " vs ".join(labels[:4]),
                 f"{len(rows)} companies · {len(metrics)} metrics",
                 f"/compare?companies={quote(code_query, safe=',')}",
@@ -305,6 +330,32 @@ def snapshot(payload: ComparisonRequest, request: Request = None) -> dict[str, A
         "missing": missing,
         "metrics": metrics,
         "metric_definitions": {metric: _metric_definition(metric) for metric in metrics},
+    }
+
+
+@router.post("/trends")
+def trends(payload: TrendsRequest) -> dict[str, Any]:
+    """Year-by-year statement series per company, small enough to chart twelve companies at once."""
+    codes = _peer_codes(payload.company_codes)
+    db = _resolve_db()
+    catalog = _metric_catalog(db)
+    custom = [
+        metric for metric in dict.fromkeys(payload.metrics)
+        if metric not in TREND_METRICS and metric.partition(".")[2] in catalog.get(metric.partition(".")[0], [])
+    ]
+    sources = {**_ANALYSIS_STATEMENT_SOURCES, **{metric.partition(".")[0]: metric.partition(".")[0] for metric in custom}}
+    companies: list[dict[str, Any]] = []
+    for code in codes:
+        try:
+            history = get_security_statements(db, code, periods=payload.periods, statement_sources=sources)
+        except Exception as exc:  # noqa: BLE001 - one company's gap must not hide the others
+            _LOGGER.warning("Could not load statement trends for %s: %s", code, exc)
+            continue
+        companies.append({"company_code": code, **statement_series(history, custom)})
+    return {
+        "companies": companies,
+        "metrics": [*TREND_METRICS, *custom],
+        "metric_definitions": {**TREND_METRICS, **{metric: _metric_definition(metric) for metric in custom}},
     }
 
 

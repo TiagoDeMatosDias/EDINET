@@ -55,7 +55,7 @@ export function formatMetricValue(
   if (definition?.format === 'percent') return `${(value * 100).toFixed(1)}%`
   const magnitude = Math.abs(value)
   const amount = magnitude >= 1_000_000 ? formatCompactNumber(magnitude) : magnitude.toLocaleString(undefined, { maximumFractionDigits: 2 })
-  const sign = value < 0 ? '-' : ''
+  const sign = value < 0 && /[1-9]/.test(amount) ? '-' : ''
   const code = definition?.format === 'money' ? currencies[definition.currency ?? 'reporting'] : null
   if (!code) return `${sign}${amount}`
   const symbol = currencySymbol(code)

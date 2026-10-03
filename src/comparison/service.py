@@ -151,24 +151,28 @@ def _latest_statement_value(
     return None, None
 
 
+# Statement lines read for each fundamental, by source table and label, shared by
+# the snapshot (latest value) and the trend charts (every year).
+_STATEMENT_LABELS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "Revenue": (("IncomeStatement", "income_statement"), ("Net sales", "Net sales (revenue)", "Total revenue")),
+    "CostOfSales": (("IncomeStatement", "income_statement"), ("Cost of sales",)),
+    "OperatingIncome": (("IncomeStatement", "income_statement"), ("Operating income - Operating profit (loss)", "Operating income")),
+    "NetIncome": (("IncomeStatement", "income_statement"), ("Profit (loss)", "Net income (loss)", "Net income")),
+    "TotalAssets": (("BalanceSheet", "balance_sheet"), ("Assets", "Total assets")),
+    "TotalEquity": (("BalanceSheet", "balance_sheet"), ("Shareholders' equity", "Shareholders equity", "Net assets")),
+    "TotalLiabilities": (("BalanceSheet", "balance_sheet"), ("Liabilities", "Total liabilities")),
+    "CurrentAssets": (("BalanceSheet", "balance_sheet"), ("Current assets",)),
+    "CurrentLiabilities": (("BalanceSheet", "balance_sheet"), ("Current liabilities",)),
+}
+
+
 def extract_latest_statement_metrics(history: dict[str, Any]) -> tuple[dict[str, float | None], str | None]:
     """Extract comparison fundamentals from the latest populated history values."""
     periods = [str(period) for period in history.get("periods", [])]
-    income = _statement_rows(history, ("IncomeStatement", "income_statement"))
-    balance = _statement_rows(history, ("BalanceSheet", "balance_sheet"))
-    shares = _statement_rows(history, ("ShareMetrics", "share_metrics"))
-    definitions = {
-        "Revenue": (income, ("Net sales", "Net sales (revenue)", "Total revenue")),
-        "CostOfSales": (income, ("Cost of sales",)),
-        "OperatingIncome": (income, ("Operating income - Operating profit (loss)", "Operating income")),
-        "NetIncome": (income, ("Profit (loss)", "Net income (loss)", "Net income")),
-        "TotalAssets": (balance, ("Assets", "Total assets")),
-        "TotalEquity": (balance, ("Shareholders' equity", "Shareholders equity", "Net assets")),
-        "TotalLiabilities": (balance, ("Liabilities", "Total liabilities")),
-        "CurrentAssets": (balance, ("Current assets",)),
-        "CurrentLiabilities": (balance, ("Current liabilities",)),
+    lines = {
+        **_STATEMENT_LABELS,
         "SharesOutstanding": (
-            shares,
+            ("ShareMetrics", "share_metrics"),
             (
                 "Number of issued shares as of filing date",
                 "Total number of issued shares",
@@ -178,12 +182,91 @@ def extract_latest_statement_metrics(history: dict[str, Any]) -> tuple[dict[str,
     }
     metrics: dict[str, float | None] = {}
     metric_periods: list[str] = []
-    for metric, (rows, labels) in definitions.items():
-        value, period = _latest_statement_value(rows, periods, labels)
+    for metric, (sources, labels) in lines.items():
+        value, period = _latest_statement_value(_statement_rows(history, sources), periods, labels)
         metrics[metric] = value
         if period:
             metric_periods.append(period)
     return metrics, max(metric_periods) if metric_periods else None
+
+
+# Year-by-year series for comparison charts. Keys match the snapshot metrics
+# where the meaning is the same; ROE here is each year's own ratio.
+TREND_METRICS: dict[str, dict[str, str]] = {
+    "Revenue": {**METRIC_DEFINITIONS["Revenue"], "description": "Net sales (or operating revenue) for each fiscal year."},
+    "OperatingIncome": {**METRIC_DEFINITIONS["OperatingIncome"], "description": "Operating profit for each fiscal year."},
+    "NetIncome": {**METRIC_DEFINITIONS["NetIncome"], "description": "Profit for each fiscal year."},
+    "GrossMargin": METRIC_DEFINITIONS["GrossMargin"],
+    "OperatingMargin": METRIC_DEFINITIONS["OperatingMargin"],
+    "NetMargin": METRIC_DEFINITIONS["NetMargin"],
+    "ReturnOnEquity": {
+        **METRIC_DEFINITIONS["ReturnOnEquity"],
+        "description": "Net income ÷ shareholders' equity at each fiscal year end (the snapshot averages three years).",
+    },
+    "DebtToEquity": METRIC_DEFINITIONS["DebtToEquity"],
+    "CurrentRatio": METRIC_DEFINITIONS["CurrentRatio"],
+    "TotalAssets": {**METRIC_DEFINITIONS["TotalAssets"], "description": "Total assets at each fiscal year end."},
+    "TotalEquity": {**METRIC_DEFINITIONS["TotalEquity"], "description": "Shareholders' equity at each fiscal year end."},
+}
+
+
+def _row_series(rows: list[dict[str, Any]], count: int, labels: tuple[str, ...]) -> list[float | None]:
+    """Per-period values of the first matching row that has one, as the snapshot reads the latest."""
+    wanted = {_normalise_label(label) for label in labels}
+    matching = [
+        row["values"] for row in rows
+        if _normalise_label(row.get("field") or row.get("record_field") or row.get("metric")) in wanted
+        and isinstance(row.get("values"), list)
+    ]
+    series: list[float | None] = []
+    for index in range(count):
+        series.append(next(
+            (value for values in matching if index < len(values) and (value := _number(values[index])) is not None),
+            None,
+        ))
+    return series
+
+
+def _ratio(numerator: float | None, denominator: float | None, positive: bool = False) -> float | None:
+    if numerator is None or denominator is None or denominator == 0 or (positive and denominator < 0):
+        return None
+    return numerator / denominator
+
+
+def statement_series(history: dict[str, Any], metric_refs: list[str] | None = None) -> dict[str, Any]:
+    """Year-by-year values of the trend metrics and any ``Table.Column`` refs."""
+    periods = [str(period) for period in history.get("periods", [])]
+    count = len(periods)
+    raw = {
+        key: _row_series(_statement_rows(history, sources), count, labels)
+        for key, (sources, labels) in _STATEMENT_LABELS.items()
+    }
+
+    def each(fn) -> list[float | None]:
+        return [fn(index) for index in range(count)]
+
+    revenue, net_income, equity = raw["Revenue"], raw["NetIncome"], raw["TotalEquity"]
+    series: dict[str, list[float | None]] = {
+        "Revenue": revenue,
+        "OperatingIncome": raw["OperatingIncome"],
+        "NetIncome": net_income,
+        "GrossMargin": each(lambda i: _ratio(
+            revenue[i] - raw["CostOfSales"][i] if revenue[i] is not None and raw["CostOfSales"][i] is not None else None,
+            revenue[i],
+        )),
+        "OperatingMargin": each(lambda i: _ratio(raw["OperatingIncome"][i], revenue[i])),
+        "NetMargin": each(lambda i: _ratio(net_income[i], revenue[i])),
+        "ReturnOnEquity": each(lambda i: _ratio(net_income[i], equity[i], positive=True)),
+        "DebtToEquity": each(lambda i: _ratio(raw["TotalLiabilities"][i], equity[i], positive=True)),
+        "CurrentRatio": each(lambda i: _ratio(raw["CurrentAssets"][i], raw["CurrentLiabilities"][i], positive=True)),
+        "TotalAssets": raw["TotalAssets"],
+        "TotalEquity": equity,
+    }
+    for metric_ref in metric_refs or []:
+        table, separator, column = metric_ref.partition(".")
+        if separator and table and column:
+            series[metric_ref] = _row_series(_statement_rows(history, (table,)), count, (column,))
+    return {"periods": periods, "series": series}
 
 
 def extract_latest_table_metrics(

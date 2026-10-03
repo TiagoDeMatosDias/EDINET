@@ -186,11 +186,13 @@ def _seed_research(path: Path) -> None:
     store.upsert_company_research(
         "local",
         "E00001",
-        thesis_status="watch",
-        target_value=2_450,
-        target_currency="JPY",
+        thesis_status="buy",
+        target_value=200,
+        target_currency="USD",
         review_on="2026-09-30",
+        thesis="Recurring service revenue should keep operating margins above 15% through the cycle.",
     )
+    store.upsert_company_research("local", "E00002", thesis_status="watch", review_on="2027-03-31")
     store.create_alert(
         "local",
         "Alpha price review",
@@ -321,11 +323,19 @@ def _capture_with_playwright(
         page.screenshot(path=str(output_dir / "web-filing-translation.png"))
 
         _seed_research(research_db)
-        capture(page, "/research", "web-research.png")
+        capture(page, "/research?company=E00001", "web-research.png", wait_ms=1_500)
+        page.goto(f"{base_url}/research?tab=options&company=E00001", wait_until="networkidle")
+        dismiss_local_warning(page)
+        page.get_by_role("region", name="Option values").wait_for(timeout=10_000)
+        # The synthetic demo prices barely move, so assume a typical equity volatility.
+        page.get_by_role("textbox", name="Volatility").fill("28")
+        page.get_by_role("combobox", name="Strategy preset").select_option("straddle")
+        page.wait_for_timeout(800)
+        page.screenshot(path=str(output_dir / "web-research-options.png"), full_page=True)
 
         page.goto(f"{base_url}/compare", wait_until="networkidle")
         dismiss_local_warning(page)
-        picker = page.get_by_label("Add company")
+        picker = page.get_by_label("Add a company")
         picker.fill("Alpha")
         page.get_by_role(
             "option",
@@ -336,13 +346,14 @@ def _capture_with_playwright(
             "option",
             name="Beta Test Company BBB · E00002 · Industrials · JPX Prime",
         ).click()
-        page.get_by_role("button", name="Compare", exact=True).click()
-        page.get_by_text("Financial comparison").wait_for(timeout=10_000)
-        page.get_by_text("Financial comparison").scroll_into_view_if_needed()
-        page.screenshot(path=str(output_dir / "web-comparison.png"))
-        page.get_by_text("Metrics", exact=True).scroll_into_view_if_needed()
-        page.get_by_role("button", name="Add metric").click()
-        page.evaluate("window.scrollBy(0, 150)")
+        # The comparison runs as soon as two companies are chosen.
+        page.get_by_role("table", name="Comparison by metric").wait_for(timeout=10_000)
+        page.keyboard.press("Escape")
+        page.mouse.click(5, 400)
+        page.screenshot(path=str(output_dir / "web-comparison.png"), full_page=True)
+        page.keyboard.press("m")
+        page.get_by_role("combobox", name="Add a metric").fill("sales")
+        page.get_by_role("listbox", name="Metrics").wait_for(timeout=10_000)
         page.screenshot(path=str(output_dir / "web-comparison-metrics.png"))
         browser.close()
 
