@@ -21,9 +21,11 @@ from src.web_app.security import OperatorGuidanceError, get_settings, install_se
 
 BASE_DIR = Path(__file__).resolve().parent
 BRAND_ASSETS_DIR = BASE_DIR.parent.parent / "assets" / "brand"
-FRONTEND_V2_DIST = Path(
-    os.getenv("EDINET_FRONTEND_DIST", BASE_DIR.parent.parent / "frontend-v2" / "dist")
-).expanduser().resolve(strict=False)
+FRONTEND_V2_DIST = (
+    Path(os.getenv("EDINET_FRONTEND_DIST", BASE_DIR.parent.parent / "frontend-v2" / "dist"))
+    .expanduser()
+    .resolve(strict=False)
+)
 
 # The API router_app from src.web_app.api already includes all API routes
 # (orchestrator, screening, security_analysis, portfolio, and auto-discovered
@@ -45,6 +47,16 @@ async def _lifespan(lifespan_app: FastAPI):
     Importing this module (tests, tools, route inspection) therefore never
     touches the configured databases.
     """
+    # Set up logging in the *serving* process.  With ``reload=True`` (the
+    # default launcher mode) uvicorn spawns a child process that imports this
+    # module and serves requests; that child never runs ``main.py``'s
+    # ``setup_logging()``, so without this call the file handler would be
+    # missing and ``logs/server.log`` would stay silent during normal traffic.
+    # ``setup_logging`` is idempotent and also re-points uvicorn's loggers at
+    # the root logger so the per-request access log reaches the file handler.
+    from src.utilities.logger import setup_logging
+
+    setup_logging()
     ensure_application_databases(settings=SETTINGS)
     async with _api_lifespan(lifespan_app):
         yield
@@ -107,9 +119,7 @@ def _assert_unique_method_paths() -> None:
                 duplicates.add(key)
             seen.add(key)
     if duplicates:
-        formatted = ", ".join(
-            f"{method} {path}" for method, path in sorted(duplicates)
-        )
+        formatted = ", ".join(f"{method} {path}" for method, path in sorted(duplicates))
         raise RuntimeError(f"Duplicate FastAPI routes registered: {formatted}")
 
 
@@ -119,8 +129,13 @@ _assert_unique_method_paths()
 def main() -> None:
     import uvicorn
 
+    from src.utilities.logger import setup_logging
     from src.web_app.tls import provision_tls
 
+    # Ensure the server logs to <project_root>/logs/ even when launched directly
+    # via ``python -m src.web_app.server`` (the primary launcher, main.py, also
+    # calls this; setup_logging is idempotent).
+    setup_logging()
     cert_path, key_path = provision_tls(host=SETTINGS.host)
     # Pass the app object: this module may already be running as ``__main__``,
     # and importing it again by string would re-register every route.

@@ -8,7 +8,10 @@ from typing import Iterator
 
 logger = logging.getLogger("src.data_processing")
 
-DEFAULT_BUSY_TIMEOUT_MS = 30_000
+# How long a writer waits for the SQLite write lock before giving up.  60 s is
+# long enough to ride out a single-ticker write (the lock is now released per
+# ticker, not per batch) without making interactive requests hang for a minute.
+DEFAULT_BUSY_TIMEOUT_MS = 60_000
 
 
 class DatabaseBusyError(RuntimeError):
@@ -86,9 +89,7 @@ def transaction(
         if isinstance(exc, sqlite3.OperationalError) and (
             "locked" in str(exc).casefold() or "busy" in str(exc).casefold()
         ):
-            raise DatabaseBusyError(
-                f"Database remained locked for {busy_timeout_ms} ms"
-            ) from exc
+            raise DatabaseBusyError(f"Database remained locked for {busy_timeout_ms} ms") from exc
         raise
     finally:
         conn.close()
@@ -126,8 +127,7 @@ class OrchestratorProcessorBase:
         """Return actual table name in schema using case-insensitive match, else None."""
         if schema_name == "main":
             sql = (
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND lower(name)=lower(?) LIMIT 1"
+                "SELECT name FROM sqlite_master WHERE type='table' AND lower(name)=lower(?) LIMIT 1"
             )
         else:
             sql = (
@@ -163,9 +163,7 @@ class OrchestratorProcessorBase:
         cols_sql = ", ".join(self._sql_ident(c) for c in columns)
 
         try:
-            conn.execute(
-                f"CREATE INDEX IF NOT EXISTS {idx_ref} ON {table_ref} ({cols_sql})"
-            )
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {idx_ref} ON {table_ref} ({cols_sql})")
         except Exception as exc:
             logger.debug(
                 "Skipping index creation for %s(%s): %s",
@@ -290,7 +288,9 @@ class OrchestratorProcessorBase:
 
         terms = filters.get("terms", []) if filters else []
         periods = filters.get("periods", []) if filters else []
-        has_unrestricted_periods = bool(filters.get("has_unrestricted_periods")) if filters else False
+        has_unrestricted_periods = (
+            bool(filters.get("has_unrestricted_periods")) if filters else False
+        )
 
         if not terms:
             return "1=1"
@@ -308,9 +308,7 @@ class OrchestratorProcessorBase:
         """Detect the actual source column names in the raw financial-data table."""
         try:
             if schema_name == "main":
-                rows = conn.execute(
-                    f"PRAGMA table_info({self._sql_ident(table_name)})"
-                ).fetchall()
+                rows = conn.execute(f"PRAGMA table_info({self._sql_ident(table_name)})").fetchall()
             else:
                 rows = conn.execute(
                     f"PRAGMA {self._sql_ident(schema_name)}.table_info({self._sql_ident(table_name)})"
@@ -414,12 +412,7 @@ class OrchestratorProcessorBase:
         if not text:
             return None
 
-        normalized = (
-            text.replace(",", "")
-            .replace("△", "-")
-            .replace("▲", "-")
-            .replace("−", "-")
-        )
+        normalized = text.replace(",", "").replace("△", "-").replace("▲", "-").replace("−", "-")
         if normalized.startswith("(") and normalized.endswith(")"):
             normalized = f"-{normalized[1:-1]}"
         try:
@@ -475,7 +468,9 @@ class OrchestratorProcessorBase:
             return "TEXT"
         return "REAL"
 
-    def _build_fact_value_case_expr(self, mapping, facts_alias="f", value_column=None, text_column=None):
+    def _build_fact_value_case_expr(
+        self, mapping, facts_alias="f", value_column=None, text_column=None
+    ):
         """Build MAX(CASE WHEN ...) against the normalized statement_facts table."""
         if not mapping:
             return "NULL"
@@ -490,11 +485,15 @@ class OrchestratorProcessorBase:
         if not value_col:
             return "NULL"
 
-        term_list = ", ".join(self._sql_literal(self._normalise_taxonomy_term(term) or term) for term in terms)
+        term_list = ", ".join(
+            self._sql_literal(self._normalise_taxonomy_term(term) or term) for term in terms
+        )
         conditions = [f"{facts_alias}.{self._sql_ident('concept_qname')} IN ({term_list})"]
         if periods:
             period_list = ", ".join(self._sql_literal(period) for period in periods)
-            conditions.append(f"{facts_alias}.{self._sql_ident('source_period')} IN ({period_list})")
+            conditions.append(
+                f"{facts_alias}.{self._sql_ident('source_period')} IN ({period_list})"
+            )
         if statement_family:
             conditions.append(
                 f"{facts_alias}.{self._sql_ident('statement_family')} = {self._sql_literal(statement_family)}"
@@ -583,9 +582,7 @@ class OrchestratorProcessorBase:
     def _get_table_columns_in_schema(self, conn, schema_name, table_name):
         """Return table columns for a table that may live in an attached schema."""
         if schema_name == "main":
-            rows = conn.execute(
-                f"PRAGMA table_info({self._sql_ident(table_name)})"
-            ).fetchall()
+            rows = conn.execute(f"PRAGMA table_info({self._sql_ident(table_name)})").fetchall()
         else:
             rows = conn.execute(
                 f"PRAGMA {self._sql_ident(schema_name)}.table_info({self._sql_ident(table_name)})"

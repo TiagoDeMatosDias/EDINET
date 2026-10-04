@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # Forex detection
 # ---------------------------------------------------------------------------
 
+
 def _is_forex_pair(symbol: str) -> bool:
     """Check if a symbol looks like a forex pair (e.g. EUR.USD, USD.JPY).
 
@@ -62,7 +63,7 @@ def _build_currency_map(entries: list[dict]) -> dict[str, str]:
     For option trades, the ``symbol`` field is the option symbol (e.g.
     'JXN 250620P00050000'), not the underlying. We extract both the option
     symbol and the underlying for completeness, mapped to the same currency.
-    
+
     Option symbols (containing spaces and numbers after the underlying)
     are NOT included in the returned map — they can't be priced via
     Stooq/Yahoo. Only the underlying stock ticker is included.
@@ -78,7 +79,7 @@ def _build_currency_map(entries: list[dict]) -> dict[str, str]:
         # Skip forex pairs
         if _is_forex_pair(sym):
             continue
-        
+
         asset_cat = entry.get("asset_category", "")
         if asset_cat == "OPT":
             # Option symbol — only map the underlying, not the option symbol itself
@@ -120,6 +121,12 @@ def ensure_prices_for_tickers(
     conn = connect_write(db2_path)
     try:
         _create_prices_table(conn, "Stock_Prices")
+        # Commit the (idempotent) schema change up front so the loop below only
+        # holds the write lock for a single ticker at a time.  Committing per
+        # ticker — rather than once at the end — releases the WAL write lock
+        # between network fetches, so concurrent writers (screening runs, price
+        # updates, ...) are not blocked for the whole multi-minute fetch loop.
+        conn.commit()
 
         for ticker, currency in ticker_currency_map.items():
             if not ticker or ticker == currency:  # skip forex tokens
@@ -131,7 +138,9 @@ def ensure_prices_for_tickers(
                 if existing_cur != currency:
                     logger.warning(
                         "Currency mismatch for %s: stored=%s, expected=%s — skipping",
-                        ticker, existing_cur, currency,
+                        ticker,
+                        existing_cur,
+                        currency,
                     )
                     continue
                 logger.debug("Ticker %s already present in Stock_Prices", ticker)
@@ -146,11 +155,14 @@ def ensure_prices_for_tickers(
                 logger.info("Fetching prices for %s (currency=%s)", ticker, currency)
                 ok = load_ticker_data(ticker, "Stock_Prices", conn, currency=currency)
             if ok:
+                # Release the write lock after each ticker so concurrent
+                # writers are not blocked during the next network fetch.
+                conn.commit()
                 fetched.append(ticker)
             else:
+                conn.rollback()
                 failed.append(ticker)
                 logger.warning("Failed to fetch prices for %s", ticker)
-        conn.commit()
     except Exception:
         conn.rollback()
         raise
@@ -159,7 +171,9 @@ def ensure_prices_for_tickers(
 
     logger.info(
         "Price fetch complete: fetched=%d, present=%d, failed=%d",
-        len(fetched), len(already_present), len(failed),
+        len(fetched),
+        len(already_present),
+        len(failed),
     )
     return {
         "fetched": fetched,
@@ -206,7 +220,8 @@ def _fetch_etf_to_db(conn: sqlite3.Connection, ticker: str, expected_currency: s
             # Check if data is up to date
             today = pd.Timestamp.today().strftime("%Y-%m-%d")
             last_stored = conn.execute(
-                "SELECT MAX(Date) FROM Stock_Prices WHERE Ticker = ?", (ticker,),
+                "SELECT MAX(Date) FROM Stock_Prices WHERE Ticker = ?",
+                (ticker,),
             ).fetchone()[0]
             if last_stored:
                 days_since = (pd.Timestamp(today) - pd.Timestamp(last_stored)).days
@@ -222,13 +237,18 @@ def _fetch_etf_to_db(conn: sqlite3.Connection, ticker: str, expected_currency: s
             df = df.drop_duplicates(subset=["Date"], keep="last")
             df = df.sort_values("Date")
             df_to_store = df.rename(columns={"Price": "Close"})[["Date", "Close"]]
-            df_to_store.attrs.update({
-                "provider": source_label,
-                "provider_symbol": ticker,
-                "price_basis": "unknown",
-            })
+            df_to_store.attrs.update(
+                {
+                    "provider": source_label,
+                    "provider_symbol": ticker,
+                    "price_basis": "unknown",
+                }
+            )
             logger.info(
-                "ETF %s: fetched %d rows via %s", ticker, len(df), source_label,
+                "ETF %s: fetched %d rows via %s",
+                ticker,
+                len(df),
+                source_label,
             )
 
     # Fallback to generic load_ticker_data with suffix support
@@ -241,7 +261,9 @@ def _fetch_etf_to_db(conn: sqlite3.Connection, ticker: str, expected_currency: s
             if stored_cur and stored_cur != expected_currency:
                 logger.warning(
                     "ETF %s: stored currency %s differs from expected %s",
-                    ticker, stored_cur, expected_currency,
+                    ticker,
+                    stored_cur,
+                    expected_currency,
                 )
             return ok
         return False
@@ -249,7 +271,11 @@ def _fetch_etf_to_db(conn: sqlite3.Connection, ticker: str, expected_currency: s
     if df_to_store is not None and not df_to_store.empty:
         try:
             _append_price_rows(
-                conn, "Stock_Prices", ticker, df_to_store, expected_currency,
+                conn,
+                "Stock_Prices",
+                ticker,
+                df_to_store,
+                expected_currency,
                 provider=df_to_store.attrs.get("provider", source_label),
                 price_basis="unknown",
                 provider_symbol=df_to_store.attrs.get("provider_symbol", ticker),

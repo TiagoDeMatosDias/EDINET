@@ -1,6 +1,6 @@
 # Logging and Correlation
 
-Updated: 2026-07-22
+Updated: 2026-10-04
 
 `main.py` initializes the root logger through `src.utilities.logger.setup_logging()`.
 
@@ -8,15 +8,25 @@ Updated: 2026-07-22
 
 ```text
 logs/
-├── run_YYYYMMDD_HHMMSS.log
-└── archive/
-    └── run_YYYYMMDD_HHMMSS.log
+├── server.log            # active log (rotates to server.log.1 … server.log.5)
+└── archive/              # legacy timestamped logs (kept for reference)
 ```
 
-- A new timestamped file is created for each launcher run.
-- Previous `run_*.log` files move to `logs/archive/` at startup.
+- The server always logs to `<project_root>/logs/server.log`, resolved to an
+  **absolute path anchored at the project root** — so it lands in `logs/` no
+  matter which working directory the server is launched from (`main.py`,
+  `scripts/share.sh`, a frozen exe, a test harness, …).
+- The log file has a **stable name** and is managed by a
+  `RotatingFileHandler` (10 MiB per file, 5 backups, ~60 MiB cap).  A stable
+  name means a running server's log is never moved out from under it — the
+  previous timestamped-file + archive-on-startup design let a *new* launcher
+  run archive the file a *still-running* server was writing to, which made
+  logging appear to stop.
 - Files receive DEBUG and above; the console receives INFO and above.
-- Logs are runtime/operator state and are ignored by Git. There is no automatic age-based archive deletion; operators should apply their normal retention policy.
+- Uvicorn's per-request access log is routed through the root logger, so every
+  HTTP request is captured in `server.log` (not just on the console).
+- Logs are runtime/operator state and are ignored by Git. Rotation bounds the
+  folder automatically; operators may still apply their own retention policy.
 
 ## Request correlation
 
