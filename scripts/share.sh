@@ -13,13 +13,28 @@
 # Ctrl-C stops both.
 set -euo pipefail
 
+# When double-clicked in a file manager there is no terminal attached, so all
+# output would be invisible. Re-execute ourselves inside a terminal window.
+if [[ ! -t 0 && ! -t 1 ]]; then
+  for term in konsole gnome-terminal xfce4-terminal xterm; do
+    if command -v "$term" >/dev/null 2>&1; then
+      case "$term" in
+        konsole)        exec "$term" -p title "Shade Share" -e "$0" "$@" ;;
+        gnome-terminal) exec "$term" -- "$0" "$@" ;;
+        xfce4-terminal) exec "$term" -e "$0" "$@" ;;
+        xterm)          exec "$term" -e "$0" "$@" ;;
+      esac
+    fi
+  done
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT=8000
 BUILD=0
 ASSUME_YES=0
 START_SERVER=1
 
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { awk 'NR>1 { if ($0 ~ /^#/) { sub(/^# ?/, ""); print } else exit }' "$0"; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --port) PORT="$2"; shift 2 ;;
