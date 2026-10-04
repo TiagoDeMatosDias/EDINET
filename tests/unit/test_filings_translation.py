@@ -254,6 +254,33 @@ def test_html_translates_short_nodes_attributes_and_preserves_spacing(monkeypatc
     assert not translation._needs_translation(translated)
 
 
+def test_html_translates_block_prose_instead_of_inline_fragments(monkeypatch):
+    """A sentence split across inline tags (e.g. ``...となっており`` +
+    ``ます。``) must be translated as one block, not as isolated fragments."""
+    calls: list[str] = []
+    monkeypatch.setattr(translation, "_try_load_argos", lambda **_kwargs: True)
+
+    def translator(text: str) -> str:
+        calls.append(text)
+        if text.strip() == "ます。":
+            return "ます。"  # a bare verb ending cannot be translated alone
+        return "has been applied."
+
+    monkeypatch.setattr(translation, "_argos_translate", translator)
+
+    html = (
+        "<body><p>４　<span>会計基準等を適用した後の指標等となっており</span>"
+        "<br/><span>ます。</span></p></body>"
+    )
+
+    translated, item_count = translation.translate_html_fragment(html, force=True)
+
+    assert item_count == 1
+    assert not any(call.strip() == "ます。" for call in calls)
+    assert any("となっており" in call and "ます" in call for call in calls)
+    assert "has been applied." in translated
+
+
 class _HtmlCatalog:
     def get_filing(self, _doc_id):
         return {"doc_id": "S100TEST"}

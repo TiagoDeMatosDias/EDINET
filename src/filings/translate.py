@@ -227,6 +227,7 @@ _JP_EN_GLOSSARY: dict[str, str] = {
     "基準": "Standards",
     "方針": "Policy",
     "重要な": "Significant",
+    "会計基準": "Accounting Standards",
     "会計方針": "Accounting Policies",
     "未適用": "Not Yet Applied",
     "変更": "Change",
@@ -283,6 +284,10 @@ _MAX_TRANSLATION_CHARS = 600
 _RESIDUAL_CHAR_LIMIT = 10
 _DECOMPOSITION_RANKS = ("\n。！？!?；;", "、,,")
 _TRANSLATABLE_ATTRIBUTES = ("alt", "aria-label", "placeholder", "title", "value")
+_BLOCK_TAGS = (
+    "p", "div", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
+    "li", "dt", "dd", "caption", "figcaption", "blockquote", "pre",
+)
 
 
 def _needs_translation(text: str) -> bool:
@@ -532,50 +537,94 @@ def translate_batch(
     return cached
 
 
+def _inside_block(node: Any) -> bool:
+    """Return True when ``node`` has a block-level ancestor."""
+    parent = getattr(node, "parent", None)
+    while parent is not None:
+        if getattr(parent, "name", None) in _BLOCK_TAGS:
+            return True
+        parent = getattr(parent, "parent", None)
+    return False
+
+
 def translate_html_fragment(
     html: str,
     catalog: Any | None = None,
     *,
     force: bool = False,
 ) -> tuple[str, int]:
-    """Translate every visible text node and user-facing attribute in HTML."""
+    """Translate visible prose and user-facing attributes in HTML.
+
+    Prose is translated per block element (paragraph, table cell, heading, ...)
+    so a sentence that iXBRL breaks across inline tags or ``<br>`` is translated
+    as one unit rather than as isolated fragments such as ``ます。``.
+    """
     from bs4 import BeautifulSoup, Comment, Declaration, Doctype, ProcessingInstruction
 
     soup = BeautifulSoup(html, "html.parser")
-    text_targets: list[tuple[Any, str, str]] = []
-    attribute_targets: list[tuple[Any, str, str]] = []
-
     ignored_string_types = (Comment, Declaration, Doctype, ProcessingInstruction)
-    for node in soup.find_all(string=True):
-        if isinstance(node, ignored_string_types):
-            continue
-        raw = str(node)
-        source = raw.strip()
-        if source and _needs_translation(source):
-            text_targets.append((node, raw, source))
 
+    attribute_targets: list[tuple[Any, str, str]] = []
     for tag in soup.find_all(True):
         for attribute in _TRANSLATABLE_ATTRIBUTES:
             value = tag.get(attribute)
             if isinstance(value, str) and _needs_translation(value):
                 attribute_targets.append((tag, attribute, value))
 
+    # Leaf blocks are block-level elements with no block-level descendants, so
+    # their entire text is translated together instead of fragment by fragment.
+    block_targets: list[tuple[Any, str, str, str]] = []
+    for block in soup.find_all(_BLOCK_TAGS):
+        if block.find(_BLOCK_TAGS) is not None:
+            continue
+        nodes = [
+            node
+            for node in block.find_all(string=True)
+            if not isinstance(node, ignored_string_types)
+        ]
+        if not nodes:
+            continue
+        first = str(nodes[0])
+        last = str(nodes[-1])
+        leading = first[: len(first) - len(first.lstrip())]
+        trailing = last[len(last.rstrip()):]
+        source = re.sub(r"\s+", " ", block.get_text(" ", strip=True)).strip()
+        if source and _needs_translation(source):
+            block_targets.append((block, source, leading, trailing))
+
+    # Text nodes outside any block element (e.g. inline text directly in the
+    # body) are translated individually, preserving surrounding whitespace.
+    text_targets: list[tuple[Any, str, str]] = []
+    for node in soup.find_all(string=True):
+        if isinstance(node, ignored_string_types):
+            continue
+        if _inside_block(node):
+            continue
+        raw = str(node)
+        source = raw.strip()
+        if source and _needs_translation(source):
+            text_targets.append((node, raw, source))
+
     sources = list(
         dict.fromkeys(
-            [source for _node, _raw, source in text_targets]
+            [source for _block, source, _leading, _trailing in block_targets]
             + [source for _tag, _attribute, source in attribute_targets]
+            + [source for _node, _raw, source in text_targets]
         )
     )
     translations = translate_batch(sources, catalog, force=force)
 
+    for block, source, leading, trailing in block_targets:
+        block.clear()
+        block.append(leading + translations[source] + trailing)
+    for tag, attribute, source in attribute_targets:
+        tag[attribute] = translations[source]
     for node, raw, source in text_targets:
         leading_length = len(raw) - len(raw.lstrip())
         trailing_start = len(raw.rstrip())
         node.replace_with(
             raw[:leading_length] + translations[source] + raw[trailing_start:]
         )
-    for tag, attribute, source in attribute_targets:
-        tag[attribute] = translations[source]
 
     remaining = [
         str(node).strip()
