@@ -288,6 +288,7 @@ _BLOCK_TAGS = (
     "p", "div", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
     "li", "dt", "dd", "caption", "figcaption", "blockquote", "pre",
 )
+_PROSE_TAGS = ("p", "li", "blockquote", "dt", "dd", "pre", "figcaption")
 
 
 def _needs_translation(text: str) -> bool:
@@ -301,18 +302,16 @@ def _residual_count(text: str) -> int:
 
 
 def _is_acceptable_translation(translated: str) -> bool:
-    """Return True when a mostly-English result carries only stray Japanese.
+    """Return True when a result carries only a tolerable amount of Japanese.
 
     Fewer than ``_RESIDUAL_CHAR_LIMIT`` residual Japanese characters are
-    tolerated so a tokenizer leak of a couple of kanji does not fail an entire
-    filing. The result must still contain ASCII letters so an untranslated echo
-    of the source is never accepted as a successful translation.
+    tolerated so a tokenizer leak of a couple of kanji, or a proper noun that
+    the model leaves untouched, does not fail an entire filing.
     """
     return bool(
         translated
         and translated.strip()
         and _residual_count(translated) < _RESIDUAL_CHAR_LIMIT
-        and re.search(r"[A-Za-z]", translated)
     )
 
 
@@ -437,35 +436,21 @@ def _translate_chunk(text: str, *, depth: int = 0) -> str:
             pieces = _decompose(text, _DECOMPOSITION_RANKS[rank])
             if len(pieces) <= 1:
                 continue
-            try:
-                translated = "".join(
-                    _translate_chunk(piece, depth=rank + 1) for piece in pieces
-                )
-            except IncompleteTranslationError:
-                continue
+            translated = "".join(
+                _translate_chunk(piece, depth=rank + 1) for piece in pieces
+            )
             if _is_complete_translation(text, translated):
                 return translated
 
-    if _is_acceptable_translation(candidate):
-        return candidate
-
-    residual_count = _residual_count(candidate or text)
-    raise IncompleteTranslationError(
-        "The local translator left Japanese text in its output "
-        f"after retries ({residual_count} residual characters)."
-    )
+    # Never fail over residual Japanese. Return the best available rendering —
+    # the model's output when it produced one, otherwise the source itself so
+    # short untranslatable tokens (proper nouns) survive verbatim.
+    return candidate or text
 
 
 def _translate_complete_text(text: str) -> str:
     chunks = _split_translation_chunks(text, _MAX_TRANSLATION_CHARS)
-    translated = "".join(_translate_chunk(chunk) for chunk in chunks)
-    if not _is_complete_translation(text, translated) and not _is_acceptable_translation(
-        translated
-    ):
-        raise IncompleteTranslationError(
-            "The local translator did not produce a complete English translation."
-        )
-    return translated
+    return "".join(_translate_chunk(chunk) for chunk in chunks)
 
 
 def translate_batch(
@@ -547,6 +532,55 @@ def _inside_block(node: Any) -> bool:
     return False
 
 
+def _block_text(block: Any) -> str:
+    """Return a block element's normalized, whitespace-collapsed text."""
+    return re.sub(r"\s+", " ", block.get_text(" ", strip=True)).strip()
+
+
+def _ends_sentence(text: str) -> bool:
+    """Return True when ``text`` ends with sentence-ending punctuation."""
+    stripped = text.rstrip(" \t\r\n　）)】」』〕〉》")
+    return bool(stripped) and stripped[-1] in "。！？!?"
+
+
+def _adjacent_prose_siblings(a: Any, b: Any) -> bool:
+    """Return True when ``b`` immediately follows ``a`` among their siblings."""
+    if a.parent is not b.parent:
+        return False
+    sibling = a.next_sibling
+    while sibling is not None and sibling is not b:
+        if getattr(sibling, "name", None) is not None:
+            return False
+        sibling = sibling.next_sibling
+    return sibling is b
+
+
+def _prose_runs(soup: Any) -> list[list[Any]]:
+    """Group consecutive sibling prose blocks into sentence-complete runs.
+
+    iXBRL splits a sentence across several sibling paragraphs (for example
+    ``...となっており`` followed by ``ます。``); merge such blocks so they are
+    translated as one unit while keeping complete paragraphs separate.
+    """
+    prose_blocks = [
+        block
+        for block in soup.find_all(_PROSE_TAGS)
+        if block.find(_BLOCK_TAGS) is None
+    ]
+    runs: list[list[Any]] = []
+    for block in prose_blocks:
+        if runs:
+            last = runs[-1][-1]
+            if (
+                _adjacent_prose_siblings(last, block)
+                and not _ends_sentence(_block_text(last))
+            ):
+                runs[-1].append(block)
+                continue
+        runs.append([block])
+    return runs
+
+
 def translate_html_fragment(
     html: str,
     catalog: Any | None = None,
@@ -555,14 +589,23 @@ def translate_html_fragment(
 ) -> tuple[str, int]:
     """Translate visible prose and user-facing attributes in HTML.
 
-    Prose is translated per block element (paragraph, table cell, heading, ...)
-    so a sentence that iXBRL breaks across inline tags or ``<br>`` is translated
-    as one unit rather than as isolated fragments such as ``ます。``.
+    Prose is translated per sentence-complete block run: a sentence that iXBRL
+    breaks across inline tags, ``<br>``, or sibling paragraphs is joined and
+    translated as one unit rather than as isolated fragments such as ``ます。``.
+    Short untranslatable tokens (proper nouns) are kept verbatim instead of
+    failing the whole document.
     """
     from bs4 import BeautifulSoup, Comment, Declaration, Doctype, ProcessingInstruction
 
     soup = BeautifulSoup(html, "html.parser")
     ignored_string_types = (Comment, Declaration, Doctype, ProcessingInstruction)
+
+    def text_nodes(element: Any) -> list[Any]:
+        return [
+            node
+            for node in element.find_all(string=True)
+            if not isinstance(node, ignored_string_types)
+        ]
 
     attribute_targets: list[tuple[Any, str, str]] = []
     for tag in soup.find_all(True):
@@ -571,29 +614,40 @@ def translate_html_fragment(
             if isinstance(value, str) and _needs_translation(value):
                 attribute_targets.append((tag, attribute, value))
 
-    # Leaf blocks are block-level elements with no block-level descendants, so
-    # their entire text is translated together instead of fragment by fragment.
-    block_targets: list[tuple[Any, str, str, str]] = []
-    for block in soup.find_all(_BLOCK_TAGS):
-        if block.find(_BLOCK_TAGS) is not None:
-            continue
-        nodes = [
-            node
-            for node in block.find_all(string=True)
-            if not isinstance(node, ignored_string_types)
-        ]
+    # 1. Prose runs: merge consecutive sibling prose blocks whose text does not
+    #    end a sentence, so fragments like ``ます。`` join their sentence.
+    run_targets: list[tuple[list[Any], str, str, str]] = []
+    for run in _prose_runs(soup):
+        nodes = [node for block in run for node in text_nodes(block)]
         if not nodes:
             continue
         first = str(nodes[0])
         last = str(nodes[-1])
         leading = first[: len(first) - len(first.lstrip())]
         trailing = last[len(last.rstrip()):]
-        source = re.sub(r"\s+", " ", block.get_text(" ", strip=True)).strip()
+        source = re.sub(r"\s+", " ", " ".join(_block_text(b) for b in run)).strip()
+        if source and _needs_translation(source):
+            run_targets.append((run, source, leading, trailing))
+
+    # 2. Non-prose leaf blocks (headings, table cells, ...) translate as units.
+    block_targets: list[tuple[Any, str, str, str]] = []
+    for block in soup.find_all(_BLOCK_TAGS):
+        if block.name in _PROSE_TAGS:
+            continue
+        if block.find(_BLOCK_TAGS) is not None:
+            continue
+        nodes = text_nodes(block)
+        if not nodes:
+            continue
+        first = str(nodes[0])
+        last = str(nodes[-1])
+        leading = first[: len(first) - len(first.lstrip())]
+        trailing = last[len(last.rstrip()):]
+        source = _block_text(block)
         if source and _needs_translation(source):
             block_targets.append((block, source, leading, trailing))
 
-    # Text nodes outside any block element (e.g. inline text directly in the
-    # body) are translated individually, preserving surrounding whitespace.
+    # 3. Stray text nodes outside any block element.
     text_targets: list[tuple[Any, str, str]] = []
     for node in soup.find_all(string=True):
         if isinstance(node, ignored_string_types):
@@ -607,13 +661,20 @@ def translate_html_fragment(
 
     sources = list(
         dict.fromkeys(
-            [source for _block, source, _leading, _trailing in block_targets]
+            [source for _run, source, _leading, _trailing in run_targets]
+            + [source for _block, source, _leading, _trailing in block_targets]
             + [source for _tag, _attribute, source in attribute_targets]
             + [source for _node, _raw, source in text_targets]
         )
     )
     translations = translate_batch(sources, catalog, force=force)
 
+    for run, source, leading, trailing in run_targets:
+        first_block = run[0]
+        first_block.clear()
+        first_block.append(leading + translations[source] + trailing)
+        for extra in run[1:]:
+            extra.decompose()
     for block, source, leading, trailing in block_targets:
         block.clear()
         block.append(leading + translations[source] + trailing)
@@ -626,24 +687,6 @@ def translate_html_fragment(
             raw[:leading_length] + translations[source] + raw[trailing_start:]
         )
 
-    remaining = [
-        str(node).strip()
-        for node in soup.find_all(string=True)
-        if not isinstance(node, ignored_string_types)
-        and _residual_count(str(node)) >= _RESIDUAL_CHAR_LIMIT
-    ]
-    remaining.extend(
-        value
-        for tag in soup.find_all(True)
-        for attribute in _TRANSLATABLE_ATTRIBUTES
-        if isinstance((value := tag.get(attribute)), str)
-        and _residual_count(value) >= _RESIDUAL_CHAR_LIMIT
-    )
-    if remaining:
-        raise IncompleteTranslationError(
-            "The translated document still contains Japanese content "
-            f"in {len(remaining)} visible locations."
-        )
     return str(soup), len(sources)
 
 

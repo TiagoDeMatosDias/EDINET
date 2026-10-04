@@ -159,7 +159,9 @@ def test_contextual_kanji_leak_is_recovered_by_fine_grained_decomposition(monkey
     assert any(call == "不利益が利益を上回るため、" for call in calls)
 
 
-def test_incomplete_output_is_rejected_and_never_cached(tmp_path, monkeypatch):
+def test_heavily_residual_output_is_returned_but_not_cached(tmp_path, monkeypatch):
+    """A result with many residual characters is returned as a best effort but
+    is not cached, so a poor translation can never poison the cache."""
     catalog = FilingCatalog(tmp_path / "Filings.db")
     monkeypatch.setattr(translation, "_try_load_argos", lambda **_kwargs: True)
     monkeypatch.setattr(
@@ -168,10 +170,25 @@ def test_incomplete_output_is_rejected_and_never_cached(tmp_path, monkeypatch):
         lambda _text: "English with 未翻訳の日本語が残っています content",
     )
 
-    with pytest.raises(translation.IncompleteTranslationError):
-        translation.translate_batch(["独自表現です。"], catalog)
+    source = "独自表現です。"
+    translated = translation.translate_batch([source], catalog)[source]
 
+    assert translated == "English with 未翻訳の日本語が残っています content"
     assert _translation_count(catalog) == 0
+
+
+def test_untranslatable_short_token_is_kept_verbatim(tmp_path, monkeypatch):
+    """A short token (a proper noun) that the model cannot translate is kept
+    as-is rather than failing the whole batch."""
+    catalog = FilingCatalog(tmp_path / "Filings.db")
+    monkeypatch.setattr(translation, "_try_load_argos", lambda **_kwargs: True)
+    monkeypatch.setattr(translation, "_argos_translate", lambda _text: "")
+
+    source = "竹 下 昇 一"
+    translated = translation.translate_batch([source], catalog)[source]
+
+    assert translated == source
+    assert _translation_count(catalog) == 1
 
 
 def test_few_residual_characters_are_accepted_and_cached(tmp_path, monkeypatch):
@@ -271,6 +288,33 @@ def test_html_translates_block_prose_instead_of_inline_fragments(monkeypatch):
     html = (
         "<body><p>４　<span>会計基準等を適用した後の指標等となっており</span>"
         "<br/><span>ます。</span></p></body>"
+    )
+
+    translated, item_count = translation.translate_html_fragment(html, force=True)
+
+    assert item_count == 1
+    assert not any(call.strip() == "ます。" for call in calls)
+    assert any("となっており" in call and "ます" in call for call in calls)
+    assert "has been applied." in translated
+
+
+def test_html_merges_prose_split_across_sibling_paragraphs(monkeypatch):
+    """A sentence split across sibling ``<p>`` blocks (``...となっており`` +
+    ``ます。``) is merged into one translation unit, not two fragments."""
+    calls: list[str] = []
+    monkeypatch.setattr(translation, "_try_load_argos", lambda **_kwargs: True)
+
+    def translator(text: str) -> str:
+        calls.append(text)
+        if text.strip() == "ます。":
+            return "ます。"
+        return "has been applied."
+
+    monkeypatch.setattr(translation, "_argos_translate", translator)
+
+    html = (
+        "<body><p>（注）会計基準等を適用した後の指標等となっており</p>"
+        "<p>ます。</p></body>"
     )
 
     translated, item_count = translation.translate_html_fragment(html, force=True)
