@@ -451,7 +451,7 @@ class AuthSettingsRequest(BaseModel):
 
     registration_mode: str | None = Field(default=None, pattern=r"^(open|closed|invite)$")
     default_role: str | None = Field(default=None, pattern=r"^(admin|operator|member)$")
-    password_min_length: int | None = Field(default=None, ge=15, le=128)
+    password_min_length: int | None = Field(default=None, ge=5, le=128)
     access_token_seconds: int | None = Field(default=None, ge=60, le=24 * 3600)
     refresh_idle_seconds: int | None = Field(default=None, ge=300, le=365 * 24 * 3600)
     refresh_absolute_seconds: int | None = Field(default=None, ge=300, le=365 * 24 * 3600)

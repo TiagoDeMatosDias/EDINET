@@ -203,7 +203,7 @@ function SignInSection() {
 
 function PasswordSection() {
   const { status } = useAuth()
-  const minimum = status?.password_min_length ?? 15
+  const minimum = status?.password_min_length ?? 5
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
   const message = useMessage()

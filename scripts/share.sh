@@ -46,7 +46,17 @@ fi
 export EDINET_AUTH_MODE=accounts
 
 # -- frontend -----------------------------------------------------------------
-if [[ $START_SERVER -eq 1 ]] && [[ $BUILD -eq 1 || ! -f "$ROOT/frontend-v2/dist/index.html" ]]; then
+# The built bundle is not tracked, so it can be older than the sources. A stale
+# bundle hides newer pages and shortcuts (for example the Admin link), so
+# rebuild it whenever anything it is built from is newer than the last build.
+needs_build() {
+  local dist="$ROOT/frontend-v2/dist/index.html"
+  [[ -f "$dist" ]] || return 0
+  find "$ROOT/frontend-v2/src" "$ROOT/frontend-v2/index.html" \
+    "$ROOT/frontend-v2/package.json" "$ROOT/frontend-v2/vite.config.ts" \
+    -newer "$dist" -print -quit 2>/dev/null | grep -q .
+}
+if [[ $START_SERVER -eq 1 ]] && { [[ $BUILD -eq 1 ]] || needs_build; }; then
   say "Building the frontend…"
   (cd "$ROOT/frontend-v2" && { [[ -d node_modules ]] || npm ci; } && npm run build >/dev/null)
 fi

@@ -51,7 +51,7 @@ export function ShortcutsDialog({ groups, onClose }: { groups: ShortcutGroup[]; 
           <dl>{pages.map(page => <div key={page.key}><dt><kbd>{page.key.toUpperCase()}</kbd></dt><dd>{page.label}</dd></div>)}</dl>
         </section>
       </div>
-      <p className="shortcuts-dialog__foot">Shortcuts pause while you type in a field. Press <kbd>Esc</kbd> to leave the field.</p>
+      <p className="shortcuts-dialog__foot">Shortcuts pause while you type in a field. Press <kbd>Shift</kbd>+<kbd>Tab</kbd> to leave the field.</p>
     </div>
   </div>
 }

@@ -291,11 +291,11 @@ function AccessForm({ settings }: { settings: AuthSettings }) {
     onError: (err: Error) => setMessage(err.message),
   })
   const set = (patch: Partial<AuthSettings>) => { setMessage(null); setDraft(current => ({ ...current, ...patch })) }
-  const valid = draft.password_min_length >= 15 && draft.password_min_length <= 128
+  const valid = draft.password_min_length >= 5 && draft.password_min_length <= 128
   return <form className="ad-form" onSubmit={event => { event.preventDefault(); if (valid) save.mutate() }}>
     <label className="ad-field"><span>Registration</span><select className="select" value={draft.registration_mode} onChange={event => set({ registration_mode: event.target.value as AuthSettings['registration_mode'] })}><option value="open">Open: anyone with the address</option><option value="invite">Invitation only</option><option value="closed">Closed</option></select></label>
     <label className="ad-field"><span>New accounts are</span><select className="select" value={draft.default_role} onChange={event => set({ default_role: event.target.value as AuthSettings['default_role'] })}><option value="member">Members</option><option value="operator">Operators</option></select></label>
-    <label className="ad-field"><span>Password minimum</span><input className="input" type="number" min={15} max={128} value={draft.password_min_length} onChange={event => set({ password_min_length: Number(event.target.value) })} /></label>
+    <label className="ad-field"><span>Password minimum</span><input className="input" type="number" min={5} max={128} value={draft.password_min_length} onChange={event => set({ password_min_length: Number(event.target.value) })} /></label>
     <label className="ad-field"><span>Access token (minutes)</span><input className="input" type="number" min={1} max={1440} value={Math.round(draft.access_token_seconds / 60)} onChange={event => set({ access_token_seconds: Number(event.target.value) * 60 })} /></label>
     <label className="ad-field"><span>Signed out after idle (days)</span><input className="input" type="number" min={1} max={365} value={Math.round(draft.refresh_idle_seconds / 86400)} onChange={event => set({ refresh_idle_seconds: Number(event.target.value) * 86400 })} /></label>
     <label className="ad-field"><span>Session limit (days)</span><input className="input" type="number" min={1} max={365} placeholder="none" value={draft.refresh_absolute_seconds ? Math.round(draft.refresh_absolute_seconds / 86400) : ''} onChange={event => set({ refresh_absolute_seconds: event.target.value ? Number(event.target.value) * 86400 : null })} /></label>

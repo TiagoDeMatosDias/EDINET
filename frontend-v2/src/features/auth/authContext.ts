@@ -9,7 +9,7 @@ export interface AuthUser {
 }
 
 /** Used only until /api/auth/status reports the server's configured minimum. */
-export const DEFAULT_PASSWORD_MIN_LENGTH = 15
+export const DEFAULT_PASSWORD_MIN_LENGTH = 5
 
 export interface AuthStatus {
   mode: 'disabled' | 'accounts'

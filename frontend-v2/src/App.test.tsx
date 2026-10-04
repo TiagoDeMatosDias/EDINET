@@ -51,7 +51,7 @@ function stubBackend(
         mode: authMode,
         registration_open: authMode === 'accounts',
         bootstrap_required: false,
-        password_min_length: 15,
+        password_min_length: 5,
       })
     }
     if (path === '/health') return jsonResponse({ status: 'healthy', version: '1.0.0', timestamp: '2026-07-19T12:00:00Z' })
@@ -197,7 +197,7 @@ describe('account sessions', () => {
     const password = await screen.findByLabelText('Password')
     expect(password).toHaveAttribute('type', 'password')
     expect(password).toHaveAccessibleName('Password')
-    expect(password).toHaveAccessibleDescription(/Minimum 15 characters/)
+    expect(password).toHaveAccessibleDescription(/Minimum 5 characters/)
   })
 
   it('reports an unreachable server instead of assuming authentication is disabled', async () => {

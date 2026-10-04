@@ -19,7 +19,7 @@ _USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{2,63}$")
 _ACCESS_TTL = timedelta(minutes=15)
 _REFRESH_TTL = timedelta(days=30)
 _API_TOKEN_PREFIX = "ed_pat_"
-DEFAULT_PASSWORD_MIN_LENGTH = 15
+DEFAULT_PASSWORD_MIN_LENGTH = 5
 MAX_PASSWORD_LENGTH = 128
 REGISTRATION_MODES = frozenset({"open", "closed", "invite"})
 ROLES = frozenset({"admin", "operator", "member"})

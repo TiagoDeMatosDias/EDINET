@@ -13,7 +13,7 @@ It always serves HTTPS, from `https://127.0.0.1:8000/` on the public homepage an
 - **Research and tagging** — one private tag system shared by favorites, watchlists, Analysis, and Screening, plus notes, thesis state, targets, review dates, and in-app alerts.
 - **Testing ideas** — expression screening, point-in-time rolling backtests, manual and CSV backtests, IBKR FlexQuery portfolio imports, and reproducible report ZIPs.
 - **Data pipeline** — 13 dynamically discovered steps, durable job state, cancellation, progress reporting, safe file uploads, XBRL `explicit`/`backfill`/`all` modes, and financial statements generated from CSV or compact filing facts.
-- **Optional accounts** — registration, login, rotating sessions, personal API tokens, administrator controls, and an administrator-set 15–128-character password minimum.
+- **Optional accounts** — registration, login, rotating sessions, personal API tokens, administrator controls, and an administrator-set 5–128-character password minimum.
 - **Zero-setup databases** — missing configured databases and their managed schemas are created automatically at startup.
 
 ## Screenshots

@@ -216,7 +216,7 @@ def test_admin_can_configure_password_minimum(tmp_path):
     access = client.post("/api/auth/login", json={"login": "policy-admin", "password": password}).json()["access_token"]
     headers = {"Authorization": f"Bearer {access}"}
 
-    assert client.get("/api/auth/status").json()["password_min_length"] == 15
+    assert client.get("/api/auth/status").json()["password_min_length"] == 5
     updated = client.patch("/api/admin/auth/settings", headers=headers, json={"password_min_length": 20})
     assert updated.status_code == 200
     assert updated.json()["password_min_length"] == 20

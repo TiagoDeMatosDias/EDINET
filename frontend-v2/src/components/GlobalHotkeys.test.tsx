@@ -73,6 +73,24 @@ describe('global hotkeys', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 
+  it('releases the focused field on Shift+Tab so shortcuts work again', () => {
+    render(<MemoryRouter initialEntries={['/overview']}><GlobalHotkeys isAdmin={false} /><Where /><input aria-label="Field" /></MemoryRouter>)
+    const field = screen.getByLabelText('Field')
+    field.focus()
+    expect(field).toHaveFocus()
+
+    expect(fireEvent.keyDown(field, { key: 'Tab', shiftKey: true })).toBe(false)
+    expect(field).not.toHaveFocus()
+
+    press('g')
+    expect(screen.getByRole('status')).toHaveTextContent('Go to')
+  })
+
+  it('leaves Shift+Tab alone when no field is focused', () => {
+    render(<MemoryRouter><GlobalHotkeys isAdmin={false} /></MemoryRouter>)
+    expect(fireEvent.keyDown(document.body, { key: 'Tab', shiftKey: true })).toBe(true)
+  })
+
   it('lists shortcuts with ? only where the page has no list of its own', async () => {
     const pageHelp = vi.fn()
     const { unmount } = render(<MemoryRouter><GlobalHotkeys isAdmin={false} /><PageWithOwnHelp onHelp={pageHelp} /></MemoryRouter>)

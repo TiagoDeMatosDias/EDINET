@@ -70,7 +70,7 @@ Responses carry `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, 
 
 Generated artifacts and mutable state default to folders inside the project and can be relocated: `EDINET_STATE_DIR` (default `config/state`; saved screens, uploads, job workspaces, and the irreplaceable databases), `EDINET_BACKTEST_DIR` (default `data/Backtests`), and `EDINET_REPORT_DIR` (default `data/reports`). `EDINET_JOB_WORKSPACE_ROOT` still overrides the job workspace alone. Missing databases are created when the server starts rather than when its module is imported.
 
-Administrators can change the minimum password length under `/admin` → Security settings. The accepted range is 15–128 characters, and the stored policy applies to registration, invitations, resets, password changes, and administrator-created credentials. The public `/pricing` page currently advertises €10 per month or €100 per year; it is informational and does not enable billing or subscription enforcement.
+Administrators can change the minimum password length under `/admin` → Security settings. The accepted range is 5–128 characters, and the stored policy applies to registration, invitations, resets, password changes, and administrator-created credentials. The public `/pricing` page currently advertises €10 per month or €100 per year; it is informational and does not enable billing or subscription enforcement.
 
 For frontend development, keep FastAPI serving HTTPS on port 8000 and start Vite in another terminal (the dev proxy targets `https://127.0.0.1:8000` with certificate verification disabled for the self-signed certificate):
 

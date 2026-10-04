@@ -8,6 +8,7 @@ import { ShortcutsDialog, type ShortcutGroup } from './ShortcutsDialog'
 const PENDING_MS = 3000
 const ANYWHERE: ShortcutGroup[] = [{ title: 'Anywhere', shortcuts: [
   { keys: ['/'], label: 'Search companies' },
+  { keys: ['Shift', 'Tab'], label: 'Leave the field you are typing in' },
   { keys: ['?'], label: 'Show or hide this list' },
   { keys: ['Esc'], label: 'Close a menu or leave a field' },
 ] }]
@@ -28,7 +29,14 @@ export function GlobalHotkeys({ isAdmin, signedIn = true, onPendingChange }: { i
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing || isTypingTarget(event.target) || modalOpen()) return
+      if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing || modalOpen()) return
+      // Shift+Tab leaves the focused field so the page shortcuts work again.
+      if (event.key === 'Tab' && event.shiftKey && isTypingTarget(event.target)) {
+        event.preventDefault()
+        ;(event.target as HTMLElement).blur()
+        return
+      }
+      if (isTypingTarget(event.target)) return
       if (event.key === 'g' && !event.defaultPrevented) {
         event.preventDefault()
         setPending(true)

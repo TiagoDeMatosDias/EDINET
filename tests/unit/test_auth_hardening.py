@@ -172,7 +172,7 @@ def test_rejected_reset_password_does_not_consume_the_token(tmp_path):
     reset_token = service.create_credential_reset(member.user_id, requested_by=admin_id)
 
     with pytest.raises(AuthError) as exc_info:
-        service.reset_password(reset_token, "short")
+        service.reset_password(reset_token, "abc")
     assert exc_info.value.code == "invalid_password"
 
     service.reset_password(reset_token, NEW_PASSWORD)

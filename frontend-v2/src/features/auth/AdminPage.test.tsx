@@ -20,7 +20,7 @@ beforeEach(() => {
     calls.push({ method, path, body: init?.body ? JSON.parse(String(init.body)) : undefined })
     const body = path === '/api/admin/auth/users' ? USERS
       : path.startsWith('/api/admin/auth/audit') ? [{ event_id: 'e1', user_id: 'u2', event_type: 'login_failed', occurred_at: new Date().toISOString(), remote_addr: '127.0.0.1', detail: null }]
-        : path === '/api/admin/auth/settings' ? { registration_mode: 'open', default_role: 'member', password_min_length: 15, access_token_seconds: 900, refresh_idle_seconds: 1209600, refresh_absolute_seconds: null, updated_at: null }
+        : path === '/api/admin/auth/settings' ? { registration_mode: 'open', default_role: 'member', password_min_length: 5, access_token_seconds: 900, refresh_idle_seconds: 1209600, refresh_absolute_seconds: null, updated_at: null }
           : path.startsWith('/api/admin/auth/credential-resets') ? { reset_token: 'reset-123' }
             : path === '/api/admin/auth/invitations' ? { invitation_token: 'invite-456' }
               : path === '/api/admin/pipeline-schedules' ? []
@@ -62,6 +62,6 @@ describe('AdminPage', () => {
     expect(await screen.findByText(/\/register\?invite=invite-456$/)).toBeInTheDocument()
     fireEvent.change(screen.getByRole('combobox', { name: 'Registration' }), { target: { value: 'invite' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save access settings' }))
-    await waitFor(() => expect(calls.find(call => call.method === 'PATCH' && call.path === '/api/admin/auth/settings')?.body).toMatchObject({ registration_mode: 'invite', password_min_length: 15 }))
+    await waitFor(() => expect(calls.find(call => call.method === 'PATCH' && call.path === '/api/admin/auth/settings')?.body).toMatchObject({ registration_mode: 'invite', password_min_length: 5 }))
   })
 })

@@ -23,7 +23,7 @@ Account authentication is optional for loopback use. In account mode:
 - changing or resetting a password signs the account out everywhere and revokes its API tokens;
 - saved backtests are private to the account that ran them;
 - refreshing a price from the provider is available to operators and administrators;
-- an administrator can set the minimum password length from Admin → Security settings. The accepted range is 15–128 characters, and the policy applies to registration, invitations, resets, changes, and administrator-created credentials.
+- an administrator can set the minimum password length from Admin → Security settings. The accepted range is 5–128 characters, and the policy applies to registration, invitations, resets, changes, and administrator-created credentials.
 
 ## Workspace overview
 
@@ -31,7 +31,7 @@ Open `/overview` after entering the workspace. It shows backend health, active a
 
 <img src="images/web-dashboard.png" alt="Workspace overview" width="900">
 
-The sidebar contains Overview, Screen, Analyze, Backtest, Portfolio, Data pipeline, Filings, Compare, and Research. Account and Admin appear when the authenticated role allows them. From the keyboard, press `G` then a letter to switch pages: `O` Overview, `S` Screen, `A` Analyze, `B` Backtest, `P` Portfolio, `D` Data pipeline (admins), `F` Filings, `C` Compare, `R` Research. Each sidebar link shows its letter, and the letters light up while `G` waits for one. `/` searches companies and `?` lists the shortcuts for the current page.
+The sidebar contains Overview, Screen, Analyze, Backtest, Portfolio, Data pipeline, Filings, Compare, and Research. Account and Admin appear when the authenticated role allows them. From the keyboard, press `G` then a letter to switch pages: `O` Overview, `S` Screen, `A` Analyze, `B` Backtest, `P` Portfolio, `D` Data pipeline (admins), `F` Filings, `C` Compare, `R` Research. Each sidebar link shows its letter, and the letters light up while `G` waits for one. `/` searches companies, `Shift+Tab` leaves the field you are typing in, and `?` lists the shortcuts for the current page.
 
 The header company finder searches across the best data currently available. It accepts company name, ticker, EDINET code, industry, and market text. The same finder is reused in Analysis, Comparison, Filings, and Research, so a ticker or company selected in one workflow resolves to the same canonical company code elsewhere. If one configured database is missing or only partly populated, search returns results from the remaining usable sources instead of failing the whole request.
 

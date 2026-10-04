@@ -129,7 +129,7 @@ class AuthStore:
                     singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
                     registration_mode TEXT NOT NULL DEFAULT 'closed',
                     default_role TEXT NOT NULL DEFAULT 'member',
-                    password_min_length INTEGER NOT NULL DEFAULT 15,
+                    password_min_length INTEGER NOT NULL DEFAULT 5,
                     access_token_seconds INTEGER NOT NULL DEFAULT 900,
                     refresh_idle_seconds INTEGER,
                     refresh_absolute_seconds INTEGER,
@@ -158,7 +158,7 @@ class AuthStore:
                 for row in conn.execute("PRAGMA table_info(auth_settings)").fetchall()
             }
             if "password_min_length" not in settings_columns:
-                conn.execute("ALTER TABLE auth_settings ADD COLUMN password_min_length INTEGER NOT NULL DEFAULT 15")
+                conn.execute("ALTER TABLE auth_settings ADD COLUMN password_min_length INTEGER NOT NULL DEFAULT 5")
             conn.commit()
         finally:
             conn.close()
@@ -721,7 +721,7 @@ class AuthStore:
             row = conn.execute(
                 "SELECT registration_mode, default_role, password_min_length, access_token_seconds, refresh_idle_seconds, refresh_absolute_seconds, updated_at FROM auth_settings WHERE singleton_id = 1"
             ).fetchone()
-            return dict(row) if row else {"registration_mode": "closed", "default_role": "member", "password_min_length": 15}
+            return dict(row) if row else {"registration_mode": "closed", "default_role": "member", "password_min_length": 5}
         finally:
             conn.close()
 
