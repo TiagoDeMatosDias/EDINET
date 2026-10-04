@@ -103,14 +103,14 @@ function parseFrequency(value: string): PipelineSchedule['frequency'] {
 }
 
 function Section({ index, title, meta, actions, children, className = '' }: { index: number; title: string; meta?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
-  return <section className={`ad-section ${className}`} id={`ad-section-${index}`} aria-labelledby={`ad-section-${index}-title`}>
-    <header><kbd aria-hidden="true">{index}</kbd><h2 id={`ad-section-${index}-title`} tabIndex={-1}>{title}</h2>{meta && <span className="ad-section__meta">{meta}</span>}{actions && <div className="ad-section__actions">{actions}</div>}</header>
+  return <section className={`console-section ${className}`} id={`console-section-${index}`} aria-labelledby={`console-section-${index}-title`}>
+    <header><kbd aria-hidden="true">{index}</kbd><h2 id={`console-section-${index}-title`} tabIndex={-1}>{title}</h2>{meta && <span className="console-section__meta">{meta}</span>}{actions && <div className="console-section__actions">{actions}</div>}</header>
     {children}
   </section>
 }
 
 function focusSection(index: number) {
-  const section = document.getElementById(`ad-section-${index}`)
+  const section = document.getElementById(`console-section-${index}`)
   section?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
   ;(section?.querySelector<HTMLElement>('[data-row][tabindex="0"]') ?? section?.querySelector<HTMLElement>('input, select, button, h2'))?.focus({ preventScroll: true })
 }
@@ -121,7 +121,7 @@ function OneTimeLink({ label, url, onDismiss }: { label: string; url: string; on
   const copy = async () => {
     try { await navigator.clipboard.writeText(url); setCopied(true) } catch { setCopied(false) }
   }
-  return <div className="ad-link" role="status">
+  return <div className="console-link" role="status">
     <strong>{label}</strong>
     <code>{url}</code>
     <button type="button" className="button button--secondary button--small" onClick={() => void copy()}><Copy aria-hidden="true" />{copied ? 'Copied' : 'Copy'}</button>
@@ -214,13 +214,13 @@ export default function AdminPage() {
   const day = 24 * 3600 * 1000
   const failures = (audit.data ?? []).filter(event => event.event_type === 'login_failed' && now - new Date(event.occurred_at).getTime() < day).length
 
-  return <div className="ad-page">
-    <header className="ad-head">
+  return <div className="console-page">
+    <header className="console-head">
       <div><span className="eyebrow">Administration</span><h1>Accounts and access</h1></div>
-      <nav className="ad-jump" aria-label="Sections">{SECTIONS.map((section, position) => <button key={section} type="button" onClick={() => focusSection(position + 1)}><kbd>{position + 1}</kbd>{section}</button>)}</nav>
+      <nav className="console-jump" aria-label="Sections">{SECTIONS.map((section, position) => <button key={section} type="button" onClick={() => focusSection(position + 1)}><kbd>{position + 1}</kbd>{section}</button>)}</nav>
       <button type="button" className="icon-button" onClick={() => setHelp(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard /></button>
     </header>
-    <div className="ad-kpis">
+    <div className="console-kpis">
       <div><span>Accounts</span><strong>{allUsers.length}</strong><small>{allUsers.filter(user => user.status === 'active').length} active · {allUsers.filter(user => user.status !== 'active').length} disabled</small></div>
       <div><span>Administrators</span><strong>{allUsers.filter(user => user.role === 'admin').length}</strong><small>{allUsers.filter(user => user.role === 'operator').length} operators</small></div>
       <div><span>Signed in, 7 days</span><strong>{allUsers.filter(user => user.last_login_at && now - new Date(user.last_login_at).getTime() < 7 * day).length}</strong><small>of {allUsers.length}</small></div>
@@ -231,20 +231,20 @@ export default function AdminPage() {
     {error && <p className="form-error" role="alert">{error} <button type="button" className="text-button" onClick={() => setError(null)}>Dismiss</button></p>}
     {link && <OneTimeLink label={link.label} url={link.url} onDismiss={() => setLink(null)} />}
 
-    <div className="ad-grid">
-      <div className="ad-column">
+    <div className="console-grid">
+      <div className="console-column">
         <Section index={1} title="Users" meta={`${shown.length} of ${allUsers.length}`} actions={<input ref={filterInput} className="input" placeholder="Filter (F)" aria-label="Filter users" value={filter} onChange={event => { setFilter(event.target.value); setCursor(0) }} onKeyDown={event => { if (event.key === 'ArrowDown' || event.key === 'Enter') { event.preventDefault(); focusRow(0) } if (event.key === 'Escape') { setFilter(''); event.currentTarget.blur() } }} />}>
-          {users.isLoading ? <LoadingState label="Loading users" /> : <div className="ad-scroll"><table className="ad-table">
+          {users.isLoading ? <LoadingState label="Loading users" /> : <div className="console-scroll"><table className="console-table">
             <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th>Created</th><th>Last login</th><th><span className="sr-only">Actions</span></th></tr></thead>
             <tbody ref={usersBody} onKeyDown={onUsersKey}>
               {shown.map((user, position) => <tr key={user.user_id} data-row tabIndex={position === index ? 0 : -1} className={position === index ? 'is-cursor' : undefined} onFocus={() => setCursor(position)} onClick={() => setCursor(position)}>
                 <td><Link to={`/people/${encodeURIComponent(user.username)}`}>{user.username}</Link>{user.user_id === auth.user?.user_id && <small> (you)</small>}</td>
-                <td className="ad-muted">{user.email || '—'}</td>
+                <td className="console-muted">{user.email || '—'}</td>
                 <td><select className="select" aria-label={`Role of ${user.username}`} value={user.role} disabled={user.status !== 'active' || updateRole.isPending} onChange={event => updateRole.mutate({ userId: user.user_id, role: event.target.value })}><option value="admin">Admin</option><option value="operator">Operator</option><option value="member">Member</option></select></td>
-                <td><span className={user.status === 'active' ? 'ad-pill' : 'ad-pill ad-pill--off'}>{user.status}</span></td>
-                <td className="ad-mono">{when(user.created_at)}</td>
-                <td className="ad-mono">{when(user.last_login_at)}</td>
-                <td className="ad-actions">
+                <td><span className={user.status === 'active' ? 'console-pill' : 'console-pill console-pill--off'}>{user.status}</span></td>
+                <td className="console-mono">{when(user.created_at)}</td>
+                <td className="console-mono">{when(user.last_login_at)}</td>
+                <td className="console-actions">
                   <button type="button" className="text-button" onClick={() => resetLink.mutate(user)} title="Make a one-time password-reset link (P)"><RotateCcw aria-hidden="true" />Reset</button>
                   {user.status === 'active' && user.user_id !== auth.user?.user_id && <button type="button" className={armed === `disable:${user.user_id}` ? 'text-button is-danger' : 'text-button'} onClick={() => disable(user)} title="Disable the account (X twice)">{armed === `disable:${user.user_id}` ? 'Disable: sure?' : 'Disable'}</button>}
                 </td>
@@ -254,16 +254,16 @@ export default function AdminPage() {
         </Section>
 
         <Section index={2} title="Invite and reset" meta="one-time links">
-          <form className="ad-inline" onSubmit={(event: FormEvent) => { event.preventDefault(); invite.mutate() }}>
-            <label className="ad-field"><span>Role</span><select className="select" value={inviteRole} onChange={event => setInviteRole(event.target.value)}><option value="member">Member</option><option value="operator">Operator</option><option value="admin">Admin</option></select></label>
-            <label className="ad-field ad-field--grow"><span>Email (optional, to restrict it)</span><input className="input" type="email" value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} /></label>
+          <form className="console-inline" onSubmit={(event: FormEvent) => { event.preventDefault(); invite.mutate() }}>
+            <label className="console-field"><span>Role</span><select className="select" value={inviteRole} onChange={event => setInviteRole(event.target.value)}><option value="member">Member</option><option value="operator">Operator</option><option value="admin">Admin</option></select></label>
+            <label className="console-field console-field--grow"><span>Email (optional, to restrict it)</span><input className="input" type="email" value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} /></label>
             <button ref={inviteButton} type="submit" className="button button--primary button--small" disabled={invite.isPending}><UserPlus aria-hidden="true" />Create invitation <kbd>I</kbd></button>
           </form>
-          <p className="ad-muted"><Link2 aria-hidden="true" /> Invitations open registration for one person even when it is closed or invitation-only. For a forgotten password, use <em>Reset</em> on the user’s row (<kbd>P</kbd>): the link sets a new password once. Links use this page’s address, so make them from the address you share (your tunnel URL).</p>
+          <p className="console-muted"><Link2 aria-hidden="true" /> Invitations open registration for one person even when it is closed or invitation-only. For a forgotten password, use <em>Reset</em> on the user’s row (<kbd>P</kbd>): the link sets a new password once. Links use this page’s address, so make them from the address you share (your tunnel URL).</p>
         </Section>
       </div>
 
-      <div className="ad-column">
+      <div className="console-column">
         <Section index={3} title="Access" meta={settings.data?.updated_at ? `changed ${when(settings.data.updated_at)}` : 'deployment defaults'}>
           {settings.data ? <AccessForm key={settings.data.updated_at ?? 'defaults'} settings={settings.data} /> : <LoadingState label="Loading settings" />}
         </Section>
@@ -292,16 +292,16 @@ function AccessForm({ settings }: { settings: AuthSettings }) {
   })
   const set = (patch: Partial<AuthSettings>) => { setMessage(null); setDraft(current => ({ ...current, ...patch })) }
   const valid = draft.password_min_length >= 5 && draft.password_min_length <= 128
-  return <form className="ad-form" onSubmit={event => { event.preventDefault(); if (valid) save.mutate() }}>
-    <label className="ad-field"><span>Registration</span><select className="select" value={draft.registration_mode} onChange={event => set({ registration_mode: event.target.value as AuthSettings['registration_mode'] })}><option value="open">Open: anyone with the address</option><option value="invite">Invitation only</option><option value="closed">Closed</option></select></label>
-    <label className="ad-field"><span>New accounts are</span><select className="select" value={draft.default_role} onChange={event => set({ default_role: event.target.value as AuthSettings['default_role'] })}><option value="member">Members</option><option value="operator">Operators</option></select></label>
-    <label className="ad-field"><span>Password minimum</span><input className="input" type="number" min={5} max={128} value={draft.password_min_length} onChange={event => set({ password_min_length: Number(event.target.value) })} /></label>
-    <label className="ad-field"><span>Access token (minutes)</span><input className="input" type="number" min={1} max={1440} value={Math.round(draft.access_token_seconds / 60)} onChange={event => set({ access_token_seconds: Number(event.target.value) * 60 })} /></label>
-    <label className="ad-field"><span>Signed out after idle (days)</span><input className="input" type="number" min={1} max={365} value={Math.round(draft.refresh_idle_seconds / 86400)} onChange={event => set({ refresh_idle_seconds: Number(event.target.value) * 86400 })} /></label>
-    <label className="ad-field"><span>Session limit (days)</span><input className="input" type="number" min={1} max={365} placeholder="none" value={draft.refresh_absolute_seconds ? Math.round(draft.refresh_absolute_seconds / 86400) : ''} onChange={event => set({ refresh_absolute_seconds: event.target.value ? Number(event.target.value) * 86400 : null })} /></label>
-    <div className="ad-form__actions">
+  return <form className="console-form" onSubmit={event => { event.preventDefault(); if (valid) save.mutate() }}>
+    <label className="console-field"><span>Registration</span><select className="select" value={draft.registration_mode} onChange={event => set({ registration_mode: event.target.value as AuthSettings['registration_mode'] })}><option value="open">Open: anyone with the address</option><option value="invite">Invitation only</option><option value="closed">Closed</option></select></label>
+    <label className="console-field"><span>New accounts are</span><select className="select" value={draft.default_role} onChange={event => set({ default_role: event.target.value as AuthSettings['default_role'] })}><option value="member">Members</option><option value="operator">Operators</option></select></label>
+    <label className="console-field"><span>Password minimum</span><input className="input" type="number" min={5} max={128} value={draft.password_min_length} onChange={event => set({ password_min_length: Number(event.target.value) })} /></label>
+    <label className="console-field"><span>Access token (minutes)</span><input className="input" type="number" min={1} max={1440} value={Math.round(draft.access_token_seconds / 60)} onChange={event => set({ access_token_seconds: Number(event.target.value) * 60 })} /></label>
+    <label className="console-field"><span>Signed out after idle (days)</span><input className="input" type="number" min={1} max={365} value={Math.round(draft.refresh_idle_seconds / 86400)} onChange={event => set({ refresh_idle_seconds: Number(event.target.value) * 86400 })} /></label>
+    <label className="console-field"><span>Session limit (days)</span><input className="input" type="number" min={1} max={365} placeholder="none" value={draft.refresh_absolute_seconds ? Math.round(draft.refresh_absolute_seconds / 86400) : ''} onChange={event => set({ refresh_absolute_seconds: event.target.value ? Number(event.target.value) * 86400 : null })} /></label>
+    <div className="console-form__actions">
       <button type="submit" className="button button--primary button--small" disabled={!valid || save.isPending}>{save.isPending ? 'Saving…' : 'Save access settings'}</button>
-      {draft.registration_mode === 'open' && <small className="ad-warn">Open registration lets anyone who reaches this address create an account. Before sharing a public link, consider invitation only.</small>}
+      {draft.registration_mode === 'open' && <small className="console-warn">Open registration lets anyone who reaches this address create an account. Before sharing a public link, consider invitation only.</small>}
       {message && <small role="status">{message}</small>}
     </div>
   </form>
@@ -314,18 +314,18 @@ function AuditTable({ events, users, loading }: { events: AuditEvent[]; users: M
     && `${EVENT_LABELS[event.event_type] ?? event.event_type} ${users.get(event.user_id ?? '')?.username ?? event.user_id ?? ''} ${event.detail ?? ''} ${event.remote_addr ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()))
   if (loading) return <LoadingState label="Loading audit log" />
   return <>
-    <div className="ad-inline">
+    <div className="console-inline">
       <input className="input" placeholder="Filter events" aria-label="Filter audit events" value={query} onChange={event => setQuery(event.target.value)} />
-      <label className="ad-check"><input type="checkbox" checked={onlyAlarming} onChange={event => setOnlyAlarming(event.target.checked)} />Failures and security events only</label>
+      <label className="console-check"><input type="checkbox" checked={onlyAlarming} onChange={event => setOnlyAlarming(event.target.checked)} />Failures and security events only</label>
     </div>
-    <div className="ad-scroll ad-scroll--audit"><table className="ad-table">
+    <div className="console-scroll console-scroll--audit"><table className="console-table">
       <thead><tr><th>Time</th><th>Event</th><th>User</th><th>From</th><th>Detail</th></tr></thead>
       <tbody>{shown.map(event => <tr key={event.event_id} className={ALARMING.has(event.event_type) ? 'is-alarm' : undefined}>
-        <td className="ad-mono">{when(event.occurred_at)}</td>
+        <td className="console-mono">{when(event.occurred_at)}</td>
         <td>{EVENT_LABELS[event.event_type] ?? event.event_type}</td>
         <td>{users.get(event.user_id ?? '')?.username ?? (event.user_id ? event.user_id.slice(0, 8) : '—')}</td>
-        <td className="ad-mono">{event.remote_addr ?? '—'}</td>
-        <td className="ad-muted" title={event.detail ?? ''}>{event.detail || '—'}</td>
+        <td className="console-mono">{event.remote_addr ?? '—'}</td>
+        <td className="console-muted" title={event.detail ?? ''}>{event.detail || '—'}</td>
       </tr>)}</tbody>
     </table></div>
   </>
@@ -363,24 +363,24 @@ function SchedulesSection() {
   })
   const remove = useMutation({ mutationFn: (id: string) => apiRequest(`/api/admin/pipeline-schedules/${encodeURIComponent(id)}`, { method: 'DELETE' }), onSuccess: () => done('Schedule deleted.'), onError: failed })
   const reset = useMutation({ mutationFn: (id: string) => apiRequest(`/api/admin/pipeline-schedules/${encodeURIComponent(id)}/reset-last-run`, { method: 'POST' }), onSuccess: () => done('Due on the next check.'), onError: failed })
-  return <div className="ad-form ad-form--schedules">
-    <p className="ad-muted">Checked every five minutes; never while another run is active. Next check {status.data?.next_check_at ? when(status.data.next_check_at) : '…'}{status.data?.active_pipeline ? ' · a run is active, so checks wait' : ''}. <button type="button" className="text-button" disabled={checkNow.isPending} onClick={() => checkNow.mutate()}>Check now</button></p>
-    {setups.length ? <div className="ad-inline">
-      <label className="ad-field"><span>Saved sequence</span><select className="select" value={setupName} onChange={event => setSetupName(event.target.value)}>{setups.map(setup => <option key={setup.name}>{setup.name}</option>)}</select></label>
-      <label className="ad-field ad-field--grow"><span>Name</span><input className="input" value={scheduleName} onChange={event => setScheduleName(event.target.value)} /></label>
-      <label className="ad-field"><span>Every</span><select className="select" value={frequency} onChange={event => setFrequency(parseFrequency(event.target.value))}><option value="daily">Day</option><option value="weekly">Week</option><option value="monthly">Month</option></select></label>
+  return <div className="console-form console-form--schedules">
+    <p className="console-muted">Checked every five minutes; never while another run is active. Next check {status.data?.next_check_at ? when(status.data.next_check_at) : '…'}{status.data?.active_pipeline ? ' · a run is active, so checks wait' : ''}. <button type="button" className="text-button" disabled={checkNow.isPending} onClick={() => checkNow.mutate()}>Check now</button></p>
+    {setups.length ? <div className="console-inline">
+      <label className="console-field"><span>Saved sequence</span><select className="select" value={setupName} onChange={event => setSetupName(event.target.value)}>{setups.map(setup => <option key={setup.name}>{setup.name}</option>)}</select></label>
+      <label className="console-field console-field--grow"><span>Name</span><input className="input" value={scheduleName} onChange={event => setScheduleName(event.target.value)} /></label>
+      <label className="console-field"><span>Every</span><select className="select" value={frequency} onChange={event => setFrequency(parseFrequency(event.target.value))}><option value="daily">Day</option><option value="weekly">Week</option><option value="monthly">Month</option></select></label>
       <button type="button" className="button button--secondary button--small" disabled={create.isPending} onClick={() => create.mutate()}>Add</button>
-    </div> : <p className="ad-muted">Save a sequence on the Data pipeline page to schedule it.</p>}
-    {schedules.data?.length ? <table className="ad-table">
+    </div> : <p className="console-muted">Save a sequence on the Data pipeline page to schedule it.</p>}
+    {schedules.data?.length ? <table className="console-table">
       <thead><tr><th>Schedule</th><th>Every</th><th>On</th><th>Last run</th><th /></tr></thead>
       <tbody>{schedules.data.map(item => <tr key={item.schedule_id}>
         <td title={item.steps.map(step => step.name).join(' → ')}>{item.name}</td>
         <td><select className="select" aria-label={`Frequency of ${item.name}`} value={item.frequency} onChange={event => update.mutate({ id: item.schedule_id, changes: { frequency: parseFrequency(event.target.value) } })}><option value="daily">Day</option><option value="weekly">Week</option><option value="monthly">Month</option></select></td>
         <td><input type="checkbox" aria-label={`Enable ${item.name}`} checked={item.enabled} onChange={event => update.mutate({ id: item.schedule_id, changes: { enabled: event.target.checked } })} /></td>
-        <td className="ad-mono">{when(item.last_run_at)}</td>
-        <td className="ad-actions"><button type="button" className="text-button" onClick={() => reset.mutate(item.schedule_id)}>Run next check</button><button type="button" className="text-button" onClick={() => remove.mutate(item.schedule_id)}>Delete</button></td>
+        <td className="console-mono">{when(item.last_run_at)}</td>
+        <td className="console-actions"><button type="button" className="text-button" onClick={() => reset.mutate(item.schedule_id)}>Run next check</button><button type="button" className="text-button" onClick={() => remove.mutate(item.schedule_id)}>Delete</button></td>
       </tr>)}</tbody>
-    </table> : !schedules.isLoading && <p className="ad-muted">No schedules.</p>}
+    </table> : !schedules.isLoading && <p className="console-muted">No schedules.</p>}
     {message && <small role="status">{message}</small>}
   </div>
 }

@@ -34,6 +34,14 @@ def test_workspace_routes_serve_the_react_entrypoint() -> None:
         assert '<div id="root"></div>' in response.text
 
 
+def test_workspace_shell_is_revalidated_not_cached() -> None:
+    # The shell names hashed assets, so a stale cached copy would keep serving
+    # an old bundle (missing newer pages) until the browser's cache expired.
+    for path in ("/", "/admin"):
+        response = client.get(path)
+        assert response.headers.get("cache-control") == "no-cache"
+
+
 def test_workspace_assets_are_served_from_isolated_mount() -> None:
     response = client.get("/")
     soup = BeautifulSoup(response.text, "html.parser")

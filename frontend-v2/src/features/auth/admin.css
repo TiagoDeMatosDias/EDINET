@@ -1,54 +1,56 @@
-.ad-page { display: flex; flex-direction: column; gap: 8px; }
-.ad-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 16px; }
-.ad-head h1 { margin: 0; font-size: 1.5rem; }
-.ad-jump { display: flex; flex-wrap: wrap; gap: 2px; margin-left: auto; }
-.ad-jump button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--muted); background: transparent; font-size: .72rem; cursor: pointer; }
-.ad-kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
-.ad-kpis > div { display: flex; flex-direction: column; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
-.ad-kpis span { color: var(--muted); font-size: .6rem; letter-spacing: .07em; text-transform: uppercase; }
-.ad-kpis strong { font-family: var(--font-mono); font-size: 1rem; font-weight: 400; }
-.ad-kpis small { color: var(--muted); font-size: .66rem; }
-.ad-kpis .is-alarm strong { color: var(--vermilion); }
-.ad-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 8px; align-items: start; }
-.ad-column { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.ad-section { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); scroll-margin-top: 80px; }
-.ad-section > header { display: flex; align-items: center; gap: 6px; }
-.ad-section > header h2 { margin: 0; font-size: .9rem; outline: none; }
-.ad-section__meta { color: var(--muted); font-size: .68rem; }
-.ad-section__actions { margin-left: auto; }
-.ad-section__actions .input { width: 180px; min-height: 28px; padding: 3px 7px; font-size: .78rem; }
-.ad-scroll { max-height: 420px; overflow: auto; }
-.ad-scroll--audit { max-height: 360px; }
-.ad-table { width: 100%; border-collapse: collapse; font-size: .76rem; }
-.ad-table th { position: sticky; top: 0; z-index: 1; padding: 2px 5px; border-bottom: 1px solid var(--border-strong); background: var(--surface); color: var(--muted); font-size: .6rem; font-weight: 500; letter-spacing: .06em; text-align: left; text-transform: uppercase; }
-.ad-table td { max-width: 220px; padding: 2px 5px; overflow: hidden; border-bottom: 1px solid var(--border); text-overflow: ellipsis; white-space: nowrap; }
-.ad-table td a { color: var(--text); }
-.ad-table tr:focus { outline: none; }
-.ad-table tr.is-cursor { background: var(--surface-subtle); box-shadow: inset 2px 0 0 var(--vermilion); }
-.ad-table tr.is-alarm td:nth-child(2) { color: var(--vermilion); }
-.ad-table .select { min-height: 24px; padding: 1px 4px; font-size: .74rem; }
-.ad-actions { display: flex; gap: 8px; }
-.ad-actions .text-button { font-size: .72rem; }
-.ad-actions .text-button svg { width: 11px; height: 11px; }
+/* The admin UI prefix is "console-", never "ad-": ad blockers apply generic
+   cosmetic filters such as [class^="ad-"] that would hide every element here. */
+.console-page { display: flex; flex-direction: column; gap: 8px; }
+.console-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 16px; }
+.console-head h1 { margin: 0; font-size: 1.5rem; }
+.console-jump { display: flex; flex-wrap: wrap; gap: 2px; margin-left: auto; }
+.console-jump button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--muted); background: transparent; font-size: .72rem; cursor: pointer; }
+.console-kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
+.console-kpis > div { display: flex; flex-direction: column; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.console-kpis span { color: var(--muted); font-size: .6rem; letter-spacing: .07em; text-transform: uppercase; }
+.console-kpis strong { font-family: var(--font-mono); font-size: 1rem; font-weight: 400; }
+.console-kpis small { color: var(--muted); font-size: .66rem; }
+.console-kpis .is-alarm strong { color: var(--vermilion); }
+.console-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 8px; align-items: start; }
+.console-column { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.console-section { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); scroll-margin-top: 80px; }
+.console-section > header { display: flex; align-items: center; gap: 6px; }
+.console-section > header h2 { margin: 0; font-size: .9rem; outline: none; }
+.console-section__meta { color: var(--muted); font-size: .68rem; }
+.console-section__actions { margin-left: auto; }
+.console-section__actions .input { width: 180px; min-height: 28px; padding: 3px 7px; font-size: .78rem; }
+.console-scroll { max-height: 420px; overflow: auto; }
+.console-scroll--audit { max-height: 360px; }
+.console-table { width: 100%; border-collapse: collapse; font-size: .76rem; }
+.console-table th { position: sticky; top: 0; z-index: 1; padding: 2px 5px; border-bottom: 1px solid var(--border-strong); background: var(--surface); color: var(--muted); font-size: .6rem; font-weight: 500; letter-spacing: .06em; text-align: left; text-transform: uppercase; }
+.console-table td { max-width: 220px; padding: 2px 5px; overflow: hidden; border-bottom: 1px solid var(--border); text-overflow: ellipsis; white-space: nowrap; }
+.console-table td a { color: var(--text); }
+.console-table tr:focus { outline: none; }
+.console-table tr.is-cursor { background: var(--surface-subtle); box-shadow: inset 2px 0 0 var(--vermilion); }
+.console-table tr.is-alarm td:nth-child(2) { color: var(--vermilion); }
+.console-table .select { min-height: 24px; padding: 1px 4px; font-size: .74rem; }
+.console-actions { display: flex; gap: 8px; }
+.console-actions .text-button { font-size: .72rem; }
+.console-actions .text-button svg { width: 11px; height: 11px; }
 .text-button.is-danger { color: var(--danger); }
-.ad-mono { font-family: var(--font-mono); font-size: .68rem; }
-.ad-muted { margin: 0; color: var(--muted); font-size: .72rem; }
-.ad-muted svg { width: 12px; height: 12px; vertical-align: -2px; }
-.ad-pill { display: inline-block; padding: 0 6px; border: 1px solid rgb(43 58 85 / 35%); border-radius: var(--radius); color: var(--indigo); font-size: .66rem; }
-.ad-pill--off { border-color: rgb(176 48 31 / 40%); color: var(--vermilion); }
-.ad-inline { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; }
-.ad-inline > .input { flex: 1; min-height: 28px; padding: 3px 7px; font-size: .78rem; }
-.ad-field { display: flex; flex-direction: column; gap: 2px; font-size: .72rem; }
-.ad-field > span { color: var(--muted); font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; }
-.ad-field--grow { flex: 1; }
-.ad-field .input, .ad-field .select { min-height: 28px; padding: 3px 6px; font-size: .78rem; }
-.ad-check { display: inline-flex; align-items: center; gap: 4px; font-size: .72rem; }
-.ad-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-.ad-form--schedules { display: flex; flex-direction: column; }
-.ad-form__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; grid-column: 1 / -1; }
-.ad-warn { color: var(--warning); }
-.ad-link { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 4px 8px; padding: 6px 10px; border: 1px solid var(--warning-border); border-radius: var(--radius); background: var(--warning-soft); font-size: .78rem; }
-.ad-link code { overflow: hidden; font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
-.ad-link small { grid-column: 1 / -1; color: var(--muted); }
-.ad-link .button svg { width: 12px; height: 12px; }
-@media (max-width: 1100px) { .ad-grid { grid-template-columns: minmax(0, 1fr); } .ad-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .ad-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.console-mono { font-family: var(--font-mono); font-size: .68rem; }
+.console-muted { margin: 0; color: var(--muted); font-size: .72rem; }
+.console-muted svg { width: 12px; height: 12px; vertical-align: -2px; }
+.console-pill { display: inline-block; padding: 0 6px; border: 1px solid rgb(43 58 85 / 35%); border-radius: var(--radius); color: var(--indigo); font-size: .66rem; }
+.console-pill--off { border-color: rgb(176 48 31 / 40%); color: var(--vermilion); }
+.console-inline { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; }
+.console-inline > .input { flex: 1; min-height: 28px; padding: 3px 7px; font-size: .78rem; }
+.console-field { display: flex; flex-direction: column; gap: 2px; font-size: .72rem; }
+.console-field > span { color: var(--muted); font-size: .6rem; letter-spacing: .05em; text-transform: uppercase; }
+.console-field--grow { flex: 1; }
+.console-field .input, .console-field .select { min-height: 28px; padding: 3px 6px; font-size: .78rem; }
+.console-check { display: inline-flex; align-items: center; gap: 4px; font-size: .72rem; }
+.console-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.console-form--schedules { display: flex; flex-direction: column; }
+.console-form__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; grid-column: 1 / -1; }
+.console-warn { color: var(--warning); }
+.console-link { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 4px 8px; padding: 6px 10px; border: 1px solid var(--warning-border); border-radius: var(--radius); background: var(--warning-soft); font-size: .78rem; }
+.console-link code { overflow: hidden; font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
+.console-link small { grid-column: 1 / -1; color: var(--muted); }
+.console-link .button svg { width: 12px; height: 12px; }
+@media (max-width: 1100px) { .console-grid { grid-template-columns: minmax(0, 1fr); } .console-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .console-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

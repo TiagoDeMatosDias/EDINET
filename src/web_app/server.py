@@ -70,7 +70,10 @@ def _frontend_v2() -> FileResponse:
         raise OperatorGuidanceError(
             "Frontend build missing. Run npm run build in frontend-v2.",
         )
-    return FileResponse(index)
+    # The shell names content-hashed assets, so a cached copy goes stale the
+    # moment the bundle is rebuilt and can hide newer pages in a browser that
+    # never revalidates. Always revalidate it (cheap 304 while unchanged).
+    return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 
 # ── Static / fallback ──
