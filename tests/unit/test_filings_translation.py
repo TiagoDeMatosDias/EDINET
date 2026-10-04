@@ -165,13 +165,30 @@ def test_incomplete_output_is_rejected_and_never_cached(tmp_path, monkeypatch):
     monkeypatch.setattr(
         translation,
         "_argos_translate",
-        lambda _text: "English with 未翻訳 content",
+        lambda _text: "English with 未翻訳の日本語が残っています content",
     )
 
     with pytest.raises(translation.IncompleteTranslationError):
         translation.translate_batch(["独自表現です。"], catalog)
 
     assert _translation_count(catalog) == 0
+
+
+def test_few_residual_characters_are_accepted_and_cached(tmp_path, monkeypatch):
+    catalog = FilingCatalog(tmp_path / "Filings.db")
+    monkeypatch.setattr(translation, "_try_load_argos", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        translation,
+        "_argos_translate",
+        lambda _text: "English with 未翻訳 content",
+    )
+
+    source = "独自表現です。"
+    translated = translation.translate_batch([source], catalog)[source]
+
+    assert translated == "English with 未翻訳 content"
+    assert translation._residual_count(translated) == 3
+    assert _translation_count(catalog) == 1
 
 
 def test_legacy_partial_cache_is_ignored_and_replaced(tmp_path, monkeypatch):

@@ -280,6 +280,7 @@ _CJK_RE = re.compile(f"[{_CJK_CHAR_CLASS}]")
 _CJK_RUN_RE = re.compile(f"[{_CJK_CHAR_CLASS}]+")
 _CHUNK_BOUNDARIES = "\n。！？!?；;、, "
 _MAX_TRANSLATION_CHARS = 600
+_RESIDUAL_CHAR_LIMIT = 10
 _DECOMPOSITION_RANKS = ("\n。！？!?；;", "、,,")
 _TRANSLATABLE_ATTRIBUTES = ("alt", "aria-label", "placeholder", "title", "value")
 
@@ -287,6 +288,27 @@ _TRANSLATABLE_ATTRIBUTES = ("alt", "aria-label", "placeholder", "title", "value"
 def _needs_translation(text: str) -> bool:
     """Return True when text contains Japanese kana or CJK ideographs."""
     return bool(text and text.strip() and _CJK_RE.search(text))
+
+
+def _residual_count(text: str) -> int:
+    """Return how many Japanese/CJK characters remain inside ``text``."""
+    return len(_CJK_RE.findall(text or ""))
+
+
+def _is_acceptable_translation(translated: str) -> bool:
+    """Return True when a mostly-English result carries only stray Japanese.
+
+    Fewer than ``_RESIDUAL_CHAR_LIMIT`` residual Japanese characters are
+    tolerated so a tokenizer leak of a couple of kanji does not fail an entire
+    filing. The result must still contain ASCII letters so an untranslated echo
+    of the source is never accepted as a successful translation.
+    """
+    return bool(
+        translated
+        and translated.strip()
+        and _residual_count(translated) < _RESIDUAL_CHAR_LIMIT
+        and re.search(r"[A-Za-z]", translated)
+    )
 
 
 def _dict_translate(text: str) -> str:
@@ -419,7 +441,10 @@ def _translate_chunk(text: str, *, depth: int = 0) -> str:
             if _is_complete_translation(text, translated):
                 return translated
 
-    residual_count = len(_CJK_RE.findall(candidate or text))
+    if _is_acceptable_translation(candidate):
+        return candidate
+
+    residual_count = _residual_count(candidate or text)
     raise IncompleteTranslationError(
         "The local translator left Japanese text in its output "
         f"after retries ({residual_count} residual characters)."
@@ -429,7 +454,9 @@ def _translate_chunk(text: str, *, depth: int = 0) -> str:
 def _translate_complete_text(text: str) -> str:
     chunks = _split_translation_chunks(text, _MAX_TRANSLATION_CHARS)
     translated = "".join(_translate_chunk(chunk) for chunk in chunks)
-    if not _is_complete_translation(text, translated):
+    if not _is_complete_translation(text, translated) and not _is_acceptable_translation(
+        translated
+    ):
         raise IncompleteTranslationError(
             "The local translator did not produce a complete English translation."
         )
@@ -444,9 +471,10 @@ def translate_batch(
 ) -> dict[str, str]:
     """Return complete English translations for every supplied string.
 
-    Cached output is accepted only when it contains no residual Japanese. The
-    function raises :class:`TranslationError` rather than returning source or
-    partially translated text as a successful English result.
+    Cached output is accepted when it is fully English or carries only a
+    handful of residual Japanese characters (fewer than ``_RESIDUAL_CHAR_LIMIT``).
+    The function raises :class:`TranslationError` rather than returning source or
+    substantially untranslated text as a successful English result.
     """
     if not texts:
         return {}
@@ -465,7 +493,10 @@ def translate_batch(
         hash_to_text = {hashlib.sha256(t.encode("utf-8")).hexdigest(): t for t in unique}
         for h, translated in hashed.items():
             src = hash_to_text.get(h)
-            if src and _is_complete_translation(src, translated):
+            if src and (
+                _is_complete_translation(src, translated)
+                or _is_acceptable_translation(translated)
+            ):
                 cached[src] = translated
             elif src:
                 logger.warning("Ignoring incomplete cached translation for source hash %s", h)
@@ -488,7 +519,11 @@ def translate_batch(
     complete = {
         source: translated
         for source, translated in new_translations.items()
-        if _needs_translation(source) and _is_complete_translation(source, translated)
+        if _needs_translation(source)
+        and (
+            _is_complete_translation(source, translated)
+            or _is_acceptable_translation(translated)
+        )
     }
     if catalog is not None and complete:
         catalog.store_translations(complete, version=TRANSLATOR_VERSION)
@@ -545,13 +580,15 @@ def translate_html_fragment(
     remaining = [
         str(node).strip()
         for node in soup.find_all(string=True)
-        if not isinstance(node, ignored_string_types) and _needs_translation(str(node))
+        if not isinstance(node, ignored_string_types)
+        and _residual_count(str(node)) >= _RESIDUAL_CHAR_LIMIT
     ]
     remaining.extend(
         value
         for tag in soup.find_all(True)
         for attribute in _TRANSLATABLE_ATTRIBUTES
-        if isinstance((value := tag.get(attribute)), str) and _needs_translation(value)
+        if isinstance((value := tag.get(attribute)), str)
+        and _residual_count(value) >= _RESIDUAL_CHAR_LIMIT
     )
     if remaining:
         raise IncompleteTranslationError(
