@@ -98,6 +98,7 @@ DATABASES: tuple[DatabaseSpec, ...] = (
     DatabaseSpec("auth_db", "auth.db", rebuildable=False),
     DatabaseSpec("research_db", "research.db", rebuildable=False),
     DatabaseSpec("pipeline_jobs_db", "pipeline_jobs.db", rebuildable=False),
+    DatabaseSpec("chat_db", "chat.db", rebuildable=False),
 )
 _DATABASES_BY_KEY = {spec.key: spec for spec in DATABASES}
 _REBUILDABLE_DIR = os.path.join("data", "databases")
@@ -185,6 +186,11 @@ def get_research_db() -> str:
 def get_pipeline_jobs_db() -> str:
     """Return the absolute path to the durable pipeline-jobs database."""
     return database_path("pipeline_jobs_db")
+
+
+def get_chat_db() -> str:
+    """Return the absolute path to the chat, profile, and encryption-key database."""
+    return database_path("chat_db")
 
 
 def get_filings_db() -> str:

@@ -141,6 +141,15 @@ export function noteTitle(title: string, body: string) {
 
 export const ALERT_OPERATORS = ['>', '>=', '<', '<=', '='] as const
 
+const OPERATOR_PREFIX = /^\s*(>=|<=|>|<|=)\s*/
+
+/** The typed threshold, with any leading comparison ("<1500", ">= 2.5") taken as the condition. */
+export function parseThreshold(raw: string) {
+  const match = OPERATOR_PREFIX.exec(raw)
+  const text = (match ? raw.slice(match[0].length) : raw).trim()
+  return { operator: match?.[1], text, number: text === '' ? NaN : Number(text.replace(/,/g, '')) }
+}
+
 export function alertCondition(alert: Pick<BookAlert, 'metric' | 'operator' | 'value' | 'price_currency'>, definitions: Record<string, MetricDefinition>) {
   const definition = definitions[alert.metric]
   const label = definition?.label ?? alert.metric

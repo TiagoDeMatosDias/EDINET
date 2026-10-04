@@ -21,6 +21,13 @@ describe('API client', () => {
     })
   })
 
+  it('treats an empty 204 as success even with a JSON content type', async () => {
+    // FastAPI labels bodiless 204 responses application/json.
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(null, { status: 204, headers: { 'Content-Type': 'application/json' } }))))
+
+    await expect(apiRequest('/api/research/alerts/a1', { method: 'DELETE' })).resolves.toBeUndefined()
+  })
+
   it('omits empty query parameters', () => {
     expect(queryString({ q: 'Toyota', limit: 20, empty: '', missing: undefined }))
       .toBe('?q=Toyota&limit=20')

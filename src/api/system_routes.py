@@ -21,6 +21,7 @@ from .models import (
     JobHealthResponse,
     ServerConfigResponse,
     StepInfo,
+    SystemStatusResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,9 +99,19 @@ def get_step(request: Request, step_name: str) -> StepInfo:
 
 @router.get("/health", response_model=HealthResponse)
 def health_check() -> HealthResponse:
-    """Return bounded process health information."""
+    """Public liveness check; it is served without authentication, so it says nothing about jobs."""
     return HealthResponse(
         status="healthy",
+        version=__version__,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+
+@router.get("/api/system/status", response_model=SystemStatusResponse)
+def system_status(request: Request) -> SystemStatusResponse:
+    """Pipeline queue state for operators and administrators."""
+    _require_operator(request)
+    return SystemStatusResponse(
         version=__version__,
         timestamp=datetime.now(timezone.utc),
         jobs=JobHealthResponse(**runtime.job_manager.health_summary()),

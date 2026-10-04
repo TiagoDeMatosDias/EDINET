@@ -1,5 +1,5 @@
-import { Check, Eye, FileText, Search, Trash2 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { Check, Eye, FileText, Minus, Plus, Search, Trash2 } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
 
 import { ErrorState, LoadingState } from '../../components/Feedback'
 import { Field, Metric } from '../../components/Page'
@@ -7,6 +7,7 @@ import { useHotkeys } from '../../hooks/useHotkeys'
 import { CashEffect } from './ActivityCells'
 import { correctionLabel, findCorrections, orderActivity, type Correction } from './activityModel'
 import { DeleteRecordsDialog } from './DeleteRecordsDialog'
+import { ManualTransactionForm, type ManualResult } from './ManualTransactionForm'
 import { formatDay, quantity, titleCase, transactionCashEffect } from './portfolioFormat'
 import { SectionCard } from './PortfolioPrimitives'
 import { PortfolioTable, type TableColumn } from './PortfolioTable'
@@ -23,6 +24,7 @@ type Props = {
   hotkeys?: boolean
   onOpenDetail: (detail: PortfolioDetail) => void
   onDeleted?: (result: DeleteResult, selection: DeleteSelection) => void
+  onAdded?: (result: ManualResult) => void
 }
 
 function activityTone(value?: string) {
@@ -47,9 +49,9 @@ function ActivityCell({ row, correction }: { row: Transaction; correction?: Corr
   </span>
 }
 
-function useColumns(onOpenDetail: Props['onOpenDetail'], selected: Set<number>, onToggle: (row: Transaction) => void, corrections: Map<number, Correction>, mainAccount: string | null) {
+function useColumns(onOpenDetail: Props['onOpenDetail'], selected: Set<number>, onToggle: (row: Transaction) => void, corrections: Map<number, Correction>, mainAccount: string | null, selectAll: { state: 'none' | 'some' | 'all'; count: number; toggle: () => void }) {
   return useMemo<TableColumn<Transaction>[]>(() => [
-    { id: 'pick', header: '', cell: row => row.id == null ? null : <button type="button" className={`pf-check${selected.has(row.id) ? ' is-on' : ''}`} role="checkbox" aria-checked={selected.has(row.id)} aria-label={`Select the record from ${row.trade_date ?? 'an unknown date'}`} onClick={() => onToggle(row)}>{selected.has(row.id) && <Check aria-hidden="true" />}</button> },
+    { id: 'pick', header: 'Select', headerCell: <button type="button" className={`pf-check${selectAll.state !== 'none' ? ' is-on' : ''}`} role="checkbox" aria-checked={selectAll.state === 'all' ? true : selectAll.state === 'some' ? 'mixed' : false} aria-label={selectAll.state === 'all' ? 'Unselect all records shown' : `Select all ${selectAll.count.toLocaleString()} records shown`} title={`${selectAll.state === 'all' ? 'Unselect' : 'Select'} all ${selectAll.count.toLocaleString()} shown (Shift+A)`} onClick={selectAll.toggle}>{selectAll.state === 'all' ? <Check aria-hidden="true" /> : selectAll.state === 'some' ? <Minus aria-hidden="true" /> : null}</button>, cell: row => row.id == null ? null : <button type="button" className={`pf-check${selected.has(row.id) ? ' is-on' : ''}`} role="checkbox" aria-checked={selected.has(row.id)} aria-label={`Select the record from ${row.trade_date ?? 'an unknown date'}`} onClick={() => onToggle(row)}>{selected.has(row.id) && <Check aria-hidden="true" />}</button> },
     { id: 'date', header: 'Date', sortFirst: 'desc', sortValue: row => row.trade_date, cell: row => <span className="mono">{row.trade_date ?? '—'}</span> },
     { id: 'activity', header: 'Activity', sortValue: row => row.activity_type, cell: row => <ActivityCell row={row} correction={row.id == null ? undefined : corrections.get(row.id)} /> },
     { id: 'symbol', header: 'Symbol', rowHeader: true, sortValue: row => row.symbol, cell: row => <strong>{row.symbol || '—'}</strong> },
@@ -57,7 +59,7 @@ function useColumns(onOpenDetail: Props['onOpenDetail'], selected: Set<number>, 
     { id: 'quantity', header: 'Quantity', numeric: true, sortValue: row => row.quantity, cell: row => Number(row.quantity) ? quantity(row.quantity) : '—' },
     { id: 'cash', header: 'Cash effect', numeric: true, tip: 'Cash in (+) or out (−) of the account, in the record’s currency. A currency conversion shows both currencies.', sortValue: row => transactionCashEffect(row), cell: row => <CashEffect row={row} /> },
     { id: 'details', header: '', cell: row => <button type="button" className="icon-button" aria-label={`View transaction from ${row.trade_date ?? 'unknown date'}`} title="Details (Enter)" onClick={() => onOpenDetail({ kind: 'transaction', transaction: row })}><Eye /></button> },
-  ], [corrections, mainAccount, onOpenDetail, onToggle, selected])
+  ], [corrections, mainAccount, onOpenDetail, onToggle, selected, selectAll])
 }
 
 function mostCommon(values: Array<string | null | undefined>) {
@@ -100,6 +102,7 @@ export function PortfolioActivity(props: Props) {
   const [hideReversed, setHideReversed] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(() => new Set())
   const [pending, setPending] = useState<DeleteSelection | null>(null)
+  const [adding, setAdding] = useState(false)
   const activityTypes = [...new Set(props.data.map(row => row.activity_type).filter(Boolean) as string[])].sort()
   const files = [...new Set(props.data.map(row => row.source_file ?? ''))].sort()
   // Only records from another account than the usual one are tagged with it.
@@ -128,13 +131,27 @@ export function PortfolioActivity(props: Props) {
     setSelected(next)
   }
   const deleteSelected = () => { if (shownSelected.length) setPending({ kind: 'records', ids: shownSelected }) }
+  const shownIds = useMemo(() => filtered.flatMap(row => row.id == null ? [] : [row.id]), [filtered])
+  const selectAllState: 'none' | 'some' | 'all' = !shownSelected.length ? 'none' : shownSelected.length === shownIds.length ? 'all' : 'some'
+  // Selects every record the filters show, on every page; again, unselects them.
+  const toggleAll = useCallback(() => {
+    setSelected(current => {
+      const next = new Set(current)
+      if (shownIds.length && shownIds.every(id => next.has(id))) for (const id of shownIds) next.delete(id)
+      else for (const id of shownIds) next.add(id)
+      return next
+    })
+  }, [shownIds])
+  const selectAll = useMemo(() => ({ state: selectAllState, count: shownIds.length, toggle: toggleAll }), [selectAllState, shownIds.length, toggleAll])
   useHotkeys({ Delete: deleteSelected }, Boolean(props.hotkeys) && !pending && shownSelected.length > 0)
-  const columns = useColumns(props.onOpenDetail, selected, toggle, corrections, mainAccount)
+  useHotkeys({ A: toggleAll, n: () => setAdding(true) }, Boolean(props.hotkeys) && !pending && !adding)
+  const columns = useColumns(props.onOpenDetail, selected, toggle, corrections, mainAccount, selectAll)
   const filtersOn = Boolean(term || activityType !== 'all' || file !== 'all' || from || to || hideReversed)
 
   return <div className="portfolio-section-stack">
     <ActivitySummary activity={props.activity} dateRange={props.dateRange} />
-    <SectionCard title="Activity" description={`${filtered.length.toLocaleString()} of ${props.data.length.toLocaleString()} records`}>
+    <SectionCard title="Activity" description={`${filtered.length.toLocaleString()} of ${props.data.length.toLocaleString()} records`} actions={!adding && <button type="button" className="button button--secondary button--small" onClick={() => setAdding(true)} title="Record a transaction by hand (N)"><Plus aria-hidden="true" />Add transaction <kbd aria-hidden="true">N</kbd></button>}>
+      {adding && <ManualTransactionForm records={props.data} onClose={() => setAdding(false)} onAdded={result => props.onAdded?.(result)} />}
       <div className="portfolio-table-toolbar pf-activity-toolbar">
         <Field label="Search activity"><div className="input-with-icon"><Search /><input className="input" data-portfolio-find value={search} placeholder="Symbol, description, or source" onChange={event => setSearch(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { setSearch(''); event.currentTarget.blur() } }} /><kbd className="input-kbd" aria-hidden="true">F</kbd></div></Field>
         <Field label="Activity type"><select className="select" value={activityType} onChange={event => setActivityType(event.target.value)}><option value="all">All activity</option>{activityTypes.map(value => <option key={value} value={value}>{titleCase(value)}</option>)}</select></Field>
@@ -147,7 +164,7 @@ export function PortfolioActivity(props: Props) {
         {shownSelected.length
           ? <><strong>{shownSelected.length.toLocaleString()} selected</strong><button type="button" className="text-button" onClick={() => setSelected(new Set())}>Clear selection</button><button type="button" className="button button--danger button--small" onClick={deleteSelected}><Trash2 aria-hidden="true" />Delete {shownSelected.length.toLocaleString()} selected…<kbd aria-hidden="true">Del</kbd></button></>
           : <span className="muted">Select records with their boxes or <kbd>Space</kbd> to delete them.</span>}
-        {filtered.length > 0 && shownSelected.length < filtered.length && <button type="button" className="text-button" onClick={() => setSelected(new Set([...selected, ...filtered.flatMap(row => row.id == null ? [] : [row.id])]))}>Select all {filtered.length.toLocaleString()} {filtersOn ? 'shown' : 'records'}</button>}
+        {shownIds.length > 0 && shownSelected.length < shownIds.length && <button type="button" className="text-button" onClick={toggleAll}>Select all {shownIds.length.toLocaleString()} {filtersOn ? 'shown' : 'records'}<span aria-hidden="true"> <kbd>Shift</kbd>+<kbd>A</kbd></span></button>}
       </div>
       {props.isLoading ? <LoadingState label="Loading activity" /> : props.error ? <ErrorState error={props.error} /> : <PortfolioTable
         label="Activity"

@@ -9,11 +9,14 @@ from src.api.router import cleanup_completed_jobs
 from src.auth.api import admin_router as _admin_router
 from src.auth.api import router as _auth_router
 from src.backtesting.api import router as _backtesting_router
+from src.chat.api import router as _chat_router
+from src.chat.profiles_api import router as _profiles_router
 from src.comparison.api import router as _comparison_router
 from src.filings.api import router as _filings_router
 from src.portfolio.api import router as _portfolio_router
 from src.reports.api import router as _reports_router
 from src.research.api import router as _research_router
+from src.web_app.api.overview import router as _overview_router
 from src.web_app.api.screening import router as _screening_router
 from src.web_app.api.security_analysis import router as _security_router
 from src.web_app.api.splits import router as _splits_router
@@ -36,6 +39,9 @@ _ROUTERS = (
     _backtesting_router,
     _comparison_router,
     _portfolio_router,
+    _chat_router,
+    _profiles_router,
+    _overview_router,
 )
 
 for _router in _ROUTERS:

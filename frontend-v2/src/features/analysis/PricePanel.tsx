@@ -21,7 +21,8 @@ export function PricePanel({ rows, formatPrice }: { rows: PriceHistoryRow[]; for
     const index = RANGE_KEYS.indexOf(range)
     setRange(RANGE_KEYS[Math.max(0, Math.min(RANGE_KEYS.length - 1, index + delta))])
   }
-  useHotkeys({ '-': () => step(1), '=': () => step(-1), '+': () => step(-1) })
+  // '=' is the unshifted '+' key on many layouts, so it narrows the range too.
+  useHotkeys({ '-': () => step(1), '+': () => step(-1), '=': () => step(-1) })
   const visible = useMemo(() => filterPriceHistory(rows, range).filter(row => priceValue(row) !== null), [rows, range])
   const labels = useMemo(() => visible.map(priceDate), [visible])
   const values = visible.map(row => priceValue(row) as number)

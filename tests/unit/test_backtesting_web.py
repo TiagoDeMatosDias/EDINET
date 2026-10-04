@@ -483,7 +483,8 @@ class TestRunScreeningBacktestSet(unittest.TestCase):
                 },
             ],
             columns=["CompanyInfo.Company_Ticker"],
-            screening_date="2023-03-31",
+            # Reports for years ending 2023-03-31 are public from late June (period end + 90 days).
+            screening_date="2023-07-01",
             max_companies=5,
             durations=["1yr"],
         )
@@ -520,7 +521,7 @@ class TestRunScreeningBacktestSet(unittest.TestCase):
                 },
             ],
             columns=["CompanyInfo.Company_Ticker"],
-            screening_date="2023-03-31",
+            screening_date="2023-07-01",
             max_companies=1,
             durations=["1yr"],
         )

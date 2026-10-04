@@ -49,6 +49,24 @@ describe('global hotkeys', () => {
     expect(screen.getByLabelText('Path')).toHaveTextContent('/pipeline')
   })
 
+  it('reaches Chat, Account, and (for administrators) Admin', () => {
+    const { unmount } = render(<MemoryRouter initialEntries={['/overview']}><GlobalHotkeys isAdmin /><Where /></MemoryRouter>)
+    press('g'); press('m')
+    expect(screen.getByLabelText('Path')).toHaveTextContent('/chat')
+    press('g'); press('u')
+    expect(screen.getByLabelText('Path')).toHaveTextContent('/account')
+    press('g'); press('n')
+    expect(screen.getByLabelText('Path')).toHaveTextContent('/admin')
+    unmount()
+
+    render(<MemoryRouter initialEntries={['/overview']}><GlobalHotkeys isAdmin={false} signedIn={false} /><Where /></MemoryRouter>)
+    press('g')
+    expect(screen.getByRole('status')).not.toHaveTextContent('Admin')
+    expect(screen.getByRole('status')).not.toHaveTextContent('Account')
+    press('n')
+    expect(screen.getByLabelText('Path')).toHaveTextContent('/overview')
+  })
+
   it('leaves G alone while typing', () => {
     render(<MemoryRouter><GlobalHotkeys isAdmin={false} /><input aria-label="Field" /></MemoryRouter>)
     press('g', screen.getByLabelText('Field'))

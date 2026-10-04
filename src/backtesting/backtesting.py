@@ -207,12 +207,16 @@ def run_backtest_web(
     commission_bps: float = 0.0,
     slippage_bps: float = 0.0,
     spread_bps: float = 0.0,
+    portfolio_owner: str = "",
     prices_table: str = "Stock_Prices",
     ratios_table: str = "ShareMetrics",
     company_table: str = "CompanyInfo",
     financial_statements_table: str = "FinancialStatements",
 ) -> dict:
     """Run a single portfolio backtest and return JSON-serializable results.
+
+    ``portfolio_owner`` names the account whose own portfolio is the
+    benchmark when ``benchmark_mode`` is ``"portfolio"``.
 
     See :ref:`BacktestResult` in the implementation plan for the return
     type schema.
@@ -352,6 +356,7 @@ def run_backtest_web(
     per_company_per_year = tracker["per_company_per_year"]
     daily_df = tracker["daily"]
     metrics = tracker["metrics"]
+    warnings.extend(tracker.get("notes", []))
     metrics["base_currency"] = base_currency or ticker_native_currency.get(tickers[0] if tickers else "", "")
 
     # Swap native/base prices for display (native prices become primary)
@@ -415,45 +420,54 @@ def run_backtest_web(
             benchmark_df = calculate_benchmark_returns(
                 prices_df, benchmark_ticker, all_dividends_df,
             )
+        else:
+            warnings.append(f"Benchmark '{benchmark_ticker}' has no stored prices in this period; results have no benchmark.")
     elif benchmark_mode == "portfolio" and db3_path:
         # Currency conversion already handled above (base_currency defaults
         # to "EUR" for portfolio benchmarks).  No need to recompute tracker.
         benchmark_df = get_portfolio_benchmark_returns(
-            db3_path, start_date, end_date, base_currency, db_path,
+            db3_path, start_date, end_date, base_currency, db_path, owner_user_id=portfolio_owner,
         )
 
-    # ── Align portfolio and benchmark to common date range ──
-    effective_start = start_date
-    effective_end = end_date
-    if benchmark_df is not None and not benchmark_df.empty and benchmark_mode == "portfolio":
+    # ── Compare portfolio and benchmark over the days both have ──
+    # The portfolio's own metrics keep its full period; the comparison
+    # (benchmark return, excess, tracking) uses the overlap only.
+    compare_df = portfolio_df
+    if benchmark_df is not None and not benchmark_df.empty:
         common_idx = portfolio_df.index.intersection(benchmark_df.index)
         if len(common_idx) > 1:
-            if len(common_idx) < len(portfolio_df.index):
+            if common_idx[0] > portfolio_df.index[0] + pd.Timedelta(days=7) or common_idx[-1] < portfolio_df.index[-1] - pd.Timedelta(days=7):
+                label = "Portfolio benchmark" if benchmark_mode == "portfolio" else f"Benchmark '{benchmark_ticker}'"
                 warnings.append(
-                    f"Portfolio benchmark covers only "
-                    f"{common_idx[0].strftime('%Y-%m-%d')} → "
-                    f"{common_idx[-1].strftime('%Y-%m-%d')}. "
-                    f"Comparison limited to this period."
+                    f"{label} covers only {common_idx[0]:%Y-%m-%d} → {common_idx[-1]:%Y-%m-%d}; "
+                    "the comparison uses that period."
                 )
-            portfolio_df = portfolio_df.loc[common_idx]
+            compare_df = portfolio_df.loc[common_idx]
             benchmark_df = benchmark_df.loc[common_idx]
-            effective_start = common_idx[0].strftime("%Y-%m-%d")
-            effective_end = common_idx[-1].strftime("%Y-%m-%d")
+            if benchmark_mode == "portfolio":
+                portfolio_df = compare_df
         else:
-            warnings.append("Portfolio benchmark has insufficient overlapping data.")
+            warnings.append("The benchmark has too little data overlapping the portfolio's; results have no benchmark.")
             benchmark_df = None
 
     # ── Benchmark metrics ───────────────────────────────────────────────
     if benchmark_df is not None and not benchmark_df.empty:
         bench_cum = benchmark_df["cumulative_return"]
-        bench_total = float(bench_cum.iloc[-1] - 1)
-        dt_start = pd.to_datetime(effective_start)
-        dt_end = pd.to_datetime(effective_end)
-        yrs = max((dt_end - dt_start).days / 365.25, 1 / 365.25)
-        bench_ann = (1 + bench_total) ** (1 / yrs) - 1
+        # Rebase both to the first common day, so each is the return over the same window.
+        bench_total = float(bench_cum.iloc[-1] / (bench_cum.iloc[0] / (1 + benchmark_df["benchmark_return"].iloc[0])) - 1)
+        port_cum = compare_df["cumulative_return"]
+        port_base = port_cum.iloc[0] / (1 + compare_df["portfolio_return"].iloc[0])
+        port_window_total = float(port_cum.iloc[-1] / port_base - 1) if port_base else metrics["total_return"]
+        window_days = (benchmark_df.index[-1] - benchmark_df.index[0]).days + 1
+        yrs = max(window_days / 365.25, 1 / 365.25)
+        bench_ann = (1 + bench_total) ** (1 / yrs) - 1 if bench_total > -1 else -1.0
+        port_window_ann = (1 + port_window_total) ** (1 / yrs) - 1 if port_window_total > -1 else -1.0
         metrics["benchmark_total_return"] = bench_total
         metrics["benchmark_annualized_return"] = bench_ann
-        metrics["excess_return"] = metrics["total_return"] - bench_total
+        metrics["excess_return"] = port_window_total - bench_total
+        metrics["excess_annualized_return"] = port_window_ann - bench_ann
+        metrics["comparison_start"] = f"{benchmark_df.index[0]:%Y-%m-%d}"
+        metrics["comparison_end"] = f"{benchmark_df.index[-1]:%Y-%m-%d}"
 
         bench_daily = benchmark_df["benchmark_return"].dropna()
         bd_std = float(bench_daily.std()) if len(bench_daily) > 1 else 0.0
@@ -470,8 +484,10 @@ def run_backtest_web(
                 excess_daily = portfolio_daily.loc[common_idx] - bench_daily.loc[common_idx]
         te_std = float(excess_daily.std()) if excess_daily is not None and len(excess_daily) > 1 else 0.0
         tracking_error = float(te_std * np.sqrt(252))
-        excess_ann = metrics.get("excess_return") or 0.0
-        info_ratio = excess_ann / tracking_error if tracking_error > 0 else 0.0
+        # Annualised active return over annualised tracking error.
+        active_ann = float(excess_daily.mean() * 252) if excess_daily is not None and len(excess_daily) > 1 else 0.0
+        info_ratio = active_ann / tracking_error if tracking_error > 0 else 0.0
+        metrics["tracking_error"] = tracking_error
 
         metrics["benchmark_volatility"] = bench_vol
         metrics["benchmark_max_drawdown"] = bench_max_dd
@@ -484,8 +500,10 @@ def run_backtest_web(
         metrics["benchmark_volatility"] = None
         metrics["benchmark_max_drawdown"] = None
         metrics["excess_return"] = None
+        metrics["excess_annualized_return"] = None
         metrics["information_ratio"] = None
         metrics["benchmark_sharpe_ratio"] = None
+        metrics["tracking_error"] = None
 
     # ── Build chart data ──────────────────────────────────────────────
     chart_data = _build_chart_data(
@@ -536,12 +554,15 @@ def run_backtest_web(
                 daily_reset["bench_price"] = daily_reset["bench_price"].ffill()
         if benchmark_df is not None and not benchmark_df.empty:
             bench_daily = benchmark_df.reset_index()
-            bench_daily["Date"] = bench_daily["Date"].dt.strftime("%Y-%m-%d")
-            for col in ["benchmark_return", "cumulative_return",
-                        "price_return", "cum_price_return",
-                        "dividend_return", "cum_dividend_return"]:
-                if col in bench_daily.columns:
-                    daily_reset[f"bench_{col}"] = bench_daily[col].values if len(bench_daily) == len(daily_reset) else pd.NA
+            bench_daily = bench_daily.rename(columns={bench_daily.columns[0]: "Date"})
+            bench_daily["Date"] = pd.to_datetime(bench_daily["Date"]).dt.strftime("%Y-%m-%d")
+            columns = [col for col in ("benchmark_return", "cumulative_return", "price_return", "cum_price_return",
+                                       "dividend_return", "cum_dividend_return") if col in bench_daily.columns]
+            # Joined by date: the two series need not share every day.
+            daily_reset = daily_reset.merge(
+                bench_daily[["Date", *columns]].rename(columns={col: f"bench_{col}" for col in columns}),
+                on="Date", how="left",
+            )
         # Swap: native prices become primary, base-currency becomes suffixed
         for tk in tickers:
             daily_reset[f"currency_{tk}"] = ticker_native_currency.get(tk, "")
@@ -661,7 +682,9 @@ def _empty_result(
         "information_ratio": None,
     } if has_benchmark else {}
     return {
+        "no_data": True,
         "metrics": {
+            "no_data": True,
             "total_return": 0.0,
             "annualized_return": 0.0,
             "volatility": 0.0,
@@ -717,6 +740,14 @@ def _build_chart_data(
         bench_dd_map: dict = {}
         if benchmark_df is not None and not benchmark_df.empty:
             b_cum = benchmark_df["cumulative_return"]
+            # A benchmark that starts later is drawn from the portfolio's level
+            # on its first day, so the two lines diverge from a common point.
+            first = b_cum.index[0]
+            if first in total_cum.index and first > total_cum.index[0]:
+                start_level = float(total_cum.loc[first]) / (1 + float(total_df.loc[first, "daily_return"] or 0.0))
+                b_base = float(b_cum.iloc[0]) / (1 + float(benchmark_df["benchmark_return"].iloc[0] or 0.0))
+                if b_base:
+                    b_cum = b_cum / b_base * start_level
             b_max = b_cum.cummax()
             b_dd = (b_cum - b_max) / b_max
             bench_cum_map = {d.strftime("%Y-%m-%d"): float(v) - 1
@@ -787,6 +818,7 @@ def run_backtest_set_web(
     db3_path: str = "",
     initial_capital: float = 0.0,
     risk_free_rate: float = 0.0,
+    portfolio_owner: str = "",
     prices_table: str = "Stock_Prices",
     ratios_table: str = "ShareMetrics",
     company_table: str = "CompanyInfo",
@@ -796,7 +828,9 @@ def run_backtest_set_web(
 
     The CSV format follows the backtest-set convention:
 
-    * Columns: ``Year``, ``Tickers``, ``Type``, ``Amount``
+    * Columns: ``Year``, ``Tickers``, ``Type``, ``Amount``; ``weight``
+      amounts may be fractions or percentages (a year's weights summing to
+      more than 1.5 are read as percentages)
     * Optional comment headers: ``# Benchmark:``, ``# Discount Rate:``
 
     For each ``Year`` row, one backtest is run per requested ``duration``,
@@ -883,6 +917,12 @@ def run_backtest_set_web(
 
         if not portfolio:
             continue
+        # Weights may be written as fractions (0.25) or percentages (25).
+        weights = [spec["value"] for spec in portfolio.values() if spec["mode"] == "weight"]
+        if weights and sum(weights) > 1.5:
+            for spec in portfolio.values():
+                if spec["mode"] == "weight":
+                    spec["value"] /= 100.0
 
         for dur_label in durations:
             dur_years = _BACKTEST_DURATIONS.get(dur_label)
@@ -920,12 +960,19 @@ def run_backtest_set_web(
                     db3_path=db3_path,
                     initial_capital=initial_capital,
                     risk_free_rate=risk_free_rate,
+                    portfolio_owner=portfolio_owner,
                     prices_table=prices_table,
                     ratios_table=ratios_table,
                     company_table=company_table,
                     financial_statements_table=financial_statements_table,
                 )
+                if bt_result.get("no_data"):
+                    raise ValueError("; ".join(bt_result.get("warnings") or ["No price data"]))
                 result_entry["metrics"] = bt_result["metrics"]
+                last_date = bt_result["metrics"].get("end_date") or ""
+                if last_date and last_date < (datetime.strptime(bt_end, "%Y-%m-%d") - pd.Timedelta(days=10)).strftime("%Y-%m-%d"):
+                    result_entry["truncated"] = True
+                result_entry["requested_end"] = bt_end
                 result_entry["chart_data"] = bt_result["chart_data"]
                 result_entry["per_company"] = bt_result["per_company"]
                 result_entry["yearly_returns"] = bt_result["yearly_returns"]
@@ -944,8 +991,17 @@ def run_backtest_set_web(
                                          benchmark_mode=benchmark_mode,
                                          base_currency=base_currency)
 
+    # The same per-run rows and paths as a rolling run, keyed by year.
+    as_rolling = [
+        {"period": f"{year}-01-01", "tickers": next((r["tickers"] for r in all_results if r["year"] == year), []),
+         "backtests": {"csv": {r["duration"]: r for r in all_results if r["year"] == year}}}
+        for year in years
+    ]
     return {
         "aggregate": aggregate,
+        "runs": rolling_run_rows(as_rolling, durations, ["csv"]),
+        "paths": rolling_paths(as_rolling),
+        "period_holdings": {item["period"]: item["tickers"] for item in as_rolling},
         "results": all_results,
     }
 
@@ -961,7 +1017,8 @@ def _build_aggregate_summary(
 ) -> dict:
     """Build the aggregate statistics for a backtest set."""
     total_runs = len(all_results)
-    success_results = [r for r in all_results if r.get("metrics")]
+    # Truncated runs (prices end before the holding period) are not results for their duration.
+    success_results = [r for r in all_results if r.get("metrics") and not r.get("truncated")]
 
     # Benchmark comparison
     has_bench = [
@@ -1007,6 +1064,16 @@ def _build_aggregate_summary(
             "dividend_return": _stat_summary(div_returns),
             "sharpe_ratio": _stat_summary(sharpes),
             "max_drawdown": _stat_summary(drawdowns),
+            # Pooling one-year and ten-year totals says little; these do not mix durations.
+            "by_duration": {
+                dur: {
+                    "count": len(in_duration),
+                    "annualized_return": _stat_summary([r["metrics"]["annualized_return"] for r in in_duration]),
+                    "total_return": _stat_summary([r["metrics"]["total_return"] for r in in_duration]),
+                }
+                for dur in durations
+                if (in_duration := [r for r in success_results if r["duration"] == dur])
+            },
         }
 
     return {
@@ -1109,12 +1176,10 @@ def run_screening_backtest_set(
             "Expected one of: Company_Ticker, Ticker, ticker."
         )
 
-    tickers = screen_df[ticker_col].dropna().unique().tolist()
-    if max_companies and len(tickers) > max_companies:
-        tickers = tickers[:max_companies]
+    tickers, _skipped = _investable_tickers(screen_df, ticker_col, screening_date, max_companies)
 
     if not tickers:
-        raise ValueError("No tickers found in screening results.")
+        raise ValueError("No tradeable tickers (with a ticker and a recent price) in the screening results.")
 
     # Equal-weight portfolio
     weight = 1.0 / len(tickers)
@@ -1153,6 +1218,37 @@ def run_screening_backtest_set(
 # ==========================================================================
 #  4. ROLLING SCREENING BACKTEST
 # ==========================================================================
+
+
+def _investable_tickers(
+    screen_df: pd.DataFrame,
+    ticker_col: str,
+    screening_date: str,
+    max_companies: int | None,
+    *,
+    stale_days: int = 31,
+) -> tuple[list[str], int]:
+    """The first ``max_companies`` matches that could be bought on ``screening_date``.
+
+    A match without a ticker (unlisted, or delisted since and dropped from the
+    code list) or without a price in the month before the screening date
+    cannot be bought; letting it take a slot would leave that slot in cash.
+    Returns the tickers, in screen order, and how many matches were skipped.
+    """
+    frame = screen_df
+    tickers = frame[ticker_col].astype("string").str.strip()
+    usable = tickers.notna() & (tickers != "") & (tickers.str.lower() != "nan")
+    if "LatestPrice" in frame.columns:
+        usable &= pd.to_numeric(frame["LatestPrice"], errors="coerce").fillna(0) > 0
+    if "PriceDate" in frame.columns and screening_date:
+        price_dates = pd.to_datetime(frame["PriceDate"], errors="coerce")
+        cutoff = pd.Timestamp(screening_date) - pd.Timedelta(days=stale_days)
+        usable &= price_dates.notna() & (price_dates >= cutoff)
+    selected = list(dict.fromkeys(tickers[usable].tolist()))
+    skipped = int((~usable).sum())
+    if max_companies and len(selected) > max_companies:
+        selected = selected[:max_companies]
+    return selected, skipped
 
 
 def _discover_screening_periods(
@@ -1213,11 +1309,19 @@ def _discover_screening_periods(
             "Expected 'monthly', 'quarterly', or 'yearly'."
         )
 
+    # Every step-th calendar month from the first available one, so a month
+    # with no period ends does not shift the rest of the schedule.
+    first_year, first_month = (int(part) for part in all_months[0].split("-"))
+    last_year, last_month = (int(part) for part in all_months[-1].split("-"))
     sampled: list[str] = []
-    for i, ym in enumerate(all_months):
-        if i % step == 0:
-            sampled.append(ym + "-01")
-
+    offset = 0
+    while True:
+        year, month = divmod(first_month - 1 + offset, 12)
+        year, month = first_year + year, month + 1
+        if (year, month) > (last_year, last_month):
+            break
+        sampled.append(f"{year:04d}-{month:02d}-01")
+        offset += step
     return sampled
 
 
@@ -1289,8 +1393,10 @@ def _build_portfolios(
                 list(screen_df.columns), COMPANYINFO_TICKER_CANDIDATES,
             ) or ticker_col
 
-            # Build market caps
+            # Build market caps for the companies selected, not every match.
             df = screen_df.copy()
+            if resolved_ticker_col in df.columns:
+                df = df[df[resolved_ticker_col].astype(str).isin({str(t) for t in tickers})]
             df = df.dropna(subset=[shares_col, latest_price_col])
             if resolved_ticker_col not in df.columns:
                 # Try to use ticker_col directly
@@ -1340,6 +1446,109 @@ def _build_portfolios(
     return portfolios_by_mode, warnings
 
 
+def _years_between(start: str | None, end: str | None) -> float | None:
+    try:
+        days = (datetime.strptime(str(end)[:10], "%Y-%m-%d") - datetime.strptime(str(start)[:10], "%Y-%m-%d")).days
+    except (TypeError, ValueError):
+        return None
+    return days / 365.25 if days > 0 else None
+
+
+def _annualize(total: float | None, years: float | None, dur: str) -> float | None:
+    """CAGR over the years actually held, or over the nominal duration when unknown."""
+    if total is None:
+        return None
+    if years is None:
+        return _annualize_return(total, dur)
+    if total <= -1.0:
+        return -1.0
+    return (1.0 + total) ** (1.0 / years) - 1.0 if years > 1 else total
+
+
+def rolling_run_rows(all_results: list[dict], durations: list[str], weighting_modes: list[str]) -> list[dict]:
+    """One flat row per backtest (period × weighting × duration), for tables and charts.
+
+    ``status`` is ``ok``, ``truncated`` (prices end before the holding period
+    does), ``no_data`` (no prices at all), or ``failed``. Only ``ok`` rows
+    count in the aggregate statistics.
+    """
+    rows: list[dict] = []
+    for result in all_results:
+        period = result.get("period", "")
+        backtests = result.get("backtests", {}) or {}
+        for wm in weighting_modes:
+            for dur in durations:
+                bt = (backtests.get(wm) or {}).get(dur)
+                if bt is None:
+                    continue
+                m = bt.get("metrics")
+                row: dict = {
+                    "period": period, "weighting": wm, "duration": dur,
+                    "companies": result.get("ticker_count", len(result.get("tickers") or [])),
+                    "matches": result.get("matches"),
+                    "warnings": list(bt.get("warnings") or [])[:5],
+                }
+                if m is None:
+                    rows.append({**row, "status": "failed"})
+                    continue
+                if m.get("no_data") or bt.get("no_data"):
+                    rows.append({**row, "status": "no_data"})
+                    continue
+                years = _years_between(m.get("start_date"), m.get("end_date"))
+                total = m.get("total_return")
+                bench_total = m.get("benchmark_total_return")
+                annual = _annualize(total, years, dur) if years is None or "annualized_return" not in m else m["annualized_return"]
+                bench_years = _years_between(m.get("comparison_start"), m.get("comparison_end")) or years
+                bench_annual = m.get("benchmark_annualized_return")
+                if bench_annual is None and bench_total is not None:
+                    bench_annual = _annualize(bench_total, bench_years, dur)
+                excess = m.get("excess_return")
+                if excess is None and total is not None and bench_total is not None:
+                    excess = total - bench_total
+                excess_annual = m.get("excess_annualized_return")
+                if excess_annual is None and annual is not None and bench_annual is not None:
+                    excess_annual = annual - bench_annual
+                rows.append({
+                    **row,
+                    "status": "truncated" if bt.get("truncated") else "ok",
+                    "start": m.get("start_date"), "end": m.get("end_date"),
+                    "requested_end": bt.get("requested_end"), "years": years,
+                    "total_return": total, "annualized_return": annual,
+                    "price_return": m.get("portfolio_price_return", total),
+                    "dividend_return": m.get("portfolio_dividend_return", 0.0),
+                    "volatility": m.get("volatility"), "sharpe_ratio": m.get("sharpe_ratio", 0.0),
+                    "max_drawdown": m.get("max_drawdown", 0.0),
+                    "benchmark_total_return": bench_total, "benchmark_annualized_return": bench_annual,
+                    "excess_return": excess, "excess_annualized_return": excess_annual,
+                    "beat_benchmark": None if bench_total is None or total is None else total > bench_total,
+                })
+    return rows
+
+
+def _monthly_path(chart_data: dict) -> list[list]:
+    """Month-end points of a run's cumulative return: ``[date, portfolio, benchmark]``."""
+    points = chart_data.get("cumulative") or []
+    sampled: list[list] = []
+    for index, point in enumerate(points):
+        date = str(point.get("date", ""))
+        following = str(points[index + 1].get("date", "")) if index + 1 < len(points) else ""
+        if index == 0 or following[:7] != date[:7]:
+            portfolio, benchmark = point.get("portfolio"), point.get("benchmark")
+            sampled.append([date, None if portfolio is None else round(float(portfolio), 4), None if benchmark is None else round(float(benchmark), 4)])
+    return sampled
+
+
+def rolling_paths(all_results: list[dict]) -> dict[str, list[list]]:
+    """Each run's monthly equity path, keyed ``period|weighting|duration``."""
+    paths: dict[str, list[list]] = {}
+    for result in all_results:
+        for wm, by_duration in (result.get("backtests") or {}).items():
+            for dur, bt in (by_duration or {}).items():
+                if bt and bt.get("metrics") and not bt.get("no_data"):
+                    paths[f"{result.get('period', '')}|{wm}|{dur}"] = _monthly_path(bt.get("chart_data") or {})
+    return paths
+
+
 def _build_rolling_aggregate(
     all_results: list[dict],
     durations: list[str],
@@ -1349,194 +1558,93 @@ def _build_rolling_aggregate(
     benchmark_mode: str = "ticker",
     base_currency: str = "",
 ) -> dict:
-    """Compute aggregate statistics from rolling backtest results.
+    """Aggregate statistics over the complete runs of a rolling backtest.
 
-    Returns the ``aggregate`` portion of the ``RollingBacktestResult`` dict:
-    ``by_weighting`` breakdown, benchmark comparison, overall stats, and
-    heatmap data.
+    Runs whose prices end before their holding period does (``truncated``),
+    or that had no prices at all, are counted separately and kept out of
+    the statistics: a two-year run is not a five-year result, and a run
+    with no data is not a 0% return.
     """
-    # Count results where at least one backtest has valid metrics
-    def _has_valid_metrics(result: dict) -> bool:
-        backtests = result.get("backtests", {})
-        for wm_data in backtests.values():
-            if isinstance(wm_data, dict):
-                for bt in wm_data.values():
-                    if isinstance(bt, dict) and bt.get("metrics") is not None:
-                        return True
-        return False
+    rows = rolling_run_rows(all_results, durations, weighting_modes)
+    complete = [row for row in rows if row["status"] == "ok"]
+    periods_with_results = {row["period"] for row in rows if row["status"] in ("ok", "truncated")}
+    has_benchmark = bool(benchmark_ticker) or benchmark_mode == "portfolio"
 
-    success_results = [r for r in all_results if _has_valid_metrics(r)]
-    total_runs = len(all_results)
-    successful = len(success_results)
-    failed = total_runs - successful
-
-    # ── Collect all per-backtest metrics ─────────────────────────────
-    # Structure: by_weighting[wm][dur] = list of metric dicts
-    by_weighting: dict[str, dict[str, list[dict]]] = {
-        wm: {d: [] for d in durations} for wm in weighting_modes
-    }
-    # Heatmap data collected in the same pass (avoids iterating results twice)
-    heatmap: dict[str, dict[str, list[dict]]] = {
-        wm: {d: [] for d in durations} for wm in weighting_modes
-    }
-    all_returns: list[float] = []
-    all_sharpes: list[float] = []
-    all_drawdowns: list[float] = []
-    # Benchmark comparison
-    outperformed = 0
-    underperformed = 0
-    by_duration_bench: dict[str, dict[str, int]] = {
-        d: {"out": 0, "total": 0} for d in durations
-    }
-
-    for r in success_results:
-        backtests = r["backtests"]
-        for wm in weighting_modes:
-            wm_bt = backtests.get(wm, {})
-            for dur in durations:
-                bt = wm_bt.get(dur)
-                if bt is None or bt.get("metrics") is None:
-                    continue
-                m = bt["metrics"]
-                tr = m.get("total_return", 0.0)
-                ann_ret = _annualize_return(tr, dur)
-                sr = m.get("sharpe_ratio", 0.0)
-                dd = m.get("max_drawdown", 0.0)
-                pr = m.get("portfolio_price_return", tr)
-                dr = m.get("portfolio_dividend_return", 0.0)
-
-                by_weighting[wm][dur].append({
-                    "total_return": tr,
-                    "annualized_return": ann_ret,
-                    "price_return": pr,
-                    "dividend_return": dr,
-                    "sharpe_ratio": sr,
-                    "max_drawdown": dd,
-                })
-                all_returns.append(ann_ret)
-                all_sharpes.append(sr)
-                all_drawdowns.append(dd)
-
-                # Benchmark comparison
-                bm_return = m.get("benchmark_total_return")
-                if bm_return is not None:
-                    by_duration_bench[dur]["total"] += 1
-                    # Annualize benchmark return for fair comparison
-                    bm_ann = _annualize_return(bm_return, dur)
-                    # Track benchmark stats per duration
-                    if "bench_returns" not in by_duration_bench[dur]:
-                        by_duration_bench[dur]["bench_returns"] = []
-                    by_duration_bench[dur]["bench_returns"].append(bm_ann)
-                    if tr > bm_return:
-                        by_duration_bench[dur]["out"] += 1
-                        outperformed += 1
-                    else:
-                        underperformed += 1
-
-                # Heatmap collection (single pass — was in _build_heatmap_data)
-                heatmap[wm][dur].append({
-                    "period": r.get("period", ""),
-                    "return": ann_ret,
-                })
-
-    # ── Per-duration × per-weighting summary stats ───────────────────
-    by_weighting_summary: dict[str, dict] = {}
-    for wm in weighting_modes:
-        wm_summary: dict[str, dict] = {}
-        for dur in durations:
-            entries = by_weighting[wm][dur]
-            if entries:
-                ann_returns = [e["annualized_return"] for e in entries]
-                sharpes_list = [e["sharpe_ratio"] for e in entries]
-                wm_summary[dur] = {
-                    "mean_return": float(np.mean(ann_returns)),
-                    "median_return": float(np.median(ann_returns)),
-                    "mean_sharpe": float(np.mean(sharpes_list)),
-                    "count": len(entries),
-                }
-            else:
-                wm_summary[dur] = {
-                    "mean_return": 0.0,
-                    "median_return": 0.0,
-                    "mean_sharpe": 0.0,
-                    "count": 0,
-                }
-        by_weighting_summary[wm] = wm_summary
-
-    # ── Benchmark comparison ─────────────────────────────────────────
-    total_with_bench = outperformed + underperformed
-    benchmark_comparison: dict | None = None
-    if (benchmark_ticker or benchmark_mode == "portfolio") and total_with_bench > 0:
-        by_dur_summary: dict[str, dict] = {}
-        for dur, counts in by_duration_bench.items():
-            if counts["total"] > 0:
-                bench_rets = counts.get("bench_returns", [])
-                bench_mean = float(np.mean(bench_rets)) if bench_rets else None
-                by_dur_summary[dur] = {
-                    "out": counts["out"],
-                    "total": counts["total"],
-                    "win_rate": (
-                        counts["out"] / counts["total"]
-                        if counts["total"] > 0 else 0.0
-                    ),
-                    "bench_mean_return": bench_mean,
-                }
-        benchmark_comparison = {
-            "outperformed": outperformed,
-            "underperformed": underperformed,
-            "win_rate": (
-                outperformed / total_with_bench
-                if total_with_bench > 0 else 0.0
-            ),
-            "by_duration": by_dur_summary,
+    def summary(entries: list[dict]) -> dict:
+        if not entries:
+            return {"mean_return": 0.0, "median_return": 0.0, "mean_sharpe": 0.0, "count": 0}
+        annual = [row["annualized_return"] for row in entries]
+        excess = [row["excess_annualized_return"] for row in entries if row["excess_annualized_return"] is not None]
+        beats = [row["beat_benchmark"] for row in entries if row["beat_benchmark"] is not None]
+        return {
+            "mean_return": float(np.mean(annual)),
+            "median_return": float(np.median(annual)),
+            "best_return": float(np.max(annual)),
+            "worst_return": float(np.min(annual)),
+            "mean_sharpe": float(np.mean([row["sharpe_ratio"] for row in entries])),
+            "mean_drawdown": float(np.mean([row["max_drawdown"] for row in entries])),
+            "mean_excess": float(np.mean(excess)) if excess else None,
+            "win_rate": float(np.mean(beats)) if beats else None,
+            "positive_rate": float(np.mean([value > 0 for value in annual])),
+            "count": len(entries),
         }
 
-    # ── Overall stats ────────────────────────────────────────────────
-    stats = {
-        "total_return": _stat_summary(all_returns),
-        "sharpe_ratio": _stat_summary(all_sharpes),
-        "max_drawdown": _stat_summary(all_drawdowns),
-    } if all_returns else None
-
-    # ── Date range ───────────────────────────────────────────────────
-    date_range = {
-        "first": periods[0] if periods else "",
-        "last": periods[-1] if periods else "",
+    by_weighting = {
+        wm: {dur: summary([row for row in complete if row["weighting"] == wm and row["duration"] == dur]) for dur in durations}
+        for wm in weighting_modes
     }
 
-    # ── Excess-returns heatmap (portfolio − benchmark) ───────────────
-    # (heatmap already collected in the main loop above)
-    if benchmark_ticker or benchmark_mode == "portfolio":
-        excess_heatmap: dict[str, list[dict]] = {d: [] for d in durations}
-        for r in all_results:
-            period = r.get("period", "")
-            backtests = r.get("backtests", {})
-            for wm in weighting_modes:
-                wm_bt = backtests.get(wm, {})
-                for dur in durations:
-                    bt = wm_bt.get(dur)
-                    if bt is None:
-                        continue
-                    m = bt.get("metrics")
-                    if m is None:
-                        continue
-                    port_ret = m.get("total_return")
-                    bench_ret = m.get("benchmark_total_return")
-                    if port_ret is not None and bench_ret is not None:
-                        excess = port_ret - bench_ret
-                        excess_heatmap[dur].append({
-                            "period": period,
-                            "return": _annualize_return(excess, dur),
-                        })
-        heatmap["excess"] = excess_heatmap
+    benchmark_comparison = None
+    compared = [row for row in complete if row["beat_benchmark"] is not None]
+    if has_benchmark and compared:
+        by_duration = {}
+        for dur in durations:
+            in_duration = [row for row in compared if row["duration"] == dur]
+            if in_duration:
+                bench = [row["benchmark_annualized_return"] for row in in_duration if row["benchmark_annualized_return"] is not None]
+                out = sum(1 for row in in_duration if row["beat_benchmark"])
+                by_duration[dur] = {
+                    "out": out, "total": len(in_duration), "win_rate": out / len(in_duration),
+                    "bench_mean_return": float(np.mean(bench)) if bench else None,
+                }
+        outperformed = sum(1 for row in compared if row["beat_benchmark"])
+        benchmark_comparison = {
+            "outperformed": outperformed,
+            "underperformed": len(compared) - outperformed,
+            "win_rate": outperformed / len(compared),
+            "by_duration": by_duration,
+        }
 
+    stats = {
+        "total_return": _stat_summary([row["annualized_return"] for row in complete]),
+        "sharpe_ratio": _stat_summary([row["sharpe_ratio"] for row in complete]),
+        "max_drawdown": _stat_summary([row["max_drawdown"] for row in complete]),
+        "excess_return": _stat_summary([row["excess_annualized_return"] for row in complete if row["excess_annualized_return"] is not None]),
+    } if complete else None
+
+    heatmap: dict = {wm: {dur: [] for dur in durations} for wm in weighting_modes}
+    for row in rows:
+        if row["status"] in ("ok", "truncated"):
+            heatmap[row["weighting"]][row["duration"]].append({"period": row["period"], "return": row["annualized_return"], "truncated": row["status"] == "truncated"})
+    if has_benchmark:
+        heatmap["excess"] = {dur: [
+            {"period": row["period"], "return": row["excess_annualized_return"], "weighting": row["weighting"], "truncated": row["status"] == "truncated"}
+            for row in rows if row["duration"] == dur and row["status"] in ("ok", "truncated") and row["excess_annualized_return"] is not None
+        ] for dur in durations}
+
+    successful = len(periods_with_results)
     return {
         "total_runs": successful,
         "successful": successful,
-        "failed": failed,
+        "failed": len(all_results) - successful,
         "periods": len(periods),
-        "date_range": date_range,
-        "by_weighting": by_weighting_summary,
+        "backtests": len(rows),
+        "complete_backtests": len(complete),
+        "truncated": sum(1 for row in rows if row["status"] == "truncated"),
+        "no_data": sum(1 for row in rows if row["status"] == "no_data"),
+        "failed_backtests": sum(1 for row in rows if row["status"] == "failed"),
+        "date_range": {"first": periods[0] if periods else "", "last": periods[-1] if periods else ""},
+        "by_weighting": by_weighting,
         "benchmark_comparison": benchmark_comparison,
         "stats": stats,
         "heatmap": heatmap,
@@ -1601,6 +1709,7 @@ def run_screening_backtest_rolling(
     end_period: str | None = None,
     progress_queue: queue.Queue | None = None,
     cancel_event: threading.Event | None = None,
+    portfolio_owner: str = "",
     prices_table: str = "Stock_Prices",
     ratios_table: str = "ShareMetrics",
     company_table: str = "CompanyInfo",
@@ -1751,12 +1860,10 @@ def run_screening_backtest_rolling(
             )
             continue
 
-        tickers = screen_df[ticker_col].dropna().unique().tolist()
-        if max_companies and len(tickers) > max_companies:
-            tickers = tickers[:max_companies]
+        tickers, skipped_matches = _investable_tickers(screen_df, ticker_col, screening_date, max_companies)
 
         if not tickers:
-            logger.info("No tickers at %s; skipping.", screening_date)
+            logger.info("No tradeable tickers at %s; skipping.", screening_date)
             continue
 
         # Emit warning if ranking is disabled (arbitrary order)
@@ -1827,25 +1934,22 @@ def run_screening_backtest_rolling(
                         db3_path=db3_path,
                         initial_capital=initial_capital,
                         risk_free_rate=risk_free_rate,
+                        portfolio_owner=portfolio_owner,
                         prices_table=prices_table,
                         ratios_table=ratios_table,
                         company_table=company_table,
                         financial_statements_table=financial_statements_table,
                     )
 
-                    # Check for truncated holding period
-                    chart_data = bt_result.get("chart_data", {})
-                    cumulative = chart_data.get("cumulative", [])
-                    if cumulative:
-                        last_chart_date = cumulative[-1].get("date", "")
-                        if last_chart_date < bt_end[:10]:
-                            bt_warnings = bt_result.get("warnings", [])
-                            bt_warnings.append(
-                                f"Holding period truncated: requested "
-                                f"{bt_end}, available data through "
-                                f"{last_chart_date}"
-                            )
-                            bt_result["warnings"] = bt_warnings
+                    # A run whose prices end well before its holding period
+                    # does is not a result for that duration.
+                    bt_result["requested_end"] = bt_end
+                    last_date = (bt_result.get("metrics") or {}).get("end_date") or ""
+                    if last_date and not bt_result.get("no_data") and last_date < (end_dt - relativedelta(days=10)).strftime("%Y-%m-%d"):
+                        bt_result["truncated"] = True
+                        bt_result.setdefault("warnings", []).append(
+                            f"Holding period truncated: requested {bt_end}, prices through {last_date}"
+                        )
 
                     wm_results[dur_label] = bt_result
                     completed_backtests += 1
@@ -1875,6 +1979,8 @@ def run_screening_backtest_rolling(
             "screening_date": screening_date,
             "tickers": tickers,
             "ticker_count": len(tickers),
+            "matches": int(len(screen_df)),
+            "untradeable_matches": skipped_matches,
             "backtests": period_backtests,
             "warnings": period_warnings,
         })
@@ -1910,6 +2016,9 @@ def run_screening_backtest_rolling(
             "weighting_modes": weighting_modes,
             "max_companies": max_companies,
             "criteria": criteria,
+            "criteria_match": criteria_match,
+            "ranking_algorithm": ranking_algorithm,
+            "ranking_rules": ranking_rules or [],
             "benchmark_ticker": benchmark_ticker,
             "benchmark_mode": benchmark_mode,
             "base_currency": base_currency,
@@ -1917,6 +2026,9 @@ def run_screening_backtest_rolling(
             "end_period": end_period or (periods[-1] if periods else None),
         },
         "aggregate": aggregate,
+        "runs": rolling_run_rows(all_results, durations, weighting_modes),
+        "paths": rolling_paths(all_results),
+        "period_holdings": {item["period"]: item.get("tickers", []) for item in all_results},
         "results": all_results,
     }
 

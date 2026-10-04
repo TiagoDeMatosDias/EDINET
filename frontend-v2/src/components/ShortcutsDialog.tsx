@@ -15,7 +15,8 @@ export interface ShortcutGroup {
  */
 export function ShortcutsDialog({ groups, onClose }: { groups: ShortcutGroup[]; onClose: () => void }) {
   const closeButton = useRef<HTMLButtonElement>(null)
-  const pages = pageShortcuts(useContext(AuthContext)?.user?.role === 'admin')
+  const user = useContext(AuthContext)?.user
+  const pages = pageShortcuts(user?.role === 'admin', Boolean(user))
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
     closeButton.current?.focus()

@@ -9,6 +9,7 @@ from typing import Any
 
 from src.orchestrator.common.db_config import (
     get_auth_db,
+    get_chat_db,
     get_db1,
     get_db2,
     get_db3,
@@ -67,6 +68,7 @@ def ensure_application_databases(
     research_db_path: str | Path | None = None,
     jobs_db_path: str | Path | None = None,
     filings_db_path: str | Path | None = None,
+    chat_db_path: str | Path | None = None,
     busy_timeout_ms: int | None = None,
 ) -> dict[str, Path]:
     """Ensure all configured application databases and schemas exist.
@@ -106,6 +108,11 @@ def ensure_application_databases(
             "EDINET_FILINGS_DB",
             get_filings_db(),
         ),
+        "chat": _configured_path(
+            chat_db_path,
+            "EDINET_CHAT_DB",
+            get_chat_db(),
+        ),
     }
 
     # These stores are rebuildable or pipeline-owned, so only their files are
@@ -122,6 +129,7 @@ def ensure_application_databases(
     # initializers here makes startup self-sufficient even when the runtime
     # modules are imported through a different entry point.
     from src.auth.storage import AuthStore
+    from src.chat.storage import ChatStore
     from src.filings.catalog import FilingCatalog
     from src.pipeline_jobs.store import JobStore
     from src.research.storage import ResearchStore
@@ -130,6 +138,7 @@ def ensure_application_databases(
     ResearchStore(paths["research"], busy_timeout_ms=effective_busy_timeout)
     JobStore(paths["pipeline_jobs"], busy_timeout_ms=effective_busy_timeout)
     FilingCatalog(paths["filings"], busy_timeout_ms=effective_busy_timeout)
+    ChatStore(paths["chat"], busy_timeout_ms=effective_busy_timeout)
 
     logger.info(
         "Application databases are ready: %s",

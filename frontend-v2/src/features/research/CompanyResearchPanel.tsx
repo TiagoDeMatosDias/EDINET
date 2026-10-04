@@ -7,7 +7,7 @@ import { apiPost, apiRequest } from '../../api/client'
 import { formatMetricValue } from '../../metrics'
 import { ConfirmButton } from './ConfirmButton'
 import { invalidateResearch, useResearchBook } from './researchQueries'
-import { ALERT_OPERATORS, alertCondition, formatDay, formatSignedPercent, isPositionTag, noteTitle, relativeDay, reviewState, THESIS_STATUSES, todayIso, upside } from './researchModel'
+import { ALERT_OPERATORS, alertCondition, formatDay, formatSignedPercent, isPositionTag, noteTitle, parseThreshold, relativeDay, reviewState, THESIS_STATUSES, todayIso, upside } from './researchModel'
 import type { CompanyResearch, Note, ResearchBook, ThesisStatus } from './researchTypes'
 import './research.css'
 
@@ -279,18 +279,20 @@ function AlertsForCompany({ code, alerts, definitions, priceCurrency }: {
   const [metric, setMetric] = useState('LatestPrice')
   const [operator, setOperator] = useState<string>('>')
   const [value, setValue] = useState('')
+  const typed = parseThreshold(value)
+  const condition = typed.operator ?? operator
   const create = useMutation({
     mutationFn: () => {
-      const threshold = Number(value.replace(/,/g, '')) / (definitions[metric]?.format === 'percent' ? 100 : 1)
-      return apiPost('/api/research/alerts', { name: alertCondition({ metric, operator, value: threshold, price_currency: priceCurrency }, definitions), edinet_code: code, metric, operator, value: threshold })
+      const threshold = typed.number / (definitions[metric]?.format === 'percent' ? 100 : 1)
+      return apiPost('/api/research/alerts', { name: alertCondition({ metric, operator: condition, value: threshold, price_currency: priceCurrency }, definitions), edinet_code: code, metric, operator: condition, value: threshold })
     },
-    onSuccess: () => { setValue(''); invalidateResearch(client) },
+    onSuccess: () => { setValue(''); setOperator(condition); invalidateResearch(client) },
   })
   const remove = useMutation({
     mutationFn: (id: string) => apiRequest(`/api/research/alerts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     onSuccess: () => invalidateResearch(client),
   })
-  const valid = value.trim() !== '' && Number.isFinite(Number(value.replace(/,/g, '')))
+  const valid = typed.text !== '' && Number.isFinite(typed.number)
   return <section className="rs-alerts" aria-label="Alerts">
     <span className="rs-label"><Bell aria-hidden="true" />Alerts</span>
     {alerts.map(alert => <span key={alert.alert_id} className={alert.triggered ? 'rs-alert-chip is-triggered' : 'rs-alert-chip'} title={alert.current_value == null ? 'No current value' : `Now ${formatMetricValue(definitions[alert.metric], alert.current_value, { price: alert.price_currency })}`}>
@@ -299,7 +301,7 @@ function AlertsForCompany({ code, alerts, definitions, priceCurrency }: {
     </span>)}
     {metrics.length > 0 && <form className="rs-alerts__add" onSubmit={event => { event.preventDefault(); if (valid) create.mutate() }}>
       <select className="select" aria-label="Alert metric" value={metric} onChange={event => setMetric(event.target.value)}>{metrics.map(key => <option key={key} value={key}>{definitions[key].label}</option>)}</select>
-      <select className="select" aria-label="Alert condition" value={operator} onChange={event => setOperator(event.target.value)}>{ALERT_OPERATORS.map(item => <option key={item}>{item}</option>)}</select>
+      <select className="select" aria-label="Alert condition" value={condition} onChange={event => { setOperator(event.target.value); setValue(typed.text) }}>{ALERT_OPERATORS.map(item => <option key={item}>{item}</option>)}</select>
       <input className="input" inputMode="decimal" aria-label="Alert threshold" placeholder={definitions[metric]?.format === 'percent' ? '%' : 'Value'} value={value} onChange={event => setValue(event.target.value)} />
       <button type="submit" className="icon-button" aria-label="Add alert" disabled={!valid || create.isPending}><Plus /></button>
     </form>}

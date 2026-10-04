@@ -25,7 +25,7 @@ export const NOTES_SHORTCUTS: ShortcutGroup = { title: 'Notes', shortcuts: [
 
 export const ALERTS_SHORTCUTS: ShortcutGroup = { title: 'Alerts', shortcuts: [
   { keys: ['J', 'K'], label: 'Next or previous alert (↓ ↑ in the list)' },
-  { keys: ['N'], label: 'New alert' },
+  { keys: ['N'], label: 'New alert: Enter picks the company, then Enter adds it' },
   { keys: ['T'], label: 'Show only triggered alerts' },
   { keys: ['X'], label: 'Delete the alert (press twice)' },
 ] }
@@ -46,6 +46,8 @@ export const BONDS_SHORTCUTS: ShortcutGroup = { title: 'Bonds', shortcuts: [
   { keys: ['A'], label: 'Price a bond issued by a company' },
   { keys: ['M'], label: 'Manual inputs (no company)' },
   { keys: ['[', ']'], label: 'Maturity one year shorter or longer' },
+  { keys: ['D'], label: 'Maturity date' },
+  { keys: ['F'], label: 'Fee as a percentage or a set amount' },
   { keys: ['C'], label: 'Coupon' },
   { keys: ['Y'], label: 'Risk-free yield' },
   { keys: ['P'], label: 'Market price, for the implied yield and default risk' },

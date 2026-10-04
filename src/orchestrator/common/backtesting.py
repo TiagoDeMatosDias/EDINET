@@ -42,6 +42,29 @@ def _sql_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _ticker_variants(tickers: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Every stored form of each ticker, mapped back to the form the caller used.
+
+    Tokyo listings appear as "7203", "72030" (EDINET's check-digit form, the
+    one prices and CompanyInfo use), and "7203.T"; any of them finds the others.
+    """
+    from src.utilities.stock_prices import tse_code
+
+    variants: list[str] = []
+    variant_to_original: dict[str, str] = {}
+    for raw in tickers:
+        original = str(raw).strip()
+        forms = [original, original[:-2] if original.endswith(".T") else f"{original}.T"]
+        code = tse_code(original)
+        if code:
+            forms += [f"{code}0", code, f"{code}.T"]
+        for form in forms:
+            if form and form not in variant_to_original:
+                variants.append(form)
+                variant_to_original[form] = original
+    return variants, variant_to_original
+
+
 def _normalise_portfolio_entry(
     spec,
 ) -> tuple[str, float]:
@@ -207,25 +230,7 @@ def get_portfolio_prices(
             raise ValueError("db_path is required when no active connection is provided.")
         conn = sqlite3.connect(db_path)
     try:
-        # Build ticker variants â€” try bare, with .T, and without .T
-        # so that both "1911" and "19110" match "1911.T" in the DB.
-        variants: list[str] = []
-        variant_to_original: dict[str, str] = {}
-        for t in tickers:
-            t = str(t).strip()
-            if t not in variant_to_original:
-                variants.append(t)
-                variant_to_original[t] = t
-            if not t.endswith(".T"):
-                tv = t + ".T"
-                if tv not in variant_to_original:
-                    variants.append(tv)
-                    variant_to_original[tv] = t
-            else:
-                tv = t[:-2]
-                if tv not in variant_to_original:
-                    variants.append(tv)
-                    variant_to_original[tv] = t
+        variants, variant_to_original = _ticker_variants(tickers)
 
         placeholders = ",".join(["?"] * len(variants))
         # Check if Currency column exists (backward compat with custom tables)
@@ -339,24 +344,7 @@ def get_dividend_data(
                 columns=["Ticker", "periodEnd", "PerShare_Dividends"]
             )
 
-        # Build ticker variants for fuzzy matching (bare, .T, no .T)
-        variants: list[str] = []
-        variant_to_original: dict[str, str] = {}
-        for t in tickers:
-            t = str(t).strip()
-            if t not in variant_to_original:
-                variants.append(t)
-                variant_to_original[t] = t
-            if not t.endswith(".T"):
-                tv = t + ".T"
-                if tv not in variant_to_original:
-                    variants.append(tv)
-                    variant_to_original[tv] = t
-            else:
-                tv = t[:-2]
-                if tv not in variant_to_original:
-                    variants.append(tv)
-                    variant_to_original[tv] = t
+        variants, variant_to_original = _ticker_variants(tickers)
 
         placeholders = ",".join(["?"] * len(variants))
 
@@ -440,23 +428,7 @@ def get_ticker_currency(
         return {}
     conn = sqlite3.connect(db_path)
     try:
-        variants: list[str] = []
-        variant_to_original: dict[str, str] = {}
-        for t in tickers:
-            t = str(t).strip()
-            if t not in variant_to_original:
-                variants.append(t)
-                variant_to_original[t] = t
-            if not t.endswith(".T"):
-                tv = t + ".T"
-                if tv not in variant_to_original:
-                    variants.append(tv)
-                    variant_to_original[tv] = t
-            else:
-                tv = t[:-2]
-                if tv not in variant_to_original:
-                    variants.append(tv)
-                    variant_to_original[tv] = t
+        variants, variant_to_original = _ticker_variants(tickers)
 
         placeholders = ",".join(["?"] * len(variants))
         try:
@@ -539,30 +511,17 @@ def convert_prices_to_base_currency(
         # Reindex to cover the FULL price date range so dates beyond the
         # FX data range use the last known rate (vital for multi-year
         # backtests where price data may extend past available FX data).
-        fx_dates = sorted(fx_dict.keys())
-        fx_vals = [fx_dict[d] for d in fx_dates]
-        fx_s = pd.Series(fx_vals, index=pd.to_datetime(fx_dates)).sort_index()
-        price_dates = df.loc[df["Ticker"] == ticker, "Date"]
-        full_range = pd.date_range(
-            min(fx_s.index[0], price_dates.min()),
-            max(fx_s.index[-1], price_dates.max()),
-            freq="D",
-        )
-        fx_s = fx_s.reindex(full_range, method="ffill")
-
+        fx_s = pd.Series(fx_dict).rename(index=pd.Timestamp).sort_index()
+        fx_s = fx_s[fx_s > 0]
+        if fx_s.empty:
+            continue
         ticker_mask = df["Ticker"] == ticker
-        for idx in df[ticker_mask].index:
-            date_val = df.at[idx, "Date"]
-            if isinstance(date_val, pd.Timestamp):
-                date_key = date_val
-            else:
-                date_key = pd.Timestamp(str(date_val))
-            try:
-                rate = fx_s.loc[date_key]
-            except KeyError:
-                continue
-            if rate > 0:
-                df.at[idx, "Price"] = df.at[idx, "Price"] * rate
+        dates = pd.to_datetime(df.loc[ticker_mask, "Date"])
+        # The last known rate on each date (weekends, holidays, after the
+        # series ends); dates before it starts use its first rate, so no price
+        # is ever left in its native currency.
+        rates = fx_s.reindex(fx_s.index.union(dates.drop_duplicates())).ffill().bfill()
+        df.loc[ticker_mask, "Price"] = df.loc[ticker_mask, "Price"].to_numpy() * rates.loc[dates].to_numpy()
 
     df["Currency"] = bc
     return df
@@ -650,20 +609,21 @@ def get_portfolio_benchmark_returns(
     end_date: str,
     base_currency: str,
     db2_path: str,
+    owner_user_id: str = "",
 ) -> pd.DataFrame | None:
-    """Fetch portfolio daily values from db3 and format as benchmark DataFrame.
+    """Fetch one account's portfolio daily values and format them as a benchmark.
 
-    Reads ``Portfolio_Daily`` from *db3_path*. Values are stored in EUR.
-    If *base_currency* != ``"EUR"``, converts daily values using historical
-    FX rates, then recomputes daily returns from the converted series.
+    Reads ``Portfolio_Daily`` for *owner_user_id* only. Values are stored in
+    EUR; for another *base_currency* each day is converted at the last known
+    FX rate, then daily returns are recomputed from the converted series.
     """
     conn = sqlite3.connect(db3_path)
     try:
         rows = conn.execute(
             "SELECT date, total_value, net_inflow FROM Portfolio_Daily "
-            "WHERE date >= ? AND date <= ? "
+            "WHERE owner_user_id = ? AND date >= ? AND date <= ? "
             "ORDER BY date",
-            (start_date, end_date),
+            (owner_user_id, start_date, end_date),
         ).fetchall()
     finally:
         conn.close()
@@ -681,9 +641,12 @@ def get_portfolio_benchmark_returns(
         from src.portfolio.currency import get_fx_series
         fx_series = get_fx_series("EUR", bc, db2_path)
         if fx_series:
-            fx_values = np.array([
-                fx_series.get(r[0], 1.0) for r in rows
-            ], dtype=float)
+            # Portfolio_Daily has weekends and holidays; FX does not. Carry
+            # the last rate forward (and the first one back) instead of 1.0.
+            known = pd.Series(fx_series).rename(index=pd.Timestamp).sort_index()
+            days = pd.DatetimeIndex(dates)
+            rates = known.reindex(known.index.union(days)).ffill().bfill()
+            fx_values = rates.loc[days].to_numpy(dtype=float)
             total_values = total_values * fx_values
             net_inflows = net_inflows * fx_values
         else:
@@ -1307,25 +1270,38 @@ def build_daily_portfolio_tracker(
     )
 
     # --- 3. Compute shares for each ticker (buy-and-hold) -------------
+    # A ticker whose first price comes after the start (a later listing, a
+    # gap in the data) is bought on that first day; its allocation waits as
+    # cash until then rather than vanishing from the portfolio's value.
     initial_prices: dict[str, float] = {}
     shares: dict[str, float] = {}
-    entry_commission = 0.0
+    entry_dates: dict[str, pd.Timestamp] = {}
+    notes: list[str] = []
+    index = price_matrix.index
+    cash_series = pd.Series(0.0, index=index)
     for t in tickers_in_data:
-        p0 = float(price_matrix[t].iloc[0])
-        if pd.isna(p0) or p0 <= 0:
+        allocation = active[t] * initial_capital
+        valid = price_matrix[t][price_matrix[t] > 0]
+        if valid.empty:
+            cash_series += allocation
+            notes.append(f"'{t}' has no usable price in the period; its allocation stayed in cash.")
             continue
-        fill_price = cost_model.fill_price(p0, "buy")
+        entry = valid.index[0]
+        fill_price = cost_model.fill_price(float(valid.iloc[0]), "buy")
         initial_prices[t] = fill_price
-        shares[t] = (active[t] * initial_capital) / fill_price
-        entry_commission += cost_model.commission(shares[t] * fill_price)
+        shares[t] = allocation / fill_price
+        entry_dates[t] = entry
+        cash_series.loc[index < entry] += allocation
+        cash_series.loc[index >= entry] -= cost_model.commission(shares[t] * fill_price)
+        if entry > index[0]:
+            notes.append(f"'{t}' first traded on {entry.date()}; its allocation was held as cash until then.")
 
     # --- 4. Daily market value per ticker -----------------------------
     daily_mktval: dict[str, pd.Series] = {}
     for t, s in shares.items():
-        daily_mktval[t] = price_matrix[t] * s
+        daily_mktval[t] = (price_matrix[t] * s).where(index >= entry_dates[t], 0.0)
 
     # --- 5. Cash balance (accumulated dividends) ----------------------
-    cash_series = pd.Series(-entry_commission, index=price_matrix.index)
     dividend_events = pd.Series(0.0, index=price_matrix.index)
     # Per-ticker daily dividend cash (for visibility / debugging)
     per_ticker_div_cash: dict[str, pd.Series] = {
@@ -1360,6 +1336,9 @@ def build_daily_portfolio_tracker(
             # Map payment date to next available trading day.
             # Dividends that fall after the last trading day are mapped
             # to the last day (they still count toward total return).
+            # Only dividends for periods ending while the shares were held.
+            if pay_date < entry_dates[ticker]:
+                continue
             pos = idx.searchsorted(pay_date, side="left")
             if pos >= len(idx):
                 effective_date = idx[-1]  # last available trading day
@@ -1440,10 +1419,14 @@ def build_daily_portfolio_tracker(
     for year in years:
         yr_pm = pm_by_year[year]
 
+        # Prices held that year: a later listing has none before it trades.
+        held = {t: yr_pm[t][yr_pm.index >= entry_dates[t]].dropna() for t in shares}
+        held = {t: series for t, series in held.items() if not series.empty}
+
         # Total portfolio start value (using FIRST trading day of year)
         port_start_val = running_cash
-        for t in shares:
-            port_start_val += shares[t] * float(yr_pm[t].iloc[0])
+        for t in held:
+            port_start_val += shares[t] * float(held[t].iloc[0])
 
         # Yearly dividends per ticker
         year_divs_per_share: dict[str, float] = {t: 0.0 for t in shares}
@@ -1457,9 +1440,9 @@ def build_daily_portfolio_tracker(
         total_year_divs_cash = 0.0
 
         # Ticker rows
-        for t in shares:
-            s_price = float(yr_pm[t].iloc[0])
-            e_price = float(yr_pm[t].iloc[-1])
+        for t in held:
+            s_price = float(held[t].iloc[0])
+            e_price = float(held[t].iloc[-1])
             div_ps = year_divs_per_share[t]
             s_shares = shares[t]
 
@@ -1477,8 +1460,8 @@ def build_daily_portfolio_tracker(
             wtd_start = start_mkt / port_start_val if port_start_val > 0 else 0.0
             # Weighted end value uses actual portfolio end value
             port_end_val_yr = running_cash + total_year_divs_cash
-            for t2 in shares:
-                port_end_val_yr += shares[t2] * float(yr_pm[t2].iloc[-1])
+            for t2 in held:
+                port_end_val_yr += shares[t2] * float(held[t2].iloc[-1])
             wtd_end = end_mkt / port_end_val_yr if port_end_val_yr > 0 else 0.0
             wtd_ret = active[t] * total_ret
 
@@ -1505,8 +1488,8 @@ def build_daily_portfolio_tracker(
         # Cash row
         cash_end_yr = running_cash + total_year_divs_cash
         port_end_val_yr2 = cash_end_yr
-        for t in shares:
-            port_end_val_yr2 += shares[t] * float(yr_pm[t].iloc[-1])
+        for t in held:
+            port_end_val_yr2 += shares[t] * float(held[t].iloc[-1])
 
         cash_wtd_start = running_cash / port_start_val if port_start_val > 0 else 0.0
         cash_wtd_end = cash_end_yr / port_end_val_yr2 if port_end_val_yr2 > 0 else 0.0
@@ -1579,6 +1562,7 @@ def build_daily_portfolio_tracker(
         "daily": daily_df,
         "per_company_per_year": pyp_df,
         "metrics": metrics,
+        "notes": notes,
     }
 
 

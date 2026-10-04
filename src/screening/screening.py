@@ -878,8 +878,9 @@ def build_screening_query(
         columns: List of ``"Table.Column"`` strings to SELECT.
         period: Optional year string to filter ``periodEnd``.
         screening_date: Optional point-in-time date (YYYY-MM-DD). When set,
-            only the most recent filing per company with ``periodEnd <= date``
-            is selected, and stock prices are capped at that date.
+            only the most recent filing per company submitted on or before
+            that date is selected (``submitDateTime``; without one, the period
+            end plus 90 days), and stock prices are capped at that date.
         available_metrics: Output of ``get_available_metrics`` for validation.
             If ``None``, validation of screening-table columns is skipped.
         column_aliases: Optional ``{Table.Column: Alias}`` overrides for the
@@ -1187,7 +1188,15 @@ def build_screening_query(
         _sub_cols_parts.append(f"f.[{_safe_identifier(_ec)}]")
     _sub_cols = ", ".join(_sub_cols_parts)
     if screening_date:
-        _where = "WHERE date(periodEnd) <= ?"
+        # Point in time means what was public then: a filing counts from the
+        # day it was submitted (on average ~3 months after its period end),
+        # not from its period end. Rows without a submission date are assumed
+        # to be filed 90 days after the period ends.
+        fs_columns = (available_metrics or {}).get("FinancialStatements") or []
+        if "submitDateTime" in fs_columns:
+            _where = "WHERE date(COALESCE(NULLIF(submitDateTime, ''), date(periodEnd, '+90 days'))) <= ?"
+        else:
+            _where = "WHERE date(periodEnd, '+90 days') <= ?" if available_metrics else "WHERE date(periodEnd) <= ?"
         _extra_params = [screening_date]
     elif period:
         _where = "WHERE SUBSTR(periodEnd, 1, 4) = ?"

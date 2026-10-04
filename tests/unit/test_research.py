@@ -84,3 +84,35 @@ def test_watchlist_member_reorder(tmp_path):
     store.reorder_watchlist_items("user-a", wl["watchlist_id"], ["E2", "E1"])
     items = store.list_watchlist_items("user-a", wl["watchlist_id"])
     assert [i["edinet_code"] for i in items] == ["E2", "E1"]
+
+
+def test_alerts_can_be_deleted_only_by_their_owner(tmp_path):
+    store = ResearchStore(tmp_path / "research.db")
+    alert = store.create_alert("u1", "Cheap", "E1", '{"metric":"PERatio","operator":"<","value":12}')
+    store.record_alert_event(alert["alert_id"], "{}", dedupe_key="k")
+
+    assert store.delete_alert("u2", alert["alert_id"]) is False
+    assert store.delete_alert("u1", alert["alert_id"]) is True
+
+    assert store.list_alerts("u1") == []
+    assert store.list_alert_events("u1", alert["alert_id"]) == []
+    assert store.delete_alert("u1", alert["alert_id"]) is False
+
+
+def test_alert_delete_route_removes_the_alert(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from src.research import api as research_api
+    from src.web_app.server import app
+
+    store = ResearchStore(tmp_path / "research.db")
+    monkeypatch.setattr(research_api, "store", store)
+    client = TestClient(app)
+    created = client.post(
+        "/api/research/alerts",
+        json={"name": "Cheap", "edinet_code": "E1", "metric": "PERatio", "operator": "<", "value": 12},
+    ).json()
+
+    assert client.delete(f"/api/research/alerts/{created['alert_id']}").status_code == 204
+    assert client.delete(f"/api/research/alerts/{created['alert_id']}").status_code == 404
+    assert client.get("/api/research/alerts").json() == {"alerts": []}

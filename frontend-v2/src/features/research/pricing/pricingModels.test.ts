@@ -106,6 +106,17 @@ describe('strategies', () => {
     expect(charged.probabilityOfProfit).toBeLessThan(plain.probabilityOfProfit)
   })
 
+  it('charges a percentage fee on each leg\'s premium, or on the share price for shares', () => {
+    const straddle = legs('straddle')
+    const premiums = straddle.map(leg => Math.abs(strategyCost([leg], 1, market)))
+    const percent = { mode: 'percent' as const, perContract: 500, percent: 0.01, contractSize: 100, roundTrip: false }
+    expect(strategyFees(straddle, percent, 1, market)).toBeCloseTo(0.01 * (premiums[0] + premiums[1]), 9)
+    expect(strategyFees(straddle, { ...percent, roundTrip: true }, 1, market)).toBeCloseTo(0.02 * (premiums[0] + premiums[1]), 9)
+    expect(strategyFees([{ kind: 'stock', side: 1, quantity: 2, strike: 0 }], percent, 1, market)).toBeCloseTo(0.01 * market.spot * 2, 9)
+    // Without prices a percentage cannot be charged; the set amount is ignored in this mode.
+    expect(strategyFees(straddle, percent)).toBe(0)
+  })
+
   it('converts between an expiry date and days to expiry', () => {
     expect(addDays('2026-10-03', 90)).toBe('2027-01-01')
     expect(daysBetween('2026-10-03', '2027-01-01')).toBe(90)

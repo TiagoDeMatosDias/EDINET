@@ -202,6 +202,33 @@ class TestPriceHeuristic:
         candidates = detect_splits_by_price_heuristic(conn, "NOEXIST")
         assert candidates == []
 
+    def test_zero_price_is_skipped_not_divided_by(self):
+        # A zero print used to crash the whole step with ZeroDivisionError.
+        conn = _make_in_memory_db()
+        conn.executemany(
+            "INSERT INTO Stock_Prices VALUES (?, ?, ?, ?)",
+            [
+                ("2024-06-10", "ZERO", "JPY", 100.0),
+                ("2024-06-11", "ZERO", "JPY", 0.0),
+                ("2024-06-12", "ZERO", "JPY", -1.0),
+                ("2024-06-13", "ZERO", "JPY", 101.0),
+            ],
+        )
+        assert detect_splits_by_price_heuristic(conn, "ZERO") == []
+
+    def test_split_across_a_bad_print_is_still_found(self):
+        conn = _make_in_memory_db()
+        conn.executemany(
+            "INSERT INTO Stock_Prices VALUES (?, ?, ?, ?)",
+            [
+                ("2024-06-10", "BADPRINT", "JPY", 100.0),
+                ("2024-06-11", "BADPRINT", "JPY", 0.0),
+                ("2024-06-12", "BADPRINT", "JPY", 50.0),
+            ],
+        )
+        [candidate] = detect_splits_by_price_heuristic(conn, "BADPRINT")
+        assert (candidate["split_date"], candidate["ratio_from"], candidate["ratio_to"]) == ("2024-06-12", 1, 2)
+
 
 # ── ShareMetrics cross-validation ───────────────────────────────────────────
 
@@ -504,6 +531,35 @@ class TestRunSplitDetection:
             conn.close()
             gc.collect()
             assert len(rows) >= 1
+
+    def test_all_tickers_skip_rate_and_index_series(self):
+        import gc
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            create_market_database(db_path)
+            add_split_test_data(db_path)
+            conn = sqlite3.connect(db_path)
+            conn.executemany(
+                "INSERT INTO Stock_Prices (Date, Ticker, Currency, Price) VALUES (?, ?, ?, ?)",
+                [
+                    ("2024-01-04", "RiskFree_EUR", "EUR", 0.5),
+                    ("2024-01-05", "RiskFree_EUR", "EUR", 0.0),
+                    ("2024-01-08", "RiskFree_EUR", "EUR", -0.2),
+                    ("2024-01-04", "Inflation_JPY", "JPY", 100.0),
+                    ("2024-01-05", "Inflation_JPY", "JPY", 40.0),
+                ],
+            )
+            conn.commit()
+            conn.close()
+            seen: list[str] = []
+
+            results = run_split_detection(
+                str(db_path), mode="full", progress=lambda done, total, message: seen.append(message),
+            )
+
+            gc.collect()
+            assert not any("RiskFree_" in message or "Inflation_" in message for message in seen)
+            assert len(seen) == results["tickers_scanned"] > 0
 
     def test_incremental_skips_already_known(self):
         import gc

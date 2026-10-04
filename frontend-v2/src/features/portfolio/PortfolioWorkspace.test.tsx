@@ -78,12 +78,12 @@ describe('PortfolioWorkspace keyboard', () => {
     expect(localStorage.getItem('portfolio.tab')).toBe('"data"')
   })
 
-  it('steps the period with - and = and asks for that window', async () => {
+  it('steps the period with - and + and asks for that window', async () => {
     renderWorkspace()
     await screen.findByText('Valued as of 2 Oct 2026')
     expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
 
-    fireEvent.keyDown(document.body, { key: '=' })
+    fireEvent.keyDown(document.body, { key: '+' })
     expect(screen.getByRole('button', { name: '5Y' })).toHaveAttribute('aria-pressed', 'true')
     await waitFor(() => expect(requests.some(path => path.startsWith('/api/portfolio/performance') && path.includes('start_date=2021-10-02'))).toBe(true))
     fireEvent.keyDown(document.body, { key: '-' })

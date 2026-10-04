@@ -211,19 +211,35 @@ export function strategyProfit(legs: Leg[], spot: number, remaining: number, yea
   return value - strategyCost(legs, years, market) - fees
 }
 
+export type FeeMode = 'contract' | 'percent'
+
 export interface TradingFees {
+  /** A set amount per contract, or a share of each trade's value. Older saved settings have no mode: per contract. */
+  mode?: FeeMode
   /** Charged per contract traded, in the price currency. */
   perContract: number
+  /** Share of the traded value (premium, or the share price for a share leg), as a fraction. */
+  percent?: number
   /** Shares per contract; a share leg counts as one lot of this size. */
   contractSize: number
   /** Charged again when the position is closed or exercised. */
   roundTrip: boolean
 }
 
-/** Fees per share of underlying for the whole position: every leg's quantity, once or twice. */
-export function strategyFees(legs: Leg[], fees: TradingFees) {
+/**
+ * Fees per share of underlying for the whole position: every leg's quantity, once or twice.
+ * A percentage fee needs today's prices (``years`` and ``market``); the closing trade is
+ * charged on the opening value, since what the position will be worth then is unknown.
+ */
+export function strategyFees(legs: Leg[], fees: TradingFees, years = 0, market?: Market) {
+  const times = fees.roundTrip ? 2 : 1
+  if (fees.mode === 'percent') {
+    const rate = fees.percent ?? 0
+    if (!(rate > 0) || !market) return 0
+    return legs.reduce((sum, leg) => sum + Math.abs(leg.quantity) * rate * Math.abs(legUnitValue(leg, market.spot, years, market)) * times, 0)
+  }
   if (!(fees.perContract > 0) || !(fees.contractSize > 0)) return 0
-  const perShare = fees.perContract / fees.contractSize * (fees.roundTrip ? 2 : 1)
+  const perShare = fees.perContract / fees.contractSize * times
   return legs.reduce((sum, leg) => sum + Math.abs(leg.quantity) * perShare, 0)
 }
 

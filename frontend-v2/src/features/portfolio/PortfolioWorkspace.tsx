@@ -52,7 +52,7 @@ const RANGE_KEYS = RANGES.map(range => range.key)
 const SHORTCUTS: ShortcutGroup[] = [
   { title: 'Anywhere on this page', shortcuts: [
     { keys: ['1', '2', '3', '4', '5', '6'], label: 'Overview, Holdings, Performance, Income, Activity, Data & method' },
-    { keys: ['-', '='], label: 'Longer or shorter period' },
+    { keys: ['-', '+'], label: 'Longer or shorter period' },
     { keys: ['C'], label: 'Choose the display currency' },
     { keys: ['B'], label: 'Choose the benchmark' },
     { keys: ['F'], label: 'Find a holding, record, or paying company' },
@@ -62,6 +62,8 @@ const SHORTCUTS: ShortcutGroup[] = [
     { keys: ['?'], label: 'Show or hide this list' },
   ] },
   { title: 'Activity records', shortcuts: [
+    { keys: ['N'], label: 'Add a transaction by hand' },
+    { keys: ['Shift+A'], label: 'Select every record shown (again: unselect)' },
     { keys: ['Space'], label: 'Select or unselect the record' },
     { keys: ['Del'], label: 'Delete the selected records (asks first)' },
   ] },
@@ -269,8 +271,9 @@ export default function PortfolioWorkspace() {
   useHotkeys({
     ...Object.fromEntries(TABS.map((item, index) => [String(index + 1), () => setTab(item.id)])),
     '-': () => stepRange(1),
-    '=': () => stepRange(-1),
     '+': () => stepRange(-1),
+    // The unshifted '+' key on many layouts.
+    '=': () => stepRange(-1),
     c: () => currencySelect.current?.focus(),
     b: () => benchmarkSelect.current?.focus(),
     f: () => {
@@ -375,6 +378,11 @@ export default function PortfolioWorkspace() {
           setStatus(selection.kind === 'everything'
             ? `Cleared all ${result.deleted.toLocaleString()} portfolio records.`
             : `Deleted ${result.deleted.toLocaleString()} record${result.deleted === 1 ? '' : 's'}; ${result.remaining.toLocaleString()} remain. Rebuilt ${result.holdings_count} holdings over ${result.daily_rows.toLocaleString()} days.`)
+          await invalidate()
+        }}
+        onAdded={async result => {
+          const record = result.transaction
+          setStatus(`Added ${record ? `${record.activity_type === 'TRADE' ? (record.buy_sell ?? '').toLowerCase() : (record.activity_type ?? '').toLowerCase().replaceAll('_', ' ')} ${record.symbol ?? ''} on ${record.trade_date}` : 'the record'}. Rebuilt ${result.holdings_count} holdings over ${result.daily_rows.toLocaleString()} days.`)
           await invalidate()
         }}
       />}

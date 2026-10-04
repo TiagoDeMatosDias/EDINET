@@ -77,7 +77,7 @@ function stub() {
     if (path.startsWith('/api/tags/')) return json({ tags: path.endsWith('E1') ? ['Autos', 'Favorite'] : path.endsWith('MO') ? ['Open position'] : ['Yield'] })
     if (path.startsWith('/api/research/alerts')) return json({}, method === 'POST' ? 201 : 200)
     if (path.startsWith('/api/research/pricing/')) return json(PRICING)
-    if (path.startsWith('/api/security/search')) return json({ results: [] })
+    if (path.startsWith('/api/security/search')) return json({ results: path.includes('q=alpha') ? [{ company_code: 'E1', company_name: 'Alpha Motor', ticker: '10000' }] : [] })
     return json({})
   }))
 }
@@ -243,7 +243,13 @@ describe('ResearchPage', () => {
     expect(breakeven()).toHaveTextContent(money(100 + call + 10))
     expect(breakeven()).toHaveTextContent('with fees')
     expect(within(screen.getByRole('region', { name: 'Strategy' })).getByText('Fees').nextSibling).toHaveTextContent('¥10')
-    expect(JSON.parse(window.localStorage.getItem('research.options.fees')!)).toEqual({ perContract: 500, contractSize: 100, roundTrip: true })
+    expect(JSON.parse(window.localStorage.getItem('research.options.fees')!)).toEqual({ mode: 'contract', perContract: 500, percent: 0, contractSize: 100, roundTrip: true })
+
+    // As a share of the premium instead: 1% of the call, charged once.
+    fireEvent.click(screen.getByRole('checkbox', { name: /Also when closing/ }))
+    fireEvent.click(screen.getByRole('button', { name: '% of value' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Fee rate' }), { target: { value: '1' } })
+    expect(breakeven()).toHaveTextContent(money(100 + call * 1.01))
   })
 
   it('charges a bond trading fee against the yield', async () => {
@@ -255,6 +261,48 @@ describe('ResearchPage', () => {
     const after = Number(within(price).getByText('Yield after fee').nextSibling!.textContent!.replace('%', ''))
     expect(after).toBeLessThan(before)
     expect(Number(within(price).getByText('Price with fee').nextSibling!.textContent)).toBeCloseTo(Number(within(price).getByText('Price with default risk').nextSibling!.textContent) + 0.5, 3)
+
+    // A set amount per bond: 0.25 on 100 face.
+    fireEvent.click(screen.getByRole('button', { name: 'Set' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Trading fee' }), { target: { value: '0.25' } })
+    expect(Number(within(price).getByText('Price with fee').nextSibling!.textContent)).toBeCloseTo(Number(within(price).getByText('Price with default risk').nextSibling!.textContent) + 0.25, 3)
+    expect(window.localStorage.getItem('research.bonds.feeMode')).toBe('"amount"')
+  })
+
+  it('sets a bond maturity by date', async () => {
+    renderPage('?tab=bonds')
+    await screen.findByRole('region', { name: 'Bond price' })
+    fireEvent.change(screen.getByLabelText('Maturity date'), { target: { value: addDays(localToday(), 730) } })
+    expect(Number((screen.getByRole('textbox', { name: 'Years to maturity' }) as HTMLInputElement).value)).toBeCloseTo(730 / 365.25, 2)
+    press('d')
+    expect(screen.getByLabelText('Maturity date')).toHaveFocus()
+  })
+
+  it('adds an alert from the keyboard: N, pick with Enter, type the condition and value, Enter', async () => {
+    renderPage('?tab=alerts')
+    await screen.findByRole('table', { name: 'Alerts' })
+    press('n')
+    const picker = screen.getByRole('combobox', { name: 'Company' })
+    expect(picker).toHaveFocus()
+    fireEvent.change(picker, { target: { value: 'alpha' } })
+    await screen.findByRole('option', { name: /Alpha Motor/ })
+    fireEvent.keyDown(picker, { key: 'Enter' })
+    const value = screen.getByRole('textbox', { name: 'Value' })
+    expect(value).toHaveFocus()
+    fireEvent.change(value, { target: { value: '<= 1,500' } })
+    expect(screen.getByRole('combobox', { name: 'Condition' })).toHaveValue('<=')
+    fireEvent.submit(value.closest('form')!)
+    await waitFor(() => expect(lastCall('POST', '/api/research/alerts')?.body).toEqual({ name: 'Price ≤ 1,500', edinet_code: 'E1', metric: 'LatestPrice', operator: '<=', value: 1500 }))
+    await waitFor(() => expect(picker).toHaveFocus())
+  })
+
+  it('deletes an alert with X pressed twice', async () => {
+    renderPage('?tab=alerts')
+    await screen.findByRole('table', { name: 'Alerts' })
+    press('x')
+    expect(lastCall('DELETE', '/api/research/alerts')).toBeUndefined()
+    press('x')
+    await waitFor(() => expect(lastCall('DELETE', '/api/research/alerts')?.path).toBe('/api/research/alerts/a1'))
   })
 
   it('lists the shortcuts for the tab in use', async () => {

@@ -12,6 +12,7 @@ import { Tip } from '../../components/Tooltip'
 import { useHotkeys } from '../../hooks/useHotkeys'
 import { formatMetricValue, groupMetrics, type MetricDefinition } from '../../metrics'
 import { useAuth } from '../auth/authContext'
+import { CompanyChannelPanel } from '../chat/CompanyChannelPanel'
 import { PortfolioTrailNav } from '../portfolio/PortfolioTrailNav'
 import { CompanyResearchPanel } from '../research/CompanyResearchPanel'
 import { ResearchBadge } from '../research/ResearchBadge'
@@ -28,6 +29,7 @@ const SECTIONS = [
   { id: 'overview', label: 'Overview' },
   { id: 'financials', label: 'Financials' },
   { id: 'filings', label: 'Filings' },
+  { id: 'discussion', label: 'Discussion' },
 ] as const
 type SectionId = typeof SECTIONS[number]['id']
 
@@ -43,8 +45,9 @@ const SHORTCUTS: ShortcutGroup[] = [
     { keys: ['G S', 'G P'], label: 'Back to the screen results or the portfolio' },
   ] },
   { title: 'This company', shortcuts: [
-    { keys: ['1', '2', '3'], label: 'Jump to Overview, Financials, Filings' },
-    { keys: ['-', '='], label: 'Widen or narrow the price range' },
+    { keys: ['1', '2', '3', '4'], label: 'Jump to Overview, Financials, Filings, Discussion' },
+    { keys: ['D'], label: 'Write in the company’s discussion channel' },
+    { keys: ['-', '+'], label: 'Widen or narrow the price range' },
     { keys: ['T'], label: 'Add a tag' },
     { keys: ['N'], label: 'Write a research note' },
     { keys: ['P'], label: 'Compare with peers' },
@@ -266,6 +269,7 @@ export default function AnalysisWorkspaceUnified() {
     },
   })
   const tagInput = useRef<HTMLInputElement>(null)
+  const discussionInput = useRef<HTMLTextAreaElement>(null)
   const noteInput = useRef<HTMLTextAreaElement>(null)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const closeShortcuts = useCallback(() => setShowShortcuts(false), [])
@@ -286,6 +290,8 @@ export default function AnalysisWorkspaceUnified() {
     1: () => jumpTo('overview'),
     2: () => jumpTo('financials'),
     3: () => jumpTo('filings'),
+    4: () => jumpTo('discussion'),
+    d: () => { discussionInput.current?.focus(); discussionInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
     t: () => { tagInput.current?.focus(); tagInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
     n: () => { noteInput.current?.focus(); noteInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
     p: () => { if (canonicalCode) navigate(`/compare?companies=${encodeURIComponent(canonicalCode)}`) },
@@ -424,6 +430,10 @@ export default function AnalysisWorkspaceUnified() {
 
     {canonicalCode && <Section id="filings" title="Filings" aside={<span className="analysis-section__note">Retained EDINET annual reports with their XBRL data.</span>}>
       <FilingsPanel companyCode={canonicalCode} />
+    </Section>}
+
+    {canonicalCode && <Section id="discussion" title="Discussion" aside={<span className="analysis-section__note">The company’s public channel and mentions elsewhere. $ references another company.</span>}>
+      <CompanyChannelPanel companyCode={canonicalCode} composerRef={discussionInput} />
     </Section>}
 
     {showShortcuts && <ShortcutsDialog groups={SHORTCUTS} onClose={closeShortcuts} />}

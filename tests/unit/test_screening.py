@@ -1162,17 +1162,34 @@ def test_build_query_with_screening_date_and_period():
 
 def test_run_screening_with_screening_date(sample_db):
     """Point-in-time screening should return correct results."""
-    # sample_db has 2023 and 2024 periods. With date 2023-06-01,
-    # only company E00001 (2023 period) should match, E00002 (2024) should not.
+    # sample_db has 2023 and 2024 periods and no submission dates, so a
+    # filing counts from 90 days after its period end. On 2023-07-15 only
+    # E00001's FY2023-03 report is public; the FY2024-03 reports are not.
     df = run_screening(
         sample_db,
         criteria=[],
         columns=["CompanyInfo.Company_Code"],
-        screening_date="2023-06-01",
+        screening_date="2023-07-15",
     )
-    # Both companies are in CompanyInfo, but only E00001 has financials <= date
-    assert len(df) >= 1
-    assert "E00001" in df["Company_Code"].values
+    assert list(df["Company_Code"]) == ["E00001"]
+
+
+def test_point_in_time_screening_waits_for_the_filing(sample_db):
+    # Without a submission date, a report counts 90 days after its period end.
+    early = run_screening(sample_db, criteria=[], columns=["CompanyInfo.Company_Code"], screening_date="2023-06-01")
+    assert early.empty
+
+
+def test_point_in_time_screening_uses_the_submission_date(sample_db):
+    conn = sqlite3.connect(sample_db)
+    conn.execute("ALTER TABLE FinancialStatements ADD COLUMN submitDateTime TEXT")
+    conn.execute("UPDATE FinancialStatements SET submitDateTime = '2023-06-20 15:00' WHERE docID = 'DOC004'")
+    conn.commit()
+    conn.close()
+    before = run_screening(sample_db, criteria=[], columns=["CompanyInfo.Company_Code"], screening_date="2023-06-19")
+    after = run_screening(sample_db, criteria=[], columns=["CompanyInfo.Company_Code"], screening_date="2023-06-20")
+    assert before.empty
+    assert list(after["Company_Code"]) == ["E00001"]
 
 
 def test_run_screening_date_without_results(sample_db):

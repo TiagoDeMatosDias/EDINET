@@ -7,6 +7,8 @@ import { useHotkeys } from '../../hooks/useHotkeys'
 export interface TableColumn<T> {
   id: string
   header: string
+  /** Rendered in the header in place of ``header`` (a select-all box); ``header`` stays its name. */
+  headerCell?: ReactNode
   /** Shown on hover and focus of the header. */
   tip?: ReactNode
   numeric?: boolean
@@ -173,7 +175,7 @@ export function PortfolioTable<T>({
         <thead>
           <tr>{columns.map(column => {
             const active = sort?.column === column.id
-            const content = <><span>{column.header}</span>{active && (sort!.direction === 'asc' ? <ArrowUp aria-hidden="true" /> : <ArrowDown aria-hidden="true" />)}</>
+            const content = column.headerCell ?? <><span>{column.header}</span>{active && (sort!.direction === 'asc' ? <ArrowUp aria-hidden="true" /> : <ArrowDown aria-hidden="true" />)}</>
             return <th key={column.id} scope="col" className={[column.numeric ? 'num' : '', column.className ?? ''].join(' ').trim() || undefined} aria-sort={active ? (sort!.direction === 'asc' ? 'ascending' : 'descending') : column.sortValue ? 'none' : undefined}>
               {column.sortValue
                 ? <button type="button" onClick={() => toggleSort(column)} title={`Sort by ${column.header}`}>{column.tip ? <Tip content={column.tip} focusable={false}>{content}</Tip> : content}</button>

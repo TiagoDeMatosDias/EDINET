@@ -1,58 +1,142 @@
-import { BarElement, CategoryScale, Chart as ChartJS, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip } from 'chart.js'
+import { AlertTriangle } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { Bar, Line } from 'react-chartjs-2'
+import { Link } from 'react-router-dom'
 
-import { BRAND_COLORS, SEMANTIC_CHART_COLORS } from '../../brand'
 import { DownloadButton } from '../../components/DownloadButton'
-import { Card, Metric } from '../../components/Page'
+import { calendarYears, dec, finite, monthlyReturns, heatColor, heatText, pct, tone, type SingleResult } from './backtestModel'
+import { asPercent, BENCHMARK_COLOR, NEGATIVE_COLOR, PORTFOLIO_COLOR, percentOptions } from './charts'
 
-ChartJS.register(BarElement, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip)
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-type Point = { date: string; portfolio?: number | null; benchmark?: number | null; price_only?: number | null; dividend_only?: number | null; total?: number | null }
-type ResultRecord = { summary?: Record<string, unknown>; aggregate?: Record<string, unknown>; chart_data?: { cumulative?: Point[]; drawdown?: Point[]; decomposition?: Point[] }; per_company?: Array<Record<string, unknown>> }
-
-function number(summary: Record<string, unknown>, key: string) {
-  const value = Number(summary[key])
-  return Number.isFinite(value) ? value : null
+export function Kpi({ label, value, detail, className }: { label: string; value: string; detail?: string; className?: string }) {
+  return <div className={`bt-kpi ${className ?? ''}`}><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>
 }
 
-function pct(value: number | null) { return value == null ? '—' : `${(value * 100).toFixed(1)}%` }
-function decimal(value: number | null) { return value == null ? '—' : value.toFixed(2) }
-
-function ResultMetrics({ summary }: { summary: Record<string, unknown> }) {
-  return <div className="metric-strip backtest-metrics"><Metric label="Total return" value={pct(number(summary, 'total_return'))} /><Metric label="Annualized" value={pct(number(summary, 'annualized_return'))} /><Metric label="Price return" value={pct(number(summary, 'price_return'))} /><Metric label="Dividend return" value={pct(number(summary, 'dividend_return'))} /><Metric label="Volatility" value={pct(number(summary, 'volatility'))} /><Metric label="Sharpe" value={decimal(number(summary, 'sharpe_ratio'))} /><Metric label="Max drawdown" value={pct(number(summary, 'max_drawdown'))} /><Metric label="Benchmark" value={pct(number(summary, 'benchmark_total_return'))} /><Metric label="Excess return" value={pct(number(summary, 'excess_return'))} /><Metric label="Initial capital" value={number(summary, 'initial_capital')?.toLocaleString() ?? '—'} /><Metric label="Start" value={String(summary.start_date ?? '—')} /><Metric label="End" value={String(summary.end_date ?? '—')} /></div>
+export function Warnings({ items }: { items: string[] }) {
+  const [open, setOpen] = useState(false)
+  if (!items.length) return null
+  const shown = open ? items : items.slice(0, 2)
+  return <div className="bt-warnings" role="status">
+    <AlertTriangle aria-hidden="true" />
+    <ul>{shown.map((item, index) => <li key={index}>{item}</li>)}</ul>
+    {items.length > 2 && <button type="button" className="text-button" onClick={() => setOpen(value => !value)}>{open ? 'Fewer' : `${items.length - 2} more`}</button>}
+  </div>
 }
 
-function ReturnChart({ rows }: { rows: Point[] }) {
-  const data = { labels: rows.map(row => row.date), datasets: [{ label: 'Portfolio', data: rows.map(row => row.portfolio == null ? null : row.portfolio * 100), borderColor: BRAND_COLORS.ink, fill: false, pointRadius: 0 }, { label: 'Benchmark', data: rows.map(row => row.benchmark == null ? null : row.benchmark * 100), borderColor: SEMANTIC_CHART_COLORS.neutral, pointRadius: 0 }] }
-  return <Line data={data} options={{ responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { position: 'bottom' } }, scales: { x: { display: false }, y: { position: 'right', ticks: { callback: value => `${value}%` } } } }} />
+type SortKey = 'Ticker' | 'weight' | 'price_return' | 'dividend_return' | 'total_return' | 'weighted_total'
+
+function HoldingsTable({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: 'weighted_total', desc: true })
+  const sorted = useMemo(() => [...rows].sort((a, b) => {
+    const left = sort.key === 'Ticker' ? String(a.Ticker ?? '') : finite(a[sort.key]) ?? -Infinity
+    const right = sort.key === 'Ticker' ? String(b.Ticker ?? '') : finite(b[sort.key]) ?? -Infinity
+    const order = typeof left === 'string' ? left.localeCompare(String(right)) : (left as number) - (right as number)
+    return sort.desc ? -order : order
+  }), [rows, sort])
+  const header = (key: SortKey, label: string, numeric = true) => <th className={numeric ? 'num' : ''} aria-sort={sort.key === key ? (sort.desc ? 'descending' : 'ascending') : 'none'}>
+    <button type="button" onClick={() => setSort(current => ({ key, desc: current.key === key ? !current.desc : numeric }))}>{label}{sort.key === key ? (sort.desc ? ' ↓' : ' ↑') : ''}</button>
+  </th>
+  return <div className="bt-scroll">
+    <table className="bt-table">
+      <thead><tr>{header('Ticker', 'Holding', false)}{header('weight', 'Weight')}<th className="num">Start → end</th>{header('price_return', 'Price')}{header('dividend_return', 'Dividend')}{header('total_return', 'Total')}{header('weighted_total', 'Contribution')}</tr></thead>
+      <tbody>{sorted.map(row => {
+        const ticker = String(row.Ticker ?? '')
+        return <tr key={ticker}>
+          <td><Link to={`/analyze?ticker=${encodeURIComponent(ticker)}&from=backtest`}>{ticker}</Link><small>{String(row.Currency ?? '')}</small></td>
+          <td className="num">{pct(row.weight)}</td>
+          <td className="num muted">{dec(row.start_price, 0)} → {dec(row.end_price, 0)}</td>
+          <td className={`num ${tone(row.price_return)}`}>{pct(row.price_return, 1, true)}</td>
+          <td className="num">{pct(row.dividend_return)}</td>
+          <td className={`num ${tone(row.total_return)}`}>{pct(row.total_return, 1, true)}</td>
+          <td className={`num ${tone(row.weighted_total)}`}>{pct(row.weighted_total, 2, true)}</td>
+        </tr>
+      })}</tbody>
+    </table>
+  </div>
 }
 
-function DrawdownChart({ rows }: { rows: Point[] }) {
-  const data = { labels: rows.map(row => row.date), datasets: [{ label: 'Portfolio', data: rows.map(row => (row.portfolio ?? 0) * 100), borderColor: SEMANTIC_CHART_COLORS.negative, backgroundColor: `${SEMANTIC_CHART_COLORS.negative}22`, fill: true, pointRadius: 0 }, { label: 'Benchmark', data: rows.map(row => row.benchmark == null ? null : row.benchmark * 100), borderColor: SEMANTIC_CHART_COLORS.neutral, pointRadius: 0 }] }
-  return <Line data={data} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } }, scales: { x: { display: false }, y: { position: 'right', max: 0, ticks: { callback: value => `${value}%` } } } }} />
+function MonthlyTable({ points }: { points: NonNullable<SingleResult['chart_data']>['cumulative'] }) {
+  const rows = useMemo(() => monthlyReturns(points ?? []), [points])
+  if (!rows.length) return <p className="muted bt-empty">No monthly data.</p>
+  return <div className="bt-scroll">
+    <table className="bt-table bt-heat">
+      <thead><tr><th>Year</th>{MONTHS.map(name => <th key={name} className="num">{name}</th>)}<th className="num">Year</th></tr></thead>
+      <tbody>{rows.map(row => <tr key={row.year}>
+        <th scope="row">{row.year}</th>
+        {row.months.map((value, index) => <td key={index} className="num" style={{ background: heatColor(value, 0.1), color: heatText(value, 0.1) }}>{value == null ? '' : (value * 100).toFixed(1)}</td>)}
+        <td className="num" style={{ background: heatColor(row.total, 0.4), color: heatText(row.total, 0.4) }}><b>{(row.total * 100).toFixed(1)}</b></td>
+      </tr>)}</tbody>
+    </table>
+  </div>
 }
 
-function DecompositionChart({ rows }: { rows: Point[] }) {
-  const sampled = rows.filter((_, index) => index % Math.max(1, Math.floor(rows.length / 80)) === 0 || index === rows.length - 1)
-  const data = { labels: sampled.map(row => row.date), datasets: [{ label: 'Price', data: sampled.map(row => (row.price_only ?? 0) * 100), backgroundColor: `${BRAND_COLORS.indigo}cc` }, { label: 'Dividend', data: sampled.map(row => (row.dividend_only ?? 0) * 100), backgroundColor: `${BRAND_COLORS.ochre}cc` }] }
-  return <Bar data={data} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } }, scales: { x: { display: false }, y: { position: 'right', ticks: { callback: value => `${value}%` } } } }} />
-}
+/** One portfolio over one period: headline numbers, charts, and holdings. */
+export function BacktestResults({ data }: { data: SingleResult }) {
+  const summary = data.summary
+  const charts = data.chart_data ?? {}
+  const cumulative = useMemo(() => charts.cumulative ?? [], [charts.cumulative])
+  const drawdown = charts.drawdown ?? []
+  const years = useMemo(() => calendarYears(cumulative), [cumulative])
+  const hasBenchmark = finite(summary.benchmark_total_return) != null
+  const warnings = [...new Set([...(data.warnings ?? []), ...((summary.warnings as string[] | undefined) ?? [])])]
+  const sampled = cumulative.filter((_, index) => index % Math.max(1, Math.floor(cumulative.length / 600)) === 0 || index === cumulative.length - 1)
+  const sampledDrawdown = drawdown.filter((_, index) => index % Math.max(1, Math.floor(drawdown.length / 600)) === 0 || index === drawdown.length - 1)
+  const compared = summary.comparison_start && summary.comparison_end && (summary.comparison_start !== summary.start_date || summary.comparison_end !== summary.end_date)
+    ? `compared ${String(summary.comparison_start)} → ${String(summary.comparison_end)}` : undefined
 
-function HoldingsBreakdown({ rows }: { rows: Array<Record<string, unknown>> }) {
-  const ranked = [...rows].sort((a, b) => Number(b.total_return ?? 0) - Number(a.total_return ?? 0)).slice(0, 12)
-  return <div className="backtest-breakdown"><div className="breakdown-head"><span>Ticker</span><span>Weight</span><span>Price</span><span>Dividend</span><span>Total</span></div>{ranked.map(row => <div key={String(row.Ticker)}><strong>{String(row.Ticker ?? '—')}</strong><span>{pct(number(row, 'weight'))}</span><span>{pct(number(row, 'price_return'))}</span><span>{pct(number(row, 'dividend_return'))}</span><b>{pct(number(row, 'total_return'))}</b></div>)}</div>
-}
-
-function RollingSummary({ aggregate }: { aggregate: Record<string, unknown> }) {
-  const stats = (aggregate.stats ?? {}) as Record<string, Record<string, unknown>>
-  return <div className="metric-strip backtest-metrics"><Metric label="Total runs" value={String(aggregate.total_runs ?? 0)} /><Metric label="Successful" value={String(aggregate.successful ?? 0)} /><Metric label="Failed" value={String(aggregate.failed ?? 0)} /><Metric label="Periods" value={String(aggregate.periods ?? 0)} /><Metric label="Mean return" value={pct(Number(stats.total_return?.mean ?? 0))} /><Metric label="Median return" value={pct(Number(stats.total_return?.median ?? 0))} /><Metric label="Mean Sharpe" value={decimal(Number(stats.sharpe_ratio?.mean ?? 0))} /><Metric label="Mean drawdown" value={pct(Number(stats.max_drawdown?.mean ?? 0))} /></div>
-}
-
-export function BacktestResults({ data, resultId }: { data: unknown; resultId: string }) {
-  const record = data as ResultRecord
-  const summary = record.summary
-  if (!summary && record.aggregate) return <Card title="Rolling backtest results" actions={resultId && <DownloadButton path={`/api/backtesting/download/${encodeURIComponent(resultId)}`} filename={`backtest_${resultId}.zip`}>Download</DownloadButton>}><RollingSummary aggregate={record.aggregate} /><details className="details"><summary>Technical aggregate</summary><pre>{JSON.stringify(record.aggregate, null, 2)}</pre></details></Card>
-  if (!summary) return null
-  const charts = record.chart_data ?? {}
-  return <Card className="backtest-results" title="Backtest results" description={`Saved as ${resultId}`} actions={resultId && <DownloadButton path={`/api/backtesting/download/${encodeURIComponent(resultId)}`} filename={`backtest_${resultId}.zip`}>Download full result</DownloadButton>}><ResultMetrics summary={summary} /><div className="backtest-chart-grid"><section><strong>Cumulative return</strong><div><ReturnChart rows={charts.cumulative ?? []} /></div></section><section><strong>Drawdown</strong><div><DrawdownChart rows={charts.drawdown ?? []} /></div></section><section><strong>Price and dividend return</strong><div><DecompositionChart rows={charts.decomposition ?? []} /></div></section><section><strong>Holding contribution</strong><HoldingsBreakdown rows={record.per_company ?? []} /></section></div><details className="details"><summary>Technical result summary</summary><pre>{JSON.stringify(summary, null, 2)}</pre></details></Card>
+  return <section className="bt-result" aria-label="Backtest result">
+    <header className="bt-result__head">
+      <h2>{(summary.tickers as string[] | undefined)?.slice(0, 6).join(', ') || 'Backtest'}{((summary.tickers as string[] | undefined)?.length ?? 0) > 6 ? ` +${(summary.tickers as string[]).length - 6}` : ''}</h2>
+      <span className="muted">{String(summary.start_date ?? '—')} → {String(summary.end_date ?? '—')} · saved {data.id}</span>
+      <DownloadButton className="button button--ghost button--small" path={`/api/backtesting/download/${encodeURIComponent(data.id)}`} filename={`backtest_${data.id}.zip`}>Download</DownloadButton>
+    </header>
+    <Warnings items={warnings} />
+    {summary.no_data ? <p className="bt-empty">No prices were found for these holdings in this period.</p> : <>
+      <div className="bt-kpis">
+        <Kpi label="Total return" value={pct(summary.total_return, 1, true)} className={tone(summary.total_return)} />
+        <Kpi label="Annualized" value={pct(summary.annualized_return, 2, true)} className={tone(summary.annualized_return)} />
+        <Kpi label="Benchmark ann." value={pct(summary.benchmark_annualized_return, 2, true)} detail={hasBenchmark ? `total ${pct(summary.benchmark_total_return, 1, true)}` : 'none'} />
+        <Kpi label="Excess ann." value={pct(summary.excess_annualized_return, 2, true)} className={tone(summary.excess_annualized_return)} detail={compared ?? (hasBenchmark ? `total ${pct(summary.excess_return, 1, true)}` : undefined)} />
+        <Kpi label="Volatility" value={pct(summary.volatility)} detail={hasBenchmark ? `bench ${pct(summary.benchmark_volatility)}` : undefined} />
+        <Kpi label="Sharpe" value={dec(summary.sharpe_ratio)} detail={hasBenchmark ? `bench ${dec(summary.benchmark_sharpe_ratio)}` : undefined} />
+        <Kpi label="Max drawdown" value={pct(summary.max_drawdown)} className="is-down" detail={hasBenchmark ? `bench ${pct(summary.benchmark_max_drawdown)}` : undefined} />
+        <Kpi label="Tracking error" value={pct(summary.tracking_error)} />
+        <Kpi label="Information ratio" value={dec(summary.information_ratio)} className={tone(summary.information_ratio)} />
+        <Kpi label="Price · dividend" value={`${pct(summary.price_return, 1, true)} · ${pct(summary.dividend_return)}`} />
+        <Kpi label="Initial capital" value={finite(summary.initial_capital)?.toLocaleString() ?? '—'} />
+      </div>
+      <div className="bt-grid">
+        <figure className="bt-panel bt-panel--wide">
+          <figcaption>Cumulative return{hasBenchmark ? ' vs benchmark' : ''}</figcaption>
+          <div className="bt-chart"><Line data={{ labels: sampled.map(point => point.date), datasets: [
+            { label: 'Portfolio', data: sampled.map(point => asPercent(point.portfolio)), borderColor: PORTFOLIO_COLOR, borderWidth: 1.5, pointRadius: 0 },
+            ...(hasBenchmark ? [{ label: 'Benchmark', data: sampled.map(point => asPercent(point.benchmark)), borderColor: BENCHMARK_COLOR, borderWidth: 1.2, borderDash: [4, 3], pointRadius: 0, spanGaps: true }] : []),
+          ] }} options={percentOptions<'line'>({ xLabels: true })} /></div>
+        </figure>
+        <figure className="bt-panel">
+          <figcaption>Drawdown</figcaption>
+          <div className="bt-chart"><Line data={{ labels: sampledDrawdown.map(point => point.date), datasets: [
+            { label: 'Portfolio', data: sampledDrawdown.map(point => asPercent(point.portfolio ?? 0)), borderColor: NEGATIVE_COLOR, backgroundColor: `${NEGATIVE_COLOR}26`, fill: true, borderWidth: 1, pointRadius: 0 },
+            ...(hasBenchmark ? [{ label: 'Benchmark', data: sampledDrawdown.map(point => asPercent(point.benchmark)), borderColor: BENCHMARK_COLOR, borderWidth: 1, pointRadius: 0, spanGaps: true }] : []),
+          ] }} options={percentOptions<'line'>({ yMax: 0 })} /></div>
+        </figure>
+        <figure className="bt-panel">
+          <figcaption>Calendar years</figcaption>
+          <div className="bt-chart"><Bar data={{ labels: years.map(row => row.year), datasets: [
+            { label: 'Portfolio', data: years.map(row => asPercent(row.portfolio)), backgroundColor: years.map(row => (row.portfolio ?? 0) >= 0 ? PORTFOLIO_COLOR : NEGATIVE_COLOR) },
+            ...(hasBenchmark ? [{ label: 'Benchmark', data: years.map(row => asPercent(row.benchmark)), backgroundColor: `${BENCHMARK_COLOR}88` }] : []),
+          ] }} options={percentOptions<'bar'>({ xLabels: true })} /></div>
+        </figure>
+        <figure className="bt-panel bt-panel--wide">
+          <figcaption>Monthly returns, %</figcaption>
+          <MonthlyTable points={cumulative} />
+        </figure>
+        <figure className="bt-panel bt-panel--full">
+          <figcaption>Holdings · {data.per_company?.length ?? 0}</figcaption>
+          <HoldingsTable rows={data.per_company ?? []} />
+        </figure>
+      </div>
+    </>}
+  </section>
 }

@@ -95,10 +95,12 @@ def test_submit_returns_202_and_terminal_output_is_persisted(
             ]
             assert client.get("/api/jobs?limit=1&offset=1").json() == []
 
-            health = client.get("/health")
-            assert health.status_code == 200
-            assert health.json()["jobs"]["active"] == 0
-            assert health.json()["jobs"]["counts_by_status"]["completed"] == 1
+            status = client.get("/api/system/status")
+            assert status.status_code == 200
+            assert status.json()["jobs"]["active"] == 0
+            assert status.json()["jobs"]["counts_by_status"]["completed"] == 1
+            # The public health check no longer describes the queue.
+            assert "jobs" not in client.get("/health").json()
     finally:
         manager.shutdown(wait=True)
 

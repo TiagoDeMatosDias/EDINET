@@ -7,6 +7,7 @@ import { formatMetricValue } from '../../../metrics'
 import { defaultRate, formatNumber, formatPercent, localToday } from '../researchModel'
 import { moveCursorKey, useListCursor } from '../useListCursor'
 import { NumberField } from './NumberField'
+import { Segmented } from './Segmented'
 import { PayoffChart, SensitivityChart, VolatilityHistoryChart } from './OptionCharts'
 import {
   addDays,
@@ -57,7 +58,8 @@ export function OptionsView({ companyCode, onCompany, active }: { companyCode: s
   const data = companyCode ? inputs.data : undefined
   const currency = data?.currency.price ?? null
   const [rates, setRates] = usePersistentState<Record<string, number>>('research.rates', {})
-  const [fees, setFees] = usePersistentState<TradingFees>('research.options.fees', { perContract: 0, contractSize: 100, roundTrip: false })
+  const [fees, setFees] = usePersistentState<TradingFees>('research.options.fees', { mode: 'contract', perContract: 0, percent: 0, contractSize: 100, roundTrip: false })
+  const feeMode = fees.mode ?? 'contract'
   const today = useMemo(() => localToday(), [])
   const rateFor = (code: string | null) => rates[code ?? 'JPY'] ?? defaultRate(code)
   const [state, setState] = useState<Assumptions>(MANUAL)
@@ -112,9 +114,11 @@ export function OptionsView({ companyCode, onCompany, active }: { companyCode: s
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [state.spot, state.strike, state.days, state.rate, state.dividendYield, state.volatility])
   const implied = marketPrice != null ? impliedVolatility(marketKind, marketPrice, { spot: state.spot, strike: state.strike, years, rate: state.rate, dividendYield: state.dividendYield }) : null
-  const totalFees = strategyFees(state.legs, fees)
-  // One leg's fees per share, for the single call and put.
-  const legFee = strategyFees([{ kind: 'call', side: 1, quantity: 1, strike: state.strike }], fees)
+  const totalFees = strategyFees(state.legs, fees, years, market)
+  // One leg's fees per share, for the single call and put (a percentage fee depends on each one's premium).
+  const callFee = strategyFees([{ kind: 'call', side: 1, quantity: 1, strike: state.strike }], fees, years, market)
+  const putFee = strategyFees([{ kind: 'put', side: 1, quantity: 1, strike: state.strike }], fees, years, market)
+  const legFee = Math.max(callFee, putFee)
   const summary = useMemo(() => summarizeStrategy(state.legs, years, market, totalFees),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [state.legs, state.spot, state.days, state.rate, state.dividendYield, state.volatility, totalFees])
@@ -193,10 +197,15 @@ export function OptionsView({ companyCode, onCompany, active }: { companyCode: s
       </div>
       <fieldset className="rs-source rs-fees">
         <legend>Trading fees</legend>
-        <NumberField className="rs-field--inline" label="Fee per contract" value={fees.perContract} step={50} digits={2} min={0} onChange={perContract => setFees({ ...fees, perContract })} />
+        <Segmented label="Fee type" value={feeMode} onChange={mode => setFees({ ...fees, mode })} options={[{ value: 'contract', label: 'Set amount', title: 'A set amount per contract' }, { value: 'percent', label: '% of value', title: 'A share of each trade’s premium' }]} />
+        {feeMode === 'contract'
+          ? <NumberField className="rs-field--inline" label="Fee per contract" value={fees.perContract} step={50} digits={2} min={0} suffix={currency ?? undefined} onChange={perContract => setFees({ ...fees, perContract })} />
+          : <NumberField className="rs-field--inline" label="Fee rate" value={fees.percent ?? 0} scale={100} step={0.05} digits={3} min={0} max={20} suffix="% of premium" onChange={percent => setFees({ ...fees, percent })} />}
         <NumberField className="rs-field--inline" label="Contract size" value={fees.contractSize} step={1} digits={0} min={1} suffix="shares" onChange={contractSize => setFees({ ...fees, contractSize: Math.max(1, Math.round(contractSize)) })} />
         <label><input type="checkbox" checked={fees.roundTrip} onChange={event => setFees({ ...fees, roundTrip: event.target.checked })} />Also when closing or exercising</label>
-        <small className="rs-dim">{legFee > 0 ? `${money(legFee)} a share for each leg; a share leg counts as one contract.` : 'Fees reduce every profit and move the breakevens.'}</small>
+        <small className="rs-dim">{legFee <= 0 ? 'Fees reduce every profit and move the breakevens.'
+          : feeMode === 'percent' ? `Call ${money(callFee)}, put ${money(putFee)} a share; a share leg pays the rate on the share price.${fees.roundTrip ? ' Closing is charged on today’s value.' : ''}`
+            : `${money(legFee)} a share for each leg; a share leg counts as one contract.`}</small>
       </fieldset>
       {companyCode && data && <button type="button" className="text-button rs-reset" onClick={() => { const next = fromCompany(); if (next) { setState(next); setMarketPrice(null) } }}><RotateCcw aria-hidden="true" />Reset to {data.company.company_name}’s data <kbd aria-hidden="true">R</kbd></button>}
     </section>
@@ -216,8 +225,8 @@ export function OptionsView({ companyCode, onCompany, active }: { companyCode: s
           <tr><th scope="row" title="Change in price per calendar day, all else equal">Theta <small>/ day</small></th><td className="num">{formatNumber(call.theta)}</td><td className="num">{formatNumber(put.theta)}</td></tr>
           <tr><th scope="row" title="Change in price per 1 percentage point of the interest rate">Rho <small>/ 1%</small></th><td className="num">{formatNumber(call.rho)}</td><td className="num">{formatNumber(put.rho)}</td></tr>
           <tr><th scope="row" title="Risk-neutral probability of finishing in the money">Chance in the money</th><td className="num">{formatPercent(call.probabilityInTheMoney)}</td><td className="num">{formatPercent(put.probabilityInTheMoney)}</td></tr>
-          <tr><th scope="row" title={legFee > 0 ? 'Including the trading fees' : undefined}>Breakeven at expiry{legFee > 0 && <small> with fees</small>}</th><td className="num">{money(state.strike + call.price + legFee)}</td><td className="num">{money(state.strike - put.price - legFee)}</td></tr>
-          <tr><th scope="row" title={`Price × ${fees.contractSize} shares${legFee > 0 ? ', plus fees' : ''}`}>Per contract{legFee > 0 && <small> with fees</small>}</th><td className="num">{money((call.price + legFee) * fees.contractSize)}</td><td className="num">{money((put.price + legFee) * fees.contractSize)}</td></tr>
+          <tr><th scope="row" title={legFee > 0 ? 'Including the trading fees' : undefined}>Breakeven at expiry{legFee > 0 && <small> with fees</small>}</th><td className="num">{money(state.strike + call.price + callFee)}</td><td className="num">{money(state.strike - put.price - putFee)}</td></tr>
+          <tr><th scope="row" title={`Price × ${fees.contractSize} shares${legFee > 0 ? ', plus fees' : ''}`}>Per contract{legFee > 0 && <small> with fees</small>}</th><td className="num">{money((call.price + callFee) * fees.contractSize)}</td><td className="num">{money((put.price + putFee) * fees.contractSize)}</td></tr>
           <tr><th scope="row" title="Cox–Ross–Rubinstein tree with 200 steps, allowing exercise at any time">American value</th><td className="num">{money(american.call)}</td><td className="num">{money(american.put)}</td></tr>
           <tr><th scope="row" title="What the right to exercise early adds (binomial tree less Black–Scholes)">Early exercise adds</th><td className="num">{formatNumber(Math.max(american.call - call.price, 0))}</td><td className="num">{formatNumber(Math.max(american.put - put.price, 0))}</td></tr>
         </tbody>

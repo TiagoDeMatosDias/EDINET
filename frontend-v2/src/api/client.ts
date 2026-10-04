@@ -71,7 +71,9 @@ export async function authenticatedFetch(path: string, init?: RequestInit) {
 async function requestOnce<T>(path: string, init?: RequestInit): Promise<{ response: Response; payload: T }> {
   const response = await authenticatedFetch(path, init)
   const contentType = response.headers.get('content-type') ?? ''
-  const payload = contentType.includes('application/json') ? await response.json() : await response.text()
+  // A 204 still carries FastAPI's JSON content type, with an empty body.
+  const text = await response.text()
+  const payload = contentType.includes('application/json') && text ? JSON.parse(text) : text || undefined
   return { response, payload: payload as T }
 }
 

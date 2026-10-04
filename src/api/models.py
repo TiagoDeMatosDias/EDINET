@@ -172,9 +172,16 @@ class JobHealthResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """Bounded process and queue health information."""
+    """Public liveness: no job or queue details, which only operators see."""
 
     status: Literal["healthy"]
+    version: str
+    timestamp: datetime
+
+
+class SystemStatusResponse(BaseModel):
+    """Operator view of the process: version and pipeline queue state."""
+
     version: str
     timestamp: datetime
     jobs: JobHealthResponse

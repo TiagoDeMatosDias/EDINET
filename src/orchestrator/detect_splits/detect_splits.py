@@ -42,11 +42,20 @@ def run_detect_splits(config, overwrite=False, context=None):
     mode = str(config.get("mode") or "incremental").strip()
     threshold = float(config.get("price_drop_threshold") or 0.40)
 
+    def progress(done: int, total: int, message: str) -> None:
+        if context is None:
+            return
+        context.checkpoint()
+        # Thousands of tickers: report every 25 so job state is not rewritten per ticker.
+        if done % 25 == 0 or done == total - 1:
+            context.report_progress(done, total, message)
+
     results = run_split_detection(
         db2_path=db2_path,
         tickers=None,  # all tickers with price data
         mode=mode,
         threshold=threshold,
+        progress=progress,
     )
 
     # Invalidate the in-process adjustment cache so the next portfolio

@@ -1,114 +1,69 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ColumnDef } from '@tanstack/react-table'
-import { ChevronDown, ChevronUp, CircleStop, Play, Plus, Save, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowDown, ArrowUp, CircleStop, Keyboard, Play, Plus, Save, Trash2, Zap } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 
 import { apiPost, apiRequest } from '../../api/client'
-import type {
-  Job,
-  JobCreateResponse,
-  JobOutput,
-  PipelineField,
-  PipelineStep,
-} from '../../api/types'
-import { DataTable } from '../../components/DataTable'
-import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
-import { Card, Field, PageHeader } from '../../components/Page'
+import type { Job, JobCreateResponse, JobOutput, PipelineStep } from '../../api/types'
+import { ErrorState, LoadingState } from '../../components/Feedback'
+import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
+import { useHotkeys } from '../../hooks/useHotkeys'
+import { ConfigField } from './ConfigField'
 import { RunOutput, StepStateTable } from './JobDetails'
+import { configKey, DAILY_RECIPE, formatMs, isTerminalJob, jobDuration, readSetups, runPayload, SETUPS_KEY, stepLabel, stripFileUploads, type SavedSetup, type SelectedStep } from './pipelineModel'
+import './pipeline.css'
 
-type SelectedStep = { id: string; name: string; overwrite: boolean }
-type SavedSetup = { name: string; steps: SelectedStep[]; config: Record<string, unknown> }
-const SETUPS_KEY = 'shade.pipeline.setups'
-const MAX_SAVED_SETUP_CHARS = 1_000_000
-const TERMINAL_JOB_STATUSES = new Set(['cancelled', 'completed', 'failed', 'interrupted'])
-const DEFAULT_UPLOAD_BYTES = 10 * 1024 * 1024
-function isTerminalJob(status?: string) { return status ? TERMINAL_JOB_STATUSES.has(status) : false }
+export { ConfigField } from './ConfigField'
 
+const SHORTCUTS: ShortcutGroup[] = [
+  { title: 'Moving around', shortcuts: [
+    { keys: ['1', '2', '3', '4', '5'], label: 'Library, Sequence, Configuration, Latest run, History' },
+    { keys: ['J', 'K'], label: 'Next or previous item in the focused list (↓ ↑)' },
+    { keys: ['F'], label: 'Filter the step library' },
+    { keys: ['?'], label: 'Show or hide this list' },
+  ] },
+  { title: 'Building a run', shortcuts: [
+    { keys: ['Enter', 'Space'], label: 'Library: add the step · Sequence: configure it' },
+    { keys: ['Shift+J', 'Shift+K'], label: 'Sequence: move the step down or up' },
+    { keys: ['O'], label: 'Sequence: overwrite on or off' },
+    { keys: ['X', 'Del'], label: 'Sequence: remove the step' },
+    { keys: ['D'], label: 'Use the daily refresh recipe' },
+    { keys: ['S'], label: 'Save the sequence as a setup' },
+    { keys: ['L'], label: 'Load a saved setup' },
+  ] },
+  { title: 'Running', shortcuts: [
+    { keys: ['Shift+R'], label: 'Run the sequence' },
+    { keys: ['C'], label: 'Cancel the running job (press twice)' },
+    { keys: ['Enter'], label: 'History: show that run' },
+  ] },
+]
 
-function isBrowserFile(value: unknown): value is File {
-  return typeof File !== 'undefined' && value instanceof File
+function statusClass(status?: string) {
+  return `pl-status pl-status--${status ?? 'unknown'}`
 }
 
-function isEmbeddedFile(value: unknown) {
-  return typeof value === 'object' && value !== null && 'filename' in value && 'content' in value && typeof value.filename === 'string' && typeof value.content === 'string'
-}
-
-function stripFileUploads(config: Record<string, unknown>) {
-  return Object.fromEntries(Object.entries(config).filter(([, value]) => !isBrowserFile(value) && !isEmbeddedFile(value)))
-}
-
-function readSetups(): SavedSetup[] {
-  try {
-    const raw = localStorage.getItem(SETUPS_KEY) ?? ''
-    if (raw.length > MAX_SAVED_SETUP_CHARS) {
-      localStorage.removeItem(SETUPS_KEY)
-      return []
-    }
-    const parsed = JSON.parse(raw || '[]')
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(item => item && typeof item === 'object').map(item => ({
-      ...(item as SavedSetup),
-      config: stripFileUploads((item as SavedSetup).config ?? {}),
-    }))
-  } catch {
-    try { localStorage.removeItem(SETUPS_KEY) } catch { /* ignore storage cleanup failures */ }
-    return []
+/** A list the keyboard can walk: ↑ ↓ (and J K) move, other keys are handed to ``onKey``. */
+function useRovingList(count: number) {
+  const [index, setIndex] = useState(0)
+  const ref = useRef<HTMLUListElement | HTMLTableSectionElement>(null)
+  const current = Math.min(index, Math.max(0, count - 1))
+  const focus = (next: number) => {
+    const bounded = Math.max(0, Math.min(count - 1, next))
+    setIndex(bounded)
+    ref.current?.querySelectorAll<HTMLElement>('[data-row]')[bounded]?.focus()
   }
-}
-function label(step: PipelineStep) { return step.display_name || step.name.replaceAll('_', ' ').replace(/\b\w/g, char => char.toUpperCase()) }
-
-function configKey(stepName: string, fieldName: string) { return `${stepName}_config.${fieldName}` }
-
-function fileNameFromValue(value: unknown) {
-  if (typeof value === 'string') return value.split(/[\\/]/).pop() ?? value
-  if (isBrowserFile(value)) return value.name
-  if (typeof value === 'object' && value !== null && 'filename' in value && typeof value.filename === 'string') return value.filename
-  return ''
-}
-
-function fileAccept(field: PipelineField) {
-  const patterns = (field.filetypes ?? [])
-    .flatMap(([, pattern]) => pattern.split(','))
-    .map(pattern => pattern.trim())
-    .filter(pattern => pattern && pattern !== '*.*')
-    .map(pattern => pattern.replace(/^\*\./, '.'))
-  return patterns.length ? patterns.join(',') : undefined
-}
-
-export function ConfigField({ field, value, onChange, maxUploadBytes }: { field: PipelineField; value: unknown; onChange: (value: unknown) => void; maxUploadBytes?: number }) {
-  const fieldLabel = field.label || field.name
-  const fieldDesc = field.description
-  const inputType = field.type?.toLowerCase() ?? 'text'
-  const maxBytes = field.max_bytes ?? maxUploadBytes ?? DEFAULT_UPLOAD_BYTES
-  const [fileError, setFileError] = useState('')
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  if (field.choices?.length) return <Field label={fieldLabel} hint={fieldDesc}><select className="select" value={String(value ?? field.default ?? '')} onChange={event => onChange(event.target.value)}>{field.choices.map(choice => <option key={choice} value={choice}>{choice}</option>)}</select></Field>
-  if (inputType.includes('bool')) return <label className="check"><input type="checkbox" checked={Boolean(value ?? field.default)} onChange={event => onChange(event.target.checked)} />{fieldLabel}</label>
-  if (inputType.includes('int') || inputType.includes('float') || inputType.includes('number')) return <Field label={fieldLabel} hint={fieldDesc}><input className="input" type="number" value={Number(value ?? field.default ?? 0)} onChange={event => onChange(Number(event.target.value))} /></Field>
-  if (inputType.includes('file')) {
-    const selectedFileName = fileNameFromValue(value)
-    const handleFile = (file?: File) => {
-      if (!file) return
-      setFileError('')
-      if (maxBytes > 0 && file.size > maxBytes) {
-        setFileError(`File is too large. Maximum size is ${Math.round(maxBytes / (1024 * 1024))} MiB.`)
-        if (fileInputRef.current) fileInputRef.current.value = ''
-        return
-      }
-      try {
-        onChange(file)
-      } catch {
-        setFileError('The selected file could not be read.')
-        if (fileInputRef.current) fileInputRef.current.value = ''
-      }
-    }
-    return <Field label={fieldLabel} hint={fieldDesc}>
-      <input ref={fileInputRef} className="input" type="file" accept={fileAccept(field)} onChange={event => void handleFile(event.target.files?.[0])} />
-      {selectedFileName && <div className="pipeline-file-selection"><small>Selected: {selectedFileName}</small><button type="button" className="button button--ghost" onClick={() => { onChange(''); if (fileInputRef.current) fileInputRef.current.value = '' }}>Clear</button></div>}
-      {fileError && <small className="form-error" role="alert">{fileError}</small>}
-    </Field>
+  const move = (event: KeyboardEvent, onKey?: (key: string, shift: boolean) => boolean) => {
+    if (onKey?.(event.key, event.shiftKey)) { event.preventDefault(); event.stopPropagation(); return }
+    if ((event.key === 'ArrowDown' || event.key === 'j') && !event.shiftKey) { event.preventDefault(); event.stopPropagation(); focus(current + 1) }
+    if ((event.key === 'ArrowUp' || event.key === 'k') && !event.shiftKey) { event.preventDefault(); event.stopPropagation(); focus(current - 1) }
   }
-  return <Field label={fieldLabel} hint={fieldDesc}><input className="input" value={String(value ?? field.default ?? '')} onChange={event => onChange(event.target.value)} /></Field>
+  return { index: current, setIndex, ref, focus, move }
+}
+
+function Region({ index, title, meta, actions, children, className = '' }: { index: number; title: string; meta?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
+  return <section className={`pl-region ${className}`} id={`pl-region-${index}`} aria-labelledby={`pl-region-${index}-title`}>
+    <header><kbd aria-hidden="true">{index}</kbd><h2 id={`pl-region-${index}-title`} tabIndex={-1}>{title}</h2>{meta && <span className="pl-region__meta">{meta}</span>}{actions && <div className="pl-region__actions">{actions}</div>}</header>
+    {children}
+  </section>
 }
 
 export default function PipelinePage() {
@@ -117,20 +72,25 @@ export default function PipelinePage() {
   const [search, setSearch] = useState('')
   const [setupName, setSetupName] = useState('Daily data refresh')
   const [setups, setSetups] = useState<SavedSetup[]>(readSetups)
-  const queryClient = useQueryClient()
   const [activeJobId, setActiveJobId] = useState<string>()
+  const [focusedStep, setFocusedStep] = useState<string | null>(null)
+  const [showAllConfig, setShowAllConfig] = useState(false)
+  const [armedCancel, setArmedCancel] = useState(false)
+  const [help, setHelp] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const closeHelp = useCallback(() => setHelp(false), [])
+  const filterInput = useRef<HTMLInputElement>(null)
+  const setupSelect = useRef<HTMLSelectElement>(null)
+  const queryClient = useQueryClient()
+
   const steps = useQuery({ queryKey: ['pipeline-steps'], queryFn: () => apiRequest<{ steps: PipelineStep[] }>('/api/steps') })
-  const serverConfig = useQuery({
-    queryKey: ['server-config'],
-    queryFn: () => apiRequest<{ max_upload_bytes: number }>('/api/config'),
-    retry: false,
-  })
+  const serverConfig = useQuery({ queryKey: ['server-config'], queryFn: () => apiRequest<{ max_upload_bytes: number }>('/api/config'), retry: false })
   const jobs = useQuery({
     queryKey: ['jobs'],
-    queryFn: () => apiRequest<Job[]>('/api/jobs?limit=20'),
+    queryFn: () => apiRequest<Job[]>('/api/jobs?limit=30'),
     refetchInterval: query => query.state.data?.some(job => !isTerminalJob(job.status)) ? 1000 : false,
   })
-  const recoveredJobId = activeJobId ?? jobs.data?.find(job => !isTerminalJob(job.status))?.job_id
+  const recoveredJobId = activeJobId ?? jobs.data?.find(job => !isTerminalJob(job.status))?.job_id ?? jobs.data?.[0]?.job_id
   const activeJob = useQuery({
     queryKey: ['job', recoveredJobId],
     queryFn: () => apiRequest<Job>(`/api/jobs/${encodeURIComponent(recoveredJobId ?? '')}`),
@@ -138,35 +98,14 @@ export default function PipelinePage() {
     refetchInterval: query => isTerminalJob(query.state.data?.status) ? false : 750,
   })
   const activeStatus = activeJob.data?.status
-  const isJobActive = Boolean(recoveredJobId && !isTerminalJob(activeStatus))
+  const running = Boolean(jobs.data?.some(job => !isTerminalJob(job.status)))
+  const runningJobId = jobs.data?.find(job => !isTerminalJob(job.status))?.job_id
+  const library = useMemo(() => (steps.data?.steps ?? []).filter(step => `${step.name} ${step.display_name ?? ''} ${step.description ?? ''} ${step.category ?? ''}`.toLowerCase().includes(search.toLowerCase())), [steps.data, search])
+  const metaFor = useCallback((name: string) => steps.data?.steps.find(step => step.name === name), [steps.data])
+
   const run = useMutation({
     mutationFn: () => {
-      // Transform flat "step_config.field" keys into nested per-step configs
-      const nested: Record<string, unknown> = {}
-      const files: Array<{ key: string; file: File }> = []
-      const selectedConfigKeys = new Set(selected.map(step => {
-        const meta = steps.data?.steps.find(item => item.name === step.name)
-        return meta?.config_key ?? `${step.name}_config`
-      }))
-      for (const [key, value] of Object.entries(config)) {
-        const dot = key.indexOf('.')
-        if (dot === -1) { nested[key] = value; continue }
-        const stepKey = key.slice(0, dot)
-        if (!selectedConfigKeys.has(stepKey)) continue
-        const fieldKey = key.slice(dot + 1)
-        if (!nested[stepKey]) nested[stepKey] = {}
-        if (isBrowserFile(value)) {
-          const uploadKey = `${stepKey}.${fieldKey}`
-          files.push({ key: uploadKey, file: value })
-          ;(nested[stepKey] as Record<string, unknown>)[fieldKey] = { __pipeline_upload__: uploadKey }
-        } else {
-          ;(nested[stepKey] as Record<string, unknown>)[fieldKey] = value
-        }
-      }
-      const payload = {
-        steps: selected.map(step => ({ name: step.name, overwrite: step.overwrite })),
-        config: nested,
-      }
+      const { payload, files } = runPayload(selected, config, steps.data?.steps ?? [])
       if (!files.length) return apiPost<JobCreateResponse>('/api/pipeline/run', payload)
       const form = new FormData()
       form.set('config', JSON.stringify(payload))
@@ -177,8 +116,8 @@ export default function PipelinePage() {
   })
   const cancel = useMutation({
     mutationFn: () => {
-      if (!recoveredJobId) throw new Error('No active pipeline job')
-      return apiPost<Job>(`/api/jobs/${encodeURIComponent(recoveredJobId)}/cancel`, { force: false })
+      if (!runningJobId) throw new Error('No pipeline job is running')
+      return apiPost<Job>(`/api/jobs/${encodeURIComponent(runningJobId)}/cancel`, { force: false })
     },
     onSuccess: job => { queryClient.setQueryData(['job', job.job_id], job); void queryClient.invalidateQueries({ queryKey: ['jobs'] }) },
   })
@@ -190,53 +129,193 @@ export default function PipelinePage() {
   useEffect(() => {
     if (recoveredJobId && isTerminalJob(activeStatus)) void queryClient.invalidateQueries({ queryKey: ['jobs'] })
   }, [recoveredJobId, activeStatus, queryClient])
-  const filtered = (steps.data?.steps ?? []).filter(step => `${step.name} ${step.display_name ?? ''} ${step.description ?? ''}`.toLowerCase().includes(search.toLowerCase()))
-  const selectedMeta = selected.map(item => ({ item, meta: steps.data?.steps.find(step => step.name === item.name) })).filter(entry => entry.meta)
-  const move = (index: number, direction: number) => setSelected(items => { const next = [...items]; const target = index + direction; if (target < 0 || target >= next.length) return items; [next[index], next[target]] = [next[target], next[index]]; return next })
-  const saveSetup = () => { const next = [...setups.filter(setup => setup.name !== setupName), { name: setupName, steps: selected, config: stripFileUploads(config) }]; setSetups(next); localStorage.setItem(SETUPS_KEY, JSON.stringify(next)) }
-  const loadSetup = (name: string) => { const setup = setups.find(item => item.name === name); if (setup) { setSetupName(setup.name); setSelected(setup.steps); setConfig(setup.config) } }
-  const jobColumns = useMemo<ColumnDef<Job>[]>(() => [{ accessorKey: 'status', header: 'Status', cell: info => <span className={`badge ${info.getValue() === 'completed' ? 'badge--success' : info.getValue() === 'failed' ? 'badge--danger' : ''}`}>{String(info.getValue())}</span> }, { accessorKey: 'current_step', header: 'Current step', cell: info => String(info.getValue() ?? '—') }, { accessorKey: 'created_at', header: 'Started', cell: info => info.getValue() ? new Date(String(info.getValue())).toLocaleString() : '—' }, { accessorKey: 'error_message', header: 'Message', cell: info => String(info.getValue() ?? '—') }], [])
+  useEffect(() => {
+    if (!armedCancel) return
+    const timer = setTimeout(() => setArmedCancel(false), 4000)
+    return () => clearTimeout(timer)
+  }, [armedCancel])
+  useEffect(() => {
+    if (!notice) return
+    const timer = setTimeout(() => setNotice(null), 4000)
+    return () => clearTimeout(timer)
+  }, [notice])
 
-  return <div className="stack">
-    <PageHeader eyebrow="Data operations" title="Data pipeline" description="Run common updates as a recipe, or assemble dynamic steps and configuration." actions={<div className="button-row">{run.isPending ? <button className="button button--primary" disabled><Play />Queueing…</button> : isJobActive ? <button className="button button--danger" disabled={cancel.isPending || activeStatus === 'cancelling'} onClick={() => cancel.mutate()}><CircleStop />{activeStatus === 'cancelling' ? 'Cancelling…' : 'Cancel run'}</button> : <button className="button button--primary" disabled={!selected.length} onClick={() => run.mutate()}><Play />Run {selected.length} step{selected.length === 1 ? '' : 's'}</button>}</div>} />
-    <div className="two-column">
-      <Card title="Pipeline sequence" description="Steps execute from top to bottom." actions={<div className="button-row"><select className="select" aria-label="Load saved setup" value="" onChange={event => loadSetup(event.target.value)}><option value="">Load setup</option>{setups.map(setup => <option key={setup.name}>{setup.name}</option>)}</select><input className="input" aria-label="Setup name" value={setupName} onChange={event => setSetupName(event.target.value)} /><button className="button button--secondary" onClick={saveSetup}><Save />Save</button></div>}>
-        {!selected.length ? <EmptyState title="No steps selected" description="Choose a prepared recipe or add individual steps from the library." action={<button className="button button--primary" onClick={() => { const preferred = ['download_documents', 'generate_financial_statements', 'generate_ratios', 'update_stock_prices']; const matches = preferred.map(name => steps.data?.steps.find(step => step.name === name)).filter(Boolean) as PipelineStep[]; setSelected(matches.map(step => ({ id: crypto.randomUUID(), name: step.name, overwrite: false }))) }}>Use daily refresh recipe</button>} /> : <div className="pipeline-list">{selected.map((item, index) => { const meta = steps.data?.steps.find(step => step.name === item.name); return <div className="pipeline-step" key={item.id}><span className="step-index">{index + 1}</span><div><strong>{meta ? label(meta) : item.name}</strong><small>{meta?.description}</small></div><label className="check"><input type="checkbox" checked={item.overwrite} onChange={event => setSelected(items => items.map(step => step.id === item.id ? { ...step, overwrite: event.target.checked } : step))} />Overwrite</label><div className="step-actions"><button className="icon-button" aria-label="Move step up" onClick={() => move(index, -1)}><ChevronUp /></button><button className="icon-button" aria-label="Move step down" onClick={() => move(index, 1)}><ChevronDown /></button><button className="icon-button" aria-label="Remove step" onClick={() => setSelected(items => items.filter(step => step.id !== item.id))}><Trash2 /></button></div></div> })}</div>}
-      </Card>
-      <Card title="Step library" description={`${filtered.length} available operations`}><input className="input" placeholder="Filter steps" value={search} onChange={event => setSearch(event.target.value)} />{steps.isLoading ? <LoadingState label="Loading pipeline steps" /> : steps.isError ? <ErrorState error={steps.error} /> : <div className="step-library">{filtered.map(step => <button key={step.name} disabled={selected.some(item => item.name === step.name)} onClick={() => setSelected(items => [...items, { id: crypto.randomUUID(), name: step.name, overwrite: false }])}><Plus /><span><strong>{label(step)}</strong><small>{step.description || step.category}</small></span></button>)}</div>}</Card>
-    </div>
-    {selectedMeta.length > 0 && (
-      <Card title="Step configuration" description="Each step's parameters are stored under the step name. Hover over a field for details.">
-        {selectedMeta.map(({ item, meta }) => {
-          const fields = meta?.input_fields ?? meta?.parameters ?? []
-          if (!fields.length) return null
-          return (
-            <div key={item.id} className="config-group">
-              <h3 className="config-group-title">{label(meta!)} <small>{meta!.name}</small></h3>
-              <p className="text-muted">{meta!.description}</p>
-              <div className="field-row">
-                {fields.map(field => (
-                  <ConfigField
-                    key={field.name}
-                    field={field}
-                    value={config[configKey(item.name, field.name)]}
-                    maxUploadBytes={serverConfig.data?.max_upload_bytes}
-                    onChange={value => setConfig(current => ({ ...current, [configKey(item.name, field.name)]: value }))}
-                  />
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </Card>
-    )}
+  const { index: libIndex, setIndex: setLibIndex, ref: libRef, focus: libFocus, move: libMove } = useRovingList(library.length)
+  const { index: seqIndex, setIndex: setSeqIndex, ref: seqRef, focus: seqFocus, move: seqMove } = useRovingList(selected.length)
+  const { index: historyIndex, setIndex: setHistoryIndex, ref: historyRef, move: historyMove } = useRovingList(jobs.data?.length ?? 0)
+
+  const add = (step: PipelineStep) => {
+    if (selected.some(item => item.name === step.name)) { setNotice(`${stepLabel(step)} is already in the sequence`); return }
+    const id = crypto.randomUUID()
+    setSelected(items => [...items, { id, name: step.name, overwrite: false }])
+    setFocusedStep(id)
+  }
+  const move = (index: number, direction: number) => {
+    const target = index + direction
+    if (target < 0 || target >= selected.length) return
+    setSelected(items => { const next = [...items]; [next[index], next[target]] = [next[target], next[index]]; return next })
+    setSeqIndex(target)
+    requestAnimationFrame(() => seqFocus(target))
+  }
+  const remove = (index: number) => setSelected(items => items.filter((_, position) => position !== index))
+  const toggleOverwrite = (index: number) => setSelected(items => items.map((item, position) => position === index ? { ...item, overwrite: !item.overwrite } : item))
+  const saveSetup = () => {
+    const next = [...setups.filter(setup => setup.name !== setupName), { name: setupName, steps: selected, config: stripFileUploads(config) }]
+    setSetups(next)
+    localStorage.setItem(SETUPS_KEY, JSON.stringify(next))
+    setNotice(`Saved “${setupName}”`)
+  }
+  const loadSetup = (name: string) => {
+    const setup = setups.find(item => item.name === name)
+    if (!setup) return
+    setSetupName(setup.name)
+    setSelected(setup.steps)
+    setConfig(setup.config)
+    setNotice(`Loaded “${setup.name}”`)
+  }
+  const useDaily = () => {
+    const matches = DAILY_RECIPE.map(name => metaFor(name)).filter(Boolean) as PipelineStep[]
+    setSelected(matches.map(step => ({ id: crypto.randomUUID(), name: step.name, overwrite: false })))
+  }
+  const focusRegion = (index: number) => {
+    const region = document.getElementById(`pl-region-${index}`)
+    ;(region?.querySelector<HTMLElement>('[data-row][tabindex="0"]') ?? region?.querySelector<HTMLElement>('input, select, button, h2'))?.focus()
+  }
+  const startRun = () => { if (selected.length && !running && !run.isPending) run.mutate() }
+  const cancelRun = () => {
+    if (!running) return
+    if (armedCancel) { setArmedCancel(false); cancel.mutate() } else setArmedCancel(true)
+  }
+
+  useHotkeys({
+    ...Object.fromEntries([1, 2, 3, 4, 5].map(index => [String(index), () => focusRegion(index)])),
+    f: () => filterInput.current?.focus(),
+    d: useDaily,
+    s: saveSetup,
+    l: () => setupSelect.current?.focus(),
+    R: startRun,
+    c: cancelRun,
+    '?': () => setHelp(true),
+  }, !help)
+
+  const configured = selected.map(item => ({ item, meta: metaFor(item.name) })).filter(entry => entry.meta && (entry.meta.input_fields ?? entry.meta.parameters ?? []).length)
+  const shownConfig = showAllConfig ? configured : configured.filter(entry => entry.item.id === (focusedStep ?? selected[seqIndex]?.id))
+  const job = activeJob.data
+  const progress = Math.round(job?.progress_percent ?? 0)
+
+  return <div className="pl-page">
+    <header className="pl-head">
+      <div><span className="eyebrow">Data operations</span><h1>Data pipeline</h1></div>
+      <span className={statusClass(running ? 'running' : job?.status)}>{running ? `running · ${progress}%` : job ? `last run ${job.status}` : 'idle'}</span>
+      <div className="pl-head__setups">
+        <select ref={setupSelect} className="select" aria-label="Load saved setup" value="" onChange={event => loadSetup(event.target.value)}><option value="">Load setup… (L)</option>{setups.map(setup => <option key={setup.name}>{setup.name}</option>)}</select>
+        <input className="input" aria-label="Setup name" value={setupName} onChange={event => setSetupName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') saveSetup() }} />
+        <button type="button" className="button button--secondary button--small" onClick={saveSetup} title="Save the sequence (S)"><Save aria-hidden="true" />Save</button>
+        <button type="button" className="button button--secondary button--small" onClick={useDaily} title="Daily refresh recipe (D)"><Zap aria-hidden="true" />Daily recipe</button>
+      </div>
+      <div className="pl-head__run">
+        {running
+          ? <button type="button" className="button button--danger button--small" disabled={cancel.isPending || activeStatus === 'cancelling'} onClick={cancelRun}><CircleStop aria-hidden="true" />{activeStatus === 'cancelling' ? 'Cancelling…' : armedCancel ? 'Cancel: sure?' : 'Cancel run'} <kbd>C</kbd></button>
+          : <button type="button" className="button button--primary button--small" disabled={!selected.length || run.isPending} onClick={startRun}><Play aria-hidden="true" />{run.isPending ? 'Queueing…' : `Run ${selected.length} step${selected.length === 1 ? '' : 's'}`} <kbd>⇧R</kbd></button>}
+        <button type="button" className="icon-button" onClick={() => setHelp(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard /></button>
+      </div>
+    </header>
+    {notice && <div className="pl-notice" role="status">{notice}</div>}
     {run.isError && <ErrorState error={run.error} retry={() => run.mutate()} />}
     {cancel.isError && <ErrorState error={cancel.error} />}
-    {activeJob.isLoading && recoveredJobId && <Card><LoadingState label="Loading pipeline job" /></Card>}
-    {activeJob.isError && <ErrorState error={activeJob.error} retry={() => activeJob.refetch()} />}
-    {activeJob.data && <Card title="Latest run" description={activeJob.data.current_step ? 'Current step: ' + activeJob.data.current_step : 'Persisted pipeline job state'} actions={<span className={`badge ${activeJob.data.status === 'completed' ? 'badge--success' : activeJob.data.status === 'failed' || activeJob.data.status === 'interrupted' ? 'badge--danger' : ''}`}>{activeJob.data.status}</span>}><p>Progress: {Math.round(activeJob.data.progress_percent ?? 0)}% · {activeJob.data.completed_step_count ?? 0}/{activeJob.data.step_count ?? activeJob.data.steps?.length ?? 0} steps complete</p>{activeJob.data.status_message && <p>{activeJob.data.status_message}</p>}{activeJob.data.error_message && <p>{activeJob.data.error_message}</p>}<StepStateTable steps={activeJob.data.steps ?? []} /></Card>}
-    {output.isError && <ErrorState error={output.error} />}
-    {output.data && <Card title="Run output" description="Bounded, redacted output persisted by the backend."><RunOutput output={output.data.output} /></Card>}
-    <Card title="Recent runs" description="Pipeline job history from the backend.">{jobs.isLoading ? <LoadingState label="Loading pipeline history" /> : jobs.isError ? <ErrorState error={jobs.error} /> : <DataTable data={jobs.data ?? []} columns={jobColumns} emptyText="No pipeline runs yet." dense />}</Card>
+
+    <div className="pl-grid">
+      <Region index={1} title="Step library" meta={`${library.length} of ${steps.data?.steps.length ?? 0}`}>
+        <label className="pl-filter"><input ref={filterInput} className="input" placeholder="Filter steps (F)" aria-label="Filter steps" value={search} onChange={event => setSearch(event.target.value)} onKeyDown={event => {
+          if (event.key === 'ArrowDown' || event.key === 'Enter') { event.preventDefault(); libFocus(0) }
+          if (event.key === 'Escape') { setSearch(''); event.currentTarget.blur() }
+        }} /></label>
+        {steps.isLoading ? <LoadingState label="Loading pipeline steps" /> : steps.isError ? <ErrorState error={steps.error} /> : <ul className="pl-list" ref={libRef as React.RefObject<HTMLUListElement>} aria-label="Step library" onKeyDown={event => libMove(event, key => {
+          if (key === 'Enter' || key === ' ') { const step = library[libIndex]; if (step) add(step); return true }
+          return false
+        })}>
+          {library.map((step, index) => {
+            const added = selected.some(item => item.name === step.name)
+            return <li key={step.name} data-row tabIndex={index === libIndex ? 0 : -1} className={[index === libIndex && 'is-cursor', added && 'is-added'].filter(Boolean).join(' ')} onFocus={() => setLibIndex(index)} onClick={() => setLibIndex(index)} onDoubleClick={() => add(step)}>
+              <div><strong>{stepLabel(step)}</strong><small>{step.description || step.category}</small></div>
+              <button type="button" className="icon-button" aria-label={added ? `${stepLabel(step)} is in the sequence` : `Add ${stepLabel(step)}`} disabled={added} onClick={event => { event.stopPropagation(); add(step) }}><Plus /></button>
+            </li>
+          })}
+        </ul>}
+      </Region>
+
+      <Region index={2} title="Sequence" meta={selected.length ? 'top to bottom' : 'empty'} actions={selected.length > 0 && <button type="button" className="text-button" onClick={() => setSelected([])}>Clear</button>}>
+        {selected.length ? <ul className="pl-list pl-list--sequence" ref={seqRef as React.RefObject<HTMLUListElement>} aria-label="Sequence" onKeyDown={event => seqMove(event, (key, shift) => {
+          if (shift && (key === 'J' || key === 'ArrowDown')) { move(seqIndex, 1); return true }
+          if (shift && (key === 'K' || key === 'ArrowUp')) { move(seqIndex, -1); return true }
+          if (key === 'o') { toggleOverwrite(seqIndex); return true }
+          if (key === 'x' || key === 'Delete') { remove(seqIndex); return true }
+          if (key === 'Enter' || key === ' ') { setFocusedStep(selected[seqIndex]?.id ?? null); focusRegion(3); return true }
+          return false
+        })}>
+          {selected.map((item, index) => {
+            const meta = metaFor(item.name)
+            const fields = (meta?.input_fields ?? meta?.parameters ?? []).length
+            return <li key={item.id} data-row tabIndex={index === seqIndex ? 0 : -1} className={[index === seqIndex && 'is-cursor', item.id === focusedStep && 'is-focused'].filter(Boolean).join(' ')} onFocus={() => { setSeqIndex(index); setFocusedStep(item.id) }} onClick={() => { setSeqIndex(index); setFocusedStep(item.id) }}>
+              <span className="pl-index">{index + 1}</span>
+              <div><strong>{meta ? stepLabel(meta) : item.name}</strong><small>{fields ? `${fields} setting${fields === 1 ? '' : 's'}` : 'no settings'}{item.overwrite ? ' · overwrite' : ''}</small></div>
+              <label className="pl-overwrite" title="Overwrite existing data (O)"><input type="checkbox" checked={item.overwrite} onChange={() => toggleOverwrite(index)} />Overwrite</label>
+              <span className="pl-step-actions">
+                <button type="button" className="icon-button" aria-label="Move step up" onClick={event => { event.stopPropagation(); move(index, -1) }}><ArrowUp /></button>
+                <button type="button" className="icon-button" aria-label="Move step down" onClick={event => { event.stopPropagation(); move(index, 1) }}><ArrowDown /></button>
+                <button type="button" className="icon-button" aria-label="Remove step" onClick={event => { event.stopPropagation(); remove(index) }}><Trash2 /></button>
+              </span>
+            </li>
+          })}
+        </ul> : <div className="pl-empty"><p>Add steps from the library (Enter), or start from the daily recipe.</p><button type="button" className="button button--primary button--small" onClick={useDaily}><Zap aria-hidden="true" />Use daily refresh recipe <kbd>D</kbd></button></div>}
+      </Region>
+
+      <Region index={3} title="Configuration" meta={configured.length ? `${configured.length} step${configured.length === 1 ? '' : 's'} with settings` : 'nothing to set'} actions={configured.length > 1 && <label className="pl-overwrite"><input type="checkbox" checked={showAllConfig} onChange={event => setShowAllConfig(event.target.checked)} />All steps</label>}>
+        {shownConfig.length ? shownConfig.map(({ item, meta }) => <div key={item.id} className="pl-config">
+          <h3>{stepLabel(meta!)} <code>{meta!.name}</code></h3>
+          {meta!.description && <p>{meta!.description}</p>}
+          <div className="pl-config__fields">
+            {(meta!.input_fields ?? meta!.parameters ?? []).map(field => <ConfigField
+              key={field.name}
+              field={field}
+              value={config[configKey(item.name, field.name)]}
+              maxUploadBytes={serverConfig.data?.max_upload_bytes}
+              onChange={value => setConfig(current => ({ ...current, [configKey(item.name, field.name)]: value }))}
+            />)}
+          </div>
+        </div>) : <p className="pl-muted">{configured.length ? 'Pick a step in the sequence to set it up.' : 'The steps in the sequence take no settings.'}</p>}
+      </Region>
+    </div>
+
+    <div className="pl-grid pl-grid--runs">
+      <Region index={4} title="Latest run" meta={job ? `${job.completed_step_count ?? 0}/${job.step_count ?? job.steps?.length ?? 0} steps · ${formatMs(jobDuration(job))}` : undefined} actions={job && <span className={statusClass(job.status)}>{job.status}</span>}>
+        {activeJob.isLoading && recoveredJobId ? <LoadingState label="Loading pipeline job" /> : activeJob.isError ? <ErrorState error={activeJob.error} retry={() => activeJob.refetch()} /> : job ? <>
+          <div className="pl-progress" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100} aria-label="Run progress"><span style={{ width: `${progress}%` }} /></div>
+          {(job.status_message || job.error_message) && <p className={job.error_message ? 'pl-error' : 'pl-muted'}>{job.error_message || job.status_message}</p>}
+          <StepStateTable steps={job.steps ?? []} />
+          {output.data && <details className="details pl-output"><summary>Run output</summary><RunOutput output={output.data.output} /></details>}
+          {output.isError && <ErrorState error={output.error} />}
+        </> : <p className="pl-muted">No runs yet.</p>}
+      </Region>
+
+      <Region index={5} title="History" meta={jobs.data ? `${jobs.data.length} runs` : undefined}>
+        {jobs.isLoading ? <LoadingState label="Loading pipeline history" /> : jobs.isError ? <ErrorState error={jobs.error} /> : jobs.data?.length ? <table className="pl-table">
+          <thead><tr><th>Status</th><th>Steps</th><th>Started</th><th className="num">Took</th><th>Message</th></tr></thead>
+          <tbody ref={historyRef as React.RefObject<HTMLTableSectionElement>} onKeyDown={event => historyMove(event, key => {
+            if (key === 'Enter') { const row = jobs.data?.[historyIndex]; if (row) setActiveJobId(row.job_id); return true }
+            return false
+          })}>
+            {jobs.data.map((row, index) => <tr key={row.job_id} data-row tabIndex={index === historyIndex ? 0 : -1} className={[index === historyIndex && 'is-cursor', row.job_id === recoveredJobId && 'is-shown'].filter(Boolean).join(' ')} onFocus={() => setHistoryIndex(index)} onClick={() => { setHistoryIndex(index); setActiveJobId(row.job_id) }}>
+              <td><span className={statusClass(row.status)}>{row.status}</span></td>
+              <td className="pl-table__steps" title={row.steps?.map(step => step.step_name).join(' → ')}>{row.steps?.map(step => step.step_name).join(' → ') || row.current_step || '—'}</td>
+              <td className="mono">{row.created_at ? new Date(row.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+              <td className="num mono">{formatMs(jobDuration(row))}</td>
+              <td className={row.error_message ? 'pl-error' : 'pl-muted'} title={row.error_message ?? row.status_message ?? ''}>{row.error_message || row.status_message || '—'}</td>
+            </tr>)}
+          </tbody>
+        </table> : <p className="pl-muted">No pipeline runs yet.</p>}
+      </Region>
+    </div>
+    {help && <ShortcutsDialog groups={SHORTCUTS} onClose={closeHelp} />}
   </div>
 }

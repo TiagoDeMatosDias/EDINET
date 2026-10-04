@@ -141,6 +141,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     logout: async () => {
       await apiRequest('/api/auth/logout', { method: 'POST' }).catch(() => undefined)
+      // Unlocked chat keys belong to the session: forget them on this device too.
+      await import('../chat/keyStore').then(module => module.forgetIdentity()).catch(() => undefined)
+      await import('../chat/e2e').then(module => module.clearConversationKeys()).catch(() => undefined)
       endSession()
     },
   }), [endSession, loading, startSession, status, user])

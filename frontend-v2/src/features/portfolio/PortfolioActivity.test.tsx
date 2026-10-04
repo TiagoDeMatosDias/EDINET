@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -105,7 +105,8 @@ describe('PortfolioActivity', () => {
 
     fireEvent.keyDown(document.body, { key: 'j' })
     fireEvent.keyDown(document.activeElement!, { key: ' ' })
-    fireEvent.click(screen.getAllByRole('checkbox')[2])
+    // The first box selects everything shown; the rest belong to the rows.
+    fireEvent.click(screen.getAllByRole('checkbox')[3])
     expect(screen.getByText('2 selected')).toBeInTheDocument()
 
     fireEvent.keyDown(document.body, { key: 'Delete' })
@@ -134,6 +135,48 @@ describe('PortfolioActivity', () => {
     fireEvent.keyDown(screen.getByRole('button', { name: 'Cancel' }), { key: 'Escape' })
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(screen.getByText('3 selected')).toBeInTheDocument()
+  })
+
+  it('selects every shown record from the header box or Shift+A, and unselects them again', () => {
+    const rows = transactions(6).map((row, index) => ({ ...row, id: index + 1 }))
+    render(withQueries(<PortfolioActivity data={rows} activity={{}} isLoading={false} hotkeys onOpenDetail={vi.fn()} />))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Activity type' }), { target: { value: 'TRADE' } })
+    const all = screen.getByRole('checkbox', { name: 'Select all 3 records shown' })
+    fireEvent.click(all)
+    expect(screen.getByText('3 selected')).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: 'Unselect all records shown' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.keyDown(document.body, { key: 'A', shiftKey: true })
+    expect(screen.queryByText(/selected$/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('checkbox')[1])
+    expect(screen.getByRole('checkbox', { name: 'Select all 3 records shown' })).toHaveAttribute('aria-checked', 'mixed')
+    fireEvent.keyDown(document.body, { key: 'A', shiftKey: true })
+    expect(screen.getByText('3 selected')).toBeInTheDocument()
+  })
+
+  it('adds a transaction by hand from N and reports it', async () => {
+    const posted: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      posted.push({ path: String(input), body: init?.body ? JSON.parse(String(init.body)) : undefined })
+      return Promise.resolve(new Response(JSON.stringify({ transaction: { id: 99, trade_date: '2026-10-01', activity_type: 'TRADE', buy_sell: 'BUY', symbol: '7203.T' }, base_currency: 'EUR', fx_rate_to_base: 0.006, daily_rows: 5, holdings_count: 2 }), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+    }))
+    const onAdded = vi.fn()
+    const rows = transactions(2).map((row, index) => ({ ...row, id: index + 1 }))
+    render(withQueries(<PortfolioActivity data={rows} activity={{}} isLoading={false} hotkeys onOpenDetail={vi.fn()} onAdded={onAdded} />))
+    fireEvent.keyDown(document.body, { key: 'n' })
+    const form = screen.getByRole('form', { name: 'Add a transaction' })
+    expect(within(form).getByRole('combobox', { name: 'Kind' })).toHaveFocus()
+    fireEvent.change(within(form).getByRole('combobox', { name: /Symbol/ }), { target: { value: '7203.T' } })
+    expect(within(form).getByRole('combobox', { name: 'Currency' })).toHaveValue('JPY')
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Quantity' }), { target: { value: '100' } })
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Price' }), { target: { value: '2,850' } })
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Commission' }), { target: { value: '55' } })
+    expect(form).toHaveTextContent('285,055 JPY')
+    fireEvent.submit(form)
+    await waitFor(() => expect(onAdded).toHaveBeenCalled())
+    expect(posted.at(-1)).toMatchObject({ path: '/api/portfolio/transactions/manual', body: { kind: 'buy', symbol: '7203.T', currency: 'JPY', quantity: 100, price: 2850, commission: 55, amount: 0 } })
+    expect(within(form).getByRole('textbox', { name: 'Quantity' })).toHaveValue('')
+    fireEvent.keyDown(within(form).getByRole('combobox', { name: 'Kind' }), { key: 'Escape' })
+    expect(screen.queryByRole('form', { name: 'Add a transaction' })).not.toBeInTheDocument()
   })
 
   it('clears everything only after the word delete is typed', async () => {

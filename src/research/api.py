@@ -365,6 +365,12 @@ def create_alert(request: Request, payload: AlertRequest) -> dict[str, Any]:
     )
 
 
+@router.delete("/alerts/{alert_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_alert(request: Request, alert_id: str) -> None:
+    if not store.delete_alert(_user(request).user_id, alert_id):
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+
 @router.post("/alerts/{alert_id}/evaluate")
 def evaluate_alert(request: Request, alert_id: str, payload: AlertEvaluationRequest) -> dict[str, Any]:
     user = _user(request)

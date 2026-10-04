@@ -47,6 +47,7 @@ def test_rebuildable_and_state_databases_default_to_separate_directories(project
         (db_config.get_research_db, "research.db"),
         (db_config.get_db3, "Portfolio.db"),
         (db_config.get_pipeline_jobs_db, "pipeline_jobs.db"),
+        (db_config.get_chat_db, "chat.db"),
     ):
         assert Path(getter()) == project / "config" / "state" / "databases" / name
 

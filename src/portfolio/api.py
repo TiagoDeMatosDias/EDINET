@@ -311,6 +311,74 @@ async def delete_transactions_selection(request: Request, payload: DeleteTransac
     return {"deleted": deleted, "remaining": preview["remaining"], **rebuilt}
 
 
+class ManualTransactionRequest(BaseModel):
+    """A transaction typed in by hand. Amounts are positive; ``kind`` sets their direction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(pattern=r"^(buy|sell|dividend|withholding_tax|deposit|withdrawal|fee|interest)$")
+    trade_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    currency: str = Field(pattern=r"^[A-Za-z]{3}$")
+    symbol: str = Field(default="", max_length=40)
+    description: str = Field(default="", max_length=300)
+    quantity: float = Field(default=0, ge=0, le=1e12)
+    price: float = Field(default=0, ge=0, le=1e12)
+    commission: float = Field(default=0, ge=0, le=1e9)
+    amount: float = Field(default=0, ge=0, le=1e13)
+    asset_category: str = Field(default="STK", pattern=r"^(STK|BOND|FUND)$")
+
+
+def _rate_to_base(currency: str, base: str, day: str) -> float | None:
+    from src.portfolio.currency import get_rate_at_date_any
+
+    try:
+        return get_rate_at_date_any(currency, base, day, get_db2())
+    except Exception:
+        logger.warning("No %s/%s rate for a manual record on %s", currency, base, day, exc_info=True)
+        return None
+
+
+@router.post("/transactions/manual", status_code=201)
+async def add_manual_transaction(request: Request, payload: ManualTransactionRequest):
+    """Record a transaction by hand and rebuild holdings, cash, and returns with it."""
+    from src.portfolio.manual_entries import (
+        MANUAL_SOURCE,
+        TRADE_KINDS,
+        ManualEntryError,
+        ManualTransaction,
+        account_currency,
+        normalized_entry,
+        stored_record,
+    )
+
+    user = _account(request)
+    try:
+        day = date.fromisoformat(payload.trade_date)
+    except ValueError as exc:
+        raise HTTPException(422, "Use a real date") from exc
+    if day > date.today():
+        raise HTTPException(422, "The date is in the future")
+    entry = ManualTransaction(**payload.model_dump())
+    db3, db2 = get_db3(), get_db2()
+    base = await asyncio.to_thread(account_currency, db3, user.user_id)
+    rate = await asyncio.to_thread(_rate_to_base, entry.currency, base, entry.trade_date)
+    try:
+        record = normalized_entry(entry, rate)
+    except ManualEntryError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if entry.kind in TRADE_KINDS:
+        # Best effort: a new holding needs prices to be valued; the record is kept either way.
+        try:
+            await asyncio.to_thread(ensure_prices_for_tickers, db2, _build_currency_map([record]))
+        except Exception:
+            logger.warning("Prices for manual record %s could not be fetched", record["symbol"], exc_info=True)
+    await asyncio.to_thread(insert_entries, db3, [record], MANUAL_SOURCE, owner_user_id=user.user_id)
+    rebuilt = await asyncio.to_thread(build_portfolio_state, db3, db2, owner_user_id=user.user_id)
+    await asyncio.to_thread(_retag_positions, user.user_id)
+    created = await asyncio.to_thread(stored_record, db3, user.user_id, record["transaction_id"])
+    return {"transaction": created, "base_currency": base, "fx_rate_to_base": rate, **rebuilt}
+
+
 @router.get("/activity-summary", response_model=ActivitySummaryResponse)
 async def activity_summary(request: Request):
     """Return counts by activity_type."""

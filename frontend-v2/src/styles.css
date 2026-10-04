@@ -54,7 +54,7 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 
 .app-shell { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); min-height: 100vh; }
 .app-shell--collapsed { --sidebar: 72px; }
-.sidebar { position: sticky; top: 0; z-index: 30; height: 100vh; display: flex; flex-direction: column; gap: 36px; padding: 28px 16px 20px 20px; border-right: 1px solid var(--border); background: var(--bg); color: var(--text); }
+.sidebar { position: sticky; top: 0; z-index: 30; height: 100vh; display: flex; flex-direction: column; gap: 24px; padding: 24px 16px 16px 20px; border-right: 1px solid var(--border); background: var(--bg); color: var(--text); }
 .brand { min-height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 2px; }
 .brand-lockup { --brand-mark-size: 32px; display: inline-flex; align-items: center; gap: 10px; min-width: 0; text-decoration: none; }
 .brand-lockup__mark { width: var(--brand-mark-size); height: var(--brand-mark-size); flex: 0 0 auto; }
@@ -66,8 +66,8 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .brand-lockup--compact { --brand-mark-size: 26px; gap: 8px; }
 .brand-lockup--compact .brand-lockup__name { font-size: .66rem; }
 .app-shell--collapsed .brand-lockup__copy, .app-shell--collapsed .primary-nav span, .app-shell--collapsed .sidebar-collapse span { display: none; }
-.primary-nav { display: flex; flex: 1; flex-direction: column; gap: 4px; }
-.primary-nav a { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 8px 8px 8px 0; border-radius: var(--radius); color: var(--muted); font-size: .9rem; text-decoration: none; }
+.primary-nav { display: flex; flex: 1; flex-direction: column; gap: 2px; overflow-y: auto; }
+.primary-nav a { display: flex; align-items: center; gap: 12px; min-height: 34px; padding: 6px 8px 6px 0; border-radius: var(--radius); color: var(--muted); font-size: .9rem; text-decoration: none; }
 .primary-nav a::before { content: ""; width: 12px; height: 1px; flex: 0 0 auto; background: transparent; }
 .primary-nav a svg { display: none; width: 16px; height: 16px; stroke-width: 1.5; }
 .app-shell--collapsed .primary-nav a { justify-content: center; padding: 8px; }
@@ -81,6 +81,10 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .primary-nav a:hover .primary-nav__key, .primary-nav a.active .primary-nav__key { opacity: 1; }
 .primary-nav--keys .primary-nav__key { border-color: var(--vermilion); color: var(--vermilion); opacity: 1; }
 .primary-nav__hint { margin: 6px 0 0 24px; color: var(--muted); font-size: .7rem; }
+.primary-nav__badge { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--vermilion); color: var(--paper); font-family: var(--font-mono); font-size: .64rem; line-height: 16px; text-align: center; }
+.primary-nav__badge + .primary-nav__key { margin-left: 6px; }
+.primary-nav a:has(.primary-nav__badge) .primary-nav__badge { margin-left: auto; }
+.app-shell--collapsed .primary-nav__badge { position: absolute; bottom: 2px; right: 0; min-width: 0; font-size: .54rem; line-height: 12px; }
 .primary-nav__hint kbd { margin: 0 2px; }
 .app-shell--collapsed .primary-nav a { position: relative; }
 .app-shell--collapsed .primary-nav__key { position: absolute; top: 1px; right: 0; min-width: 0; padding: 0 .3em; font-size: .56rem; line-height: 1.4; }

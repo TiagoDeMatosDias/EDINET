@@ -19,12 +19,12 @@ const modalOpen = () => Boolean(document.querySelector('[aria-modal="true"]'))
  * Gmail or GitHub: after G a hint lists the destinations, and Esc or any other
  * key cancels. "?" lists shortcuts on pages that have no list of their own.
  */
-export function GlobalHotkeys({ isAdmin, onPendingChange }: { isAdmin: boolean; onPendingChange?: (pending: boolean) => void }) {
+export function GlobalHotkeys({ isAdmin, signedIn = true, onPendingChange }: { isAdmin: boolean; signedIn?: boolean; onPendingChange?: (pending: boolean) => void }) {
   const navigate = useNavigate()
   const location = useLocation()
   const [pending, setPending] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
-  const pages = useMemo(() => pageShortcuts(isAdmin), [isAdmin])
+  const pages = useMemo(() => pageShortcuts(isAdmin, signedIn), [isAdmin, signedIn])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

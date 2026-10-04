@@ -9,7 +9,7 @@ import { useHotkeys } from '../../hooks/useHotkeys'
 import { formatMetricValue } from '../../metrics'
 import { ConfirmButton } from './ConfirmButton'
 import { invalidateResearch } from './researchQueries'
-import { ALERT_OPERATORS, alertCondition, alertDistance, formatSignedPercent, relativeDay } from './researchModel'
+import { ALERT_OPERATORS, alertCondition, alertDistance, formatSignedPercent, parseThreshold, relativeDay } from './researchModel'
 import type { ResearchBook } from './researchTypes'
 import { moveCursorKey, useListCursor } from './useListCursor'
 
@@ -31,6 +31,7 @@ export function AlertsView({ book, active, today, onOpenCompany }: {
   const [operator, setOperator] = useState('<')
   const [value, setValue] = useState('')
   const pickerRef = useRef<HTMLInputElement>(null)
+  const valueRef = useRef<HTMLInputElement>(null)
 
   // Triggered first, then the ones closest to their threshold.
   const shown = useMemo(() => [...alerts]
@@ -43,11 +44,20 @@ export function AlertsView({ book, active, today, onOpenCompany }: {
     onSuccess: () => invalidateResearch(client),
   })
   const percent = definitions[metric]?.format === 'percent'
-  const threshold = Number(value.replace(/,/g, '')) / (percent ? 100 : 1)
-  const valid = Boolean(company?.company_code) && value.trim() !== '' && Number.isFinite(threshold)
+  const typed = parseThreshold(value)
+  const threshold = typed.number / (percent ? 100 : 1)
+  const condition = typed.operator ?? operator
+  const valid = Boolean(company?.company_code) && typed.text !== '' && Number.isFinite(threshold)
   const create = useMutation({
-    mutationFn: () => apiPost('/api/research/alerts', { name: alertCondition({ metric, operator, value: threshold }, definitions), edinet_code: company?.company_code, metric, operator, value: threshold }),
-    onSuccess: () => { setValue(''); setCompany(null); invalidateResearch(client) },
+    mutationFn: () => apiPost('/api/research/alerts', { name: alertCondition({ metric, operator: condition, value: threshold }, definitions), edinet_code: company?.company_code, metric, operator: condition, value: threshold }),
+    onSuccess: () => {
+      setValue('')
+      setOperator(condition)
+      setCompany(null)
+      invalidateResearch(client)
+      // Ready for the next one, as after pressing N.
+      pickerRef.current?.focus()
+    },
   })
   const step = (delta: number) => { setCursor(Math.max(0, Math.min(shown.length - 1, index + delta))); setFocusRequest(request => request + 1) }
   useHotkeys({
@@ -71,14 +81,15 @@ export function AlertsView({ book, active, today, onOpenCompany }: {
   return <div className="rs-alerts-view">
     <section className="panel" aria-label="New alert">
       <form className="rs-alert-form" onSubmit={event => { event.preventDefault(); if (valid) create.mutate() }}>
-        <div className="rs-alert-form__company"><CompanyPicker selected={company} onSelect={setCompany} inputRef={pickerRef} label="Company" /></div>
+        <div className="rs-alert-form__company"><CompanyPicker selected={company} onSelect={next => { setCompany(next); if (next) valueRef.current?.focus() }} inputRef={pickerRef} label="Company" /></div>
         <label className="field-label">Metric<select className="select" value={metric} onChange={event => setMetric(event.target.value)}>{Object.entries(definitions).map(([key, definition]) => <option key={key} value={key}>{definition.label}</option>)}</select></label>
-        <label className="field-label">Condition<select className="select" value={operator} onChange={event => setOperator(event.target.value)}>{ALERT_OPERATORS.map(item => <option key={item}>{item}</option>)}</select></label>
-        <label className="field-label">{percent ? 'Value (%)' : 'Value'}<input className="input" inputMode="decimal" value={value} onChange={event => setValue(event.target.value)} /></label>
-        <button type="submit" className="button button--primary button--small" disabled={!valid || create.isPending}>{create.isPending ? 'Adding…' : 'Add alert'} <kbd aria-hidden="true">N</kbd></button>
+        <label className="field-label">Condition<select className="select" value={condition} onChange={event => { setOperator(event.target.value); setValue(typed.text) }}>{ALERT_OPERATORS.map(item => <option key={item}>{item}</option>)}</select></label>
+        <label className="field-label">{percent ? 'Value (%)' : 'Value'}<input ref={valueRef} className="input" inputMode="decimal" aria-label="Value" placeholder={`e.g. ${condition} 1500`} value={value} onChange={event => setValue(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') event.currentTarget.blur() }} /></label>
+        <button type="submit" className="button button--primary button--small" disabled={!valid || create.isPending}>{create.isPending ? 'Adding…' : 'Add alert'} <kbd aria-hidden="true">Enter</kbd></button>
         {create.error && <span className="form-error">{(create.error as Error).message}</span>}
+        {remove.error && <span className="form-error">Could not delete the alert: {(remove.error as Error).message}</span>}
       </form>
-      <p className="rs-hint">Alerts are checked against the latest stored prices and filings each time this page loads; triggered ones are listed first.</p>
+      <p className="rs-hint"><kbd>N</kbd> starts a new alert: pick the company with <kbd>Enter</kbd>, type the value (a leading <code>&lt;</code>, <code>&gt;=</code>… sets the condition), and press <kbd>Enter</kbd> to add it. Alerts are checked against the latest stored prices and filings each time this page loads; triggered ones are listed first.</p>
     </section>
     <section className="panel" aria-label="Alerts">
       <div className="rs-toolbar">

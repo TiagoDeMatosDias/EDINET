@@ -4,8 +4,15 @@ export type JsonRecord = Record<string, unknown>
 
 export interface Health {
   status: string
+  version: string
   timestamp: string
-  jobs_active: number
+}
+
+/** Operators only: ``/api/system/status``. */
+export interface SystemStatus {
+  version: string
+  timestamp: string
+  jobs: { queue_depth: number; active: number; counts_by_status: Record<string, number> }
 }
 
 export interface JobStep {

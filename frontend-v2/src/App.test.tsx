@@ -54,7 +54,8 @@ function stubBackend(
         password_min_length: 15,
       })
     }
-    if (path === '/health') return jsonResponse({ status: 'healthy', timestamp: '2026-07-19T12:00:00Z', jobs_active: 0 })
+    if (path === '/health') return jsonResponse({ status: 'healthy', version: '1.0.0', timestamp: '2026-07-19T12:00:00Z' })
+    if (path === '/api/overview') return jsonResponse({ today: '2026-07-19', portfolio: null, research: { followed: 2, alerts: 1, notes: 3, reviews_due: [], recent_notes: [], theses: {} }, data: { latest_price_date: '2026-07-18', priced_securities: 3800, filings: null } })
     if (path.startsWith('/api/jobs')) return jsonResponse([])
     if (path === '/api/steps') return jsonResponse({ steps: [] })
     if (path === '/api/portfolio/activity-summary') return jsonResponse({ by_activity: {} })

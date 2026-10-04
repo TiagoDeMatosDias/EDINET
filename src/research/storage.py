@@ -429,6 +429,19 @@ class ResearchStore:
         finally:
             conn.close()
 
+    def delete_alert(self, user_id: str, alert_id: str) -> bool:
+        """Delete one of the user's alerts and its trigger history."""
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            owned = conn.execute(
+                "SELECT 1 FROM alert_rules WHERE user_id = ? AND alert_id = ?",
+                (user_id, alert_id),
+            ).fetchone()
+            if owned is None:
+                return False
+            conn.execute("DELETE FROM alert_events WHERE alert_id = ?", (alert_id,))
+            conn.execute("DELETE FROM alert_rules WHERE alert_id = ?", (alert_id,))
+            return True
+
     def record_alert_event(self, alert_id: str, payload_json: str, dedupe_key: str | None = None) -> dict[str, Any] | None:
         event_id = str(uuid.uuid4())
         occurred = _timestamp()

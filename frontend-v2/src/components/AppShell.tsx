@@ -1,13 +1,14 @@
-import { BarChart3, BriefcaseBusiness, Building2, CircleCheck, CircleX, FileText, GitCompare, Home, LogIn, Menu, PanelLeftClose, Search, Settings, Shield, StickyNote, UserCircle, Workflow, X } from 'lucide-react'
+import { BarChart3, BriefcaseBusiness, Building2, CircleCheck, CircleX, FileText, GitCompare, Home, LogIn, Menu, MessagesSquare, PanelLeftClose, Search, Settings, Shield, StickyNote, UserCircle, Workflow, X } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 
-import { useHealth } from '../hooks/useHealth'
+import { useHealth, useSystemStatus } from '../hooks/useHealth'
 import { BrandLockup } from './Brand'
 import { GlobalCompanySearch } from './GlobalCompanySearch'
 import { GlobalHotkeys } from './GlobalHotkeys'
 import { pageShortcutFor } from './pageShortcuts'
 import { useAuth } from '../features/auth/authContext'
+import { useChatUnread } from '../features/chat/chatApi'
 
 const navigation = [
   { to: '/overview', label: 'Overview', icon: Home },
@@ -18,23 +19,30 @@ const navigation = [
   { to: '/filings', label: 'Filings', icon: FileText },
   { to: '/compare', label: 'Compare', icon: GitCompare },
   { to: '/research', label: 'Research', icon: StickyNote },
+  { to: '/chat', label: 'Chat', icon: MessagesSquare },
 ]
 const pipelineNavigation = { to: '/pipeline', label: 'Data pipeline', icon: Workflow }
+const accountNavigation = { to: '/account', label: 'Account', icon: Settings }
+const adminNavigation = { to: '/admin', label: 'Admin', icon: Shield }
 
 /** The sidebar links, each with its "G then a letter" shortcut; the letters light up while G waits for one. */
-function Navigation({ onNavigate, keysActive = false }: { onNavigate?: () => void; keysActive?: boolean }) {
+function Navigation({ onNavigate, keysActive = false, unreadChat = 0 }: { onNavigate?: () => void; keysActive?: boolean; unreadChat?: number }) {
   const auth = useAuth()
-  const items = auth.user?.role === 'admin'
-    ? [...navigation.slice(0, 5), pipelineNavigation, ...navigation.slice(5)]
-    : navigation
+  const isAdmin = auth.user?.role === 'admin'
+  const items = [
+    ...navigation.slice(0, 5),
+    ...(isAdmin ? [pipelineNavigation] : []),
+    ...navigation.slice(5),
+    ...(auth.user ? [accountNavigation] : []),
+    ...(isAdmin ? [adminNavigation] : []),
+  ]
   return <nav className={keysActive ? 'primary-nav primary-nav--keys' : 'primary-nav'} aria-label="Primary navigation">
     {items.map(item => {
       const Icon = item.icon
       const key = pageShortcutFor(item.to)?.key.toUpperCase()
-      return <NavLink key={item.to} to={item.to} end={item.to === '/overview'} onClick={onNavigate} title={key ? `${item.label} (G then ${key})` : undefined}><Icon aria-hidden="true" /><span>{item.label}</span>{key && <kbd className="primary-nav__key" aria-hidden="true">{key}</kbd>}</NavLink>
+      const unread = item.to === '/chat' && unreadChat > 0 ? unreadChat : 0
+      return <NavLink key={item.to} to={item.to} end={item.to === '/overview'} onClick={onNavigate} title={key ? `${item.label} (G then ${key})` : undefined}><Icon aria-hidden="true" /><span>{item.label}</span>{unread > 0 && <span className="primary-nav__badge" aria-label={`${unread} unread`}>{unread > 99 ? '99+' : unread}</span>}{key && <kbd className="primary-nav__key" aria-hidden="true">{key}</kbd>}</NavLink>
     })}
-    {auth.user && <NavLink to="/account" end onClick={onNavigate}><Settings aria-hidden="true" /><span>Account</span></NavLink>}
-    {auth.user?.role === 'admin' && <NavLink to="/admin" end onClick={onNavigate}><Shield aria-hidden="true" /><span>Admin</span></NavLink>}
     <p className="primary-nav__hint">Press <kbd>G</kbd> then a letter</p>
   </nav>
 }
@@ -102,6 +110,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   const health = useHealth()
   const location = useLocation()
   const auth = useAuth()
+  const unread = useChatUnread(Boolean(auth.user) || auth.status?.mode === 'disabled')
+  const operator = auth.user?.role === 'admin' || auth.user?.role === 'operator'
+  const system = useSystemStatus(operator)
+  const activeJobs = operator ? system.data?.jobs.active ?? 0 : 0
   const mobileNavigation = navigation.slice(0, 5)
   // Pages remount per path; start each one at the top instead of the previous page's scroll position.
   useEffect(() => { window.scrollTo(0, 0) }, [location.pathname])
@@ -109,14 +121,14 @@ export function AppShell({ children }: { children: ReactNode }) {
   return <div className={collapsed ? 'app-shell app-shell--collapsed' : 'app-shell'}>
     <aside className={mobileOpen ? 'sidebar sidebar--open' : 'sidebar'}>
       <div className="brand"><BrandLockup showTagline /><button className="icon-button mobile-only" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X /></button></div>
-      <Navigation onNavigate={() => setMobileOpen(false)} keysActive={keysActive} />
+      <Navigation onNavigate={() => setMobileOpen(false)} keysActive={keysActive} unreadChat={unread.data?.total ?? 0} />
       <button className="sidebar-collapse desktop-only" onClick={() => setCollapsed(value => !value)}><PanelLeftClose aria-hidden="true" /><span>{collapsed ? 'Expand' : 'Collapse'}</span></button>
     </aside>
     {mobileOpen && <button className="backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
     <div className="app-content">
-      <header className="topbar"><button className="icon-button mobile-only" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button><GlobalCompanySearch /><div className="topbar-actions"><div className={health.isError ? 'health health--error' : 'health'}>{health.isError ? <CircleX /> : <CircleCheck />}<span>{health.isError ? 'Backend unavailable' : auth.user?.role === 'admin' && health.data?.jobs_active ? `${health.data.jobs_active} job active` : 'Data service ready'}</span></div><AuthSection /></div></header>
+      <header className="topbar"><button className="icon-button mobile-only" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button><GlobalCompanySearch /><div className="topbar-actions"><div className={health.isError ? 'health health--error' : 'health'}>{health.isError ? <CircleX /> : <CircleCheck />}<span>{health.isError ? 'Backend unavailable' : activeJobs ? `${activeJobs} job${activeJobs === 1 ? '' : 's'} active` : 'Data service ready'}</span></div><AuthSection /></div></header>
       <main id="main-content" key={location.pathname}>{children}</main>
-      <GlobalHotkeys isAdmin={auth.user?.role === 'admin'} onPendingChange={setKeysActive} />
+      <GlobalHotkeys isAdmin={auth.user?.role === 'admin'} signedIn={Boolean(auth.user)} onPendingChange={setKeysActive} />
       <nav className="mobile-nav" aria-label="Mobile primary navigation">{mobileNavigation.map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/overview'}><Icon /><span>{item.label}</span></NavLink> })}</nav>
     </div>
   </div>

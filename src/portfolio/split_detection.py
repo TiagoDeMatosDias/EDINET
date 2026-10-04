@@ -8,9 +8,11 @@ the ShareMetrics table in the same database.
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 from datetime import date as Date
 from fractions import Fraction
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,13 @@ _SHARE_COUNT_TOLERANCE = 0.20
 # If ShareMetrics ratio is further than this multiple from the candidate
 # ratio, the candidate is rejected rather than kept as pending.
 _REJECTION_MULTIPLIER = 3.0
+
+# Stock_Prices also stores non-security series: ECB FX rates under ``EUR``,
+# CPI indices as ``Inflation_<CUR>``, and short-term rates in percent as
+# ``RiskFree_<CUR>``. Rates can be zero or negative and indices rebase, so
+# none of them can split; scanning them only produces false events (or, for a
+# zero rate, a division by zero).
+_NON_SECURITY_TICKERS = ("EUR",)
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +117,15 @@ def _round_split_ratio(raw_ratio: float) -> tuple[int, int]:
         return (max(1, fraction.denominator), max(1, fraction.numerator))
 
 
+def _positive_price(value: object) -> float | None:
+    """The value as a finite positive float, or ``None`` when it cannot be a price."""
+    try:
+        price = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return price if math.isfinite(price) and price > 0 else None
+
+
 def detect_splits_by_price_heuristic(
     conn: sqlite3.Connection,
     ticker: str,
@@ -151,6 +169,9 @@ def detect_splits_by_price_heuristic(
             (ticker,),
         ).fetchall()
 
+    # A zero, negative, or non-numeric print is bad data rather than a price:
+    # drop it so neighbouring valid prices are still compared across it.
+    rows = [row for row in rows if _positive_price(row[1]) is not None]
     if len(rows) < 2:
         return []
 
@@ -158,8 +179,10 @@ def detect_splits_by_price_heuristic(
     for i in range(1, len(rows)):
         previous = rows[i - 1]
         current = rows[i]
-        prev_date_str, prev_price = previous[:2]
-        curr_date_str, curr_price = current[:2]
+        prev_date_str = previous[0]
+        curr_date_str = current[0]
+        prev_price = _positive_price(previous[1])
+        curr_price = _positive_price(current[1])
         basis_offset = 2 if "Price_Basis" in columns else None
         provider_offset = (
             3 if "Price_Basis" in columns and "Provider" in columns else
@@ -174,7 +197,7 @@ def detect_splits_by_price_heuristic(
         curr_date = _parse_date(curr_date_str)
         if prev_date is None or curr_date is None:
             continue
-        if prev_price is None or curr_price is None or prev_price == 0:
+        if prev_price is None or curr_price is None:
             continue
 
         gap_days = (curr_date - prev_date).days
@@ -514,6 +537,7 @@ def run_split_detection(
     tickers: list[str] | None = None,
     mode: str = "incremental",
     threshold: float = 0.40,
+    progress: Callable[[int, int, str], None] | None = None,
 ) -> dict:
     """Run split detection and update the Stock_Splits table.
 
@@ -524,6 +548,8 @@ def run_split_detection(
               data since last known split), or ``"verify_pending"`` (re-check
               entries that are still pending).
         threshold: Minimum price change to flag as a potential split.
+        progress: Called as ``progress(done, total, message)`` before each
+            ticker; it may raise to cancel, which rolls the run back.
 
     Returns:
         ``{"new_pending": N, "confirmed": N, "rejected": N,
@@ -557,8 +583,11 @@ def run_split_detection(
                 r[0]
                 for r in conn.execute(
                     "SELECT DISTINCT Ticker FROM Stock_Prices "
-                    "WHERE Ticker != 'EUR' AND Ticker NOT LIKE 'Inflation_%' "
-                    "ORDER BY Ticker"
+                    "WHERE Ticker NOT IN ({}) "
+                    "AND Ticker NOT LIKE 'Inflation\\_%' ESCAPE '\\' "
+                    "AND Ticker NOT LIKE 'RiskFree\\_%' ESCAPE '\\' "
+                    "ORDER BY Ticker".format(",".join("?" * len(_NON_SECURITY_TICKERS))),
+                    _NON_SECURITY_TICKERS,
                 ).fetchall()
             ]
 
@@ -604,8 +633,10 @@ def run_split_detection(
             "already_known": 0, "tickers_scanned": len(tickers),
         }
 
-        for ticker in tickers:
+        for position, ticker in enumerate(tickers):
             logger.debug("Scanning ticker %s", ticker)
+            if progress is not None:
+                progress(position, len(tickers), f"Scanning {ticker} ({position + 1}/{len(tickers)})")
 
             if mode == "verify_pending":
                 # Re-verify only existing pending entries for this ticker

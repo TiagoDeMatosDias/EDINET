@@ -7,7 +7,7 @@ import { usePersistentState } from '../../../hooks/usePersistentState'
 import { formatMetricValue } from '../../../metrics'
 import { abbreviate } from '../../comparison/comparisonModel'
 import { divergingColor } from '../../portfolio/chartTheme'
-import { defaultRate, formatDay, formatNumber, formatPercent, formatSignedPercent } from '../researchModel'
+import { defaultRate, formatDay, formatNumber, formatPercent, formatSignedPercent, localToday } from '../researchModel'
 import type { PricingInputs } from '../researchTypes'
 import { DefaultTimelineChart, OutcomesChart, PriceYieldChart } from './BondCharts'
 import {
@@ -24,6 +24,8 @@ import {
 } from './bondModel'
 import { creditProfile, type CreditProfile, type ZScore } from './creditModel'
 import { NumberField } from './NumberField'
+import { Segmented } from './Segmented'
+import { addDays, daysBetween } from './optionsModel'
 import { usePricingInputs } from '../researchQueries'
 import { PricingCompany } from './PricingCompany'
 
@@ -45,6 +47,7 @@ interface BondState {
 const MANUAL: BondState = { face: 100, coupon: 0.02, frequency: 2, years: 5, riskFree: 0.01, source: 'spread', spread: 0.01, annualDefault: 0.01, recovery: 0.4, equityWindow: '1Y' }
 
 const RATE_SHIFTS = [-0.02, -0.01, -0.005, 0, 0.005, 0.01, 0.02]
+const DAYS_PER_YEAR = 365.25
 const SPREAD_SHIFTS = [-0.005, 0, 0.005, 0.01, 0.03]
 
 function bp(value: number) {
@@ -58,12 +61,16 @@ export function BondsView({ companyCode, onCompany, active }: { companyCode: str
   const [rates, setRates] = usePersistentState<Record<string, number>>('research.rates', {})
   const [state, setState] = useState<BondState>(MANUAL)
   const [marketPrice, setMarketPrice] = useState<number | null>(null)
-  // Commission or dealer markup paid when buying, as a share of face value.
+  // Commission or dealer markup paid when buying: a share of face value, or a set amount per bond.
   const [feeRate, setFeeRate] = usePersistentState<number>('research.bonds.fee', 0)
+  const [feeMode, setFeeMode] = usePersistentState<'percent' | 'amount'>('research.bonds.feeMode', 'percent', ['percent', 'amount'])
+  const [feeAmount, setFeeAmount] = usePersistentState<number>('research.bonds.feeAmount', 0)
+  const today = useMemo(() => localToday(), [])
   const pickerRef = useRef<HTMLInputElement>(null)
   const couponRef = useRef<HTMLInputElement>(null)
   const yieldRef = useRef<HTMLInputElement>(null)
   const priceRef = useRef<HTMLInputElement>(null)
+  const maturityRef = useRef<HTMLInputElement>(null)
   const [applied, setApplied] = useState('')
 
   const fromCompany = (): BondState | null => {
@@ -100,7 +107,8 @@ export function BondsView({ companyCode, onCompany, active }: { companyCode: str
   const credit = { riskFree: state.riskFree, hazard, recovery: state.recovery }
   const priced = priceWithCredit(terms, credit)
   const risk = riskMeasures(terms, priced.yield ?? state.riskFree)
-  const fee = Math.max(feeRate, 0) * state.face
+  const fee = feeMode === 'amount' ? Math.max(feeAmount, 0) : Math.max(feeRate, 0) * state.face
+  const maturityDate = addDays(today, state.years * DAYS_PER_YEAR)
   const yieldAfterFee = fee > 0 ? yieldFromPrice(terms, priced.price + fee) : priced.yield
   // Returns are on everything paid, fee included.
   const ends = useMemo(() => outcomes(terms, priced.price + fee, credit),
@@ -121,10 +129,16 @@ export function BondsView({ companyCode, onCompany, active }: { companyCode: str
     c: () => focus(couponRef.current),
     y: () => focus(yieldRef.current),
     p: () => focus(priceRef.current),
+    d: () => focus(maturityRef.current),
+    f: () => setFeeMode(feeMode === 'percent' ? 'amount' : 'percent'),
     r: reset,
   }, active)
 
   const issuer = data?.company.company_name
+  const feeModeToggle = <Segmented label="Fee type" value={feeMode} onChange={setFeeMode} options={[{ value: 'percent', label: '%', title: 'A share of face value (F)' }, { value: 'amount', label: 'Set', title: 'A set amount per bond (F)' }]} />
+  const feeHint = <>{fee > 0
+    ? feeMode === 'percent' ? `${formatNumber(fee, 3)} per ${formatNumber(state.face, 0)} face, paid when buying` : `${formatPercent(fee / state.face, 3)} of face, paid when buying`
+    : 'Commission or dealer markup paid when buying'}</>
   return <div className="rs-pricing rs-bonds">
     <section className="panel rs-pricing__inputs" aria-label="Bond inputs">
       <PricingCompany code={companyCode} inputs={data} loading={inputs.isLoading} error={inputs.error} inputRef={pickerRef} onChange={onCompany} />
@@ -133,10 +147,28 @@ export function BondsView({ companyCode, onCompany, active }: { companyCode: str
           <select className="select" aria-label="Coupons per year" value={state.frequency} onChange={event => set({ frequency: Number(event.target.value) })}><option value={1}>Annual</option><option value={2}>Semi-annual</option><option value={4}>Quarterly</option></select>
         </NumberField>
         <NumberField label="Years to maturity" value={state.years} step={1} digits={2} min={0.1} max={50} onChange={years => set({ years })} hint={<span className="rs-quick">{[1, 3, 5, 7, 10, 20].map(years => <button key={years} type="button" aria-pressed={state.years === years} onClick={() => set({ years })}>{years}y</button>)}</span>} />
+        <label className="rs-field">
+          <span className="rs-field__label">Maturity date</span>
+          <span className="rs-field__control">
+            <input
+              ref={maturityRef}
+              type="date"
+              className="input"
+              aria-label="Maturity date"
+              min={addDays(today, Math.ceil(0.1 * DAYS_PER_YEAR))}
+              max={addDays(today, 50 * DAYS_PER_YEAR)}
+              value={maturityDate}
+              onChange={event => { const days = daysBetween(today, event.target.value); if (days != null && days >= 0.1 * DAYS_PER_YEAR && days <= 50 * DAYS_PER_YEAR) set({ years: days / DAYS_PER_YEAR }) }}
+            />
+          </span>
+          <small className="rs-field__hint">{formatNumber(state.years, 2)} years; the first coupon period is short when it is not a whole number of periods</small>
+        </label>
         <NumberField label="Face value" value={state.face} step={100} digits={2} min={1} onChange={face => set({ face })} hint="Prices are per this amount" />
         <NumberField label="Risk-free yield" value={state.riskFree} scale={100} step={0.25} digits={2} suffix="%" inputRef={yieldRef} onChange={setRiskFree} hint={`Assumption${data?.currency.price ? ` for ${data.currency.price}` : ''}; the government yield for the maturity`} />
         <NumberField label="Recovery if default" value={state.recovery} scale={100} step={5} digits={0} min={0} max={100} suffix="%" onChange={recovery => set({ recovery })} hint="Share of face recovered; 40% is a common senior unsecured assumption" />
-        <NumberField label="Trading fee" value={feeRate} scale={100} step={0.05} digits={3} min={0} max={20} suffix="% of face" onChange={setFeeRate} hint={fee > 0 ? `${formatNumber(fee, 3)} per ${formatNumber(state.face, 0)} face, paid when buying` : 'Commission or dealer markup paid when buying'} />
+        {feeMode === 'percent'
+          ? <NumberField label="Trading fee" value={feeRate} scale={100} step={0.05} digits={3} min={0} max={20} suffix="% of face" onChange={setFeeRate} hint={feeHint}>{feeModeToggle}</NumberField>
+          : <NumberField label="Trading fee" value={feeAmount} step={0.1} digits={3} min={0} max={state.face} suffix="per bond" onChange={setFeeAmount} hint={feeHint}>{feeModeToggle}</NumberField>}
         <NumberField label="Market price" value={marketPrice} step={0.5} digits={3} min={0} inputRef={priceRef} onChange={value => setMarketPrice(value || null)} hint={marketPrice == null ? 'Optional clean price: solves for yield and implied default risk' : marketYield == null ? 'No yield gives this price' : `Yield ${formatPercent(marketYield, 2)}`} />
       </div>
       <fieldset className="rs-source">

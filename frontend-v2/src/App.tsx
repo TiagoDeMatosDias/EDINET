@@ -21,6 +21,8 @@ const ResearchPage = lazy(() => import('./features/research/ResearchPage'))
 const LoginPage = lazy(() => import('./features/auth/LoginPage'))
 const AccountPage = lazy(() => import('./features/auth/AccountPage'))
 const AdminPage = lazy(() => import('./features/auth/AdminPage'))
+const ChatPage = lazy(() => import('./features/chat/ChatPage'))
+const ProfilePage = lazy(() => import('./features/chat/ProfilePage'))
 
 function WorkspaceLayout() {
   return (
@@ -61,6 +63,8 @@ export function App() {
             <Route path="/filings/:docId" element={<FilingViewerPage />} />
             <Route path="/compare" element={<ComparisonPage />} />
             <Route path="/research" element={<ResearchPage />} />
+            <Route path="/chat" element={<ChatPage />} />
+            <Route path="/people/:username" element={<ProfilePage />} />
             <Route path="/account" element={<AccountPage />} />
             <Route path="/admin" element={<AdminPage />} />
           </Route>

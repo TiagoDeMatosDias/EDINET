@@ -217,6 +217,11 @@ th.num .rs-sort { justify-content: flex-end; }
 .rs-fees { gap: 6px 14px; }
 .rs-fees .rs-field--inline .rs-field__label { font-size: .6rem; }
 .rs-fees > small { flex-basis: 100%; font-size: .7rem; }
+.rs-segmented { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--border-strong); border-radius: var(--radius); overflow: hidden; }
+.rs-segmented button { padding: 2px 8px; border: 0; background: transparent; color: var(--muted); font-size: .72rem; cursor: pointer; }
+.rs-segmented button + button { border-left: 1px solid var(--border-strong); }
+.rs-segmented button:hover { color: var(--text); }
+.rs-segmented button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
 .rs-quick { display: inline-flex; flex-wrap: wrap; gap: 2px; }
 .rs-quick button { padding: 0 4px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--muted); background: transparent; font-size: .66rem; cursor: pointer; }
 .rs-quick button small { font-family: var(--font-mono); font-size: .62rem; }

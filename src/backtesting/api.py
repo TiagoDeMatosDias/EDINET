@@ -32,6 +32,7 @@ from src.backtesting.zip_export import (
     build_summary,
     save_rolling_backtest_zip,
 )
+from src.backtesting.jobs import jobs as _rolling_jobs
 from src.orchestrator.common.db_config import get_db2, get_db3
 from src.orchestrator.common.sqlite import connect_read
 from src.portfolio.currency import get_available_display_currencies
@@ -109,6 +110,34 @@ def _write_owner(out_dir: Path, http_request: Request | None) -> None:
         json.dumps({"owner_user_id": owner}),
         encoding="utf-8",
     )
+
+
+def _portfolio_owner(http_request: Request | None) -> str:
+    """Whose own portfolio a ``portfolio`` benchmark means: the signed-in account."""
+    user = _request_user(http_request)
+    return user.user_id if user is not None else ""
+
+
+_META_FILE = "meta.json"
+
+
+def _write_meta(out_dir: Path, *, kind: str, title: str, subtitle: str = "", headline: dict[str, Any] | None = None) -> None:
+    """A small description of a saved result, for the saved-results list."""
+    (out_dir / _META_FILE).write_text(
+        json.dumps({"kind": kind, "title": title, "subtitle": subtitle, "headline": headline or {}}, default=str),
+        encoding="utf-8",
+    )
+
+
+def _read_meta(directory: Path) -> dict[str, Any]:
+    path = directory / _META_FILE
+    if not path.is_file() or path.is_symlink():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _read_owner(directory: Path) -> str | None:
@@ -330,13 +359,57 @@ def list_backtests(http_request: Request) -> dict:
             and _can_access(d, user)
         ):
             zip_file = d / "backtest.zip"
+            meta = _read_meta(d)
             items.append({
                 "id": d.name,
                 "path": d.name,
                 "created": d.name,
                 "has_zip": zip_file.exists(),
+                "kind": meta.get("kind"),
+                "title": meta.get("title"),
+                "subtitle": meta.get("subtitle"),
+                "headline": meta.get("headline") or {},
             })
     return {"backtests": items}
+
+
+# Candidate benchmarks: Japanese indices first, then the global index funds
+# the portfolio page offers.
+_BENCHMARK_CANDIDATES: tuple[tuple[str, str, str], ...] = (
+    ("TPX", "TOPIX", "TOPIX index, price only"),
+    ("13060", "TOPIX", "NEXT FUNDS 1306, price only"),
+    ("13210", "Nikkei 225", "NEXT FUNDS 1321, price only"),
+    ("VWCE", "FTSE All-World", "Vanguard VWCE, accumulating"),
+    ("IWDA", "MSCI World", "iShares IWDA, accumulating"),
+    ("CSPX", "S&P 500", "iShares CSPX, accumulating"),
+    ("SPY", "S&P 500", "SPDR SPY, price only"),
+)
+
+
+@router.get("/benchmarks")
+def list_benchmarks() -> dict:
+    """Benchmarks with stored prices, and the dates they cover."""
+    conn = connect_read(_resolve_db())
+    try:
+        tickers = [ticker for ticker, _label, _detail in _BENCHMARK_CANDIDATES]
+        rows = conn.execute(
+            f"SELECT Ticker, MIN(Date), MAX(Date), COUNT(*), MAX(Currency) FROM Stock_Prices "
+            f"WHERE Ticker IN ({','.join('?' * len(tickers))}) AND Price > 0 GROUP BY Ticker",
+            tickers,
+        ).fetchall()
+    finally:
+        conn.close()
+    coverage = {row[0]: row for row in rows}
+    return {"benchmarks": [
+        {
+            "ticker": ticker, "label": label, "detail": detail,
+            "available": ticker in coverage and coverage[ticker][3] > 1,
+            "first_date": coverage[ticker][1][:10] if ticker in coverage else None,
+            "last_date": coverage[ticker][2][:10] if ticker in coverage else None,
+            "currency": coverage[ticker][4] if ticker in coverage else None,
+        }
+        for ticker, label, detail in _BENCHMARK_CANDIDATES
+    ]}
 
 
 @router.get("/download/{backtest_id}")
@@ -376,8 +449,12 @@ def get_backtest_result(backtest_id: str, http_request: Request) -> dict[str, An
         return {
             "id": backtest_id,
             "status": "complete",
+            "kind": _read_meta(result_path.parent).get("kind") or ("csv" if "config" not in stored else "rolling"),
             "aggregate": stored.get("aggregate", {}),
             "config": stored.get("config", {}),
+            "runs": stored.get("runs", []),
+            "paths": stored.get("paths", {}),
+            "period_holdings": stored.get("period_holdings", {}),
         }
     raise HTTPException(status_code=500, detail="Backtest result has an invalid format.")
 
@@ -422,6 +499,7 @@ async def run_backtest(
                     commission_bps=request.commission_bps,
                     slippage_bps=request.slippage_bps,
                     spread_bps=request.spread_bps,
+                    portfolio_owner=_portfolio_owner(http_request),
                 ),
                 timeout=120,
             )
@@ -474,15 +552,17 @@ async def run_backtest(
     await asyncio.to_thread(_save_and_zip)
 
     holdings = _holdings_label(list(request.portfolio))
-    _record_recent_backtest(
-        http_request,
-        ts,
-        title=f"Backtest · {holdings}" if holdings else "Backtest",
-        subtitle=_backtest_subtitle(
-            f"{request.start_date} to {request.end_date}",
-            f"vs {request.benchmark_ticker}" if request.benchmark_ticker else None,
-        ),
+    title = f"Backtest · {holdings}" if holdings else "Backtest"
+    subtitle = _backtest_subtitle(
+        f"{request.start_date} to {request.end_date}",
+        "vs own portfolio" if request.benchmark_mode == "portfolio" else f"vs {request.benchmark_ticker}" if request.benchmark_ticker else None,
     )
+    metrics = result.get("metrics") or {}
+    _write_meta(out_dir, kind="single", title=title, subtitle=subtitle, headline={
+        "total_return": metrics.get("total_return"), "annualized_return": metrics.get("annualized_return"),
+        "excess_return": metrics.get("excess_return"),
+    })
+    _record_recent_backtest(http_request, ts, title=title, subtitle=subtitle)
 
     return {
         "id": ts,
@@ -493,6 +573,7 @@ async def run_backtest(
         "per_company": result.get("per_company", []),
         "yearly_returns": result.get("yearly_returns", []),
         "dividends_by_year": result.get("dividends_by_year", []),
+        "warnings": result.get("warnings", []),
     }
 
 
@@ -530,6 +611,7 @@ async def run_from_csv(
                     db3_path=db3,
                     initial_capital=request.initial_capital,
                     risk_free_rate=_resolve_risk_free_rate(request.risk_free_rate, base_currency),
+                    portfolio_owner=_portfolio_owner(http_request),
                 ),
                 timeout=120,
             )
@@ -570,21 +652,26 @@ async def run_from_csv(
     (out_dir / "result.json").write_bytes(result_bytes)
     (out_dir / "backtest.zip").write_bytes(zip_bytes)
 
-    _record_recent_backtest(
-        http_request,
-        ts,
-        title="CSV portfolio backtest",
-        subtitle=_backtest_subtitle(
-            ", ".join(request.durations) if request.durations else "Configured periods",
-            f"vs {request.benchmark_ticker}" if request.benchmark_ticker else None,
-        ),
+    subtitle = _backtest_subtitle(
+        ", ".join(request.durations) if request.durations else "Configured periods",
+        "vs own portfolio" if request.benchmark_mode == "portfolio" else f"vs {request.benchmark_ticker}" if request.benchmark_ticker else None,
     )
+    stats = (result.get("aggregate") or {}).get("stats") or {}
+    _write_meta(out_dir, kind="csv", title="CSV portfolio backtest", subtitle=subtitle, headline={
+        "mean_annualized_return": (stats.get("annualized_return") or {}).get("mean"),
+        "runs": (result.get("aggregate") or {}).get("total_runs"),
+    })
+    _record_recent_backtest(http_request, ts, title="CSV portfolio backtest", subtitle=subtitle)
 
     return {
         "id": ts,
         "status": "complete",
         "path": ts,
+        "kind": "csv",
         "aggregate": result.get("aggregate", {}),
+        "runs": result.get("runs", []),
+        "paths": result.get("paths", {}),
+        "period_holdings": result.get("period_holdings", {}),
     }
 
 
@@ -616,147 +703,204 @@ def get_rolling_periods(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@router.post("/run-rolling")
-async def run_rolling(
-    request: RollingScreeningRequest,
-    http_request: Request,
-) -> StreamingResponse:
-    """Run a rolling screening backtest with SSE progress streaming."""
+def _rolling_runner(request: RollingScreeningRequest, http_request: Request):
+    """Validate a rolling request and return ``run(progress_queue, cancel_event)``."""
     db = _resolve_db()
-
     base_currency = _validate_base_currency(request.base_currency)
     db3 = ""
     if request.benchmark_mode == "portfolio":
         db3 = _resolve_db3()
         if not base_currency:
             base_currency = "EUR"
+    risk_free_rate = _resolve_risk_free_rate(request.risk_free_rate, base_currency)
+    owner = _portfolio_owner(http_request)
 
+    def run(progress_queue: Any, cancel_event: threading.Event) -> dict:
+        return _bt.run_screening_backtest_rolling(
+            db_path=db,
+            criteria=request.criteria,
+            criteria_match=request.criteria_match,
+            columns=request.columns,
+            cadence=request.cadence,
+            durations=request.durations,
+            weighting_modes=request.weighting_modes,
+            max_companies=request.max_companies,
+            ranking_algorithm=request.ranking_algorithm,
+            ranking_rules=request.ranking_rules,
+            computed_columns=request.computed_columns,
+            benchmark_ticker=request.benchmark_ticker,
+            benchmark_mode=request.benchmark_mode,
+            base_currency=base_currency,
+            db3_path=db3,
+            initial_capital=request.initial_capital,
+            risk_free_rate=risk_free_rate,
+            start_period=request.start_period,
+            end_period=request.end_period,
+            progress_queue=progress_queue,
+            cancel_event=cancel_event,
+            portfolio_owner=owner,
+        )
+
+    return run
+
+
+def _save_rolling_result(final_result: dict, request: RollingScreeningRequest, http_request: Request) -> str:
+    """Store a finished rolling run (archive, result.json, meta) and return its id."""
+    saved_dir = Path(save_rolling_backtest_zip(final_result, str(_BACKTEST_ROOT), get_settings().max_backtest_artifact_bytes))
+    backtest_id = saved_dir.name
+    agg = final_result.get("aggregate", {})
+    cfg = final_result.get("config", {})
+    _write_owner(saved_dir, http_request)
+    # The archive is the full artifact; result.json holds what the workspace
+    # draws: the aggregate, one row per run, and monthly equity paths.
+    (saved_dir / "result.json").write_text(
+        json.dumps({
+            "aggregate": agg, "config": cfg,
+            "runs": final_result.get("runs", []),
+            "paths": final_result.get("paths", {}),
+            "period_holdings": final_result.get("period_holdings", {}),
+        }, default=str),
+        encoding="utf-8",
+    )
+    title = f"Rolling screen · {cfg.get('cadence', request.cadence)}"
+    subtitle = _backtest_subtitle(
+        ", ".join(request.durations),
+        f"top {request.max_companies}",
+        "vs own portfolio" if request.benchmark_mode == "portfolio" else f"vs {request.benchmark_ticker}" if request.benchmark_ticker else None,
+    )
+    stats = agg.get("stats") or {}
+    comparison = agg.get("benchmark_comparison") or {}
+    _write_meta(saved_dir, kind="rolling", title=title, subtitle=subtitle, headline={
+        "mean_annualized_return": (stats.get("total_return") or {}).get("mean"),
+        "win_rate": comparison.get("win_rate"),
+        "runs": agg.get("complete_backtests"),
+    })
+    _record_recent_backtest(http_request, backtest_id, title=title, subtitle=subtitle)
+    return backtest_id
+
+
+def _archive_limit_message(exc: ExportSizeLimitExceeded) -> str:
+    limit_mib = exc.limit_bytes // (1024 * 1024)
+    logger.warning("Rolling backtest archive exceeded limit: attempted=%d limit=%d", exc.attempted_bytes, exc.limit_bytes)
+    return (
+        "Backtest completed, but its download archive exceeded "
+        f"the {limit_mib} MiB limit. Reduce the period range or "
+        "increase EDINET_MAX_BACKTEST_ARTIFACT_BYTES and restart."
+    )
+
+
+@router.post("/rolling-jobs", status_code=202)
+def start_rolling_job(request: RollingScreeningRequest, http_request: Request) -> dict:
+    """Start a rolling screening backtest in the background; poll it by id."""
+    run = _rolling_runner(request, http_request)
+    owner = _portfolio_owner(http_request) or None
+
+    def save(result: dict) -> str:
+        try:
+            return _save_rolling_result(result, request, http_request)
+        except ExportSizeLimitExceeded as exc:
+            raise ValueError(_archive_limit_message(exc)) from exc
+
+    return _rolling_jobs.start(owner, run, save).view()
+
+
+@router.get("/rolling-jobs")
+def list_rolling_jobs(http_request: Request) -> dict:
+    """This account's rolling jobs from the last hour, newest first."""
+    owner = _portfolio_owner(http_request) or None
+    return {"jobs": [job.view() for job in sorted(_rolling_jobs.for_owner(owner), key=lambda job: -job.created_at)]}
+
+
+@router.get("/rolling-jobs/{job_id}")
+def get_rolling_job(job_id: str, http_request: Request) -> dict:
+    job = _rolling_jobs.get(job_id, _portfolio_owner(http_request) or None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Backtest job not found.")
+    return job.view()
+
+
+@router.post("/rolling-jobs/{job_id}/cancel")
+def cancel_rolling_job(job_id: str, http_request: Request) -> dict:
+    job = _rolling_jobs.get(job_id, _portfolio_owner(http_request) or None)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Backtest job not found.")
+    job.cancel.set()
+    return job.view()
+
+
+@router.post("/run-rolling")
+async def run_rolling(
+    request: RollingScreeningRequest,
+    http_request: Request,
+) -> StreamingResponse:
+    """Run a rolling screening backtest with SSE progress streaming.
+
+    Prefer ``/rolling-jobs``: streamed responses do not pass through every
+    proxy, and this run stops when the page is closed.
+    """
+    run = _rolling_runner(request, http_request)
     progress_queue: queue.Queue = queue.Queue()
     cancel_event = threading.Event()
 
+    class _Relay:
+        def put(self, message: dict) -> None:
+            progress_queue.put(message)
+
     async def event_generator():
-        loop = asyncio.get_event_loop()
-        task = asyncio.ensure_future(
-            asyncio.to_thread(
-                _bt.run_screening_backtest_rolling,
-                db_path=db,
-                criteria=request.criteria,
-                criteria_match=request.criteria_match,
-                columns=request.columns,
-                cadence=request.cadence,
-                durations=request.durations,
-                weighting_modes=request.weighting_modes,
-                max_companies=request.max_companies,
-                ranking_algorithm=request.ranking_algorithm,
-                ranking_rules=request.ranking_rules,
-                computed_columns=request.computed_columns,
-                benchmark_ticker=request.benchmark_ticker,
-                benchmark_mode=request.benchmark_mode,
-                base_currency=base_currency,
-                db3_path=db3,
-                initial_capital=request.initial_capital,
-                risk_free_rate=_resolve_risk_free_rate(request.risk_free_rate, base_currency),
-                start_period=request.start_period,
-                end_period=request.end_period,
-                progress_queue=progress_queue,
-                cancel_event=cancel_event,
-            )
-        )
-        final_result = None
-        try:
-            while True:
-                if await http_request.is_disconnected():
-                    cancel_event.set()
-                    break
-
-                try:
-                    msg = await loop.run_in_executor(
-                        None, progress_queue.get, True, 1.0,
-                    )
-                except queue.Empty:
-                    if task.done():
-                        break
-                    continue
-
-                # Don't stream the full result to the client — too large
-                if msg.get("type") == "result":
-                    final_result = msg
-                    break
-                if msg.get("type") == "error":
-                    yield f"data: {json.dumps(msg)}\n\n"
-                    break
-
-                yield f"data: {json.dumps(msg)}\n\n"
-        finally:
-            cancel_event.set()
-            if not task.done():
-                task.cancel()
-
-        if task.done() and not task.cancelled():
-            exc = task.exception()
-            if exc is not None:
-                error_msg = str(exc)
-                if "cancelled" in error_msg.lower():
-                    yield f"data: {json.dumps({'type': 'error', 'message': 'cancelled'})}\n\n"
-                else:
-                    logger.error("Rolling backtest failed: %s", error_msg)
-                    yield f"data: {json.dumps({'type': 'error', 'message': 'Backtest failed'})}\n\n"
-
-        # Build ZIP and save to disk, then yield download info
-        if final_result is not None:
+        # The slot is held for the whole run, not only while the response starts.
+        async with _semaphore:
+            loop = asyncio.get_running_loop()
+            task = asyncio.ensure_future(asyncio.to_thread(run, _Relay(), cancel_event))
+            final_result = None
             try:
-                saved_path = await loop.run_in_executor(
-                    None,
-                    save_rolling_backtest_zip,
-                    final_result,
-                    str(_BACKTEST_ROOT),
-                    get_settings().max_backtest_artifact_bytes,
-                )
-                saved_dir = Path(saved_path)
-                backtest_id = saved_dir.name
-                agg = final_result.get("aggregate", {})
-                cfg = final_result.get("config", {})
-                _write_owner(saved_dir, http_request)
-                # Keep a small, navigable result alongside the ZIP.  The ZIP
-                # remains the full artifact; this file is only for the
-                # workspace's recent-history links.
-                (saved_dir / "result.json").write_text(
-                    json.dumps({"aggregate": agg, "config": cfg}, default=str),
-                    encoding="utf-8",
-                )
-                _record_recent_backtest(
-                    http_request,
-                    backtest_id,
-                    title=f"Rolling screen backtest · {cfg.get('cadence', request.cadence)}",
-                    subtitle=_backtest_subtitle(
-                        ", ".join(request.durations),
-                        f"top {request.max_companies}",
-                        f"vs {request.benchmark_ticker}" if request.benchmark_ticker else None,
-                    ),
-                )
-                yield f"data: {json.dumps({'type': 'result', 'id': backtest_id, 'path': backtest_id, 'aggregate': agg, 'config': cfg})}\n\n"
-            except ExportSizeLimitExceeded as exc:
-                limit_mib = exc.limit_bytes // (1024 * 1024)
-                logger.warning(
-                    "Rolling backtest archive exceeded limit: attempted=%d limit=%d",
-                    exc.attempted_bytes,
-                    exc.limit_bytes,
-                )
-                message = (
-                    "Backtest completed, but its download archive exceeded "
-                    f"the {limit_mib} MiB limit. Reduce the period range or "
-                    "increase EDINET_MAX_BACKTEST_ARTIFACT_BYTES and restart."
-                )
-                yield f"data: {json.dumps({'type': 'error', 'message': message})}\n\n"
-            except Exception as e:
-                logger.error("Failed to save rolling backtest ZIP: %s", e, exc_info=True)
-                yield f"data: {json.dumps({'type': 'error', 'message': 'Failed to save results'})}\n\n"
+                while True:
+                    if await http_request.is_disconnected():
+                        cancel_event.set()
+                        break
+                    try:
+                        msg = await loop.run_in_executor(None, progress_queue.get, True, 1.0)
+                    except queue.Empty:
+                        if task.done():
+                            break
+                        continue
+                    # Don't stream the full result to the client — too large
+                    if msg.get("type") == "result":
+                        final_result = msg
+                        break
+                    yield f"data: {json.dumps(msg)}\n\n"
+                    if msg.get("type") == "error":
+                        break
+            finally:
+                cancel_event.set()
+                if not task.done():
+                    task.cancel()
 
-    async with _semaphore:
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-        )
+            if task.done() and not task.cancelled():
+                exc = task.exception()
+                if exc is not None:
+                    if "cancelled" in str(exc).lower():
+                        yield f"data: {json.dumps({'type': 'error', 'message': 'cancelled'})}\n\n"
+                    else:
+                        logger.error("Rolling backtest failed: %s", exc)
+                        yield f"data: {json.dumps({'type': 'error', 'message': 'Backtest failed'})}\n\n"
+                elif final_result is None and isinstance(task.result(), dict):
+                    final_result = task.result()
+
+            if final_result is not None:
+                try:
+                    backtest_id = await loop.run_in_executor(None, _save_rolling_result, final_result, request, http_request)
+                    payload = {
+                        "type": "result", "id": backtest_id, "path": backtest_id,
+                        "aggregate": final_result.get("aggregate", {}), "config": final_result.get("config", {}),
+                    }
+                    yield f"data: {json.dumps(payload, default=str)}\n\n"
+                except ExportSizeLimitExceeded as exc:
+                    yield f"data: {json.dumps({'type': 'error', 'message': _archive_limit_message(exc)})}\n\n"
+                except Exception as e:
+                    logger.error("Failed to save rolling backtest ZIP: %s", e, exc_info=True)
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'Failed to save results'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @router.post("/export-rolling-xlsx")
