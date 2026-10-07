@@ -12,6 +12,12 @@ logger = logging.getLogger(__name__)
 
 stockprice_api = stock_prices
 
+# Commit (and release the WAL write lock) every N ticker updates instead of
+# after every single ticker.  Per-ticker commits are slow; batching keeps the
+# lock release frequent enough that concurrent writers are not blocked for the
+# whole multi-minute fetch loop.
+COMMIT_BATCH_SIZE = 100
+
 
 def get_tickers_from_prices(conn, table_name="CompanyInfo"):
     """Return canonical, distinct ticker values from *table_name*.
@@ -80,8 +86,7 @@ def _delete_ticker_price_rows(conn, prices_table: str, ticker: str) -> int:
 
 def _table_columns(conn, table_name: str) -> list[str]:
     return [
-        str(row[1])
-        for row in conn.execute(f"PRAGMA table_info({quote_identifier(table_name)})")
+        str(row[1]) for row in conn.execute(f"PRAGMA table_info({quote_identifier(table_name)})")
     ]
 
 
@@ -95,12 +100,22 @@ def _copy_staged_ticker_rows(
     source_columns = set(_table_columns(conn, source_table))
     target_columns = set(_table_columns(conn, target_table))
     preferred_columns = (
-        "Date", "Ticker", "Currency", "Price",
-        "Price_Basis", "Provider", "Source_Id", "Source_Revision",
-        "Adjustment_Factor", "Split_Adjustment_Factor", "Adjusted_Price",
+        "Date",
+        "Ticker",
+        "Currency",
+        "Price",
+        "Price_Basis",
+        "Provider",
+        "Source_Id",
+        "Source_Revision",
+        "Adjustment_Factor",
+        "Split_Adjustment_Factor",
+        "Adjusted_Price",
         "Retrieved_At",
     )
-    columns = [name for name in preferred_columns if name in source_columns and name in target_columns]
+    columns = [
+        name for name in preferred_columns if name in source_columns and name in target_columns
+    ]
     if not {"Date", "Ticker", "Currency", "Price"}.issubset(columns):
         raise RuntimeError("Staged price table is missing required columns")
     quoted_columns = ", ".join(quote_identifier(name) for name in columns)
@@ -114,43 +129,35 @@ def _copy_staged_ticker_rows(
     return max(cursor.rowcount, 0)
 
 
-def _update_ticker(
+def _overwrite_ticker(
     conn,
     prices_table: str,
     ticker: str,
     *,
     currency: str | None,
-    overwrite: bool,
-    savepoint_id: int,
 ) -> bool:
-    """Update one ticker, replacing history through an isolated staging table."""
-    if not overwrite:
-        result = stockprice_api.load_ticker_data(
-            ticker, prices_table, conn, currency=currency,
-        )
-        if result:
-            conn.commit()
-        else:
-            conn.rollback()
-        return result
+    """Replace a ticker's cached history through an isolated staging table.
 
+    Returns True when replacement rows were stored.  Does not commit; the
+    caller's transaction controls the commit boundary.
+    """
     staging_table = f"__stock_price_stage_{uuid.uuid4().hex}"
     try:
-        # Create and commit the staging schema before fetching. The provider
-        # request must not run while the target table is write-locked.
         stockprice_api._create_prices_table(conn, staging_table)
-        conn.commit()
-
         result = stockprice_api.load_ticker_data(
-            ticker, staging_table, conn, currency=currency,
+            ticker,
+            staging_table,
+            conn,
+            currency=currency,
         )
-        replacement_exists = conn.execute(
-            f"SELECT 1 FROM {quote_identifier(staging_table)} "
-            "WHERE Ticker = ? LIMIT 1",
-            (ticker,),
-        ).fetchone() is not None
+        replacement_exists = (
+            conn.execute(
+                f"SELECT 1 FROM {quote_identifier(staging_table)} WHERE Ticker = ? LIMIT 1",
+                (ticker,),
+            ).fetchone()
+            is not None
+        )
         if not result or not replacement_exists:
-            conn.rollback()
             logger.warning(
                 "Keeping existing price rows for %s because overwrite "
                 "did not produce replacement data",
@@ -160,16 +167,17 @@ def _update_ticker(
 
         deleted_rows = _delete_ticker_price_rows(conn, prices_table, ticker)
         inserted_rows = _copy_staged_ticker_rows(
-            conn, staging_table, prices_table, ticker,
+            conn,
+            staging_table,
+            prices_table,
+            ticker,
         )
         if inserted_rows == 0:
-            conn.rollback()
             logger.warning(
                 "Keeping existing price rows for %s because staged data was empty",
                 ticker,
             )
             return False
-        conn.commit()
         logger.info(
             "Replaced %s existing price rows for %s with %s freshly downloaded rows",
             deleted_rows,
@@ -177,15 +185,59 @@ def _update_ticker(
             inserted_rows,
         )
         return True
-    except Exception:
-        conn.rollback()
-        raise
     finally:
         try:
             conn.execute(f"DROP TABLE IF EXISTS {quote_identifier(staging_table)}")
-            conn.commit()
         except sqlite3.Error:
             logger.exception("Could not remove staging table for ticker %s", ticker)
+
+
+def _update_ticker(
+    conn,
+    prices_table: str,
+    ticker: str,
+    *,
+    currency: str | None,
+    overwrite: bool,
+    savepoint_id: int,
+) -> bool:
+    """Update one ticker, replacing history through an isolated staging table.
+
+    The ticker's changes stay in the caller's open transaction; a savepoint
+    keeps the update atomic so a failure rolls back only this ticker's changes
+    and leaves the surrounding batch intact.  The caller commits at the batch
+    boundary (see ``COMMIT_BATCH_SIZE``).
+    """
+    savepoint = f"stock_price_update_{savepoint_id}"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        if not overwrite:
+            result = stockprice_api.load_ticker_data(
+                ticker,
+                prices_table,
+                conn,
+                currency=currency,
+            )
+        else:
+            result = _overwrite_ticker(
+                conn,
+                prices_table,
+                ticker,
+                currency=currency,
+            )
+        if result:
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            return True
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        return False
+    except Exception:
+        try:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except sqlite3.Error:
+            logger.exception("Could not roll back update for ticker %s", ticker)
+        raise
 
 
 def update_all_stock_prices(
@@ -212,10 +264,7 @@ def update_all_stock_prices(
         if company_tickers:
             tickers = company_tickers
         else:
-            tickers = [
-                ticker for ticker in price_tickers
-                if not _is_auxiliary_ticker(ticker)
-            ]
+            tickers = [ticker for ticker in price_tickers if not _is_auxiliary_ticker(ticker)]
 
         random.shuffle(tickers)
         logger.info("Randomized stock-price update order for %s tickers", len(tickers))
@@ -260,6 +309,13 @@ def update_all_stock_prices(
                         len(tickers),
                     )
                     break
+            # Commit (and release the write lock) at the batch boundary rather
+            # than after every single ticker.
+            if (index + 1) % COMMIT_BATCH_SIZE == 0:
+                conn.commit()
+        # Commit any remaining uncommitted changes (last partial batch or an
+        # early abort) so the write lock is released.
+        conn.commit()
         if failed_tickers:
             logger.warning(
                 "Stock-price updates failed for %s of %s attempted tickers",
@@ -282,6 +338,13 @@ def update_all_stock_prices(
         }
     except Exception as exc:
         logger.error("An error occurred: %s", exc, exc_info=True)
+        if conn:
+            # Commit the current batch so the successful tickers in it are not
+            # lost when the connection is closed below.
+            try:
+                conn.commit()
+            except sqlite3.Error:
+                pass
         raise
     finally:
         if conn:
@@ -291,11 +354,10 @@ def update_all_stock_prices(
 def run_update_stock_prices(config, overwrite=False, context=None):
     """Handler that resolves the target database path and runs the updater."""
     logger.info("Updating stock prices...")
-
-    kwargs = dict(
-        Company_Table="CompanyInfo",
-        prices_table="Stock_Prices",
-    )
+    kwargs: dict = {
+        "Company_Table": "CompanyInfo",
+        "prices_table": "Stock_Prices",
+    }
     if context is not None:
         kwargs["context"] = context
     if overwrite:
