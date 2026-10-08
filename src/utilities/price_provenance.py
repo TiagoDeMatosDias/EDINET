@@ -51,12 +51,19 @@ def table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
 def ensure_price_provenance_columns(
     conn: sqlite3.Connection,
     table_name: str = "Stock_Prices",
+    *,
+    ticker: str | None = None,
 ) -> set[str]:
     """Create/migrate row-level provenance columns and return all columns.
 
     Existing rows are deliberately marked ``unknown`` rather than guessed to
     be raw.  A migration/reconciliation job can promote them after inspecting
     the source; this prevents a split adjustment being applied twice.
+
+    With *ticker*, blank bases are normalised for that ticker's rows only.
+    Per-ticker writers only read and refresh their own rows, and the
+    unindexed table-wide check costs ~0.5 s on a 15M-row table, which made it
+    the slowest step of a bulk price update when run for every ticker.
     """
     quoted = _quote_identifier(table_name)
     columns = table_columns(conn, table_name)
@@ -84,10 +91,14 @@ def ensure_price_provenance_columns(
         # Null/blank values from hand-created imports are just as ambiguous as
         # migrated rows.  Do not let downstream COALESCE expressions silently
         # treat them as raw.
-        conn.execute(
-            f"UPDATE {quoted} SET \"Price_Basis\" = 'unknown' "
-            "WHERE \"Price_Basis\" IS NULL OR TRIM(\"Price_Basis\") = ''"
-        )
+        blank = "(\"Price_Basis\" IS NULL OR TRIM(\"Price_Basis\") = '')"
+        if ticker is None:
+            conn.execute(f"UPDATE {quoted} SET \"Price_Basis\" = 'unknown' WHERE {blank}")
+        else:
+            conn.execute(
+                f"UPDATE {quoted} SET \"Price_Basis\" = 'unknown' WHERE Ticker = ? AND {blank}",
+                (ticker,),
+            )
     return table_columns(conn, table_name)
 
 
@@ -114,7 +125,7 @@ def refresh_split_adjusted_prices(
     readers (such as a screening run) only need this cheap catch-up instead of
     rewriting every price row.
     """
-    columns = ensure_price_provenance_columns(conn, prices_table)
+    columns = ensure_price_provenance_columns(conn, prices_table, ticker=ticker)
     if "Split_Adjustment_Factor" not in columns or "Adjusted_Price" not in columns:
         return 0
     split_columns = table_columns(conn, "Stock_Splits")
@@ -136,13 +147,15 @@ def refresh_split_adjusted_prices(
             if "detection_method" in split_columns else "0"
         )
         id_order = "id DESC" if "id" in split_columns else "rowid DESC"
+        ticker_clause = "AND ticker = ?" if ticker is not None else ""
         try:
             split_rows = conn.execute(
                 "SELECT ticker, split_date, ratio_from, ratio_to, "
                 f"{method_select}, {id_select} FROM Stock_Splits "
                 "WHERE confirmation = 'confirmed' "
-                f"{basis_clause} {superseded_clause} "
+                f"{basis_clause} {superseded_clause} {ticker_clause} "
                 f"ORDER BY ticker, split_date, {method_order}, {id_order}",
+                (ticker,) if ticker is not None else (),
             ).fetchall()
         except sqlite3.Error:
             split_rows = []
@@ -171,11 +184,12 @@ def refresh_split_adjusted_prices(
         )
     where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = conn.execute(
-        f"SELECT rowid, Ticker, Date, Price, Price_Basis FROM { _quote_identifier(prices_table) }{where}",
+        "SELECT rowid, Ticker, Date, Price, Price_Basis, Split_Adjustment_Factor, "
+        f"Adjusted_Price FROM {_quote_identifier(prices_table)}{where}",
         params,
     ).fetchall()
-    updated = 0
-    for rowid, row_ticker, date_value, price, basis in rows:
+    changes: list[tuple[float | None, float | None, int]] = []
+    for rowid, row_ticker, date_value, price, basis, old_factor, old_adjusted in rows:
         basis_text = str(basis or "raw").strip().lower()
         factor: float | None
         adjusted: float | None
@@ -189,13 +203,17 @@ def refresh_split_adjusted_prices(
                 if split_date > str(date_value)[:10]:
                     factor *= split_factor
             adjusted = price * factor if price is not None else None
-        conn.execute(
+        # Write only rows whose derived values change, so refreshing one ticker
+        # after appending a day of prices does not rewrite its whole history.
+        if (factor, adjusted) != (old_factor, old_adjusted):
+            changes.append((factor, adjusted, rowid))
+    if changes:
+        conn.executemany(
             f"UPDATE {_quote_identifier(prices_table)} SET Split_Adjustment_Factor = ?, "
             "Adjusted_Price = ? WHERE rowid = ?",
-            (factor, adjusted, rowid),
+            changes,
         )
-        updated += 1
-    return updated
+    return len(changes)
 
 
 def source_id(provider: str, provider_symbol: str, date: str) -> str:

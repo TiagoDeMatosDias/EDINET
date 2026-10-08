@@ -230,7 +230,7 @@ class TestImportStockPricesCsv(unittest.TestCase):
         request_fn = Mock(return_value=FakeResponse())
         _reset_provider_cooldowns()
         try:
-            with patch("src.utilities.stock_prices.requests.get", request_fn):
+            with patch("src.utilities.stock_prices._http_get", request_fn):
                 result = _fetch_jpx_history("3110")
         finally:
             _reset_provider_cooldowns()
@@ -380,7 +380,7 @@ class TestImportStockPricesCsv(unittest.TestCase):
         request_fn = Mock(return_value=FakeResponse())
         _reset_provider_cooldowns()
         try:
-            with patch("src.utilities.stock_prices.requests.get", request_fn), patch(
+            with patch("src.utilities.stock_prices._http_get", request_fn), patch(
                 "src.utilities.stock_prices.time.sleep"
             ) as sleep:
                 with self.assertRaises(_ProviderRateLimitError):
@@ -408,7 +408,7 @@ class TestImportStockPricesCsv(unittest.TestCase):
         request_fn = Mock(return_value=FakeResponse())
         _reset_provider_cooldowns()
         try:
-            with patch("src.utilities.stock_prices.requests.get", request_fn), patch(
+            with patch("src.utilities.stock_prices._http_get", request_fn), patch(
                 "src.utilities.stock_prices.time.sleep"
             ):
                 with self.assertRaises(_ProviderRateLimitError):
@@ -433,7 +433,7 @@ class TestImportStockPricesCsv(unittest.TestCase):
         request_fn = Mock(return_value=FakeResponse(404))
         _reset_provider_cooldowns()
         try:
-            with patch("src.utilities.stock_prices.requests.get", request_fn):
+            with patch("src.utilities.stock_prices._http_get", request_fn):
                 with self.assertRaises(RuntimeError):
                     _fetch_yahoo_history("43960.T")
 
@@ -481,7 +481,7 @@ class TestImportStockPricesCsv(unittest.TestCase):
         ])
         _reset_provider_cooldowns()
         try:
-            with patch("src.utilities.stock_prices.requests.get", request_fn), patch(
+            with patch("src.utilities.stock_prices._http_get", request_fn), patch(
                 "src.utilities.stock_prices.time.sleep"
             ):
                 result, events = _fetch_yahoo_history("3110.T")

@@ -112,6 +112,14 @@ def _block_network(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect_ex", _guarded_connect_ex)
 
 
+@pytest.fixture(autouse=True)
+def _no_provider_pacing(monkeypatch):
+    """Price-provider request pacing adds real sleeps; tests use fixed responses."""
+    from src.utilities import stock_prices
+
+    monkeypatch.setattr(stock_prices, "_PROVIDER_MIN_INTERVAL_SECONDS", {})
+
+
 def pytest_sessionfinish(session, exitstatus):
     del session, exitstatus
     shutil.rmtree(_TEST_RUNTIME_DIR, ignore_errors=True)

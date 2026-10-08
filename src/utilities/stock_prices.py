@@ -3,6 +3,7 @@ import logging
 import random
 import re
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -77,6 +78,21 @@ _PROVIDER_RETRY_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504, 520
 _PROVIDER_RATE_LIMIT_STATUS_CODES = frozenset({403, 429})
 _PROVIDER_COOLDOWNS: dict[str, float] = {}
 
+# Keep-alive cuts a JPX request from ~0.8 s (new DNS/TLS handshake) to ~20 ms,
+# which would otherwise turn a bulk update into a burst of requests.  Space
+# requests to each provider out to stay near a browser's request rate.
+_PROVIDER_MIN_INTERVAL_SECONDS = {
+    "JPX quote": 0.25,
+    "Stooq": 0.5,
+    "Yahoo Finance chart": 0.25,
+}
+_PROVIDER_LAST_REQUEST: dict[str, float] = {}
+_PROVIDER_PACING_LOCK = threading.Lock()
+# Connect timeout separate from the read timeout: an unreachable host (Stooq
+# blocking us) used to hold each attempt for the full 30 s, or longer.
+_PROVIDER_TIMEOUT = (10, 30)
+_HTTP_LOCAL = threading.local()
+
 _PROVIDER_ERRORS = (
     requests.RequestException,
     RuntimeError,
@@ -141,6 +157,29 @@ def primary_cooldown_remaining() -> float:
 def _reset_provider_cooldowns() -> None:
     """Clear process-local cooldowns; intended for tests and controlled jobs."""
     _PROVIDER_COOLDOWNS.clear()
+    _PROVIDER_LAST_REQUEST.clear()
+
+
+def _http_get(url: str, **kwargs) -> requests.Response:
+    """GET through one persistent keep-alive session per thread."""
+    session = getattr(_HTTP_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        _HTTP_LOCAL.session = session
+    return session.get(url, **kwargs)
+
+
+def _pace_provider(provider: str) -> None:
+    """Sleep so requests to *provider* are at least its minimum interval apart."""
+    interval = _PROVIDER_MIN_INTERVAL_SECONDS.get(provider, 0.0)
+    if interval <= 0:
+        return
+    with _PROVIDER_PACING_LOCK:
+        now = time.monotonic()
+        wait = _PROVIDER_LAST_REQUEST.get(provider, 0.0) + interval - now
+        _PROVIDER_LAST_REQUEST[provider] = now + max(wait, 0.0)
+    if wait > 0:
+        time.sleep(wait)
 
 
 def _retry_after_seconds(response: requests.Response) -> float | None:
@@ -267,12 +306,21 @@ def _request_with_retries(
         )
 
     for attempt in range(1, _PROVIDER_MAX_ATTEMPTS + 1):
+        _pace_provider(provider)
         try:
             response = request_fn(url, **kwargs)
         except requests.RequestException as exc:
             if attempt >= _PROVIDER_MAX_ATTEMPTS:
                 if cooldown_on_failure:
-                    _mark_provider_cooldown(provider, _PROVIDER_FAILURE_COOLDOWN_SECONDS)
+                    # A host that refused every connection is down or blocking
+                    # us; the short cooldown made each later ticker sit through
+                    # three more connect timeouts before reaching the fallback.
+                    _mark_provider_cooldown(
+                        provider,
+                        _PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS
+                        if isinstance(exc, requests.ConnectionError)
+                        else _PROVIDER_FAILURE_COOLDOWN_SECONDS,
+                    )
                 raise
             delay = _retry_delay(attempt)
             _sleep_for_retry(provider, type(exc).__name__, attempt, delay)
@@ -472,12 +520,12 @@ def _fetch_jpx_history(provider_ticker: str, start_date: str | None = None) -> p
     )
     response = _request_with_retries(
         _JPX_PROVIDER_NAME,
-        requests.get,
+        _http_get,
         _JPX_DATA_ENDPOINT,
         response_validator=_validate_jpx_response,
         params={"F": "ctl/stock_detail", "qcode": provider_ticker},
         headers={**_JPX_HEADERS, "Referer": detail_url},
-        timeout=30,
+        timeout=_PROVIDER_TIMEOUT,
     )
     return _parse_jpx_history(response.text, start_date=start_date)
 
@@ -530,12 +578,12 @@ def _fetch_stooq_history(provider_ticker: str, start_date: str | None = None) ->
 
     response = _request_with_retries(
         _STOOQ_PROVIDER_NAME,
-        requests.get,
+        _http_get,
         _STOOQ_DOWNLOAD_ENDPOINT,
         response_validator=_validate_stooq_response,
         params=params,
         headers=_STOOQ_HEADERS,
-        timeout=30,
+        timeout=_PROVIDER_TIMEOUT,
     )
 
     text = response.text.strip()
@@ -695,13 +743,13 @@ def _fetch_yahoo_history(
         try:
             response = _request_with_retries(
                 _YAHOO_PROVIDER_NAME,
-                requests.get,
+                _http_get,
                 endpoint.format(symbol=provider_ticker),
                 response_validator=_validate_yahoo_response,
                 cooldown_on_failure=False,
                 params=params,
                 headers=_YAHOO_HEADERS,
-                timeout=30,
+                timeout=_PROVIDER_TIMEOUT,
             )
             return _parse_yahoo_chart_payload(response.json())
         except _ProviderRateLimitError as exc:
@@ -1036,10 +1084,10 @@ def _append_price_rows(
     With *replace_other_currencies*, a security keeps one price per date:
     rows for the same dates under another currency label are removed.
     """
-    columns = ensure_price_provenance_columns(conn, prices_table)
+    columns = ensure_price_provenance_columns(conn, prices_table, ticker=ticker)
     if not columns:
         _create_prices_table(conn, prices_table)
-        columns = ensure_price_provenance_columns(conn, prices_table)
+        columns = ensure_price_provenance_columns(conn, prices_table, ticker=ticker)
     out_data = df.copy()
     out_data["Ticker"] = ticker
     out_data["Currency"] = currency
@@ -1605,7 +1653,7 @@ def load_ticker_data(ticker, prices_table, conn, currency: str | None = None) ->
     is the expected currency; the provider's reported currency overrides it.
     """
     try:
-        ensure_price_provenance_columns(conn, prices_table)
+        ensure_price_provenance_columns(conn, prices_table, ticker=ticker)
         quoted_table = _quote_identifier(prices_table)
         repair_price_currency_labels(conn, prices_table, ticker)
         last_date_query = (

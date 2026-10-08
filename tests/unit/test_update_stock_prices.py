@@ -168,3 +168,66 @@ def test_tse_code_recognises_every_stored_and_broker_form(ticker, code):
     from src.utilities.stock_prices import tse_code
 
     assert tse_code(ticker) == code
+
+
+def test_provider_requests_are_paced_per_provider(monkeypatch):
+    from src.utilities import stock_prices
+
+    monkeypatch.setattr(stock_prices, "_PROVIDER_MIN_INTERVAL_SECONDS", {"JPX quote": 0.25})
+    stock_prices._reset_provider_cooldowns()
+    clock = {"now": 100.0}
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(round(seconds, 3))
+        clock["now"] += seconds
+
+    monkeypatch.setattr(stock_prices.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(stock_prices.time, "sleep", fake_sleep)
+
+    stock_prices._pace_provider("JPX quote")
+    stock_prices._pace_provider("JPX quote")
+    clock["now"] += 1.0
+    stock_prices._pace_provider("JPX quote")
+    stock_prices._pace_provider("Stooq")
+
+    # Only the back-to-back JPX request waits; an unpaced provider never does.
+    assert sleeps == [0.25]
+    stock_prices._reset_provider_cooldowns()
+
+
+def test_connection_failure_cools_provider_down_for_longer(monkeypatch):
+    import requests
+
+    from src.utilities import stock_prices
+
+    stock_prices._reset_provider_cooldowns()
+    monkeypatch.setattr(stock_prices.time, "sleep", lambda _seconds: None)
+
+    def refuse(_url, **_kwargs):
+        raise requests.ConnectTimeout("connect timed out")
+
+    with pytest.raises(requests.ConnectTimeout):
+        stock_prices._request_with_retries("Stooq", refuse, "https://stooq.invalid/")
+    assert stock_prices._provider_cooldown_remaining("Stooq") > 60
+    stock_prices._reset_provider_cooldowns()
+
+
+def test_http_get_reuses_one_session_per_thread(monkeypatch):
+    from src.utilities import stock_prices
+
+    created = []
+
+    class FakeSession:
+        def __init__(self):
+            created.append(self)
+
+        def get(self, url, **kwargs):
+            return (url, kwargs)
+
+    monkeypatch.setattr(stock_prices.requests, "Session", FakeSession)
+    monkeypatch.setattr(stock_prices, "_HTTP_LOCAL", stock_prices.threading.local())
+
+    assert stock_prices._http_get("https://a.invalid/", timeout=1) == ("https://a.invalid/", {"timeout": 1})
+    stock_prices._http_get("https://b.invalid/")
+    assert len(created) == 1

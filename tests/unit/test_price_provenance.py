@@ -215,3 +215,45 @@ def test_catch_up_refresh_fills_only_rows_never_derived() -> None:
     rows = conn.execute("SELECT Adjusted_Price FROM Stock_Prices ORDER BY Date").fetchall()
     assert [row[0] for row in rows] == [50.0, 50.0, None]
     assert refresh_split_adjusted_prices(conn, only_missing=True) == 0
+
+
+def test_ticker_scoped_check_normalises_only_that_tickers_blank_basis() -> None:
+    from src.utilities.price_provenance import ensure_price_provenance_columns
+
+    conn = _price_db()
+    conn.executemany(
+        "INSERT INTO Stock_Prices(Date, Ticker, Currency, Price, Price_Basis) VALUES (?, ?, 'JPY', 1, ' ')",
+        [("2024-06-14", "X"), ("2024-06-14", "Y")],
+    )
+
+    ensure_price_provenance_columns(conn, "Stock_Prices", ticker="X")
+    bases = dict(conn.execute("SELECT Ticker, Price_Basis FROM Stock_Prices").fetchall())
+    assert bases == {"X": "unknown", "Y": " "}
+
+    ensure_price_provenance_columns(conn, "Stock_Prices")
+    bases = dict(conn.execute("SELECT Ticker, Price_Basis FROM Stock_Prices").fetchall())
+    assert bases == {"X": "unknown", "Y": "unknown"}
+
+
+def test_ticker_refresh_writes_only_rows_whose_values_change() -> None:
+    conn = _price_db()
+    conn.executemany(
+        "INSERT INTO Stock_Prices(Date, Ticker, Currency, Price, Price_Basis) VALUES (?, ?, 'JPY', ?, 'raw')",
+        [("2024-06-14", "X", 100.0), ("2024-06-17", "X", 50.0), ("2024-06-14", "Y", 10.0)],
+    )
+    conn.execute(
+        "INSERT INTO Stock_Splits(ticker, split_date, ratio_from, ratio_to, "
+        "confirmation, price_basis) VALUES ('X', '2024-06-15', 1, 2, 'confirmed', 'raw')"
+    )
+    assert refresh_split_adjusted_prices(conn, ticker="X") == 2
+    # Nothing changed, so nothing is rewritten, and other tickers stay untouched.
+    assert refresh_split_adjusted_prices(conn, ticker="X") == 0
+    assert conn.execute("SELECT Adjusted_Price FROM Stock_Prices WHERE Ticker = 'Y'").fetchone()[0] is None
+
+    conn.execute("INSERT INTO Stock_Prices(Date, Ticker, Currency, Price, Price_Basis) VALUES ('2024-06-18', 'X', 'JPY', 52, 'raw')")
+    assert refresh_split_adjusted_prices(conn, ticker="X") == 1
+    conn.execute("UPDATE Stock_Splits SET ratio_to = 4 WHERE ticker = 'X'")
+    assert refresh_split_adjusted_prices(conn, ticker="X") == 1
+    assert conn.execute(
+        "SELECT Adjusted_Price FROM Stock_Prices WHERE Ticker = 'X' AND Date = '2024-06-14'"
+    ).fetchone()[0] == 25.0
