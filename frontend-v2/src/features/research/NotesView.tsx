@@ -6,7 +6,9 @@ import { apiPost, apiRequest } from '../../api/client'
 import type { SecuritySearchResult } from '../../api/types'
 import { CompanyPicker } from '../../components/CompanyPicker'
 import { ErrorState, LoadingState } from '../../components/Feedback'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { notesScope } from './researchHotkeys'
 import { downloadTextFile, safeFileName } from '../analysis/downloads'
 import { NoteItem } from './CompanyResearchPanel'
 import { notesMarkdown, noteTitle } from './researchModel'
@@ -60,18 +62,18 @@ export function NotesView({ companies, companyCode, onCompany, active, today }: 
   const focus = (element: HTMLElement | null) => { element?.focus(); element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }) }
   const download = () => downloadTextFile(`${safeFileName(companyCode ? names.get(companyCode) ?? companyCode : 'research')}-notes.md`, notesMarkdown(shown, names), 'text/markdown;charset=utf-8')
 
-  useHotkeys({
-    j: () => step(1),
-    k: () => step(-1),
-    n: () => focus(noteRef.current),
-    f: () => focus(filterRef.current),
-    e: () => { if (current) setEditing(current.note_id) },
-    x: () => {
+  useHotkeyScope(notesScope, {
+    next: () => step(1),
+    previous: () => step(-1),
+    new: () => focus(noteRef.current),
+    filter: () => focus(filterRef.current),
+    edit: () => { if (current) setEditing(current.note_id) },
+    delete: () => {
       if (!current) return
       if (armed === current.note_id) { setArmed(null); remove.mutate(current.note_id) } else setArmed(current.note_id)
     },
-    d: download,
-  }, active && !editing)
+    download,
+  }, { enabled: active && !editing })
 
   const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if ((event.target as HTMLElement).closest('.is-editing')) return
@@ -103,7 +105,7 @@ export function NotesView({ companies, companyCode, onCompany, active, today }: 
         }}
       />
       <div className="rs-compose__actions">
-        <button type="button" className="button button--primary button--small" disabled={!body.trim() || create.isPending} onClick={() => create.mutate()}>{create.isPending ? 'Saving…' : 'Save note'} <kbd aria-hidden="true">N</kbd></button>
+        <button type="button" className="button button--primary button--small" disabled={!body.trim() || create.isPending} onClick={() => create.mutate()}>{create.isPending ? 'Saving…' : 'Save note'} <span aria-hidden="true"><HotkeyKbd hotkey={notesScope.byId.new} /></span></button>
         {create.error && <span className="form-error">{(create.error as Error).message}</span>}
       </div>
     </section>
@@ -112,7 +114,7 @@ export function NotesView({ companies, companyCode, onCompany, active, today }: 
         <label className="rs-search">
           <Search aria-hidden="true" />
           <input ref={filterRef} className="input" value={query} placeholder="Search notes" aria-label="Search notes" onChange={event => { setQuery(event.target.value); setCursor(0) }} onKeyDown={event => { if (event.key === 'Escape') { setQuery(''); event.currentTarget.blur() } if (event.key === 'ArrowDown') { event.preventDefault(); setFocusRequest(value => value + 1) } }} />
-          <kbd aria-hidden="true">F</kbd>
+          <span aria-hidden="true"><HotkeyKbd hotkey={notesScope.byId.filter} /></span>
         </label>
         {companyCode && <span className="rs-chip" aria-pressed="true">{filterName}<button type="button" className="icon-button" aria-label={`Show notes on every company, not just ${filterName}`} onClick={() => onCompany('')}><X /></button></span>}
         <span className="rs-count">{shown.length === all.length ? `${all.length} notes` : `${shown.length} of ${all.length} notes`}</span>

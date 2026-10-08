@@ -6,6 +6,8 @@ import type { SecuritySearchResult } from '../../api/types'
 import { CompanyPicker } from '../../components/CompanyPicker'
 import { formatPeriod, MAX_COMPANIES, seriesStyle } from './comparisonModel'
 import type { CompanyInfo } from './comparisonTypes'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { comparisonScope } from './comparisonHotkeys'
 
 export function Swatch({ index }: { index: number }) {
   const style = seriesStyle(index)
@@ -36,7 +38,7 @@ export function CompanyPanel({ codes, info, periods, cursorCode, inputRef, actio
     </header>
     <div className="cmp-companies__add">
       <CompanyPicker selected={null} onSelect={company => company && onAdd(company)} clearOnSelect requireCompanyCode disabled={full} label="Add a company" placeholder={full ? 'Twelve companies is the most a comparison holds' : 'Add a company: name, ticker, code…'} inputRef={inputRef} />
-      <kbd aria-hidden="true">A</kbd>
+      <span aria-hidden="true"><HotkeyKbd hotkey={comparisonScope.byId['add-company']} /></span>
     </div>
     {codes.length > 0 ? <ol className="cmp-companies__list">
       {codes.map((code, index) => {

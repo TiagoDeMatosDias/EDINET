@@ -1,12 +1,13 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AtSign, DollarSign, Filter, Info, Keyboard, Lock, Search, Unlock, X } from 'lucide-react'
+import { AtSign, DollarSign, Filter, Info, Lock, Search, Unlock, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { ApiError } from '../../api/client'
 import { ErrorState, LoadingState } from '../../components/Feedback'
-import { ShortcutsDialog } from '../../components/ShortcutsDialog'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { chatApi, chatKeys, invalidateChat, useChatSummary, type MessagePage } from './chatApi'
 import { ChannelDetails, ConversationDetails } from './ChatDetails'
@@ -31,7 +32,7 @@ import {
   type KindFilter,
   type MessageFilter,
 } from './chatModel'
-import { CHAT_SHORTCUTS } from './chatShortcuts'
+import { chatScope } from './chatHotkeys'
 import { ChatSidebar } from './ChatSidebar'
 import type { Channel, ChatMessage, ChatTarget, MessageBody, Person } from './chatTypes'
 import { Composer } from './Composer'
@@ -42,7 +43,7 @@ import { MessageList, type MessageAction, type Where } from './MessageList'
 import { applyIncoming, useChatLive } from './useChatLive'
 import './chat.css'
 
-type DialogKind = 'switch' | 'dm' | 'group' | 'invite' | 'help' | null
+type DialogKind = 'switch' | 'dm' | 'group' | 'invite' | null
 
 function listKey(target: ChatTarget) {
   return target.type === 'feed' ? chatKeys.feed : target.type === 'channel' ? chatKeys.channelMessages(target.id) : chatKeys.conversationMessages(target.id)
@@ -352,37 +353,36 @@ export default function ChatPage() {
   }
   const toggleKind = (kind: KindFilter) => setFilter(current => ({ ...current, kind: current.kind === kind ? 'all' : kind }))
 
-  useHotkeys({
-    j: () => setCursor(Math.min(visible.length - 1, cursor + 1)),
-    k: () => setCursor(Math.max(0, cursor - 1)),
-    Enter: () => composer.current?.focus(),
-    Escape: () => { setSelectedId(null); setArmed(null); setReplyTo(null) },
-    '[': () => stepEntry(-1),
-    ']': () => stepEntry(1),
-    u: nextUnread,
-    a: () => go({ type: 'feed' }),
-    t: () => setDialog('switch'),
-    f: () => filterInput.current?.focus(),
-    ...Object.fromEntries(KIND_FILTERS.map((item, index) => [String(index + 1), () => setFilter(current => ({ ...current, kind: item.key }))])),
-    m: () => setFilter(current => ({ ...current, mentionsMe: !current.mentionsMe })),
-    $: () => setFilter(current => ({ ...current, withCompanies: !current.withCompanies })),
-    s: () => { if (channel) subscribe(!channel.subscribed) },
-    n: () => setDialog('dm'),
-    N: () => setDialog('group'),
-    r: () => { if (selected?.kind === 'message' && !selected.deleted) act('reply', selected) },
-    o: openCompany,
-    c: openPlace,
-    p: () => { if (selected) act('profile', selected) },
-    d: () => { if (selected && selected.sender.user_id !== meId) act('dm', selected) },
-    x: () => { if (selected?.kind === 'message' && !selected.deleted && (selected.sender.user_id === meId || (me?.role === 'admin' && selected.channel_id))) act('delete', selected) },
-    b: () => {
+  useHotkeyScope(chatScope, {
+    next: () => setCursor(Math.min(visible.length - 1, cursor + 1)),
+    previous: () => setCursor(Math.max(0, cursor - 1)),
+    compose: () => composer.current?.focus(),
+    clear: () => { setSelectedId(null); setArmed(null); setReplyTo(null) },
+    'previous-entry': () => stepEntry(-1),
+    'next-entry': () => stepEntry(1),
+    unread: nextUnread,
+    feed: () => go({ type: 'feed' }),
+    switch: () => setDialog('switch'),
+    filter: () => filterInput.current?.focus(),
+    ...Object.fromEntries(KIND_FILTERS.map((item, index) => [`kind-${index + 1}`, () => setFilter(current => ({ ...current, kind: item.key }))])),
+    mentions: () => setFilter(current => ({ ...current, mentionsMe: !current.mentionsMe })),
+    'with-companies': () => setFilter(current => ({ ...current, withCompanies: !current.withCompanies })),
+    subscribe: () => { if (channel) subscribe(!channel.subscribed) },
+    'new-dm': () => setDialog('dm'),
+    'new-group': () => setDialog('group'),
+    reply: () => { if (selected?.kind === 'message' && !selected.deleted) act('reply', selected) },
+    'open-company': openCompany,
+    place: openPlace,
+    profile: () => { if (selected) act('profile', selected) },
+    'dm-author': () => { if (selected && selected.sender.user_id !== meId) act('dm', selected) },
+    delete: () => { if (selected?.kind === 'message' && !selected.deleted && (selected.sender.user_id === meId || (me?.role === 'admin' && selected.channel_id))) act('delete', selected) },
+    block: () => {
       if (selected?.kind === 'message' && selected.sender.user_id !== meId && selectedId) act('block', selected)
       else if (target.type === 'channel') { if (armed === 'block-channel') { setArmed(null); blockChannel() } else setArmed('block-channel') }
     },
-    i: () => setShowDetails(!showDetails),
-    l: () => setFocusList(value => value + 1),
-    '?': () => setDialog('help'),
-  }, dialog === null)
+    details: () => setShowDetails(!showDetails),
+    list: () => setFocusList(value => value + 1),
+  }, { enabled: dialog === null })
 
   if (summary.isLoading) return <LoadingState label="Loading chat" />
   if (summary.isError || !summary.data || !me) return <ErrorState error={summary.error} retry={() => summary.refetch()} />
@@ -420,8 +420,8 @@ export default function ChatPage() {
           <span className="chat-dot" style={{ background: target.type === 'feed' ? 'var(--ink)' : colorFor(target.id) }} aria-hidden="true" />
           <div className="chat-head__title"><h1>{target.type === 'conversation' && <Lock aria-hidden="true" />}{title}</h1><p>{subtitle}</p></div>
           <div className="chat-head__tools">
-            {target.type === 'feed' && <div className="chat-kinds" role="group" aria-label="Show">{KIND_FILTERS.map((item, index) => <button key={item.key} type="button" aria-pressed={filter.kind === item.key} onClick={() => toggleKind(item.key)} title={`${item.label} (${index + 1})`}><kbd>{index + 1}</kbd>{item.label}</button>)}</div>}
-            <label className="chat-filter"><Filter aria-hidden="true" /><input ref={filterInput} placeholder="Filter: words, from:name, in:channel" aria-label="Filter messages" value={filter.text} onChange={event => setFilter(current => ({ ...current, text: event.target.value }))} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); if (filter.text) setFilter(current => ({ ...current, text: '' })); else event.currentTarget.blur() } if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); setFocusList(value => value + 1) } }} /><kbd>F</kbd></label>
+            {target.type === 'feed' && <div className="chat-kinds" role="group" aria-label="Show">{KIND_FILTERS.map((item, index) => <button key={item.key} type="button" aria-pressed={filter.kind === item.key} onClick={() => toggleKind(item.key)} title={item.label}><HotkeyKbd hotkey={chatScope.byId[`kind-${index + 1}`]} />{item.label}</button>)}</div>}
+            <label className="chat-filter"><Filter aria-hidden="true" /><input ref={filterInput} placeholder="Filter: words, from:name, in:channel" aria-label="Filter messages" value={filter.text} onChange={event => setFilter(current => ({ ...current, text: event.target.value }))} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); if (filter.text) setFilter(current => ({ ...current, text: '' })); else event.currentTarget.blur() } if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); setFocusList(value => value + 1) } }} /><HotkeyKbd hotkey={chatScope.byId.filter} /></label>
             <button type="button" className={filter.mentionsMe ? 'chat-toggle is-on' : 'chat-toggle'} aria-pressed={filter.mentionsMe} onClick={() => setFilter(current => ({ ...current, mentionsMe: !current.mentionsMe }))} title="Only messages that mention you (M)"><AtSign aria-hidden="true" /></button>
             <button type="button" className={filter.withCompanies ? 'chat-toggle is-on' : 'chat-toggle'} aria-pressed={filter.withCompanies} onClick={() => setFilter(current => ({ ...current, withCompanies: !current.withCompanies }))} title="Only messages that reference a company ($)"><DollarSign aria-hidden="true" /></button>
             {isFiltering(filter) && <button type="button" className="chat-toggle" onClick={() => setFilter(EMPTY_FILTER)} title="Clear the filter"><X aria-hidden="true" /></button>}
@@ -430,7 +430,7 @@ export default function ChatPage() {
               ? <button type="button" className="chat-toggle" onClick={() => void forgetIdentity(meId)} title="Lock encrypted messages on this device"><Unlock aria-hidden="true" /></button>
               : <span className="chat-toggle chat-toggle--static" title="Encrypted messages are locked"><Lock aria-hidden="true" /></span>}
             <button type="button" className={showDetails ? 'chat-toggle is-on' : 'chat-toggle'} aria-pressed={showDetails} onClick={() => setShowDetails(!showDetails)} title="Details (I)"><Info aria-hidden="true" /></button>
-            <button type="button" className="chat-toggle" onClick={() => setDialog('help')} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard aria-hidden="true" /></button>
+            <HotkeyHelpButton className="chat-toggle" />
           </div>
         </header>
         {notice && <div className="chat-notice" role="status">{notice}<button type="button" className="icon-button" aria-label="Dismiss" onClick={() => setNotice(null)}><X /></button></div>}
@@ -519,7 +519,6 @@ export default function ChatPage() {
       busy={busy}
       error={dialogError ?? (dialog !== 'dm' && locked ? 'Unlock encrypted messages first (open a conversation to unlock).' : null)}
     />}
-    {dialog === 'help' && <ShortcutsDialog groups={CHAT_SHORTCUTS} onClose={() => setDialog(null)} />}
   </div>
 }
 
@@ -534,7 +533,7 @@ function FeedDetails({ channels, onOpen, messages, bodyOf }: { channels: Channel
       <span className="chat-dot" style={{ background: colorFor(item.channel_id) }} />
       <button type="button" className="text-button" onClick={() => onOpen({ type: 'channel', id: item.channel_id })}>{channelLabel(item)}</button>
       {(item.unread ?? 0) > 0 && <span className="chat-badge">{item.unread}</span>}
-    </li>)}</ul> : <p className="muted">Open a channel and press <kbd>S</kbd> to follow it here.</p>}
+    </li>)}</ul> : <p className="muted">Open a channel and press <HotkeyKbd hotkey={chatScope.byId.subscribe} /> to follow it here.</p>}
     {top.length > 0 && <section className="chat-details__section" aria-label="Companies mentioned">
       <h4>Companies mentioned</h4>
       <ul className="chat-details__list">{top.map(item => <li key={item.code}>
@@ -545,7 +544,7 @@ function FeedDetails({ channels, onOpen, messages, bodyOf }: { channels: Channel
     </section>}
     <section className="chat-details__section" aria-label="Filtering">
       <h4>Filtering</h4>
-      <p className="muted"><kbd>1</kbd>–<kbd>5</kbd> by kind, <kbd>M</kbd> mentions of you, <kbd>$</kbd> with companies, <kbd>F</kbd> words; <code>from:alice</code> and <code>in:stocks</code> narrow further.</p>
+      <p className="muted"><HotkeyKbd hotkey={chatScope.byId['kind-1']} />–<HotkeyKbd hotkey={chatScope.byId['kind-5']} /> by kind, <HotkeyKbd hotkey={chatScope.byId.mentions} /> mentions of you, <HotkeyKbd hotkey={chatScope.byId['with-companies']} /> with companies, <HotkeyKbd hotkey={chatScope.byId.filter} /> words; <code>from:alice</code> and <code>in:stocks</code> narrow further.</p>
     </section>
   </aside>
 }

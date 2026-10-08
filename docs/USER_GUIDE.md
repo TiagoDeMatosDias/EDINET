@@ -33,6 +33,12 @@ Open `/overview` after entering the workspace. It shows backend health, active a
 
 The sidebar contains Overview, Screen, Analyze, Backtest, Portfolio, Data pipeline, Filings, Compare, and Research. Account and Admin appear when the authenticated role allows them. From the keyboard, press `G` then a letter to switch pages: `O` Overview, `S` Screen, `A` Analyze, `B` Backtest, `P` Portfolio, `D` Data pipeline (admins), `F` Filings, `C` Compare, `R` Research. Each sidebar link shows its letter, and the letters light up while `G` waits for one. `/` searches companies, `Shift+Tab` leaves the field you are typing in, and `?` lists the shortcuts for the current page.
 
+### Keyboard shortcuts
+
+Every shortcut follows the same conventions on every screen: `1`–`9` jump to tabs or sections, `J`/`K` (or `↓`/`↑`) move through a list, `[`/`]` step to the previous or next page, tab, or item, `F` focuses the filter, `N` creates, `A` adds, `O` opens, `X` deletes, `D` downloads, `R` runs or refreshes, and `Esc` closes. `?` lists the keys of the screen in view, including any panel or tab that is open, followed by the keys that work anywhere.
+
+To change a key, open **Account → Keyboard shortcuts** (or the link at the foot of the `?` list). It lists every shortcut on every screen, including screens you have not opened yet; choose a screen or search by action or key, press **Change**, then press the new key (`Esc` cancels). A key another shortcut on the same screen already uses is refused, as are `Tab`, `Esc`, and browser keys such as `Ctrl+W`. Changes apply at once, are saved to your account so they follow you to every browser, and each row has a **Reset**; **Reset all to defaults** restores everything. In a local workspace without accounts the keys are saved for the local user. Hints shown next to buttons and in tooltips always show your current key.
+
 The header company finder searches across the best data currently available. It accepts company name, ticker, EDINET code, industry, and market text. The same finder is reused in Analysis, Comparison, Filings, and Research, so a ticker or company selected in one workflow resolves to the same canonical company code elsewhere. If one configured database is missing or only partly populated, search returns results from the remaining usable sources instead of failing the whole request.
 
 ## Find and analyze companies

@@ -1,12 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
-import { Keyboard } from 'lucide-react'
-import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useMemo, useRef, type KeyboardEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import { apiRequest } from '../../api/client'
 import { PageHeader } from '../../components/Page'
-import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { AlertsView } from './AlertsView'
 import { BookView } from './BookView'
 import { NotesView } from './NotesView'
@@ -14,24 +14,12 @@ import { BondsView } from './pricing/BondsView'
 import { OptionsView } from './pricing/OptionsView'
 import { reviewState, todayIso } from './researchModel'
 import { useResearchBook } from './researchQueries'
-import { ALERTS_SHORTCUTS, BONDS_SHORTCUTS, BOOK_SHORTCUTS, NOTES_SHORTCUTS, OPTIONS_SHORTCUTS } from './researchShortcuts'
+import { RESEARCH_TABS, researchScope } from './researchHotkeys'
 import type { Note } from './researchTypes'
 
-const TABS = [
-  { key: 'companies', label: 'Companies', shortcuts: BOOK_SHORTCUTS },
-  { key: 'notes', label: 'Notes', shortcuts: NOTES_SHORTCUTS },
-  { key: 'alerts', label: 'Alerts', shortcuts: ALERTS_SHORTCUTS },
-  { key: 'options', label: 'Options', shortcuts: OPTIONS_SHORTCUTS },
-  { key: 'bonds', label: 'Bonds & credit', shortcuts: BONDS_SHORTCUTS },
-] as const
+const TABS = RESEARCH_TABS
 
 type TabKey = typeof TABS[number]['key']
-
-const ANYWHERE: ShortcutGroup = { title: 'Research', shortcuts: [
-  { keys: ['1', '2', '3', '4', '5'], label: 'Companies, Notes, Alerts, Options, Bonds' },
-  { keys: ['[', ']'], label: 'In the tab list: previous or next tab (also ← →)' },
-  { keys: ['?'], label: 'Show or hide this list' },
-] }
 
 export default function ResearchPage() {
   const [params, setParams] = useSearchParams()
@@ -42,8 +30,6 @@ export default function ResearchPage() {
   const tag = params.get('tag') ?? ''
   const status = params.get('status') ?? ''
   const today = useMemo(() => todayIso(), [])
-  const [showShortcuts, setShowShortcuts] = useState(false)
-  const closeShortcuts = useCallback(() => setShowShortcuts(false), [])
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
 
   const book = useResearchBook()
@@ -58,10 +44,7 @@ export default function ResearchPage() {
     setParams(next, { replace: true })
   }
   const selectTab = (key: TabKey) => update({ tab: key })
-  useHotkeys(Object.fromEntries([
-    ['?', () => setShowShortcuts(true)],
-    ...TABS.map((item, index) => [String(index + 1), () => selectTab(item.key)]),
-  ]), !showShortcuts)
+  useHotkeyScope(researchScope, Object.fromEntries(TABS.map(item => [`tab-${item.key}`, () => selectTab(item.key)])))
 
   const companies = book.data?.companies ?? []
   const triggered = (book.data?.alerts ?? []).filter(alert => alert.triggered).length
@@ -89,15 +72,14 @@ export default function ResearchPage() {
     selectTab(next.key)
     tabRefs.current[TABS.indexOf(next)]?.focus()
   }
-  const current = TABS.find(item => item.key === tab) ?? TABS[0]
-  const active = !showShortcuts
+  const active = true
 
   return <div className="stack dense-page rs-page">
     <PageHeader
       eyebrow="Research"
       title="Research"
       description={book.data ? `Your private research: ${description}.` : 'Your private notes, tags, theses, alerts, and pricing tools.'}
-      actions={<button type="button" className="icon-button" onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard aria-hidden="true" /></button>}
+      actions={<HotkeyHelpButton />}
     />
     <div className="rs-tabs" role="tablist" aria-label="Research" onKeyDown={onTabKeyDown}>
       {TABS.map((item, index) => <button
@@ -111,7 +93,7 @@ export default function ResearchPage() {
         tabIndex={tab === item.key ? 0 : -1}
         className={tab === item.key ? 'rs-tab active' : 'rs-tab'}
         onClick={() => selectTab(item.key)}
-      ><kbd aria-hidden="true">{index + 1}</kbd>{item.label}{counts[item.key] && <small className={item.key === 'alerts' && triggered ? 'is-alert' : undefined}>{counts[item.key]}</small>}</button>)}
+      ><span aria-hidden="true"><HotkeyKbd hotkey={researchScope.byId[`tab-${item.key}`]} /></span>{item.label}{counts[item.key] && <small className={item.key === 'alerts' && triggered ? 'is-alert' : undefined}>{counts[item.key]}</small>}</button>)}
     </div>
     <div role="tabpanel" id={`rs-panel-${tab}`} aria-labelledby={`rs-tab-${tab}`} className="rs-panel">
       {tab === 'companies' && <BookView
@@ -132,6 +114,5 @@ export default function ResearchPage() {
       {tab === 'options' && <OptionsView companyCode={company} onCompany={code => update({ company: code })} active={active} />}
       {tab === 'bonds' && <BondsView companyCode={company} onCompany={code => update({ company: code })} active={active} />}
     </div>
-    {showShortcuts && <ShortcutsDialog groups={[ANYWHERE, current.shortcuts]} onClose={closeShortcuts} />}
   </div>
 }

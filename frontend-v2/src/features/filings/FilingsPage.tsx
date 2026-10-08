@@ -1,18 +1,20 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { ArrowRight, Building2, Download, Keyboard, X } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { ArrowRight, Building2, Download, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { apiRequest, queryString } from '../../api/client'
 import type { SecuritySearchResult } from '../../api/types'
 import { CompanyPicker } from '../../components/CompanyPicker'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
-import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
 import { Tip } from '../../components/Tooltip'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { exportCompanyFilings } from './exportFilings'
 import { companyName, formatDay, FORM_CATEGORIES, formCategory, type FormCategoryKey } from './filingFormat'
 import { FilingsTable, type FilingRow } from './FilingsTable'
+import { filingsScope } from './filingsHotkeys'
 import './filings.css'
 
 interface FilingCoverage {
@@ -32,22 +34,6 @@ type CategoryKey = FormCategoryKey | 'all'
 const CATEGORY_KEYS: CategoryKey[] = ['all', ...FORM_CATEGORIES.map(category => category.key)]
 const PAGE_SIZE = 50
 
-const SHORTCUTS: ShortcutGroup[] = [
-  { title: 'Anywhere', shortcuts: [
-    { keys: ['/'], label: 'Search companies (opens Analysis)' },
-    { keys: ['?'], label: 'Show or hide this list' },
-  ] },
-  { title: 'Filing Explorer', shortcuts: [
-    { keys: ['F'], label: "Find a company's filings" },
-    { keys: ['[', ']'], label: 'Previous or next report type' },
-    { keys: ['J'], label: 'Jump into the filing list' },
-    { keys: ['↑', '↓'], label: 'Move between filings (also J, K)' },
-    { keys: ['Enter'], label: 'Open the focused filing' },
-    { keys: ['X'], label: 'Clear the company' },
-    { keys: ['A'], label: "Open the company's analysis" },
-  ] },
-]
-
 function categoryCodes(key: CategoryKey) {
   return key === 'all' ? [] : [...(FORM_CATEGORIES.find(category => category.key === key)?.codes ?? [])]
 }
@@ -61,7 +47,7 @@ function CategoryTabs({ active, counts, onChange }: { active: CategoryKey; count
         {labels[key]}<small>{count.toLocaleString()}</small>
       </button>
     })}
-    <span className="filing-types__keys" aria-hidden="true"><kbd>[</kbd><kbd>]</kbd></span>
+    <span className="filing-types__keys" aria-hidden="true"><HotkeyKbd hotkey={filingsScope.byId['previous-type']} /><HotkeyKbd hotkey={filingsScope.byId['next-type']} /></span>
   </div>
 }
 
@@ -85,8 +71,6 @@ export default function FilingsPage() {
   const [picked, setPicked] = useState<SecuritySearchResult | null>(null)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
-  const [showShortcuts, setShowShortcuts] = useState(false)
-  const closeShortcuts = useCallback(() => setShowShortcuts(false), [])
 
   // Older links carried the document as ?doc=; send them to the viewer.
   const legacyDoc = searchParams.get('doc')
@@ -150,15 +134,14 @@ export default function FilingsPage() {
   const selected: SecuritySearchResult | null = companyCode ? { company_code: companyCode, ticker, company_name: companyTitle } : null
   const summary = coverage.data?.summary
 
-  useHotkeys({
-    f: () => finder.current?.focus(),
-    '[': () => cycleCategory(-1),
-    ']': () => cycleCategory(1),
-    j: () => document.querySelector<HTMLTableRowElement>('.filings-table tbody tr[tabindex="0"]')?.focus(),
-    x: () => { if (companyCode) chooseCompany(null) },
-    a: () => { if (companyCode) navigate(`/analyze/${encodeURIComponent(companyCode)}`) },
-    '?': () => setShowShortcuts(true),
-  }, !showShortcuts)
+  useHotkeyScope(filingsScope, {
+    find: () => finder.current?.focus(),
+    'previous-type': () => cycleCategory(-1),
+    'next-type': () => cycleCategory(1),
+    'enter-list': () => document.querySelector<HTMLTableRowElement>('.filings-table tbody tr[tabindex="0"]')?.focus(),
+    'clear-company': () => { if (companyCode) chooseCompany(null) },
+    analyze: () => { if (companyCode) navigate(`/analyze/${encodeURIComponent(companyCode)}`) },
+  })
 
   const exportAll = async () => {
     setExporting(true)
@@ -186,8 +169,8 @@ export default function FilingsPage() {
       </div>
       <div className="filings-explorer__finder">
         <CompanyPicker selected={selected} onSelect={chooseCompany} label="Find a company's filings" placeholder="Company name, ticker, or EDINET code" inputRef={finder} />
-        <kbd aria-hidden="true">F</kbd>
-        <button type="button" className="icon-button" onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard /></button>
+        <span aria-hidden="true"><HotkeyKbd hotkey={filingsScope.byId.find} /></span>
+        <HotkeyHelpButton />
       </div>
     </header>
 
@@ -217,7 +200,7 @@ export default function FilingsPage() {
           {companyFilings.isError && <ErrorState error={companyFilings.error} retry={() => void companyFilings.refetch()} />}
           {companyFilings.data && !companyRows.length && <EmptyState title="No retained reports for this company" description="The filing pipeline has not acquired any XBRL packages for it yet." />}
           {visibleCompanyRows.length > 0 && <FilingsTable filings={visibleCompanyRows} from="filings" label={`Filings by ${companyTitle}`} />}
-          {companyRows.length > 0 && <p className="filings-list__foot"><span>{visibleCompanyRows.length} of {companyRows.length} reports · newest first · <kbd>J</kbd> jumps into the list, <kbd>Enter</kbd> opens a filing</span></p>}
+          {companyRows.length > 0 && <p className="filings-list__foot"><span>{visibleCompanyRows.length} of {companyRows.length} reports · newest first · <HotkeyKbd hotkey={filingsScope.byId['enter-list']} /> jumps into the list, <kbd>Enter</kbd> opens a filing</span></p>}
         </> : <>
           <header className="filings-list__header">
             <h2>Latest filings</h2>
@@ -228,12 +211,11 @@ export default function FilingsPage() {
           {latestRows.length > 0 && <FilingsTable filings={latestRows} showCompany from="filings" label="Latest filings" />}
           {latest.data && !latestRows.length && <EmptyState title="No filings of this type" description="Choose another report type above." />}
           <div className="filings-list__foot">
-            <span>{latestRows.length.toLocaleString()} shown · <kbd>J</kbd> jumps into the list, <kbd>Enter</kbd> opens a filing</span>
+            <span>{latestRows.length.toLocaleString()} shown · <HotkeyKbd hotkey={filingsScope.byId['enter-list']} /> jumps into the list, <kbd>Enter</kbd> opens a filing</span>
             {latest.hasNextPage && <button type="button" className="button button--ghost button--small" disabled={latest.isFetchingNextPage} onClick={() => void latest.fetchNextPage()}>{latest.isFetchingNextPage ? 'Loading…' : `Show ${PAGE_SIZE} more`}</button>}
           </div>
         </>}
       </section>
     </div>
-    {showShortcuts && <ShortcutsDialog groups={SHORTCUTS} onClose={closeShortcuts} />}
   </div>
 }

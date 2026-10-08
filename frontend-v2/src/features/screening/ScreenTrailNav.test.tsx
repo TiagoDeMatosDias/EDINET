@@ -23,7 +23,7 @@ describe('stepping through screen results from Analysis', () => {
 
     expect(screen.getByText('2 of 3')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Next screened company' })).toHaveAttribute('title', 'Next: Gamma (Shift+J)')
-    fireEvent.keyDown(document.body, { key: 'J' })
+    fireEvent.keyDown(document.body, { key: 'J', shiftKey: true })
 
     expect(screen.getByLabelText('Path')).toHaveTextContent('/analyze/E3?from=screen')
     expect(readCursor()).toMatchObject({ signature: 'run', code: 'E3', refocus: true })

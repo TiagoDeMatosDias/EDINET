@@ -4,7 +4,10 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
 import { ErrorState, LoadingState } from '../../components/Feedback'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { useHotkeyText } from '../../hotkeys/useHotkeyText'
+import { profileScope } from './chatHotkeys'
 import { chatApi, chatKeys, invalidateChat } from './chatApi'
 import { colorFor, fullTime, personName, relativeTime } from './chatModel'
 import { formatFingerprint } from './crypto'
@@ -42,12 +45,13 @@ export default function ProfilePage() {
     }
   }
   const message = () => { if (data?.can_message) navigate(`/chat?dm=${encodeURIComponent(data.user_id)}`) }
-  useHotkeys({
-    m: message,
-    b: () => { if (data && !data.is_me) void toggleBlock() },
-    e: () => { if (data?.is_me) navigate('/account#profile') },
-    Escape: () => setArmed(false),
+  useHotkeyScope(profileScope, {
+    message,
+    block: () => { if (data && !data.is_me) void toggleBlock() },
+    edit: () => { if (data?.is_me) navigate('/account#profile') },
+    disarm: () => setArmed(false),
   })
+  const messageKey = useHotkeyText(profileScope.byId.message)
 
   if (profile.isLoading) return <LoadingState label="Loading profile" />
   if (profile.isError || !data) return <ErrorState error={profile.error} retry={() => profile.refetch()} />
@@ -61,10 +65,10 @@ export default function ProfilePage() {
       </div>
       <div className="profile-head__actions">
         {data.is_me
-          ? <Link className="button button--secondary button--small" to="/account#profile"><Pencil aria-hidden="true" />Edit profile <kbd>E</kbd></Link>
+          ? <Link className="button button--secondary button--small" to="/account#profile"><Pencil aria-hidden="true" />Edit profile <HotkeyKbd hotkey={profileScope.byId.edit} /></Link>
           : <>
-            <button type="button" className="button button--primary button--small" disabled={!data.can_message} onClick={message} title={data.can_message ? 'End-to-end encrypted conversation (M)' : data.blocked_by_me ? 'Unblock to message' : 'Not accepting messages'}><MessageSquare aria-hidden="true" />Message <kbd>M</kbd></button>
-            <button type="button" className={armed ? 'button button--danger button--small' : 'button button--ghost button--small'} onClick={() => void toggleBlock()}><Ban aria-hidden="true" />{data.blocked_by_me ? 'Unblock' : armed ? 'Block: sure?' : 'Block'} <kbd>B</kbd></button>
+            <button type="button" className="button button--primary button--small" disabled={!data.can_message} onClick={message} title={data.can_message ? `End-to-end encrypted conversation (${messageKey})` : data.blocked_by_me ? 'Unblock to message' : 'Not accepting messages'}><MessageSquare aria-hidden="true" />Message <HotkeyKbd hotkey={profileScope.byId.message} /></button>
+            <button type="button" className={armed ? 'button button--danger button--small' : 'button button--ghost button--small'} onClick={() => void toggleBlock()}><Ban aria-hidden="true" />{data.blocked_by_me ? 'Unblock' : armed ? 'Block: sure?' : 'Block'} <HotkeyKbd hotkey={profileScope.byId.block} /></button>
           </>}
       </div>
     </header>

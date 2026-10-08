@@ -2,15 +2,21 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { useHotkeys } from '../hooks/useHotkeys'
+import { defineScope } from '../hotkeys/registry'
+import { useHotkeyScope } from '../hotkeys/useHotkeyScope'
 import { GlobalHotkeys } from './GlobalHotkeys'
 
 function Where() {
   return <div aria-label="Path">{useLocation().pathname}</div>
 }
 
-function PageWithOwnHelp({ onHelp }: { onHelp: () => void }) {
-  useHotkeys({ '?': onHelp, s: () => undefined })
+const pageScope = defineScope({ id: 'test-page', label: 'Test page', screen: 'Test', hotkeys: [
+  { id: 'save', keys: 's', label: 'Save the thing' },
+  { id: 'jump', keys: 'p', label: 'Jump somewhere' },
+] })
+
+function Page({ onSave = () => undefined, onJump = () => undefined }: { onSave?: () => void; onJump?: () => void }) {
+  useHotkeyScope(pageScope, { save: onSave, jump: onJump })
   return null
 }
 
@@ -33,8 +39,7 @@ describe('global hotkeys', () => {
 
   it('beats page shortcuts to the second key, and other keys or Esc cancel', () => {
     const pageKey = vi.fn()
-    function Page() { useHotkeys({ p: pageKey }); return null }
-    render(<MemoryRouter initialEntries={['/screen']}><GlobalHotkeys isAdmin /><Page /><Where /></MemoryRouter>)
+    render(<MemoryRouter initialEntries={['/screen']}><GlobalHotkeys isAdmin /><Page onJump={pageKey} /><Where /></MemoryRouter>)
 
     press('g'); press('p')
     expect(screen.getByLabelText('Path')).toHaveTextContent('/portfolio')
@@ -91,19 +96,22 @@ describe('global hotkeys', () => {
     expect(fireEvent.keyDown(document.body, { key: 'Tab', shiftKey: true })).toBe(true)
   })
 
-  it('lists shortcuts with ? only where the page has no list of its own', async () => {
-    const pageHelp = vi.fn()
-    const { unmount } = render(<MemoryRouter><GlobalHotkeys isAdmin={false} /><PageWithOwnHelp onHelp={pageHelp} /></MemoryRouter>)
+  it('lists the mounted screen\'s shortcuts and the global ones with ?', async () => {
+    render(<MemoryRouter><GlobalHotkeys isAdmin={false} /><Page /></MemoryRouter>)
     press('?')
-    await new Promise(resolve => setTimeout(resolve, 10))
-    expect(pageHelp).toHaveBeenCalled()
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    unmount()
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('Test page')
+    expect(dialog).toHaveTextContent('Save the thing')
+    expect(dialog).toHaveTextContent('Search companies')
+    expect(dialog).toHaveTextContent('Go to a page')
+    expect(dialog).toHaveTextContent('Research')
+  })
 
+  it('omits screens that are not mounted', async () => {
     render(<MemoryRouter><GlobalHotkeys isAdmin={false} /></MemoryRouter>)
     press('?')
     const dialog = await screen.findByRole('dialog')
-    expect(dialog).toHaveTextContent('Go to a page')
-    expect(dialog).toHaveTextContent('Research')
+    expect(dialog).not.toHaveTextContent('Save the thing')
+    expect(dialog).toHaveTextContent('Anywhere')
   })
 })

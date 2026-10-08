@@ -6,7 +6,9 @@ import { useHealth, useSystemStatus } from '../hooks/useHealth'
 import { BrandLockup } from './Brand'
 import { GlobalCompanySearch } from './GlobalCompanySearch'
 import { GlobalHotkeys } from './GlobalHotkeys'
-import { pageShortcutFor } from './pageShortcuts'
+import { globalScope } from '../hotkeys/globalScopes'
+import { useGotoPages } from '../hotkeys/goto'
+import { useHotkeyText } from '../hotkeys/useHotkeyText'
 import { useAuth } from '../features/auth/authContext'
 import { useChatUnread } from '../features/chat/chatApi'
 
@@ -29,6 +31,8 @@ const adminNavigation = { to: '/admin', label: 'Admin', icon: Shield }
 function Navigation({ onNavigate, keysActive = false, unreadChat = 0 }: { onNavigate?: () => void; keysActive?: boolean; unreadChat?: number }) {
   const auth = useAuth()
   const isAdmin = auth.user?.role === 'admin'
+  const gotoPages = useGotoPages(isAdmin, Boolean(auth.user))
+  const leader = useHotkeyText(globalScope.byId.goto)
   const items = [
     ...navigation.slice(0, 5),
     ...(isAdmin ? [pipelineNavigation] : []),
@@ -39,11 +43,11 @@ function Navigation({ onNavigate, keysActive = false, unreadChat = 0 }: { onNavi
   return <nav className={keysActive ? 'primary-nav primary-nav--keys' : 'primary-nav'} aria-label="Primary navigation">
     {items.map(item => {
       const Icon = item.icon
-      const key = pageShortcutFor(item.to)?.key.toUpperCase()
+      const key = gotoPages.find(page => page.to === item.to)?.hint
       const unread = item.to === '/chat' && unreadChat > 0 ? unreadChat : 0
-      return <NavLink key={item.to} to={item.to} end={item.to === '/overview'} onClick={onNavigate} title={key ? `${item.label} (G then ${key})` : undefined}><Icon aria-hidden="true" /><span>{item.label}</span>{unread > 0 && <span className="primary-nav__badge" aria-label={`${unread} unread`}>{unread > 99 ? '99+' : unread}</span>}{key && <kbd className="primary-nav__key" aria-hidden="true">{key}</kbd>}</NavLink>
+      return <NavLink key={item.to} to={item.to} end={item.to === '/overview'} onClick={onNavigate} title={key ? `${item.label} (${leader} then ${key})` : undefined}><Icon aria-hidden="true" /><span>{item.label}</span>{unread > 0 && <span className="primary-nav__badge" aria-label={`${unread} unread`}>{unread > 99 ? '99+' : unread}</span>}{key && <kbd className="primary-nav__key" aria-hidden="true">{key}</kbd>}</NavLink>
     })}
-    <p className="primary-nav__hint">Press <kbd>G</kbd> then a letter</p>
+    <p className="primary-nav__hint">Press <kbd>{leader}</kbd> then a letter</p>
   </nav>
 }
 

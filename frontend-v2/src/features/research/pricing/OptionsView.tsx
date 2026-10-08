@@ -1,7 +1,10 @@
 import { Minus, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { useMemo, useRef, useState, type KeyboardEvent } from 'react'
 
-import { useHotkeys } from '../../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../../hotkeys/useHotkeyScope'
+import { useHotkeyText } from '../../../hotkeys/useHotkeyText'
+import { optionsScope } from '../researchHotkeys'
 import { usePersistentState } from '../../../hooks/usePersistentState'
 import { formatMetricValue } from '../../../metrics'
 import { defaultRate, formatNumber, formatPercent, localToday } from '../researchModel'
@@ -140,18 +143,20 @@ export function OptionsView({ companyCode, onCompany, active }: { companyCode: s
   }
   const focus = (element: HTMLElement | null) => { element?.focus(); element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }) }
 
-  useHotkeys({
-    a: () => focus(pickerRef.current),
-    m: () => onCompany(''),
-    '[': () => set({ strike: Math.max(step, roundToStep(state.strike, step) - step) }),
-    ']': () => set({ strike: roundToStep(state.strike, step) + step }),
-    v: () => { if (sources.length) chooseSource(sources[(sources.indexOf(state.volSource) + 1) % sources.length]) },
-    t: () => focus(daysRef.current),
-    i: () => focus(marketRef.current),
-    s: () => focus(presetRef.current),
-    l: () => setLadderFocus(value => value + 1),
-    r: () => { const next = fromCompany(); if (next) { setState(next); setMarketPrice(null) } },
-  }, active)
+  useHotkeyScope(optionsScope, {
+    company: () => focus(pickerRef.current),
+    manual: () => onCompany(''),
+    'strike-down': () => set({ strike: Math.max(step, roundToStep(state.strike, step) - step) }),
+    'strike-up': () => set({ strike: roundToStep(state.strike, step) + step }),
+    volatility: () => { if (sources.length) chooseSource(sources[(sources.indexOf(state.volSource) + 1) % sources.length]) },
+    days: () => focus(daysRef.current),
+    market: () => focus(marketRef.current),
+    strategy: () => focus(presetRef.current),
+    ladder: () => setLadderFocus(value => value + 1),
+    reset: () => { const next = fromCompany(); if (next) { setState(next); setMarketPrice(null) } },
+  }, { enabled: active })
+  const companyKey = useHotkeyText(optionsScope.byId.company)
+  const manualKey = useHotkeyText(optionsScope.byId.manual)
 
   const onLadderKeyDown = (event: KeyboardEvent<HTMLTableSectionElement>) => {
     if (moveCursorKey(event, ladderIndex, ladder.length, next => set({ strike: ladder[next] }))) return
@@ -161,7 +166,7 @@ export function OptionsView({ companyCode, onCompany, active }: { companyCode: s
 
   return <div className="rs-pricing">
     <section className="panel rs-pricing__inputs" aria-label="Option inputs">
-      <PricingCompany code={companyCode} inputs={data} loading={inputs.isLoading} error={inputs.error} inputRef={pickerRef} onChange={onCompany} />
+      <PricingCompany code={companyCode} inputs={data} loading={inputs.isLoading} error={inputs.error} inputRef={pickerRef} onChange={onCompany} keys={{ company: companyKey, manual: manualKey }} />
       {noPrice && <p className="callout callout--warning">This company has no stored price, so the inputs below are manual.</p>}
       <div className="rs-fields">
         <NumberField label="Spot" value={state.spot} step={step} min={0.0001} onChange={spot => set({ spot })} digits={2} hint={data?.spot != null && state.spot !== data.spot ? <button type="button" className="text-button" onClick={() => set({ spot: data.spot as number })}>Latest {money(data.spot)}</button> : currency ?? undefined} />
@@ -207,7 +212,7 @@ export function OptionsView({ companyCode, onCompany, active }: { companyCode: s
           : feeMode === 'percent' ? `Call ${money(callFee)}, put ${money(putFee)} a share; a share leg pays the rate on the share price.${fees.roundTrip ? ' Closing is charged on today’s value.' : ''}`
             : `${money(legFee)} a share for each leg; a share leg counts as one contract.`}</small>
       </fieldset>
-      {companyCode && data && <button type="button" className="text-button rs-reset" onClick={() => { const next = fromCompany(); if (next) { setState(next); setMarketPrice(null) } }}><RotateCcw aria-hidden="true" />Reset to {data.company.company_name}’s data <kbd aria-hidden="true">R</kbd></button>}
+      {companyCode && data && <button type="button" className="text-button rs-reset" onClick={() => { const next = fromCompany(); if (next) { setState(next); setMarketPrice(null) } }}><RotateCcw aria-hidden="true" />Reset to {data.company.company_name}’s data <span aria-hidden="true"><HotkeyKbd hotkey={optionsScope.byId.reset} /></span></button>}
     </section>
 
     <section className="panel rs-pricing__values" aria-label="Option values">
@@ -241,7 +246,7 @@ export function OptionsView({ companyCode, onCompany, active }: { companyCode: s
           {STRATEGY_PRESETS.map(preset => <option key={preset.key} value={preset.key}>{preset.label}</option>)}
           {state.preset === 'custom' && <option value="custom">Custom</option>}
         </select>
-        <kbd aria-hidden="true">S</kbd>
+        <span aria-hidden="true"><HotkeyKbd hotkey={optionsScope.byId.strategy} /></span>
         <span className="rs-panel__meta">{STRATEGY_PRESETS.find(preset => preset.key === state.preset)?.description ?? 'Your own combination of legs.'}</span>
       </header>
       <div className="rs-table-scroll"><table className="rs-table rs-legs">
@@ -276,7 +281,7 @@ export function OptionsView({ companyCode, onCompany, active }: { companyCode: s
     </section>
 
     <section className="panel rs-pricing__ladder" aria-label="Strike ladder">
-      <header className="rs-panel__header"><h3>Strike ladder <kbd aria-hidden="true">L</kbd></h3><span className="rs-panel__meta">{state.days} days · vol {formatPercent(state.volatility)}</span></header>
+      <header className="rs-panel__header"><h3>Strike ladder <span aria-hidden="true"><HotkeyKbd hotkey={optionsScope.byId.ladder} /></span></h3><span className="rs-panel__meta">{state.days} days · vol {formatPercent(state.volatility)}</span></header>
       <div className="rs-table-scroll">
         <table className="rs-table rs-ladder">
           <thead><tr><th scope="col" className="num">Call Δ</th><th scope="col" className="num">Call</th><th scope="col" className="num">Strike</th><th scope="col" className="num">Put</th><th scope="col" className="num">Put Δ</th><th scope="col" className="num" title="Strike against spot">Moneyness</th></tr></thead>

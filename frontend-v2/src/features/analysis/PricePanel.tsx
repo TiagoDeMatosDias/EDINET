@@ -4,7 +4,9 @@ import { Line } from 'react-chartjs-2'
 
 import { BRAND_COLORS } from '../../brand'
 import { Tip } from '../../components/Tooltip'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { pricePanelScope } from './analysisHotkeys'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { crosshairPlugin, referenceLinePlugin } from './chartPlugins'
 import { filterPriceHistory, PRICE_RANGES, priceDate, priceTicks, priceValue, type PriceHistoryRow, type PriceRangeKey } from './priceHistoryRanges'
@@ -22,7 +24,7 @@ export function PricePanel({ rows, formatPrice }: { rows: PriceHistoryRow[]; for
     setRange(RANGE_KEYS[Math.max(0, Math.min(RANGE_KEYS.length - 1, index + delta))])
   }
   // '=' is the unshifted '+' key on many layouts, so it narrows the range too.
-  useHotkeys({ '-': () => step(1), '+': () => step(-1), '=': () => step(-1) })
+  useHotkeyScope(pricePanelScope, { wider: () => step(1), narrower: () => step(-1) })
   const visible = useMemo(() => filterPriceHistory(rows, range).filter(row => priceValue(row) !== null), [rows, range])
   const labels = useMemo(() => visible.map(priceDate), [visible])
   const values = visible.map(row => priceValue(row) as number)
@@ -81,7 +83,7 @@ export function PricePanel({ rows, formatPrice }: { rows: PriceHistoryRow[]; for
     <div className="price-panel__toolbar">
       <div className="range-buttons" role="group" aria-label="Price range">
         {PRICE_RANGES.map(option => <button key={option.key} type="button" className={range === option.key ? 'active' : ''} aria-pressed={range === option.key} title={option.title} onClick={() => setRange(option.key)}>{option.label}</button>)}
-        <span className="range-buttons__keys" aria-hidden="true"><kbd>-</kbd><kbd>=</kbd></span>
+        <span className="range-buttons__keys" aria-hidden="true"><HotkeyKbd hotkey={pricePanelScope.byId.wider} /><HotkeyKbd hotkey={pricePanelScope.byId.narrower} /></span>
       </div>
       {change !== null && <dl className="price-panel__stats">
         <div><dt>Return</dt><dd className={change < 0 ? 'neg' : 'pos'}>{change >= 0 ? '+' : '−'}{Math.abs(change * 100).toFixed(1)}%</dd></div>

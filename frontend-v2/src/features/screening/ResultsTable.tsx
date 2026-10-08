@@ -4,7 +4,9 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import type { ScreeningResult } from '../../api/types'
 import { Tip } from '../../components/Tooltip'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { resultsScope } from './screeningHotkeys'
 import { cellText } from './resultFormat'
 import { analysisHref, readCursor, resultSignature, writeCursor, writeTrail, type ResultsSort } from './screenTrail'
 
@@ -141,10 +143,10 @@ export function ResultsTable({ result, columnInfo, hotkeys = true }: { result: S
   }
 
   const enterList = () => select(cursorIndex, true)
-  useHotkeys({
-    j: enterList, k: enterList, ArrowDown: enterList, ArrowUp: enterList,
-    '[': () => goToPage(page - 1), ']': () => goToPage(page + 1),
-  }, hotkeys && sorted.length > 0)
+  useHotkeyScope(resultsScope, {
+    enter: enterList,
+    'previous-page': () => goToPage(page - 1), 'next-page': () => goToPage(page + 1),
+  }, { enabled: hotkeys && sorted.length > 0 })
   const onKeyDown = (event: KeyboardEvent<HTMLTableSectionElement>) => {
     if (event.ctrlKey || event.metaKey || event.altKey) return
     const keys: Record<string, () => void> = {
@@ -205,7 +207,7 @@ export function ResultsTable({ result, columnInfo, hotkeys = true }: { result: S
     </div>
     <footer className="results-grid__foot">
       <span>{sorted.length ? `${(page * PAGE_SIZE + 1).toLocaleString()}–${Math.min(sorted.length, (page + 1) * PAGE_SIZE).toLocaleString()} of ${sorted.length.toLocaleString()}` : 'No rows'}{sort ? ` · sorted by ${columnInfo(sort.column).label}` : ''}</span>
-      <span className="results-grid__keys"><kbd>↓</kbd><kbd>J</kbd> browse · <kbd>Enter</kbd> open · <kbd>Shift Enter</kbd> new tab · <kbd>[</kbd><kbd>]</kbd> pages</span>
+      <span className="results-grid__keys"><HotkeyKbd hotkey={resultsScope.byId.enter} /> browse · <kbd>Enter</kbd> open · <kbd>Shift Enter</kbd> new tab · <HotkeyKbd hotkey={resultsScope.byId['previous-page']} /><HotkeyKbd hotkey={resultsScope.byId['next-page']} /> pages</span>
       {pages > 1 && <span className="results-grid__pager">
         <button type="button" className="icon-button" aria-label="Previous page" disabled={page === 0} onClick={() => goToPage(page - 1)}><ChevronLeft /></button>
         <span>Page {page + 1} of {pages}</span>

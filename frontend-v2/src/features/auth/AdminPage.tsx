@@ -1,13 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, Keyboard, Link2, RotateCcw, UserPlus } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
+import { Copy, Link2, RotateCcw, UserPlus } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 
 import { apiRequest } from '../../api/client'
 import { LoadingState } from '../../components/Feedback'
-import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { useAuth } from './authContext'
+import { ADMIN_SECTIONS, adminScope } from './adminHotkeys'
 import './admin.css'
 
 interface AdminUser {
@@ -54,19 +56,7 @@ const EVENT_LABELS: Record<string, string> = {
 }
 const ALARMING = new Set(['login_failed', 'refresh_reuse_detected', 'password_change_failed', 'user_disabled'])
 
-const SECTIONS = ['Users', 'Invite and reset', 'Access', 'Pipeline schedules', 'Audit log'] as const
-const SHORTCUTS: ShortcutGroup[] = [
-  { title: 'Administration', shortcuts: [
-    { keys: ['1', '2', '3', '4', '5'], label: SECTIONS.join(', ') },
-    { keys: ['F'], label: 'Filter users' },
-    { keys: ['J', 'K'], label: 'Users or audit log: next or previous row (↓ ↑)' },
-    { keys: ['Enter'], label: 'Users: change the role' },
-    { keys: ['P'], label: 'Users: make a password-reset link' },
-    { keys: ['X'], label: 'Users: disable the account (press twice)' },
-    { keys: ['I'], label: 'Create an invitation link' },
-    { keys: ['?'], label: 'Show or hide this list' },
-  ] },
-]
+const SECTIONS = ADMIN_SECTIONS
 
 const stamp = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })
 const when = (value: string | null | undefined) => (value ? stamp.format(new Date(value)) : '—')
@@ -104,7 +94,7 @@ function parseFrequency(value: string): PipelineSchedule['frequency'] {
 
 function Section({ index, title, meta, actions, children, className = '' }: { index: number; title: string; meta?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
   return <section className={`console-section ${className}`} id={`console-section-${index}`} aria-labelledby={`console-section-${index}-title`}>
-    <header><kbd aria-hidden="true">{index}</kbd><h2 id={`console-section-${index}-title`} tabIndex={-1}>{title}</h2>{meta && <span className="console-section__meta">{meta}</span>}{actions && <div className="console-section__actions">{actions}</div>}</header>
+    <header><span aria-hidden="true"><HotkeyKbd hotkey={adminScope.byId[`section-${index}`]} /></span><h2 id={`console-section-${index}-title`} tabIndex={-1}>{title}</h2>{meta && <span className="console-section__meta">{meta}</span>}{actions && <div className="console-section__actions">{actions}</div>}</header>
     {children}
   </section>
 }
@@ -133,8 +123,6 @@ function OneTimeLink({ label, url, onDismiss }: { label: string; url: string; on
 export default function AdminPage() {
   const auth = useAuth()
   const client = useQueryClient()
-  const [help, setHelp] = useState(false)
-  const closeHelp = useCallback(() => setHelp(false), [])
   const [filter, setFilter] = useState('')
   const [cursor, setCursor] = useState(0)
   const [armed, setArmed] = useState<string | null>(null)
@@ -203,12 +191,11 @@ export default function AdminPage() {
     else if (key === 'p' && current) { event.preventDefault(); event.stopPropagation(); resetLink.mutate(current) }
   }
 
-  useHotkeys({
-    ...Object.fromEntries(SECTIONS.map((_, position) => [String(position + 1), () => focusSection(position + 1)])),
-    f: () => filterInput.current?.focus(),
-    i: () => inviteButton.current?.focus(),
-    '?': () => setHelp(true),
-  }, !help)
+  useHotkeyScope(adminScope, {
+    ...Object.fromEntries(SECTIONS.map((_, position) => [`section-${position + 1}`, () => focusSection(position + 1)])),
+    filter: () => filterInput.current?.focus(),
+    invite: () => inviteButton.current?.focus(),
+  })
 
   const allUsers = users.data ?? []
   const day = 24 * 3600 * 1000
@@ -217,8 +204,8 @@ export default function AdminPage() {
   return <div className="console-page">
     <header className="console-head">
       <div><span className="eyebrow">Administration</span><h1>Accounts and access</h1></div>
-      <nav className="console-jump" aria-label="Sections">{SECTIONS.map((section, position) => <button key={section} type="button" onClick={() => focusSection(position + 1)}><kbd>{position + 1}</kbd>{section}</button>)}</nav>
-      <button type="button" className="icon-button" onClick={() => setHelp(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard /></button>
+      <nav className="console-jump" aria-label="Sections">{SECTIONS.map((section, position) => <button key={section} type="button" onClick={() => focusSection(position + 1)}><HotkeyKbd hotkey={adminScope.byId[`section-${position + 1}`]} />{section}</button>)}</nav>
+      <HotkeyHelpButton />
     </header>
     <div className="console-kpis">
       <div><span>Accounts</span><strong>{allUsers.length}</strong><small>{allUsers.filter(user => user.status === 'active').length} active · {allUsers.filter(user => user.status !== 'active').length} disabled</small></div>
@@ -257,7 +244,7 @@ export default function AdminPage() {
           <form className="console-inline" onSubmit={(event: FormEvent) => { event.preventDefault(); invite.mutate() }}>
             <label className="console-field"><span>Role</span><select className="select" value={inviteRole} onChange={event => setInviteRole(event.target.value)}><option value="member">Member</option><option value="operator">Operator</option><option value="admin">Admin</option></select></label>
             <label className="console-field console-field--grow"><span>Email (optional, to restrict it)</span><input className="input" type="email" value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} /></label>
-            <button ref={inviteButton} type="submit" className="button button--primary button--small" disabled={invite.isPending}><UserPlus aria-hidden="true" />Create invitation <kbd>I</kbd></button>
+            <button ref={inviteButton} type="submit" className="button button--primary button--small" disabled={invite.isPending}><UserPlus aria-hidden="true" />Create invitation <HotkeyKbd hotkey={adminScope.byId.invite} /></button>
           </form>
           <p className="console-muted"><Link2 aria-hidden="true" /> Invitations open registration for one person even when it is closed or invitation-only. For a forgotten password, use <em>Reset</em> on the user’s row (<kbd>P</kbd>): the link sets a new password once. Links use this page’s address, so make them from the address you share (your tunnel URL).</p>
         </Section>
@@ -273,7 +260,6 @@ export default function AdminPage() {
         </Section>
       </div>
     </div>
-    {help && <ShortcutsDialog groups={SHORTCUTS} onClose={closeHelp} />}
   </div>
 }
 

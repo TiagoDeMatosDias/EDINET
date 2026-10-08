@@ -2,7 +2,9 @@ import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { useHotkeyText } from '../../hotkeys/useHotkeyText'
+import { screenTrailScope } from './screeningHotkeys'
 import { analysisHref, moveCursorTo, readTrail } from './screenTrail'
 
 /**
@@ -19,7 +21,9 @@ export function ScreenTrailNav({ current }: { current: string }) {
     moveCursorTo(code)
     navigate(analysisHref(code))
   }
-  useHotkeys({ J: () => step(1), K: () => step(-1) }, index >= 0)
+  useHotkeyScope(screenTrailScope, { next: () => step(1), previous: () => step(-1) }, { enabled: index >= 0 })
+  const nextKey = useHotkeyText(screenTrailScope.byId.next)
+  const previousKey = useHotkeyText(screenTrailScope.byId.previous)
   const neighbour = (offset: number) => trail?.names[index + offset]
   const previous = neighbour(-1)
   const next = neighbour(1)
@@ -27,9 +31,9 @@ export function ScreenTrailNav({ current }: { current: string }) {
   return <span className="screen-trail">
     <Link className="button button--ghost button--small" to="/screen" title="Back to the screen results (G then S)"><ArrowLeft aria-hidden="true" />Screen</Link>
     {trail && index >= 0 && <>
-      <button type="button" className="icon-button" aria-label="Previous screened company" disabled={!previous} onClick={() => step(-1)} title={previous ? `Previous: ${previous} (Shift+K)` : 'This is the first company'}><ChevronLeft /></button>
+      <button type="button" className="icon-button" aria-label="Previous screened company" disabled={!previous} onClick={() => step(-1)} title={previous ? `Previous: ${previous} (${previousKey})` : 'This is the first company'}><ChevronLeft /></button>
       <span className="screen-trail__position" title="Position in your screen results">{(index + 1).toLocaleString()} of {trail.codes.length.toLocaleString()}</span>
-      <button type="button" className="icon-button" aria-label="Next screened company" disabled={!next} onClick={() => step(1)} title={next ? `Next: ${next} (Shift+J)` : 'This is the last company'}><ChevronRight /></button>
+      <button type="button" className="icon-button" aria-label="Next screened company" disabled={!next} onClick={() => step(1)} title={next ? `Next: ${next} (${nextKey})` : 'This is the last company'}><ChevronRight /></button>
     </>}
   </span>
 }

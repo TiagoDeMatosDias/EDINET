@@ -3,7 +3,10 @@ import { useCallback, useMemo, useState } from 'react'
 
 import { ErrorState, LoadingState } from '../../components/Feedback'
 import { Field, Metric } from '../../components/Page'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { useHotkeyText } from '../../hotkeys/useHotkeyText'
+import { portfolioActivityScope, portfolioScope } from './portfolioHotkeys'
 import { CashEffect } from './ActivityCells'
 import { correctionLabel, findCorrections, orderActivity, type Correction } from './activityModel'
 import { DeleteRecordsDialog } from './DeleteRecordsDialog'
@@ -143,17 +146,22 @@ export function PortfolioActivity(props: Props) {
     })
   }, [shownIds])
   const selectAll = useMemo(() => ({ state: selectAllState, count: shownIds.length, toggle: toggleAll }), [selectAllState, shownIds.length, toggleAll])
-  useHotkeys({ Delete: deleteSelected }, Boolean(props.hotkeys) && !pending && shownSelected.length > 0)
-  useHotkeys({ A: toggleAll, n: () => setAdding(true) }, Boolean(props.hotkeys) && !pending && !adding)
+  useHotkeyScope(portfolioActivityScope, {
+    delete: () => { if (shownSelected.length > 0) deleteSelected() },
+    'select-all': () => { if (!adding) toggleAll() },
+    add: () => setAdding(true),
+  }, { enabled: Boolean(props.hotkeys) && !pending })
+  const addKey = useHotkeyText(portfolioActivityScope.byId.add)
+  const selectAllKey = useHotkeyText(portfolioActivityScope.byId['select-all'])
   const columns = useColumns(props.onOpenDetail, selected, toggle, corrections, mainAccount, selectAll)
   const filtersOn = Boolean(term || activityType !== 'all' || file !== 'all' || from || to || hideReversed)
 
   return <div className="portfolio-section-stack">
     <ActivitySummary activity={props.activity} dateRange={props.dateRange} />
-    <SectionCard title="Activity" description={`${filtered.length.toLocaleString()} of ${props.data.length.toLocaleString()} records`} actions={!adding && <button type="button" className="button button--secondary button--small" onClick={() => setAdding(true)} title="Record a transaction by hand (N)"><Plus aria-hidden="true" />Add transaction <kbd aria-hidden="true">N</kbd></button>}>
+    <SectionCard title="Activity" description={`${filtered.length.toLocaleString()} of ${props.data.length.toLocaleString()} records`} actions={!adding && <button type="button" className="button button--secondary button--small" onClick={() => setAdding(true)} title={`Record a transaction by hand (${addKey})`}><Plus aria-hidden="true" />Add transaction <span aria-hidden="true"><HotkeyKbd hotkey={portfolioActivityScope.byId.add} /></span></button>}>
       {adding && <ManualTransactionForm records={props.data} onClose={() => setAdding(false)} onAdded={result => props.onAdded?.(result)} />}
       <div className="portfolio-table-toolbar pf-activity-toolbar">
-        <Field label="Search activity"><div className="input-with-icon"><Search /><input className="input" data-portfolio-find value={search} placeholder="Symbol, description, or source" onChange={event => setSearch(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { setSearch(''); event.currentTarget.blur() } }} /><kbd className="input-kbd" aria-hidden="true">F</kbd></div></Field>
+        <Field label="Search activity"><div className="input-with-icon"><Search /><input className="input" data-portfolio-find value={search} placeholder="Symbol, description, or source" onChange={event => setSearch(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { setSearch(''); event.currentTarget.blur() } }} /><span aria-hidden="true"><HotkeyKbd className="input-kbd" hotkey={portfolioScope.byId.find} /></span></div></Field>
         <Field label="Activity type"><select className="select" value={activityType} onChange={event => setActivityType(event.target.value)}><option value="all">All activity</option>{activityTypes.map(value => <option key={value} value={value}>{titleCase(value)}</option>)}</select></Field>
         <Field label="Imported from"><select className="select" value={file} onChange={event => setFile(event.target.value)}><option value="all">Every file</option>{files.map(value => <option key={value} value={value}>{value || 'No file name'}</option>)}</select></Field>
         <Field label="From"><input className="input" type="date" value={from} max={to || undefined} onChange={event => setFrom(event.target.value)} /></Field>
@@ -162,9 +170,9 @@ export function PortfolioActivity(props: Props) {
       </div>
       <div className="pf-selection-bar" role="status">
         {shownSelected.length
-          ? <><strong>{shownSelected.length.toLocaleString()} selected</strong><button type="button" className="text-button" onClick={() => setSelected(new Set())}>Clear selection</button><button type="button" className="button button--danger button--small" onClick={deleteSelected}><Trash2 aria-hidden="true" />Delete {shownSelected.length.toLocaleString()} selected…<kbd aria-hidden="true">Del</kbd></button></>
+          ? <><strong>{shownSelected.length.toLocaleString()} selected</strong><button type="button" className="text-button" onClick={() => setSelected(new Set())}>Clear selection</button><button type="button" className="button button--danger button--small" onClick={deleteSelected}><Trash2 aria-hidden="true" />Delete {shownSelected.length.toLocaleString()} selected…<span aria-hidden="true"><HotkeyKbd hotkey={portfolioActivityScope.byId.delete} /></span></button></>
           : <span className="muted">Select records with their boxes or <kbd>Space</kbd> to delete them.</span>}
-        {shownIds.length > 0 && shownSelected.length < shownIds.length && <button type="button" className="text-button" onClick={toggleAll}>Select all {shownIds.length.toLocaleString()} {filtersOn ? 'shown' : 'records'}<span aria-hidden="true"> <kbd>Shift</kbd>+<kbd>A</kbd></span></button>}
+        {shownIds.length > 0 && shownSelected.length < shownIds.length && <button type="button" className="text-button" onClick={toggleAll}>Select all {shownIds.length.toLocaleString()} {filtersOn ? 'shown' : 'records'}<span aria-hidden="true"> <kbd>{selectAllKey}</kbd></span></button>}
       </div>
       {props.isLoading ? <LoadingState label="Loading activity" /> : props.error ? <ErrorState error={props.error} /> : <PortfolioTable
         label="Activity"

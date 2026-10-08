@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -124,6 +125,13 @@ class AuthStore:
                     expires_at TEXT,
                     consumed_at TEXT,
                     revoked_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id TEXT NOT NULL,
+                    setting_key TEXT NOT NULL,
+                    setting_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, setting_key)
                 );
                 CREATE TABLE IF NOT EXISTS auth_settings (
                     singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
@@ -759,6 +767,45 @@ class AuthStore:
             conn.execute(
                 f"UPDATE auth_settings SET {set_pairs}, updated_at = :updated_at WHERE singleton_id = 1",
                 {**kwargs, "updated_at": timestamp(now)},
+            )
+
+    # -- per-user preferences --
+
+    def get_user_setting(self, user_id: str, key: str) -> Any | None:
+        """Return one stored preference for *user_id*, or ``None`` when unset.
+
+        Values are opaque JSON: the caller owns their shape and validation.
+        No foreign key ties them to ``users`` so the auth-disabled ``local``
+        principal can keep preferences too.
+        """
+        conn = self.connection()
+        try:
+            row = conn.execute(
+                "SELECT setting_json FROM user_settings WHERE user_id = ? AND setting_key = ?",
+                (user_id, key),
+            ).fetchone()
+        finally:
+            conn.close()
+        return json.loads(row["setting_json"]) if row else None
+
+    def set_user_setting(self, user_id: str, key: str, value: Any) -> None:
+        """Store (replace) one preference for *user_id*."""
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            conn.execute(
+                """INSERT INTO user_settings(user_id, setting_key, setting_json, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, setting_key) DO UPDATE SET
+                       setting_json = excluded.setting_json,
+                       updated_at = excluded.updated_at""",
+                (user_id, key, json.dumps(value, separators=(",", ":")), timestamp(utc_now())),
+            )
+
+    def delete_user_setting(self, user_id: str, key: str) -> None:
+        """Remove one preference, restoring the application default."""
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            conn.execute(
+                "DELETE FROM user_settings WHERE user_id = ? AND setting_key = ?",
+                (user_id, key),
             )
 
     def audit(

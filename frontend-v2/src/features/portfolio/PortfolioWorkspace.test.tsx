@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AuthContext, type AuthContextValue } from '../auth/authContext'
 import PortfolioWorkspace from './PortfolioWorkspace'
+import { GlobalHotkeys } from '../../components/GlobalHotkeys'
 
 // jsdom has no canvas; the charts are covered by the screenshots, not here.
 vi.mock('react-chartjs-2', () => ({ Line: () => null, Bar: () => null }))
@@ -54,7 +55,7 @@ const AUTH: AuthContextValue = {
 
 function renderWorkspace() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={client}><AuthContext.Provider value={AUTH}><MemoryRouter initialEntries={['/portfolio']}><PortfolioWorkspace /></MemoryRouter></AuthContext.Provider></QueryClientProvider>)
+  return render(<QueryClientProvider client={client}><AuthContext.Provider value={AUTH}><MemoryRouter initialEntries={['/portfolio']}><PortfolioWorkspace /><GlobalHotkeys isAdmin={false} /></MemoryRouter></AuthContext.Provider></QueryClientProvider>)
 }
 
 beforeEach(stub)

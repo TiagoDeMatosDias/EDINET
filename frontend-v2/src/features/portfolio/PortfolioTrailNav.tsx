@@ -2,7 +2,9 @@ import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { useHotkeyText } from '../../hotkeys/useHotkeyText'
+import { portfolioTrailScope } from './portfolioHotkeys'
 import { moveTrailTo, readPortfolioTrail } from './portfolioTrail'
 
 /**
@@ -20,16 +22,18 @@ export function PortfolioTrailNav({ current }: { current: string }) {
     moveTrailTo(entry.key)
     navigate(entry.href)
   }
-  useHotkeys({ J: () => step(1), K: () => step(-1) }, index >= 0)
+  useHotkeyScope(portfolioTrailScope, { next: () => step(1), previous: () => step(-1) }, { enabled: index >= 0 })
+  const nextKey = useHotkeyText(portfolioTrailScope.byId.next)
+  const previousKey = useHotkeyText(portfolioTrailScope.byId.previous)
   const previous = entries[index - 1]
   const next = entries[index + 1]
 
   return <span className="screen-trail">
     <Link className="button button--ghost button--small" to="/portfolio" title="Back to the portfolio (G then P)" onClick={() => moveTrailTo(current)}><ArrowLeft aria-hidden="true" />Portfolio</Link>
     {index >= 0 && <>
-      <button type="button" className="icon-button" aria-label="Previous holding" disabled={!previous} onClick={() => step(-1)} title={previous ? `Previous: ${previous.label} (Shift+K)` : 'This is the first holding'}><ChevronLeft /></button>
+      <button type="button" className="icon-button" aria-label="Previous holding" disabled={!previous} onClick={() => step(-1)} title={previous ? `Previous: ${previous.label} (${previousKey})` : 'This is the first holding'}><ChevronLeft /></button>
       <span className="screen-trail__position" title="Position in your holdings list">{(index + 1).toLocaleString()} of {entries.length.toLocaleString()}</span>
-      <button type="button" className="icon-button" aria-label="Next holding" disabled={!next} onClick={() => step(1)} title={next ? `Next: ${next.label} (Shift+J)` : 'This is the last holding'}><ChevronRight /></button>
+      <button type="button" className="icon-button" aria-label="Next holding" disabled={!next} onClick={() => step(1)} title={next ? `Next: ${next.label} (${nextKey})` : 'This is the last holding'}><ChevronRight /></button>
     </>}
   </span>
 }

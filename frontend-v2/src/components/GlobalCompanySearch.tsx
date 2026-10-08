@@ -4,7 +4,9 @@ import { useNavigate } from 'react-router-dom'
 
 import { searchCompanies, useCompanySearch } from './CompanyPicker'
 import type { SecuritySearchResult } from '../api/types'
-import { useHotkeys } from '../hooks/useHotkeys'
+import { globalScope } from '../hotkeys/globalScopes'
+import { useHotkeyText } from '../hotkeys/useHotkeyText'
+import { useHotkeyScope } from '../hotkeys/useHotkeyScope'
 
 function companyMeta(company: SecuritySearchResult) {
   return [company.ticker, company.company_code, company.industry, company.market]
@@ -25,7 +27,8 @@ export function GlobalCompanySearch() {
   const [active, setActive] = useState(0)
   const search = useCompanySearch(query)
   // "/" jumps to company search from anywhere in the workspace.
-  useHotkeys({ '/': () => { input.current?.focus(); input.current?.select() } })
+  useHotkeyScope(globalScope, { search: () => { input.current?.focus(); input.current?.select() } })
+  const searchKey = useHotkeyText(globalScope.byId.search)
   const choose = (company: SecuritySearchResult) => {
     setQuery(company.ticker || company.company_name)
     setOpen(false)
@@ -81,7 +84,7 @@ export function GlobalCompanySearch() {
           aria-controls="global-company-results"
           aria-activedescendant={showResults && results.length ? `global-company-result-${activeIndex}` : undefined}
         />
-        <kbd title="Press / to search from anywhere">/</kbd>
+        <kbd title={`Press ${searchKey} to search from anywhere`}>{searchKey}</kbd>
       </form>
       {showResults && (
         <div id="global-company-results" className="global-search-results" role="listbox">

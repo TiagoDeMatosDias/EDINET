@@ -1,0 +1,44 @@
+.account-section--wide { margin-top: 10px; }
+
+.hk-settings { display: grid; gap: 10px; }
+.hk-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.hk-search { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 220px; max-width: 320px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg); color: var(--muted); }
+.hk-search input { flex: 1; min-width: 0; padding: 5px 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: .8rem; }
+.hk-screen { display: inline-flex; align-items: center; gap: 6px; font-size: .74rem; color: var(--muted); }
+.hk-screen select { padding: 4px 6px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg); color: var(--text); font: inherit; font-size: .78rem; }
+.hk-status { margin-left: auto; color: var(--muted); font-size: .72rem; }
+.hk-empty { margin: 0; color: var(--muted); font-size: .8rem; }
+
+.hk-screen-block { display: grid; gap: 6px; }
+.hk-screen-block > h3 { margin: 6px 0 0; font-family: var(--font-display); font-size: .95rem; font-weight: 500; }
+.hk-scope > h4 { margin: 4px 0 2px; color: var(--muted); font-size: .7rem; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; }
+.hk-scope__note { margin: 0 0 4px; color: var(--muted); font-size: .72rem; }
+
+.hk-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.hk-table tr { border-top: 1px solid var(--border); }
+.hk-table tr.is-capturing { background: var(--brand-accent-soft); }
+.hk-table th, .hk-table td { padding: 5px 6px; text-align: left; vertical-align: middle; }
+.hk-table th { width: 45%; font-weight: 400; }
+.hk-table th small { display: block; color: var(--muted); font-size: .7rem; }
+.hk-table td.hk-state { width: 72px; }
+.hk-table td.hk-actions { width: 130px; white-space: nowrap; text-align: right; }
+.hk-table td.hk-actions .text-button + .text-button { margin-left: 10px; }
+
+.hk-keys { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.hk-key { display: inline-flex; align-items: center; gap: 2px; }
+.hk-or, .hk-plus { color: var(--muted); font-size: .68rem; }
+.hk-or { margin: 0 4px; }
+
+.hk-badge { display: inline-block; padding: 0 5px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--muted); font-size: .66rem; }
+.hk-badge--custom { border-color: var(--brand-accent); color: var(--brand-accent); }
+
+.hk-capture { display: grid; gap: 2px; padding: 4px 8px; border: 1px dashed var(--brand-accent); border-radius: var(--radius); outline: 0; }
+.hk-capture small { color: var(--muted); font-size: .68rem; }
+.hk-capture__error { margin: 2px 0 0; color: var(--danger); font-size: .72rem; }
+
+@media (max-width: 700px) {
+  .hk-status { margin-left: 0; flex-basis: 100%; }
+  .hk-table th { width: auto; }
+  .hk-table td.hk-state { display: none; }
+  .hk-table td.hk-actions { width: auto; }
+}

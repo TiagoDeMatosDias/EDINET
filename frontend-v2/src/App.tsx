@@ -5,6 +5,7 @@ import { AppShell } from './components/AppShell'
 import { LoadingState } from './components/Feedback'
 import { AuthProvider } from './features/auth/AuthProvider'
 import { useAuth } from './features/auth/authContext'
+import { HotkeyProvider } from './hotkeys/HotkeyProvider'
 
 const OverviewPage = lazy(() => import('./features/overview/OverviewPage'))
 const HomePage = lazy(() => import('./features/marketing/HomePage'))
@@ -42,6 +43,7 @@ function AdminOnlyPage({ children }: { children: ReactNode }) {
 export function App() {
   return (
     <AuthProvider>
+      <HotkeyProvider>
       <Suspense fallback={<LoadingState label="Loading page" />}>
         <Routes>
           <Route path="/" element={<HomePage />} />
@@ -72,6 +74,7 @@ export function App() {
           <Route path="*" element={<Navigate replace to="/" />} />
         </Routes>
       </Suspense>
+      </HotkeyProvider>
     </AuthProvider>
   )
 }

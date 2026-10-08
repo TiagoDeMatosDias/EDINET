@@ -4,6 +4,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ChatPage from './ChatPage'
+import { GlobalHotkeys } from '../../components/GlobalHotkeys'
 
 function json(value: unknown, status = 200) {
   return Promise.resolve(new Response(status === 204 ? null : JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } }))
@@ -56,7 +57,7 @@ function Location() {
 
 function renderChat(search = '') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/chat${search}`]}><ChatPage /><Location /></MemoryRouter></QueryClientProvider>)
+  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/chat${search}`]}><ChatPage /><GlobalHotkeys isAdmin={false} /><Location /></MemoryRouter></QueryClientProvider>)
 }
 
 const press = (key: string, options: Partial<KeyboardEventInit> = {}) => fireEvent.keyDown(window, { key, ...options })

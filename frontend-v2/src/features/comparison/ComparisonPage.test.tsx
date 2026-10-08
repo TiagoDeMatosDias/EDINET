@@ -4,6 +4,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ComparisonPage from './ComparisonPage'
+import { GlobalHotkeys } from '../../components/GlobalHotkeys'
 
 // jsdom has no canvas; the charts are covered by the screenshots, not here.
 vi.mock('react-chartjs-2', () => ({ Line: () => null, Bar: () => null, Scatter: () => null }))
@@ -83,7 +84,7 @@ function Location() {
 
 function renderPage(search: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/compare${search}`]}><ComparisonPage /><Location /></MemoryRouter></QueryClientProvider>)
+  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/compare${search}`]}><ComparisonPage /><GlobalHotkeys isAdmin={false} /><Location /></MemoryRouter></QueryClientProvider>)
 }
 
 const table = () => screen.getByRole('table', { name: 'Comparison by metric' })
@@ -136,7 +137,7 @@ describe('ComparisonPage', () => {
     fireEvent.keyDown(window, { key: 'l' })
     fireEvent.keyDown(window, { key: '[' })
     expect(screen.getByTestId('location').textContent).toBe('?companies=E2%2CE1%2CE3')
-    fireEvent.keyDown(window, { key: 'X' })
+    fireEvent.keyDown(window, { key: 'X', shiftKey: true })
     expect(screen.getByTestId('location').textContent).toBe('?companies=E1%2CE3')
   })
 

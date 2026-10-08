@@ -1,13 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, CheckCircle2, CloudDownload, FileUp, Keyboard, RefreshCw, Upload } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, CloudDownload, FileUp, RefreshCw, Upload } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { apiRequest, queryString } from '../../api/client'
 import { Card } from '../../components/Page'
-import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
 import { Tip } from '../../components/Tooltip'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { useHotkeyText } from '../../hotkeys/useHotkeyText'
+import { holdingDetailScope, portfolioIncomeScope, portfolioScope } from './portfolioHotkeys'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { useAuth } from '../auth/authContext'
 import { PortfolioActivity } from './PortfolioActivity'
@@ -49,45 +52,6 @@ const TABS: Array<{ id: PortfolioTab; label: string }> = [
 const TAB_IDS = TABS.map(tab => tab.id)
 const RANGE_KEYS = RANGES.map(range => range.key)
 
-const SHORTCUTS: ShortcutGroup[] = [
-  { title: 'Anywhere on this page', shortcuts: [
-    { keys: ['1', '2', '3', '4', '5', '6'], label: 'Overview, Holdings, Performance, Income, Activity, Data & method' },
-    { keys: ['-', '+'], label: 'Longer or shorter period' },
-    { keys: ['C'], label: 'Choose the display currency' },
-    { keys: ['B'], label: 'Choose the benchmark' },
-    { keys: ['F'], label: 'Find a holding, record, or paying company' },
-    { keys: ['R'], label: 'Rebuild the portfolio from your activity' },
-    { keys: ['Shift+R'], label: 'Refresh market prices, then rebuild (operators)' },
-    { keys: ['I'], label: 'Import an IBKR Flex Query file' },
-    { keys: ['?'], label: 'Show or hide this list' },
-  ] },
-  { title: 'Activity records', shortcuts: [
-    { keys: ['N'], label: 'Add a transaction by hand' },
-    { keys: ['Shift+A'], label: 'Select every record shown (again: unselect)' },
-    { keys: ['Space'], label: 'Select or unselect the record' },
-    { keys: ['Del'], label: 'Delete the selected records (asks first)' },
-  ] },
-  { title: 'Holdings and activity lists', shortcuts: [
-    { keys: ['↓', 'J'], label: 'Enter the list, then move down' },
-    { keys: ['↑', 'K'], label: 'Move up' },
-    { keys: ['Home', 'End'], label: 'First or last row' },
-    { keys: ['Enter'], label: 'Open the details' },
-    { keys: ['A'], label: 'Open the holding in Analysis' },
-    { keys: ['[', ']'], label: 'Previous or next page' },
-  ] },
-  { title: 'Income', shortcuts: [
-    { keys: ['F'], label: 'Choose companies (type, ↑/↓, Enter)' },
-    { keys: ['X'], label: 'Show every payer again' },
-    { keys: ['Enter'], label: 'In the payers list: show only that company' },
-    { keys: ['A'], label: 'In the payers list: add or remove it' },
-  ] },
-  { title: 'Holding details', shortcuts: [
-    { keys: ['Shift+J', 'Shift+K'], label: 'Next or previous holding' },
-    { keys: ['A'], label: 'Open in Analysis (Shift+J/K step on from there)' },
-    { keys: ['Esc'], label: 'Close' },
-  ] },
-]
-
 function currencyOptions(data?: Array<{ code?: string } | string>) {
   const codes = data?.map(item => typeof item === 'string' ? item : item.code ?? '').filter(Boolean)
   return codes?.length ? codes : ['EUR', 'USD', 'JPY']
@@ -110,7 +74,7 @@ function DataStatus({ quality, onOpen }: { quality?: DataQuality; onOpen: () => 
   const warnings = issues.filter(issue => issue.level === 'warning').length
   const label = errors ? `${errors} data problem${errors === 1 ? '' : 's'}` : warnings ? `${warnings} data warning${warnings === 1 ? '' : 's'}` : 'Data checks pass'
   const Icon = errors || warnings ? AlertTriangle : CheckCircle2
-  return <button type="button" className={`pf-status ${errors ? 'is-error' : warnings ? 'is-warning' : 'is-ok'}`} onClick={onOpen} title="Open Data & method (6)">
+  return <button type="button" className={`pf-status ${errors ? 'is-error' : warnings ? 'is-warning' : 'is-ok'}`} onClick={onOpen} title="Open Data & method">
     <Icon aria-hidden="true" />{label}
   </button>
 }
@@ -130,7 +94,6 @@ export default function PortfolioWorkspace() {
   const [incomeView, setIncomeView] = usePersistentState<IncomeView>('portfolio.incomeView', { grouping: 'quarterly', measure: 'net', stack: 'company' })
   const [detail, setDetail] = useState<PortfolioDetail | null>(null)
   const [status, setStatus] = useState('')
-  const [showShortcuts, setShowShortcuts] = useState(false)
   const [holdingOrder, setHoldingOrder] = useState<Holding[]>([])
   // Coming back from Analysis lands on the holding last opened.
   const [returnTo] = useState(() => {
@@ -148,7 +111,6 @@ export default function PortfolioWorkspace() {
   const importInput = useRef<HTMLInputElement>(null)
   const closeDetail = useCallback(() => setDetail(null), [])
   const openDetail = useCallback((next: PortfolioDetail) => setDetail(next), [])
-  const closeShortcuts = useCallback(() => setShowShortcuts(false), [])
   const suffix = queryString({ display_currency: currency })
 
   const currencies = useQuery({ queryKey: ['portfolio-currencies'], queryFn: () => apiRequest<Array<{ code?: string } | string>>('/api/portfolio/display-currencies'), retry: false })
@@ -267,31 +229,33 @@ export default function PortfolioWorkspace() {
     setRange(RANGE_KEYS[Math.max(0, Math.min(RANGE_KEYS.length - 1, index + offset))])
   }
 
-  const pageKeysActive = !detail && !showShortcuts
-  useHotkeys({
-    ...Object.fromEntries(TABS.map((item, index) => [String(index + 1), () => setTab(item.id)])),
-    '-': () => stepRange(1),
-    '+': () => stepRange(-1),
-    // The unshifted '+' key on many layouts.
-    '=': () => stepRange(-1),
-    c: () => currencySelect.current?.focus(),
-    b: () => benchmarkSelect.current?.focus(),
-    f: () => {
+  const pageKeysActive = !detail
+  const currencyKey = useHotkeyText(portfolioScope.byId.currency)
+  const benchmarkKey = useHotkeyText(portfolioScope.byId.benchmark)
+  const refreshKey = useHotkeyText(portfolioScope.byId['refresh-prices'])
+  const rebuildKey = useHotkeyText(portfolioScope.byId.rebuild)
+  const importKey = useHotkeyText(portfolioScope.byId.import)
+  useHotkeyScope(portfolioScope, {
+    ...Object.fromEntries(TABS.map(item => [`tab-${item.id}`, () => setTab(item.id)])),
+    longer: () => stepRange(1),
+    shorter: () => stepRange(-1),
+    currency: () => currencySelect.current?.focus(),
+    benchmark: () => benchmarkSelect.current?.focus(),
+    find: () => {
       if (tab === 'income') return document.querySelector<HTMLInputElement>('[data-income-find]')?.focus()
       if (tab !== 'holdings' && tab !== 'activity') setTab('holdings')
       window.setTimeout(() => document.querySelector<HTMLInputElement>('[data-portfolio-find]')?.focus(), 0)
     },
-    x: () => { if (tab === 'income') setIncomeSymbols([]) },
-    r: () => { if (!busy) rebuild.mutate() },
-    R: () => { if (!busy && canRefresh) refresh.mutate() },
-    i: () => importInput.current?.click(),
-    '?': () => setShowShortcuts(true),
-  }, pageKeysActive)
-  useHotkeys({
-    a: () => { if (detailHolding) openAnalysis(detailHolding) },
-    J: () => stepHolding(1),
-    K: () => stepHolding(-1),
-  }, Boolean(detailHolding) && !showShortcuts)
+    rebuild: () => { if (!busy) rebuild.mutate() },
+    'refresh-prices': () => { if (!busy && canRefresh) refresh.mutate() },
+    import: () => importInput.current?.click(),
+  }, { enabled: pageKeysActive })
+  useHotkeyScope(portfolioIncomeScope, { 'show-all': () => setIncomeSymbols([]) }, { enabled: pageKeysActive && tab === 'income' })
+  useHotkeyScope(holdingDetailScope, {
+    analyze: () => { if (detailHolding) openAnalysis(detailHolding) },
+    next: () => stepHolding(1),
+    previous: () => stepHolding(-1),
+  }, { enabled: Boolean(detailHolding) })
 
   const metadata = detailMeta(detail)
   const performanceData = performance.data
@@ -309,32 +273,32 @@ export default function PortfolioWorkspace() {
           {quality.data?.valuation_date ? <Tip content="The last day the ledger was valued. Rebuild (R) after importing activity; refresh prices (Shift+R) to extend it to today.">Valued as of {formatDay(quality.data.valuation_date)}</Tip> : 'Not valued yet'}
           {period && <span>{formatDay(period.start)} – {formatDay(period.end)}</span>}
           <DataStatus quality={quality.data} onOpen={() => setTab('data')} />
-          <button type="button" className="icon-button" onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard aria-hidden="true" /></button>
+          <HotkeyHelpButton />
         </p>
       </div>
       <div className="pf-header__controls">
         <div className="range-buttons" role="group" aria-label="Performance period">
           {RANGES.map(option => <button key={option.key} type="button" className={range === option.key ? 'active' : ''} aria-pressed={range === option.key} title={option.title} onClick={() => setRange(option.key)}>{option.label}</button>)}
-          <span className="range-buttons__keys" aria-hidden="true"><kbd>-</kbd><kbd>=</kbd></span>
+          <span className="range-buttons__keys" aria-hidden="true"><HotkeyKbd hotkey={portfolioScope.byId.longer} /><HotkeyKbd hotkey={portfolioScope.byId.shorter} /></span>
         </div>
-        <label className="pf-select" title="Display currency (C)">
+        <label className="pf-select" title={`Display currency (${currencyKey})`}>
           <span>Currency</span>
           <select ref={currencySelect} className="select" value={currency} onChange={event => setCurrency(event.target.value)} aria-label="Display currency">{currencyOptions(currencies.data).map(code => <option key={code}>{code}</option>)}</select>
-          <kbd aria-hidden="true">C</kbd>
+          <span aria-hidden="true"><HotkeyKbd hotkey={portfolioScope.byId.currency} /></span>
         </label>
-        <label className="pf-select" title="Compare against (B)">
+        <label className="pf-select" title={`Compare against (${benchmarkKey})`}>
           <span>Benchmark</span>
           <select ref={benchmarkSelect} className="select" value={benchmark} onChange={event => setBenchmark(event.target.value)} aria-label="Benchmark">
             <option value="">None</option>
             {(benchmarks.data ?? []).map(choice => <option key={choice.ticker} value={choice.ticker} disabled={!choice.available && !canRefresh}>{choice.ticker} · {choice.label}{choice.available ? '' : ' (no prices yet)'}</option>)}
             {benchmark && !(benchmarks.data ?? []).some(choice => choice.ticker === benchmark) && <option value={benchmark}>{benchmark}</option>}
           </select>
-          <kbd aria-hidden="true">B</kbd>
+          <span aria-hidden="true"><HotkeyKbd hotkey={portfolioScope.byId.benchmark} /></span>
         </label>
         <div className="pf-header__actions">
-          {canRefresh && <button type="button" className="button button--secondary button--small" disabled={busy} onClick={() => refresh.mutate()} title="Fetch the latest prices for every holding and the benchmark, plus exchange and interest rates, then rebuild (Shift+R)"><CloudDownload className={refresh.isPending ? 'spin' : undefined} />Refresh prices</button>}
-          <button type="button" className="button button--ghost button--small" disabled={busy} onClick={() => rebuild.mutate()} title="Revalue every day from your activity and the stored prices (R)"><RefreshCw className={rebuild.isPending ? 'spin' : undefined} />Rebuild</button>
-          <label className="button button--ghost button--small file-button" title="Import an IBKR Flex Query XML file (I)"><Upload />Import<input ref={importInput} type="file" accept=".xml,text/xml" multiple onChange={event => void uploadFiles(event.target.files)} /></label>
+          {canRefresh && <button type="button" className="button button--secondary button--small" disabled={busy} onClick={() => refresh.mutate()} title={`Fetch the latest prices for every holding and the benchmark, plus exchange and interest rates, then rebuild (${refreshKey})`}><CloudDownload className={refresh.isPending ? 'spin' : undefined} />Refresh prices</button>}
+          <button type="button" className="button button--ghost button--small" disabled={busy} onClick={() => rebuild.mutate()} title={`Revalue every day from your activity and the stored prices (${rebuildKey})`}><RefreshCw className={rebuild.isPending ? 'spin' : undefined} />Rebuild</button>
+          <label className="button button--ghost button--small file-button" title={`Import an IBKR Flex Query XML file (${importKey})`}><Upload />Import<input ref={importInput} type="file" accept=".xml,text/xml" multiple onChange={event => void uploadFiles(event.target.files)} /></label>
         </div>
       </div>
     </header>
@@ -348,7 +312,7 @@ export default function PortfolioWorkspace() {
         <StatButton label="Max drawdown" tip="The largest fall from a previous high on the time-weighted path, so deposits and withdrawals do not count." value={percent(performanceData?.max_drawdown)} detail={performanceData?.max_dd_peak_date ? `${formatDay(performanceData.max_dd_peak_date)} → ${formatDay(performanceData.max_dd_trough_date)}` : 'Peak to trough'} tone="negative" onClick={() => setTab('performance')} />
         <StatButton label="Sharpe ratio" tip="Annualized return above cash, divided by volatility. Cash is the short-term government rate in the display currency (see Data & method)." value={decimal(performanceData?.sharpe_ratio)} detail={performanceData?.risk_free?.kind === 'missing' ? 'No rate data: 0% cash' : `Cash ${percent(performanceData?.risk_free_rate)} a year`} onClick={() => setTab('data')} />
       </div>
-      <nav className="step-tabs portfolio-tabs" aria-label="Portfolio sections">{TABS.map((item, index) => <button key={item.id} type="button" className={tab === item.id ? 'active' : ''} aria-pressed={tab === item.id} onClick={() => setTab(item.id)} title={`${item.label} (${index + 1})`}><kbd aria-hidden="true">{index + 1}</kbd>{item.label}</button>)}</nav>
+      <nav className="step-tabs portfolio-tabs" aria-label="Portfolio sections">{TABS.map(item => <button key={item.id} type="button" className={tab === item.id ? 'active' : ''} aria-pressed={tab === item.id} onClick={() => setTab(item.id)} title={item.label}><span aria-hidden="true"><HotkeyKbd hotkey={portfolioScope.byId[`tab-${item.id}`]} /></span>{item.label}</button>)}</nav>
       {tab === 'overview' && <PortfolioOverview performance={performanceData} isLoading={performance.isLoading} summary={summary} holdings={openHoldings} allocation={allocation.data} currencies={currencyExposure.data} transactions={transactions.data ?? []} currency={currency} benchmarkLabel={benchmarkLabel} onOpenDetail={openDetail} onTab={setTab} />}
       {tab === 'holdings' && <PortfolioHoldings data={holdings.data ?? []} summary={summary} currency={currency} includeClosed={includeClosed} isLoading={holdings.isLoading} error={holdings.error} hotkeys={pageKeysActive} returnTo={returnTo} onIncludeClosed={setIncludeClosed} onOpenDetail={openDetail} onAnalyze={openAnalysis} onOrderChange={setHoldingOrder} />}
       {tab === 'performance' && <PortfolioPerformance performance={performanceData} isLoading={performance.isLoading} contribution={contribution.data} currency={currency} benchmarkLabel={benchmarkLabel} />}
@@ -401,6 +365,5 @@ export default function PortfolioWorkspace() {
         onIncome={symbol => { setIncomeSymbols([symbol]); setTab('income'); setDetail(null) }}
       />}
     </PortfolioDrawer>
-    {showShortcuts && <ShortcutsDialog groups={SHORTCUTS} onClose={closeShortcuts} />}
   </div>
 }

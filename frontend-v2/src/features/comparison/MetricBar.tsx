@@ -4,6 +4,8 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type R
 import { groupMetrics, metricDefinition, type MetricDefinition } from '../../metrics'
 import { buildMetricOptions, isTextMetric, searchMetrics, type MetricOption } from '../screening/metricCatalog'
 import { orderMetrics } from './comparisonModel'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { comparisonScope } from './comparisonHotkeys'
 
 // Tags and split events are not numbers a comparison can line up.
 const HIDDEN_TABLES = ['Company_Tags', 'Stock_Splits']
@@ -60,7 +62,7 @@ function MetricSearch({ options, standardOptions, selected, inputRef, onChoose }
       onChange={event => { setQuery(event.target.value); setActive(0); setOpen(true) }}
       onKeyDown={onKeyDown}
     />
-    <kbd aria-hidden="true">M</kbd>
+    <span aria-hidden="true"><HotkeyKbd hotkey={comparisonScope.byId['add-metric']} /></span>
     {open && <ul ref={list} id={listId} role="listbox" aria-label="Metrics" className="cmp-metric-search__list">
       {results.map((option, index) => <li
         key={option.key}

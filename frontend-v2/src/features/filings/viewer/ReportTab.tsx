@@ -4,7 +4,9 @@ import { useState } from 'react'
 
 import { apiRequest, queryString } from '../../../api/client'
 import { EmptyState, ErrorState, LoadingState } from '../../../components/Feedback'
-import { useHotkeys } from '../../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../../hotkeys/useHotkeyScope'
+import { reportTabScope } from '../filingsHotkeys'
 import { usePersistentState } from '../../../hooks/usePersistentState'
 import { formatBytes } from '../filingFormat'
 import { FILE_GROUP_LABELS, type ReportFile } from './viewerTypes'
@@ -60,11 +62,11 @@ export function ReportTab({ docId, files, filesLoading, active, onSelect }: { do
     const next = files[Math.max(0, Math.min(files.length - 1, index + delta))]
     if (next) onSelect(next.artifact_id)
   }
-  useHotkeys({
-    j: () => step(1),
-    k: () => step(-1),
-    t: () => setLanguage(LANGUAGE_KEYS[(LANGUAGE_KEYS.indexOf(language) + 1) % LANGUAGE_KEYS.length]),
-  }, files.length > 0)
+  useHotkeyScope(reportTabScope, {
+    next: () => step(1),
+    previous: () => step(-1),
+    language: () => setLanguage(LANGUAGE_KEYS[(LANGUAGE_KEYS.indexOf(language) + 1) % LANGUAGE_KEYS.length]),
+  }, { enabled: files.length > 0 })
   const retranslate = async () => {
     setRefreshing(true)
     setRefreshError('')
@@ -96,7 +98,7 @@ export function ReportTab({ docId, files, filesLoading, active, onSelect }: { do
           </button>
         </li>)}</ul>
       </section>)}
-      <p className="viewer-sidebar__keys"><kbd>J</kbd><kbd>K</kbd> next and previous document</p>
+      <p className="viewer-sidebar__keys"><HotkeyKbd hotkey={reportTabScope.byId.next} /><HotkeyKbd hotkey={reportTabScope.byId.previous} /> next and previous document</p>
     </nav>
     <section className="viewer-main" aria-label={selected?.label ?? 'Report'}>
       <header className="viewer-toolbar">
@@ -107,7 +109,7 @@ export function ReportTab({ docId, files, filesLoading, active, onSelect }: { do
         <div className="segmented segmented--small" role="group" aria-label="Report language">
           {LANGUAGES.map(option => <button key={option.key} type="button" className={language === option.key ? 'active' : ''} aria-pressed={language === option.key} onClick={() => setLanguage(option.key)}>{option.label}</button>)}
         </div>
-        <kbd title="Cycle the report language">T</kbd>
+        <span title="Cycle the report language"><HotkeyKbd hotkey={reportTabScope.byId.language} /></span>
         {wantsEnglish && englishHtml && <button type="button" className="text-button" disabled={refreshing} onClick={() => void retranslate()} title="Discard the cached translation of this document and translate it again"><RefreshCw aria-hidden="true" className={refreshing ? 'spin' : undefined} />Retranslate</button>}
       </header>
       {wantsEnglish && english.isFetching && !englishHtml && <p className="viewer-note" role="status">Translating this document with the local Argos model. Long sections can take a minute; the Japanese original stays readable meanwhile.</p>}

@@ -1,18 +1,21 @@
 import { useQuery } from '@tanstack/react-query'
-import { ArrowRight, Keyboard } from 'lucide-react'
-import { useCallback, useState, type ReactNode } from 'react'
+import { ArrowRight } from 'lucide-react'
+import { type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import { apiRequest } from '../../api/client'
 import type { Job } from '../../api/types'
 import { ErrorState, LoadingState } from '../../components/Feedback'
-import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
 import { useSystemStatus } from '../../hooks/useHealth'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { globalScope } from '../../hotkeys/globalScopes'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { useAuth } from '../auth/authContext'
 import { chatApi, chatKeys, useChatUnread } from '../chat/chatApi'
 import { colorFor, messageTime, personName, relativeTime } from '../chat/chatModel'
 import { recentWorkTitle } from './recentWork'
+import { overviewScope } from './overviewHotkeys'
 import './overview.css'
 
 interface RecentWorkItem {
@@ -58,22 +61,6 @@ const EMPTY_RESEARCH: OverviewData['research'] = { followed: 0, alerts: 0, notes
 
 const KIND_LABELS: Record<string, string> = { screen: 'Screen', company: 'Company', comparison: 'Compare', filing: 'Filing', backtest: 'Backtest' }
 
-const SHORTCUTS: ShortcutGroup[] = [
-  { title: 'Overview', shortcuts: [
-    { keys: ['J', 'K'], label: 'Next or previous item in any panel' },
-    { keys: ['[', ']'], label: 'Previous or next panel' },
-    { keys: ['Enter'], label: 'Open the item' },
-    { keys: ['1', '2', '3', '4', '5', '6'], label: 'Portfolio, Research, Chat, Recent work, Data, Start' },
-    { keys: ['?'], label: 'Show or hide this list' },
-  ] },
-  { title: 'Start something', shortcuts: [
-    { keys: ['N'], label: 'New screen' },
-    { keys: ['/'], label: 'Analyze a company (search)' },
-    { keys: ['T'], label: 'Test an idea in Backtest' },
-    { keys: ['U'], label: 'Read unread chat' },
-  ] },
-]
-
 const money = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 0 })
 const dayFormat = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 
@@ -118,7 +105,7 @@ function focusPanel(index: number) {
 function Panel({ index, title, link, meta, children, className = '' }: { index: number; title: string; link?: { to: string; label: string }; meta?: ReactNode; children: ReactNode; className?: string }) {
   return <section className={`ov-panel ${className}`} aria-labelledby={`ov-panel-${index}`}>
     <header>
-      <kbd aria-hidden="true">{index}</kbd>
+      <span aria-hidden="true"><HotkeyKbd hotkey={overviewScope.byId[`panel-${index}`]} /></span>
       <h2 id={`ov-panel-${index}`} tabIndex={-1}>{title}</h2>
       {meta && <span className="ov-panel__meta">{meta}</span>}
       {link && <Link className="ov-panel__link" to={link.to}>{link.label}<ArrowRight aria-hidden="true" /></Link>}
@@ -135,8 +122,6 @@ export default function OverviewPage() {
   const auth = useAuth()
   const navigate = useNavigate()
   const isAdmin = auth.user?.role === 'admin' || auth.user?.role === 'operator'
-  const [help, setHelp] = useState(false)
-  const closeHelp = useCallback(() => setHelp(false), [])
   const overview = useQuery({ queryKey: ['overview'], queryFn: () => apiRequest<OverviewData>('/api/overview'), refetchInterval: 120_000 })
   const recent = useQuery({ queryKey: ['recent-work'], queryFn: () => apiRequest<{ items: RecentWorkItem[] }>('/api/research/recent-work?limit=50') })
   const feed = useQuery({ queryKey: chatKeys.feed, queryFn: () => chatApi.feed(), retry: false, staleTime: 30_000 })
@@ -144,17 +129,16 @@ export default function OverviewPage() {
   const status = useSystemStatus(isAdmin)
   const jobs = useQuery({ queryKey: ['jobs'], queryFn: () => apiRequest<Job[]>('/api/jobs?limit=8'), enabled: isAdmin, retry: false })
 
-  useHotkeys({
-    j: () => moveFocus(1),
-    k: () => moveFocus(-1),
-    ']': () => moveFocus(1, true),
-    '[': () => moveFocus(-1, true),
-    ...Object.fromEntries([1, 2, 3, 4, 5, 6].map(index => [String(index), () => focusPanel(index - 1)])),
-    n: () => navigate('/screen'),
-    t: () => navigate('/backtest'),
-    u: () => navigate('/chat'),
-    '?': () => setHelp(true),
-  }, !help)
+  useHotkeyScope(overviewScope, {
+    next: () => moveFocus(1),
+    previous: () => moveFocus(-1),
+    'next-panel': () => moveFocus(1, true),
+    'previous-panel': () => moveFocus(-1, true),
+    ...Object.fromEntries([1, 2, 3, 4, 5, 6].map(index => [`panel-${index}`, () => focusPanel(index - 1)])),
+    'new-screen': () => navigate('/screen'),
+    backtest: () => navigate('/backtest'),
+    chat: () => navigate('/chat'),
+  })
 
   if (overview.isLoading) return <LoadingState label="Loading your overview" />
   if (overview.isError || !overview.data) return <ErrorState error={overview.error} retry={() => overview.refetch()} />
@@ -170,12 +154,12 @@ export default function OverviewPage() {
       <div><span className="eyebrow">Research workspace</span><h1>Overview</h1></div>
       <p>{day(overview.data.today)} · {auth.user ? `signed in as ${auth.user.username}` : 'local workspace'}</p>
       <nav className="ov-actions" aria-label="Start something">
-        <Link className="button button--primary button--small" to="/screen">Find companies <kbd>N</kbd></Link>
-        <button type="button" className="button button--secondary button--small" onClick={() => document.querySelector<HTMLInputElement>('.global-search input')?.focus()}>Analyze <kbd>/</kbd></button>
-        <Link className="button button--secondary button--small" to="/backtest">Test an idea <kbd>T</kbd></Link>
+        <Link className="button button--primary button--small" to="/screen">Find companies <HotkeyKbd hotkey={overviewScope.byId['new-screen']} /></Link>
+        <button type="button" className="button button--secondary button--small" onClick={() => document.querySelector<HTMLInputElement>('.global-search input')?.focus()}>Analyze <HotkeyKbd hotkey={globalScope.byId.search} /></button>
+        <Link className="button button--secondary button--small" to="/backtest">Test an idea <HotkeyKbd hotkey={overviewScope.byId.backtest} /></Link>
         <Link className="button button--secondary button--small" to="/compare">Compare</Link>
         {auth.user?.role === 'admin' && <Link className="button button--secondary button--small" to="/pipeline">Refresh data</Link>}
-        <button type="button" className="icon-button" onClick={() => setHelp(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard /></button>
+        <HotkeyHelpButton />
       </nav>
     </header>
 
@@ -253,15 +237,14 @@ export default function OverviewPage() {
 
       <Panel index={6} title="Start" meta="where to go next">
         <ul className="ov-list ov-list--start">
-          <li><Link className="ov-item" to="/screen">Find companies that match rules</Link><kbd>N</kbd></li>
-          <li><Link className="ov-item" to="/backtest">Backtest a portfolio or a screen</Link><kbd>T</kbd></li>
+          <li><Link className="ov-item" to="/screen">Find companies that match rules</Link><HotkeyKbd hotkey={overviewScope.byId['new-screen']} /></li>
+          <li><Link className="ov-item" to="/backtest">Backtest a portfolio or a screen</Link><HotkeyKbd hotkey={overviewScope.byId.backtest} /></li>
           <li><Link className="ov-item" to="/compare">Compare companies, a tag, or your portfolio</Link></li>
           <li><Link className="ov-item" to="/research?tab=alerts">Set an alert on a price or ratio</Link></li>
-          <li><Link className="ov-item" to="/chat">Discuss ideas in Chat</Link><kbd>U</kbd></li>
+          <li><Link className="ov-item" to="/chat">Discuss ideas in Chat</Link><HotkeyKbd hotkey={overviewScope.byId.chat} /></li>
           <li><Link className="ov-item" to="/filings">Read filings in Japanese and English</Link></li>
         </ul>
       </Panel>
     </div>
-    {help && <ShortcutsDialog groups={SHORTCUTS} onClose={closeHelp} />}
   </div>
 }

@@ -58,7 +58,7 @@ describe('PipelinePage keyboard', () => {
     press('Enter', document.activeElement!)
     fireEvent.change(screen.getByRole('combobox', { name: /Detection Mode/ }), { target: { value: 'full' } })
 
-    press('R', window, { shiftKey: true })
+    press('r')
     await waitFor(() => expect(posted.find(item => item.path === '/api/pipeline/run')?.body).toEqual({
       steps: [{ name: 'detect_splits', overwrite: false }, { name: 'update_stock_prices', overwrite: true }],
       config: { detect_splits_config: { mode: 'full' } },

@@ -28,7 +28,7 @@ describe('stepping through portfolio holdings from Analysis', () => {
 
     expect(screen.getByText('2 of 3')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Next holding' })).toHaveAttribute('title', 'Next: British American Tobacco (Shift+J)')
-    fireEvent.keyDown(document.body, { key: 'J' })
+    fireEvent.keyDown(document.body, { key: 'J', shiftKey: true })
     expect(screen.getByLabelText('Path')).toHaveTextContent('/analyze?ticker=BTI&from=portfolio')
     expect(readPortfolioTrail()).toMatchObject({ current: 'BTI', refocus: true })
   })
@@ -40,7 +40,7 @@ describe('stepping through portfolio holdings from Analysis', () => {
     expect(screen.getByText('1 of 3')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Previous holding' })).toBeDisabled()
     expect(screen.getByRole('link', { name: 'Portfolio' })).toHaveAttribute('href', '/portfolio')
-    fireEvent.keyDown(document.body, { key: 'J' })
+    fireEvent.keyDown(document.body, { key: 'J', shiftKey: true })
     expect(screen.getByLabelText('Path')).toHaveTextContent('/analyze/E01437?from=portfolio')
   })
 })

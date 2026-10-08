@@ -2,7 +2,9 @@ import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 
 import { Tip } from '../../components/Tooltip'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { portfolioTableScope } from './portfolioHotkeys'
 
 export interface TableColumn<T> {
   id: string
@@ -130,10 +132,10 @@ export function PortfolioTable<T>({
   const focusInList = () => Boolean(body.current?.contains(document.activeElement))
   const enterList = () => select(cursorIndex, true)
   const goToPage = (target: number) => select(Math.max(0, Math.min(pages - 1, target)) * pageSize, focusInList())
-  useHotkeys({
-    j: enterList, k: enterList, ArrowDown: enterList, ArrowUp: enterList,
-    '[': () => goToPage(page - 1), ']': () => goToPage(page + 1),
-  }, hotkeys && sorted.length > 0)
+  useHotkeyScope(portfolioTableScope, {
+    enter: enterList,
+    'previous-page': () => goToPage(page - 1), 'next-page': () => goToPage(page + 1),
+  }, { enabled: hotkeys && sorted.length > 0 })
 
   const toggleSort = (column: TableColumn<T>) => {
     if (!column.sortValue) return
@@ -207,7 +209,7 @@ export function PortfolioTable<T>({
       </table>
     </div>
     <footer className="pf-table__foot">
-      {(hotkeys || onOpen) ? <span className="pf-table__keys" aria-hidden="true"><kbd>↓</kbd><kbd>J</kbd> browse{onOpen && <> · <kbd>Enter</kbd> {openLabel}</>}{onSecondary && secondaryLabel && <> · <kbd>A</kbd> {secondaryLabel}</>}{keysHint && <> · {keysHint}</>}{pages > 1 && <> · <kbd>[</kbd><kbd>]</kbd> pages</>}</span> : <span>{sorted.length.toLocaleString()} rows</span>}
+      {(hotkeys || onOpen) ? <span className="pf-table__keys" aria-hidden="true"><HotkeyKbd hotkey={portfolioTableScope.byId.enter} /> browse{onOpen && <> · <kbd>Enter</kbd> {openLabel}</>}{onSecondary && secondaryLabel && <> · <kbd>A</kbd> {secondaryLabel}</>}{keysHint && <> · {keysHint}</>}{pages > 1 && <> · <HotkeyKbd hotkey={portfolioTableScope.byId['previous-page']} /><HotkeyKbd hotkey={portfolioTableScope.byId['next-page']} /> pages</>}</span> : <span>{sorted.length.toLocaleString()} rows</span>}
       {pages > 1 && <span className="pf-table__pages" aria-label="Table pagination">
         <span>{(page * pageSize + 1).toLocaleString()}–{Math.min((page + 1) * pageSize, sorted.length).toLocaleString()} of {sorted.length.toLocaleString()}</span>
         <button type="button" className="icon-button" aria-label="Previous page" disabled={page === 0} onClick={() => goToPage(page - 1)}><ChevronLeft /></button>

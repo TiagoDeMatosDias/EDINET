@@ -19,6 +19,7 @@ from src.research.api import router as _research_router
 from src.web_app.api.overview import router as _overview_router
 from src.web_app.api.screening import router as _screening_router
 from src.web_app.api.security_analysis import router as _security_router
+from src.web_app.api.settings import router as _settings_router
 from src.web_app.api.splits import router as _splits_router
 from src.web_app.api.tags import router as _tags_router
 
@@ -42,6 +43,7 @@ _ROUTERS = (
     _chat_router,
     _profiles_router,
     _overview_router,
+    _settings_router,
 )
 
 for _router in _ROUTERS:

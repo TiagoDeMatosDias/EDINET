@@ -1,6 +1,6 @@
 # Frontend Architecture
 
-Updated: 2026-09-25
+Updated: 2026-10-08
 
 ## Overview
 
@@ -57,6 +57,7 @@ frontend-v2/
 │   │   ├── backtesting/
 │   │   ├── portfolio/
 │   │   └── pipeline/
+│   ├── hotkeys/             # declared scopes, dispatch, help list, settings editor (see its README.md)
 │   ├── hooks/
 │   ├── test/
 │   ├── App.tsx              # lazy route definitions
@@ -175,3 +176,7 @@ During development, run FastAPI on port 8000 and `npm run dev` from `frontend-v2
 4. Add API types to `src/api/types.ts` and shared network behavior to `src/api/client.ts` or `stream.ts`.
 5. Add a Vitest test and, for a new top-level route, a FastAPI entrypoint smoke test.
 6. Run `npm run lint`, `npm test`, `npm run build`, and the focused Python web tests.
+
+## Keyboard shortcuts
+
+All shortcuts go through `src/hotkeys/` (its `README.md` holds the standard and the steps for adding keys). Each screen declares its keys once in `features/<screen>/<screen>Hotkeys.ts` with `defineScope`, and its component mounts them with `useHotkeyScope(scope, handlers, { enabled })`. `src/hotkeys/catalog.ts` imports every declaration so the Account page lists screens whose lazily loaded pages were never opened. The `?` list (`HotkeyHelpDialog`) shows the scopes mounted right now plus the global scope; there is no per-page help state. `HotkeyProvider` loads the signed-in user's overrides from `/api/settings/hotkeys` (stored in `auth.db.user_settings`) with TanStack Query and applies them immediately; without it every key uses its default. Inline hints use `HotkeyKbd`/`useHotkeyText`, so they follow rebindings. `catalog.test.ts` fails on duplicate default keys between scopes that can be mounted together and on standard keys used for other jobs without a description.

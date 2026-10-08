@@ -1,20 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Ban, ExternalLink, Keyboard, KeyRound, Lock, X } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
+import { Ban, ExternalLink, KeyRound, Lock, X } from 'lucide-react'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import { apiRequest } from '../../api/client'
 import type { SecuritySearchResult } from '../../api/types'
 import { CompanyPicker } from '../../components/CompanyPicker'
 import { LoadingState } from '../../components/Feedback'
-import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { HotkeySettingsPanel } from '../../hotkeys/HotkeySettingsPanel'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { chatApi, chatKeys, invalidateChat, useChatSummary } from '../chat/chatApi'
 import { channelLabel, colorFor, personName } from '../chat/chatModel'
 import type { ChatProfile, Person } from '../chat/chatTypes'
 import { formatFingerprint, unwrapPrivateKey, wrapPrivateKey, WrongPassphraseError } from '../chat/crypto'
 import { KeyPanel, MIN_PASSPHRASE } from '../chat/KeyPanel'
 import { forgetIdentity, useChatIdentity } from '../chat/keyStore'
+import { ACCOUNT_SECTIONS, accountScope } from './accountHotkeys'
 import { useAuth } from './authContext'
 import './account.css'
 
@@ -38,33 +41,14 @@ interface Session {
   user_agent: string | null
 }
 
-const SECTIONS = [
-  { id: 'profile', label: 'Public profile' },
-  { id: 'account', label: 'Sign-in details' },
-  { id: 'password', label: 'Password' },
-  { id: 'encryption', label: 'Chat encryption' },
-  { id: 'blocks', label: 'Blocked' },
-  { id: 'tokens', label: 'API tokens' },
-  { id: 'sessions', label: 'Sessions' },
-] as const
-
-const SHORTCUTS: ShortcutGroup[] = [
-  { title: 'Account', shortcuts: [
-    { keys: ['1', '2', '3', '4', '5', '6', '7'], label: SECTIONS.map(section => section.label).join(', ') },
-    { keys: ['V'], label: 'View your public profile' },
-    { keys: ['Enter'], label: 'In a field: save that section' },
-    { keys: ['J', 'K'], label: 'In a list: next or previous entry (↓ ↑)' },
-    { keys: ['U'], label: 'In the blocked list: unblock the entry' },
-    { keys: ['?'], label: 'Show or hide this list' },
-  ] },
-]
+const SECTIONS = ACCOUNT_SECTIONS
 
 const dateTime = new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short' })
 const when = (value: string | null | undefined) => (value ? dateTime.format(new Date(value)) : '—')
 
-function Section({ id, index, title, description, actions, children }: { id: string; index: number; title: string; description?: string; actions?: ReactNode; children: ReactNode }) {
-  return <section id={`account-${id}`} className="account-section" aria-labelledby={`account-${id}-title`}>
-    <header><kbd aria-hidden="true">{index + 1}</kbd><h2 id={`account-${id}-title`}>{title}</h2>{description && <p>{description}</p>}{actions}</header>
+function Section({ id, title, description, actions, children, className }: { id: (typeof SECTIONS)[number]['id']; title: string; description?: string; actions?: ReactNode; children: ReactNode; className?: string }) {
+  return <section id={`account-${id}`} className={className ? `account-section ${className}` : 'account-section'} aria-labelledby={`account-${id}-title`}>
+    <header><span aria-hidden="true"><HotkeyKbd hotkey={accountScope.byId[`section-${id}`]} /></span><h2 id={`account-${id}-title`}>{title}</h2>{description && <p>{description}</p>}{actions}</header>
     {children}
   </section>
 }
@@ -78,48 +62,47 @@ function focusSection(id: string) {
 export default function AccountPage() {
   const { user, status } = useAuth()
   const navigate = useNavigate()
-  const [help, setHelp] = useState(false)
-  const closeHelp = useCallback(() => setHelp(false), [])
   const accounts = status?.mode === 'accounts'
   useEffect(() => {
     const hash = window.location.hash.replace('#', '')
     if (SECTIONS.some(section => section.id === hash)) setTimeout(() => focusSection(hash), 50)
   }, [])
-  useHotkeys({
-    ...Object.fromEntries(SECTIONS.map((section, index) => [String(index + 1), () => focusSection(section.id)])),
-    v: () => { if (user) navigate(`/people/${encodeURIComponent(user.username)}`) },
-    '?': () => setHelp(true),
-  }, !help)
+  useHotkeyScope(accountScope, {
+    ...Object.fromEntries(SECTIONS.map(section => [`section-${section.id}`, () => focusSection(section.id)])),
+    'view-profile': () => { if (user) navigate(`/people/${encodeURIComponent(user.username)}`) },
+  })
 
   return <div className="account-page dense-page">
     <header className="account-head">
       <div><span className="eyebrow">Account</span><h1>{user?.username ?? 'Local workspace'}</h1><p>{user ? `${user.role} · ${user.email ?? 'no email'}` : 'Authentication is disabled; account settings apply to the local user.'}</p></div>
-      <nav className="account-jump" aria-label="Sections">{SECTIONS.map((section, index) => <button key={section.id} type="button" onClick={() => focusSection(section.id)}><kbd>{index + 1}</kbd>{section.label}</button>)}</nav>
+      <nav className="account-jump" aria-label="Sections">{SECTIONS.map(section => <button key={section.id} type="button" onClick={() => focusSection(section.id)}><HotkeyKbd hotkey={accountScope.byId[`section-${section.id}`]} />{section.label}</button>)}</nav>
       <div className="account-head__actions">
-        {user && <Link className="button button--secondary button--small" to={`/people/${encodeURIComponent(user.username)}`}><ExternalLink aria-hidden="true" />Public profile <kbd>V</kbd></Link>}
-        <button type="button" className="icon-button" onClick={() => setHelp(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard /></button>
+        {user && <Link className="button button--secondary button--small" to={`/people/${encodeURIComponent(user.username)}`}><ExternalLink aria-hidden="true" />Public profile <HotkeyKbd hotkey={accountScope.byId['view-profile']} /></Link>}
+        <HotkeyHelpButton />
       </div>
     </header>
     <div className="account-grid">
       <div className="account-column">
-        <Section id="profile" index={0} title="Public profile" description="What other members see on your profile and next to your messages.">
+        <Section id="profile" title="Public profile" description="What other members see on your profile and next to your messages.">
           <PublicProfileSection />
         </Section>
         {accounts && user && <>
-          <Section id="account" index={1} title="Sign-in details"><SignInSection /></Section>
-          <Section id="password" index={2} title="Password" description="Changing it signs out your other sessions."><PasswordSection /></Section>
+          <Section id="account" title="Sign-in details"><SignInSection /></Section>
+          <Section id="password" title="Password" description="Changing it signs out your other sessions."><PasswordSection /></Section>
         </>}
       </div>
       <div className="account-column">
-        <Section id="encryption" index={3} title="Chat encryption" description="Direct and group messages are end-to-end encrypted with a key only your browsers can unlock."><EncryptionSection /></Section>
-        <Section id="blocks" index={4} title="Blocked people and channels" description="You do not see their messages anywhere, and blocked people cannot message you."><BlocksSection /></Section>
+        <Section id="encryption" title="Chat encryption" description="Direct and group messages are end-to-end encrypted with a key only your browsers can unlock."><EncryptionSection /></Section>
+        <Section id="blocks" title="Blocked people and channels" description="You do not see their messages anywhere, and blocked people cannot message you."><BlocksSection /></Section>
         {accounts && user && <>
-          <Section id="tokens" index={5} title="Personal API tokens" description="Shown once when created. Revoke any you no longer use."><TokensSection /></Section>
-          <Section id="sessions" index={6} title="Sessions" description="Revoke sessions you do not recognise."><SessionsSection /></Section>
+          <Section id="tokens" title="Personal API tokens" description="Shown once when created. Revoke any you no longer use."><TokensSection /></Section>
+          <Section id="sessions" title="Sessions" description="Revoke sessions you do not recognise."><SessionsSection /></Section>
         </>}
       </div>
     </div>
-    {help && <ShortcutsDialog groups={SHORTCUTS} onClose={closeHelp} />}
+    <Section id="keyboard" className="account-section--wide" title="Keyboard shortcuts" description={accounts && user ? 'Change any shortcut, screen by screen. Your keys are saved to your account and follow you to every browser.' : 'Change any shortcut, screen by screen. Keys are saved for the local workspace.'}>
+      <HotkeySettingsPanel />
+    </Section>
   </div>
 }
 
@@ -310,7 +293,7 @@ function BlocksSection() {
       {entries.map((entry, position) => <li key={entry.key} tabIndex={position === index ? 0 : -1} className={position === index ? 'is-cursor' : undefined} onFocus={() => setCursor(position)}>
         <span className="chat-dot" style={{ background: entry.color }} />
         <Link to={entry.href}>{entry.label}</Link><small>{entry.detail}</small><small className="account-list__date">{when(entry.created)}</small>
-        <button type="button" className="text-button" onClick={() => void change(entry.kind, entry.id, false, entry.label)}>Unblock <kbd>U</kbd></button>
+        <button type="button" className="text-button" onClick={() => void change(entry.kind, entry.id, false, entry.label)}>Unblock <HotkeyKbd hotkey={accountScope.byId.unblock} /></button>
       </li>)}
     </ul> : <p className="muted">You have not blocked anyone. Block people from their messages or profile (B), and channels from the channel (B with nothing selected).</p>}
     <label className="field"><span>Block someone</span><input className="input" placeholder="Find a person by name" value={query} onChange={event => setQuery(event.target.value)} /></label>

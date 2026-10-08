@@ -5,6 +5,8 @@ import { Link } from 'react-router-dom'
 import { channelLabel, colorFor, personName, referencedCompanies } from './chatModel'
 import type { Channel, ChatMessage, Conversation, MessageBody } from './chatTypes'
 import { formatFingerprint, type Identity } from './crypto'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { chatScope } from './chatHotkeys'
 
 interface Tally { code: string; name: string; count: number }
 
@@ -63,9 +65,9 @@ export function ChannelDetails({ channel, messages, bodyOf, meId, armedBlock, on
     </dl>
     <div className="chat-details__actions">
       <button type="button" className={channel.subscribed ? 'button button--secondary button--small' : 'button button--primary button--small'} onClick={() => onSubscribe(!channel.subscribed)} title="Subscribe or unsubscribe (S)">
-        {channel.subscribed ? <BellOff aria-hidden="true" /> : <Bell aria-hidden="true" />}{channel.subscribed ? 'Unsubscribe' : 'Subscribe'} <kbd>S</kbd>
+        {channel.subscribed ? <BellOff aria-hidden="true" /> : <Bell aria-hidden="true" />}{channel.subscribed ? 'Unsubscribe' : 'Subscribe'} <HotkeyKbd hotkey={chatScope.byId.subscribe} />
       </button>
-      {channel.company_code && <Link className="button button--ghost button--small" to={`/analyze/${encodeURIComponent(channel.company_code)}`} title="Open the analysis (O)"><BarChart3 aria-hidden="true" />Analysis <kbd>O</kbd></Link>}
+      {channel.company_code && <Link className="button button--ghost button--small" to={`/analyze/${encodeURIComponent(channel.company_code)}`} title="Open the analysis"><BarChart3 aria-hidden="true" />Analysis <HotkeyKbd hotkey={chatScope.byId['open-company']} /></Link>}
       <button type="button" className={armedBlock ? 'button button--danger button--small' : 'button button--ghost button--small'} onClick={onBlock} title="Hide this channel everywhere (B twice with nothing selected)"><UserX aria-hidden="true" />{armedBlock ? 'Block: sure?' : 'Block channel'}</button>
     </div>
     <p className="chat-details__note"><ShieldCheck aria-hidden="true" />Public to signed-in members; stored encrypted on the server.</p>

@@ -1,13 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CircleStop, FlaskConical, Keyboard, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { CircleStop, FlaskConical, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { apiPost, apiRequest } from '../../api/client'
 import { downloadApiFile } from '../../api/download'
 import { ErrorState, LoadingState } from '../../components/Feedback'
-import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { useHotkeyText } from '../../hotkeys/useHotkeyText'
+import { globalScope } from '../../hotkeys/globalScopes'
+import { backtestScope } from './backtestHotkeys'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { BacktestResults } from './BacktestResults'
 import { BacktestSetup, type BacktestSetupHandle, type Settings } from './BacktestSetup'
@@ -18,32 +22,6 @@ import './backtesting.css'
 const SETTINGS_KEY = 'shade.backtest.settings'
 const MODES: Array<[Mode, string]> = [['manual', 'Portfolio'], ['screen', 'Rolling screen'], ['csv', 'CSV set']]
 const TERMINAL = new Set(['complete', 'failed', 'cancelled'])
-
-const SHORTCUTS: ShortcutGroup[] = [
-  { title: 'Set up and run', shortcuts: [
-    { keys: ['1', '2', '3'], label: 'Portfolio, rolling screen, or CSV set' },
-    { keys: ['R'], label: 'Run the backtest (Ctrl+Enter in the form)' },
-    { keys: ['X'], label: 'Cancel the running rolling backtest' },
-    { keys: ['E'], label: 'Show or hide the setup panel' },
-    { keys: ['S'], label: 'Focus the first setup field' },
-    { keys: ['A'], label: 'Add a holding' },
-    { keys: ['B'], label: 'Choose the benchmark' },
-  ] },
-  { title: 'Results', shortcuts: [
-    { keys: ['[', ']'], label: 'Previous or next view (rolling and CSV results)' },
-    { keys: ['D', 'Shift+D'], label: 'Next or previous holding period' },
-    { keys: ['W'], label: 'Next weighting' },
-    { keys: ['M'], label: 'Heatmap: return or excess' },
-    { keys: ['J', 'K'], label: 'Move through table rows; Enter opens' },
-    { keys: ['Esc'], label: 'Close the selected run' },
-  ] },
-  { title: 'Saved results', shortcuts: [
-    { keys: ['L'], label: 'Focus the saved list' },
-    { keys: ['Enter'], label: 'Open the focused result' },
-    { keys: ['O'], label: 'Download the focused result' },
-    { keys: ['?'], label: 'This list' },
-  ] },
-]
 
 function isoDate(offsetYears = 0) {
   const date = new Date()
@@ -93,7 +71,7 @@ function SavedList({ items, current, onOpen }: { items: SavedBacktest[]; current
   }
   return <section className="bt-saved" aria-labelledby="bt-saved-title">
     <header>
-      <h2 id="bt-saved-title">Saved results <kbd>L</kbd></h2>
+      <h2 id="bt-saved-title">Saved results <HotkeyKbd hotkey={backtestScope.byId.saved} /></h2>
       <div className="bt-chips" aria-label="Kind">{(['all', 'single', 'rolling', 'csv'] as const).map(value => <button key={value} type="button" aria-pressed={kind === value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{value === 'all' ? `All · ${items.length}` : kindLabel(value)}</button>)}</div>
     </header>
     {shown.length ? <div className="bt-scroll bt-scroll--saved"><table className="bt-table bt-saved__table">
@@ -123,7 +101,7 @@ function JobProgress({ job, onCancel }: { job: RollingJob; onCancel: () => void 
   return <section className="bt-progress" aria-live="polite">
     <div><strong>{job.status === 'queued' ? 'Waiting for a free slot…' : job.status === 'saving' ? 'Saving results…' : progress.phase ?? 'Starting…'}</strong>
       <span className="muted">{total ? `${done.toLocaleString()} of ${total.toLocaleString()} backtests · period ${(progress.period_index ?? 0) + 1} of ${progress.total_periods ?? '—'}` : 'Preparing rolling periods'}</span>
-      <button type="button" className="button button--danger button--small" onClick={onCancel}><CircleStop />Cancel <kbd>X</kbd></button></div>
+      <button type="button" className="button button--danger button--small" onClick={onCancel}><CircleStop />Cancel <HotkeyKbd hotkey={backtestScope.byId.cancel} /></button></div>
     <progress max={1} value={share} aria-label="Backtest progress" />
     <small className="muted">Runs on the server: you can leave this page and come back.</small>
   </section>
@@ -140,9 +118,7 @@ export default function BacktestingPage() {
   const [csvContent, setCsvContent] = useState('')
   const [setupOpen, setSetupOpen] = usePersistentState('shade.backtest.setupOpen', true)
   const [startedJob, setStartedJob] = useState<string | null>(null)
-  const [help, setHelp] = useState(false)
   const [draft, setDraft] = useState(readScreenDraft)
-  const closeHelp = useCallback(() => setHelp(false), [])
   const setupRef = useRef<BacktestSetupHandle>(null)
   const setRef = useRef<SetResultsHandle>(null)
   const savedRef = useRef<HTMLDivElement>(null)
@@ -256,26 +232,26 @@ export default function BacktestingPage() {
     run.mutate()
   }
 
-  useHotkeys({
-    '1': () => setMode('manual'),
-    '2': () => setMode('screen'),
-    '3': () => setMode('csv'),
-    r: start,
-    x: () => { if (running) cancel.mutate() },
-    e: () => setSetupOpen(!setupOpen),
-    s: () => { if (!setupOpen) setSetupOpen(true); requestAnimationFrame(() => setupRef.current?.focusFirst()) },
-    a: () => { if (mode === 'manual') { if (!setupOpen) setSetupOpen(true); setupRef.current?.addHolding() } },
-    b: () => { if (!setupOpen) setSetupOpen(true); requestAnimationFrame(() => setupRef.current?.focusBenchmark()) },
-    l: () => savedRef.current?.querySelector<HTMLElement>('tbody tr')?.focus(),
-    '[': () => setRef.current?.cycleTab(-1),
-    ']': () => setRef.current?.cycleTab(1),
-    d: () => setRef.current?.cycleDuration(1),
-    D: () => setRef.current?.cycleDuration(-1),
-    w: () => setRef.current?.cycleWeighting(),
-    m: () => setRef.current?.toggleMetric(),
-    Escape: () => { setRef.current?.closeDetail() },
-    '?': () => setHelp(true),
-  }, !help)
+  const setupKey = useHotkeyText(backtestScope.byId['setup-panel'])
+  useHotkeyScope(backtestScope, {
+    'mode-manual': () => setMode('manual'),
+    'mode-screen': () => setMode('screen'),
+    'mode-csv': () => setMode('csv'),
+    run: start,
+    cancel: () => { if (running) cancel.mutate() },
+    'setup-panel': () => setSetupOpen(!setupOpen),
+    'setup-focus': () => { if (!setupOpen) setSetupOpen(true); requestAnimationFrame(() => setupRef.current?.focusFirst()) },
+    'add-holding': () => { if (mode === 'manual') { if (!setupOpen) setSetupOpen(true); setupRef.current?.addHolding() } },
+    benchmark: () => { if (!setupOpen) setSetupOpen(true); requestAnimationFrame(() => setupRef.current?.focusBenchmark()) },
+    saved: () => savedRef.current?.querySelector<HTMLElement>('tbody tr')?.focus(),
+    'previous-view': () => setRef.current?.cycleTab(-1),
+    'next-view': () => setRef.current?.cycleTab(1),
+    'next-duration': () => setRef.current?.cycleDuration(1),
+    'previous-duration': () => setRef.current?.cycleDuration(-1),
+    weighting: () => setRef.current?.cycleWeighting(),
+    measure: () => setRef.current?.toggleMetric(),
+    'close-detail': () => { setRef.current?.closeDetail() },
+  })
 
   const currencyCodes = (currencies.data?.currencies ?? []).map(item => typeof item === 'string' ? item : item.code ?? '').filter(Boolean)
   const shown = resultId ? result.data : undefined
@@ -284,11 +260,11 @@ export default function BacktestingPage() {
   return <div className="bt-page">
     <header className="bt-head">
       <div><span className="eyebrow">Strategy research</span><h1>Backtest</h1></div>
-      <div className="bt-modes" role="tablist" aria-label="What to backtest">{MODES.map(([value, label], index) => <button key={value} type="button" role="tab" aria-selected={mode === value} className={mode === value ? 'active' : ''} onClick={() => setMode(value)}>{label} <kbd>{index + 1}</kbd></button>)}</div>
+      <div className="bt-modes" role="tablist" aria-label="What to backtest">{MODES.map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={mode === value} className={mode === value ? 'active' : ''} onClick={() => setMode(value)}>{label} <HotkeyKbd hotkey={backtestScope.byId[`mode-${value}`]} /></button>)}</div>
       <div className="bt-actions">
-        <button type="button" className="icon-button" onClick={() => setSetupOpen(!setupOpen)} title={setupOpen ? 'Hide setup (E)' : 'Show setup (E)'} aria-label={setupOpen ? 'Hide setup' : 'Show setup'}>{setupOpen ? <PanelLeftClose /> : <PanelLeftOpen />}</button>
-        <button type="button" className="icon-button" onClick={() => setHelp(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard /></button>
-        <button type="button" className="button button--primary button--small" disabled={run.isPending || running} onClick={start}><FlaskConical />{run.isPending ? 'Running…' : running ? 'Rolling backtest running' : 'Run'} <kbd>R</kbd></button>
+        <button type="button" className="icon-button" onClick={() => setSetupOpen(!setupOpen)} title={`${setupOpen ? 'Hide' : 'Show'} setup (${setupKey})`} aria-label={setupOpen ? 'Hide setup' : 'Show setup'}>{setupOpen ? <PanelLeftClose /> : <PanelLeftOpen />}</button>
+        <HotkeyHelpButton />
+        <button type="button" className="button button--primary button--small" disabled={run.isPending || running} onClick={start}><FlaskConical />{run.isPending ? 'Running…' : running ? 'Rolling backtest running' : 'Run'} <HotkeyKbd hotkey={backtestScope.byId.run} /></button>
       </div>
     </header>
     <div className={`bt-layout ${setupOpen ? '' : 'is-collapsed'}`}>
@@ -306,17 +282,16 @@ export default function BacktestingPage() {
         {!resultId && !run.isPending && !running && <section className="bt-intro">
           <h2>Test an idea against history</h2>
           <dl>
-            <div><dt>Portfolio <kbd>1</kbd></dt><dd>Fixed holdings over one period: return, risk, drawdowns, calendar and monthly returns, and each holding's contribution, against a benchmark.</dd></div>
-            <div><dt>Rolling screen <kbd>2</kbd></dt><dd>Your Screening draft re-run every month, quarter, or year with only the filings public at the time, then held for each period: how often and by how much it beat the benchmark.</dd></div>
-            <div><dt>CSV set <kbd>3</kbd></dt><dd>A portfolio per year from a file, each held for the periods you choose.</dd></div>
+            <div><dt>Portfolio <HotkeyKbd hotkey={backtestScope.byId['mode-manual']} /></dt><dd>Fixed holdings over one period: return, risk, drawdowns, calendar and monthly returns, and each holding's contribution, against a benchmark.</dd></div>
+            <div><dt>Rolling screen <HotkeyKbd hotkey={backtestScope.byId['mode-screen']} /></dt><dd>Your Screening draft re-run every month, quarter, or year with only the filings public at the time, then held for each period: how often and by how much it beat the benchmark.</dd></div>
+            <div><dt>CSV set <HotkeyKbd hotkey={backtestScope.byId['mode-csv']} /></dt><dd>A portfolio per year from a file, each held for the periods you choose.</dd></div>
           </dl>
-          <p className="muted">Press <kbd>R</kbd> to run, <kbd>?</kbd> for every shortcut.</p>
+          <p className="muted">Press <HotkeyKbd hotkey={backtestScope.byId.run} /> to run, <HotkeyKbd hotkey={globalScope.byId.help} /> for every shortcut.</p>
         </section>}
         <div ref={savedRef}>
           {saved.isLoading ? <LoadingState label="Loading saved backtests" /> : saved.isError ? <ErrorState error={saved.error} retry={() => saved.refetch()} /> : <SavedList items={saved.data?.backtests ?? []} current={resultId} onOpen={id => { run.reset(); open(id) }} />}
         </div>
       </main>
     </div>
-    {help && <ShortcutsDialog groups={SHORTCUTS} onClose={closeHelp} />}
   </div>
 }

@@ -7,7 +7,10 @@ import type { SecurityHistory } from '../../api/types'
 import { SERIES_COLORS } from '../../brand'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
 import { Tip } from '../../components/Tooltip'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { globalScope } from '../../hotkeys/globalScopes'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { financialsScope } from './analysisHotkeys'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { crosshairPlugin } from './chartPlugins'
 import { downloadTextFile, selectedMetricsCsv } from './downloads'
@@ -222,15 +225,15 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
     downloadTextFile(`${prefix}-${sourceKey}.csv`, selectedMetricsCsv(metrics, periods, metrics.map(metric => metric.field)), 'text/csv;charset=utf-8')
   }
 
-  useHotkeys({
-    '[': () => cycleTable(-1),
-    ']': () => cycleTable(1),
-    v: cycleView,
-    e: () => setShowEmpty(!showEmpty),
-    f: () => filterInput.current?.focus(),
-    c: () => setChartType(chartType === 'bar' ? 'line' : 'bar'),
-    x: () => { setSlots([]); setNotice('') },
-  }, populated.length > 0)
+  useHotkeyScope(financialsScope, {
+    'previous-statement': () => cycleTable(-1),
+    'next-statement': () => cycleTable(1),
+    view: cycleView,
+    empty: () => setShowEmpty(!showEmpty),
+    filter: () => filterInput.current?.focus(),
+    'chart-type': () => setChartType(chartType === 'bar' ? 'line' : 'bar'),
+    'clear-chart': () => { setSlots([]); setNotice('') },
+  }, { enabled: populated.length > 0 })
 
   const moveFocus = (index: number) => {
     const next = Math.max(0, Math.min(visibleRows.length - 1, index))
@@ -297,20 +300,20 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
       {statementTabs.map(tab)}
       {rollingTabs.length > 0 && <span className="statement-tabs__divider"><Tip content="Rolling tables hold multi-year averages and growth rates derived from the annual statements." focusable={false}>Rolling</Tip></span>}
       {rollingTabs.map(tab)}
-      <span className="statement-tabs__keys" aria-hidden="true"><kbd>[</kbd><kbd>]</kbd></span>
+      <span className="statement-tabs__keys" aria-hidden="true"><HotkeyKbd hotkey={financialsScope.byId['previous-statement']} /><HotkeyKbd hotkey={financialsScope.byId['next-statement']} /></span>
     </div>
     <div className="statement-toolbar">
       <div className="segmented segmented--small" role="group" aria-label="Statement view">
         {VIEWS.map(item => <button key={item.key} type="button" className={activeView === item.key ? 'active' : ''} aria-pressed={activeView === item.key} disabled={!viewAvailable(item.key)} title={viewAvailable(item.key) ? item.hint : 'Common size needs a revenue or total assets line'} onClick={() => setView(item.key)}>{item.label}</button>)}
       </div>
-      <kbd className="toolbar-key" title="Cycle views">V</kbd>
+      <span title="Cycle views"><HotkeyKbd className="toolbar-key" hotkey={financialsScope.byId.view} /></span>
       <label className="statement-filter">
         <Search aria-hidden="true" />
         <input ref={filterInput} value={filter} onChange={event => { setFilter(event.target.value); setFocusIndex(0) }} onKeyDown={event => { if (event.key === 'Escape') { setFilter(''); event.currentTarget.blur() } if (event.key === 'ArrowDown') { event.preventDefault(); moveFocus(0) } }} placeholder="Filter lines" aria-label="Filter statement lines" />
-        <kbd>F</kbd>
+        <HotkeyKbd hotkey={financialsScope.byId.filter} />
       </label>
       {emptyCount > 0 && <button type="button" className="text-button" aria-pressed={showEmpty} onClick={() => setShowEmpty(!showEmpty)} title="Lines the taxonomy defines but this company never reported">
-        {showEmpty ? 'Hide empty lines' : `Show ${emptyCount.toLocaleString()} empty lines`} <kbd>E</kbd>
+        {showEmpty ? 'Hide empty lines' : `Show ${emptyCount.toLocaleString()} empty lines`} <HotkeyKbd hotkey={financialsScope.byId.empty} />
       </button>}
       <span className="statement-toolbar__spacer" />
       <div className="segmented segmented--small" role="group" aria-label="Chart type">
@@ -324,7 +327,7 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
       <div className="series-legend">
         {selectedRows.map(row => <button key={row.field} type="button" className="series-chip" onClick={() => toggle(row.field)} title={`Remove ${row.label} from the chart`}><span className="series-chip__key" style={{ background: colorOf(row.field) }} />{row.label}<X aria-hidden="true" /></button>)}
         {selectedRows.length === 0 && <span className="series-legend__hint">Click a line in the table, or focus it and press <kbd>Space</kbd>, to chart it.</span>}
-        {selectedRows.length > 0 && <button type="button" className="text-button series-legend__clear" onClick={() => { setSlots([]); setNotice('') }}>Clear <kbd>X</kbd></button>}
+        {selectedRows.length > 0 && <button type="button" className="text-button series-legend__clear" onClick={() => { setSlots([]); setNotice('') }}>Clear <HotkeyKbd hotkey={financialsScope.byId['clear-chart']} /></button>}
         {notice && <span className="series-legend__notice" role="status">{notice}</span>}
       </div>
       {chartGroups.size > 0 && <div className={`statement-chart__plots statement-chart__plots--${Math.min(chartGroups.size, 3)}`}>
@@ -386,7 +389,7 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
     </div>
     <p className="statement-footnote">
       {visibleRows.length.toLocaleString()} lines · fiscal years ending {periods.length ? `${periodLabel(periods[0])} to ${periodLabel(periods[periods.length - 1])}` : '—'} · values from EDINET XBRL filings
-      <span className="statement-footnote__keys"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Space</kbd> chart · <kbd>?</kbd> all shortcuts</span>
+      <span className="statement-footnote__keys"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Space</kbd> chart · <HotkeyKbd hotkey={globalScope.byId.help} /> all shortcuts</span>
     </p>
   </div>
 }

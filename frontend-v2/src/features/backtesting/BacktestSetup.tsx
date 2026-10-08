@@ -3,6 +3,8 @@ import { forwardRef, useImperativeHandle, useRef } from 'react'
 import { Link } from 'react-router-dom'
 
 import { DURATIONS, OWN_PORTFOLIO, WEIGHTINGS, weightTotal, type Benchmark, type Holding, type Mode, type ScreenDraft } from './backtestModel'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { backtestScope } from './backtestHotkeys'
 
 export interface Settings {
   holdings: Holding[]
@@ -87,7 +89,7 @@ export const BacktestSetup = forwardRef<BacktestSetupHandle, Props>(function Bac
         </div>)}
       </div>
       <div className="bt-row">
-        <button type="button" className="button button--ghost button--small" onClick={addHolding}><Plus />Add <kbd>A</kbd></button>
+        <button type="button" className="button button--ghost button--small" onClick={addHolding}><Plus />Add <HotkeyKbd hotkey={backtestScope.byId['add-holding']} /></button>
         {holdings.length > 1 && hasWeights && <button type="button" className="text-button" onClick={() => { const named = holdings.filter(item => item.ticker.trim()); onChange({ holdings: named.map(item => ({ ...item, mode: 'weight', value: Math.round(10000 / named.length) / 100 })) }) }}>Equal weights</button>}
       </div>
       <div className="bt-pair">
@@ -130,7 +132,7 @@ export const BacktestSetup = forwardRef<BacktestSetupHandle, Props>(function Bac
 
     <fieldset>
       <legend>Comparison and money</legend>
-      <label>Benchmark <kbd>B</kbd>
+      <label>Benchmark <HotkeyKbd hotkey={backtestScope.byId.benchmark} />
         <select ref={benchmarkRef} className="select select--small" value={settings.benchmark} onChange={event => onChange({ benchmark: event.target.value })}>
           {benchmarks.map(item => <option key={item.ticker} value={item.ticker} disabled={!item.available}>{item.label} · {item.ticker}{item.available ? '' : ' (no prices)'}</option>)}
           {settings.benchmark && settings.benchmark !== OWN_PORTFOLIO && !benchmarks.some(item => item.ticker === settings.benchmark) && <option value={settings.benchmark}>{settings.benchmark}</option>}

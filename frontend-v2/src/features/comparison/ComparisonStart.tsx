@@ -4,6 +4,8 @@ import { Link } from 'react-router-dom'
 import { apiRequest } from '../../api/client'
 import { parseCodes, parseList } from './comparisonModel'
 import type { SavedComparison } from './comparisonTypes'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { comparisonScope } from './comparisonHotkeys'
 
 interface RecentWork { work_id: string; kind: string; title: string; subtitle?: string | null; href: string; occurred_at: string }
 
@@ -33,7 +35,7 @@ export function ComparisonStart({ onLoad }: { onLoad: (codes: string[], metrics:
   }
   return <div className="cmp-start-grid">
     {templates.length > 0 && <section className="panel cmp-panel" aria-labelledby="cmp-start-saved">
-      <header className="cmp-panel__header"><h2 id="cmp-start-saved">Saved comparisons <kbd aria-hidden="true">O</kbd></h2></header>
+      <header className="cmp-panel__header"><h2 id="cmp-start-saved">Saved comparisons <span aria-hidden="true"><HotkeyKbd hotkey={comparisonScope.byId.saved} /></span></h2></header>
       <ul className="cmp-start-list">{templates.map(item => {
         const codes = parseList(item.companies_json)
         return <li key={item.template_id}><button type="button" onClick={() => onLoad(codes, parseList(item.metrics_json))}><strong>{item.name}</strong><small>{codes.length} companies</small></button></li>

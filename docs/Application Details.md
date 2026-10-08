@@ -1,7 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-08-01
+Last updated: 2026-10-08
 - Central reference for runtime/test Python modules (`src/`), web app modules (`src/web_app/`), React frontend (`frontend-v2/`), and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
@@ -490,6 +490,10 @@ Responsibility: Screening API routes at `/api/screening/*` — metrics, periods,
 ### [src/web_app/api/security_analysis.py](../src/web_app/api/security_analysis.py)
 
 Responsibility: Security Analysis API routes at `/api/security/*` — search, overview, statements, price-history, peers, update-price, optimize, db-path, available-columns, chart-data.
+
+### [src/web_app/api/settings.py](../src/web_app/api/settings.py)
+
+Responsibility: per-user workstation preferences. `GET`/`PUT`/`DELETE /api/settings/hotkeys` read, replace, and clear the caller's hotkey overrides (`{hotkey_id: [key spec, …]}`, at most four keys per id and 1,000 ids), stored as JSON in `auth.db.user_settings` through `AuthStore.get_user_setting`/`set_user_setting`/`delete_user_setting`. Works for accounts and for the auth-disabled `local` principal; the frontend owns the hotkey catalogue and defaults.
 
 ### [src/web_app/api/tags.py](../src/web_app/api/tags.py)
 

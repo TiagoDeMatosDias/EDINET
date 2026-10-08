@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { addDays, blackScholes } from './pricing/optionsModel'
 import { localToday } from './researchModel'
 import ResearchPage from './ResearchPage'
+import { GlobalHotkeys } from '../../components/GlobalHotkeys'
 
 // jsdom has no canvas; the charts are covered by the screenshots, not here.
 vi.mock('react-chartjs-2', () => ({ Line: () => null, Bar: () => null }))
@@ -88,7 +89,7 @@ function Location() {
 
 function renderPage(search = '') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/research${search}`]}><ResearchPage /><Location /></MemoryRouter></QueryClientProvider>)
+  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/research${search}`]}><ResearchPage /><GlobalHotkeys isAdmin={false} /><Location /></MemoryRouter></QueryClientProvider>)
 }
 
 const location = () => screen.getByTestId('location').textContent
@@ -309,7 +310,9 @@ describe('ResearchPage', () => {
     renderPage('?tab=bonds')
     press('?')
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText('Maturity one year shorter or longer')).toBeInTheDocument()
-    expect(within(dialog).getByText('Companies, Notes, Alerts, Options, Bonds')).toBeInTheDocument()
+    expect(within(dialog).getByText('Maturity one year shorter')).toBeInTheDocument()
+    expect(within(dialog).getByText('Bonds & credit tab')).toBeInTheDocument()
+    // Only the tab in use is listed, not its siblings.
+    expect(within(dialog).queryByText('Download the list as CSV')).not.toBeInTheDocument()
   })
 })

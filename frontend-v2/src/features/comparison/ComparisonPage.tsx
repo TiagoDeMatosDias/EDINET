@@ -1,14 +1,15 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { ArrowLeft, Check, Download, Keyboard, Link2 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowLeft, Check, Download, Link2 } from 'lucide-react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { apiPost, apiRequest, queryString } from '../../api/client'
 import { searchCompanies } from '../../components/CompanyPicker'
 import { ErrorState, LoadingState } from '../../components/Feedback'
 import { PageHeader } from '../../components/Page'
-import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { groupMetrics, type MetricDefinition } from '../../metrics'
 import { downloadTextFile, safeFileName } from '../analysis/downloads'
@@ -21,37 +22,8 @@ import { ComparisonStart } from './ComparisonStart'
 import { MetricBar } from './MetricBar'
 import { PeersPanel } from './PeersPanel'
 import { SavedComparisons } from './SavedComparisons'
+import { comparisonScope } from './comparisonHotkeys'
 import './comparison.css'
-
-const SHORTCUTS: ShortcutGroup[] = [
-  { title: 'Anywhere', shortcuts: [
-    { keys: ['/'], label: 'Search companies' },
-    { keys: ['?'], label: 'Show or hide this list' },
-    { keys: ['Esc'], label: 'Close a menu or leave a field' },
-    { keys: ['1', '2', '3', '4'], label: 'Jump to Companies, Metrics, Table, Charts' },
-  ] },
-  { title: 'Companies', shortcuts: [
-    { keys: ['A'], label: 'Add a company' },
-    { keys: ['P'], label: 'Go to the suggested peers (↑/↓, then Enter adds)' },
-    { keys: ['Shift+P'], label: 'Add the closest peer' },
-    { keys: ['[', ']'], label: 'Move the company earlier or later' },
-    { keys: ['Shift+X'], label: 'Remove the company' },
-    { keys: ['O'], label: 'Open a saved comparison' },
-    { keys: ['Ctrl+S'], label: 'Save this comparison' },
-  ] },
-  { title: 'Table', shortcuts: [
-    { keys: ['↑', '↓'], label: 'Move between metrics (also J, K)' },
-    { keys: ['←', '→'], label: 'Move between companies (also H, L)' },
-    { keys: ['Enter'], label: 'Open the company in Analysis (Shift: new tab)' },
-    { keys: ['S'], label: 'Sort companies by the metric, best first' },
-    { keys: ['X'], label: 'Hide the metric' },
-    { keys: ['M'], label: 'Add a metric' },
-    { keys: ['E'], label: 'Show or hide metrics no company reports' },
-    { keys: ['R'], label: 'Show or hide ranks' },
-    { keys: ['I'], label: 'Index the trend chart to 100' },
-    { keys: ['D'], label: 'Download the table as CSV' },
-  ] },
-]
 
 const DEFAULT_SCATTER = { x: 'PriceToBook', y: 'ReturnOnEquity' }
 // Up to this many companies, the charts sit beside the table on wide screens.
@@ -161,7 +133,6 @@ export default function ComparisonPage() {
   const [cursor, setCursor] = useState<{ metric: string | null; code: string | null }>({ metric: null, code: null })
   const [focusRequest, setFocusRequest] = useState(0)
   const [trendPick, setTrendPick] = useState<{ metric: string; atCursor: string | null } | null>(null)
-  const [showShortcuts, setShowShortcuts] = useState(false)
   const [saved, setSaved] = useState<{ open: boolean; saving: boolean }>({ open: false, saving: false })
   const [copied, setCopied] = useState(false)
 
@@ -273,41 +244,31 @@ export default function ComparisonPage() {
   }
   const setSavedOpen = useCallback((open: boolean) => setSaved({ open, saving: false }), [])
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 's') return
-      event.preventDefault()
-      setSaved({ open: true, saving: true })
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
-
-  useHotkeys({
-    '?': () => setShowShortcuts(true),
-    1: () => jump(companiesSection.current, () => addInput.current?.focus({ preventScroll: true })),
-    2: () => jump(metricsSection.current),
-    3: () => jump(tableSection.current, () => setFocusRequest(count => count + 1)),
-    4: () => jump(chartsSection.current),
-    a: () => addInput.current?.focus(),
-    m: () => metricInput.current?.focus(),
-    p: focusPeers,
-    P: () => { const closest = peers.data?.peers.find(peer => !codes.includes(peer.company_code)); if (closest) addPeers([closest]) },
-    j: () => moveRow(1, true),
-    k: () => moveRow(-1, true),
-    l: () => moveColumn(1, true),
-    h: () => moveColumn(-1, true),
-    s: () => toggleSort(cursorMetric),
-    x: () => hideMetric(cursorMetric),
-    X: () => removeCompany(cursorCode),
-    '[': () => moveCompany(cursorCode, -1),
-    ']': () => moveCompany(cursorCode, 1),
-    e: () => setHideEmpty(!hideEmpty),
-    r: () => setShowRanks(!showRanks),
-    i: () => setIndexed(!indexed),
-    d: download,
-    o: () => setSaved({ open: true, saving: false }),
-  }, !showShortcuts && !saved.open)
+  useHotkeyScope(comparisonScope, {
+    save: () => setSaved({ open: true, saving: true }),
+    'section-1': () => jump(companiesSection.current, () => addInput.current?.focus({ preventScroll: true })),
+    'section-2': () => jump(metricsSection.current),
+    'section-3': () => jump(tableSection.current, () => setFocusRequest(count => count + 1)),
+    'section-4': () => jump(chartsSection.current),
+    'add-company': () => addInput.current?.focus(),
+    'add-metric': () => metricInput.current?.focus(),
+    peers: focusPeers,
+    'add-closest-peer': () => { const closest = peers.data?.peers.find(peer => !codes.includes(peer.company_code)); if (closest) addPeers([closest]) },
+    'next-metric': () => moveRow(1, true),
+    'previous-metric': () => moveRow(-1, true),
+    'next-company': () => moveColumn(1, true),
+    'previous-company': () => moveColumn(-1, true),
+    sort: () => toggleSort(cursorMetric),
+    'hide-metric': () => hideMetric(cursorMetric),
+    'remove-company': () => removeCompany(cursorCode),
+    'move-company-earlier': () => moveCompany(cursorCode, -1),
+    'move-company-later': () => moveCompany(cursorCode, 1),
+    empty: () => setHideEmpty(!hideEmpty),
+    ranks: () => setShowRanks(!showRanks),
+    indexed: () => setIndexed(!indexed),
+    download,
+    saved: () => setSaved({ open: true, saving: false }),
+  }, { enabled: !saved.open })
 
   const industries = [...new Set(codes.map(code => info[code]?.industry).filter(Boolean))]
   const notes = [fiscalYearNote(ordered), currencyNote(ordered), result?.missing.length ? `No financial data for ${result.missing.join(', ')}.` : null].filter(Boolean)
@@ -327,7 +288,7 @@ export default function ComparisonPage() {
         <SavedComparisons open={saved.open} saving={saved.saving} codes={codes} metrics={sameList(selectedMetrics, standard) ? [] : selectedMetrics} defaultName={codes.map(code => shortName(info[code]?.company_name || code)).slice(0, 4).join(' vs ')} onOpenChange={setSavedOpen} onLoad={loadSaved} />
         <button type="button" className="button button--secondary button--small" disabled={!codes.length} onClick={() => void copyLink()} title="Copy a link to this comparison">{copied ? <Check aria-hidden="true" /> : <Link2 aria-hidden="true" />}{copied ? 'Copied' : 'Link'}</button>
         <button type="button" className="button button--secondary button--small" disabled={!viewCompanies.length} onClick={download} title="Download the table as CSV (D)"><Download aria-hidden="true" />CSV</button>
-        <button type="button" className="icon-button" onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard aria-hidden="true" /></button>
+        <HotkeyHelpButton />
       </>}
     />
     <div className="cmp-top">
@@ -358,7 +319,7 @@ export default function ComparisonPage() {
     {codes.length >= 2 && ordered.length > 0 && <div className={sideBySide ? 'cmp-results cmp-results--side' : 'cmp-results'}>
       <section ref={tableSection} className="panel cmp-panel cmp-table-panel" aria-labelledby="cmp-table-title">
         <header className="cmp-panel__header">
-          <h2 id="cmp-table-title">Comparison <kbd aria-hidden="true">3</kbd></h2>
+          <h2 id="cmp-table-title">Comparison <span aria-hidden="true"><HotkeyKbd hotkey={comparisonScope.byId['section-3']} /></span></h2>
           <span className="cmp-panel__meta">{commonPeriod ? `FY ending ${formatPeriod(commonPeriod)} · ` : ''}<span className="cmp-legend cmp-legend--best" />best <span className="cmp-legend cmp-legend--worst" />worst{activeSort ? ` · sorted by ${definitions[activeSort]?.label ?? activeSort}` : ''}</span>
           {(snapshot.isFetching || pendingCodes.length > 0) && <span className="cmp-panel__meta cmp-updating" role="status">Updating…</span>}
           <span className="cmp-panel__spacer" />
@@ -391,6 +352,5 @@ export default function ComparisonPage() {
         <TrendChart companies={viewCompanies} trends={trends.data} loading={trends.isLoading} metric={trendMetric} indexed={indexed} colorIndex={colorIndex} onMetric={metric => setTrendPick({ metric, atCursor: cursorMetric })} onIndexed={setIndexed} />
       </div>
     </div>}
-    {showShortcuts && <ShortcutsDialog groups={SHORTCUTS} onClose={() => setShowShortcuts(false)} />}
   </div>
 }

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CalendarClock, ChevronDown, ChevronUp, Columns3, Download, FlaskConical, FolderOpen, GitCompare, Keyboard, LoaderCircle, Save } from 'lucide-react'
+import { CalendarClock, ChevronDown, ChevronUp, Columns3, Download, FlaskConical, FolderOpen, GitCompare, LoaderCircle, Save } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -7,9 +7,11 @@ import { apiPost, apiRequest, authenticatedFetch } from '../../api/client'
 import { downloadBlob } from '../../api/download'
 import type { ScreeningResult } from '../../api/types'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
-import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
 import { Tip } from '../../components/Tooltip'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { useHotkeyText } from '../../hotkeys/useHotkeyText'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { formatAsOf } from './asOfDates'
 import { AsOfMenu } from './AsOfMenu'
@@ -23,40 +25,11 @@ import { describeRule, describeScreen, newFilterRule, newGroupId, ruleProblem } 
 import { availableStarters, defaultOutput, type StarterScreen } from './screenDefaults'
 import { ScreensMenu } from './ScreensMenu'
 import type { ColumnFormats, ComputedColumn, Criterion, CriteriaMatch, MetricCatalog, SavedScreen, SavedScreenSummary } from './types'
+import { screeningCommandsScope, screeningScope } from './screeningHotkeys'
 import './screening.css'
 
 const DRAFT_KEY = 'shade.screening.draft'
 const LEGACY_DEFAULT_COLUMNS = ['CompanyInfo.EdinetCode', 'CompanyInfo.Company_Ticker', 'CompanyInfo.Company_Name', 'CompanyInfo.Company_Industry']
-
-const SHORTCUTS: ShortcutGroup[] = [
-  { title: 'Anywhere on this page', shortcuts: [
-    { keys: ['Ctrl+Enter'], label: 'Run the screen (also while typing)' },
-    { keys: ['Ctrl+S'], label: 'Save the screen (also while typing)' },
-    { keys: ['?'], label: 'Show or hide this list' },
-    { keys: ['/'], label: 'Search companies' },
-  ] },
-  { title: 'Building', shortcuts: [
-    { keys: ['N'], label: 'Add a rule and choose its metric' },
-    { keys: ['Shift+N'], label: 'Add a group of alternatives' },
-    { keys: ['O'], label: 'Open a saved or starter screen' },
-    { keys: ['D'], label: 'Change the as-of date (runs the screen)' },
-    { keys: ['C'], label: 'Choose output columns' },
-    { keys: ['B'], label: 'Collapse or expand the rules' },
-    { keys: ['R'], label: 'Run the screen' },
-  ] },
-  { title: 'Results', shortcuts: [
-    { keys: ['↓', 'J'], label: 'Go to the results, then move down (↑ or K moves up)' },
-    { keys: ['Enter'], label: 'Open the company in Analysis' },
-    { keys: ['Shift+Enter'], label: 'Open the company in a new tab' },
-    { keys: ['[', ']'], label: 'Previous or next page' },
-    { keys: ['Home', 'End'], label: 'First or last company' },
-  ] },
-  { title: 'Menus and pickers', shortcuts: [
-    { keys: ['↑', '↓'], label: 'Move through metrics, screens, or dates' },
-    { keys: ['Enter'], label: 'Choose' },
-    { keys: ['Esc'], label: 'Close' },
-  ] },
-]
 
 interface Draft extends SavedScreen { loaded_name?: string | null; saved_key?: string | null }
 
@@ -166,7 +139,6 @@ export default function ScreeningWorkspace() {
   const [openRuleId, setOpenRuleId] = useState<string | null>(null)
   const [showColumns, setShowColumns] = useState(false)
   const [showScreens, setShowScreens] = useState(false)
-  const [showShortcuts, setShowShortcuts] = useState(false)
   const [showDate, setShowDate] = useState(false)
   const [collapsed, setCollapsed] = usePersistentState('shade.screening.builder-collapsed', false, [true, false])
   const nameInput = useRef<HTMLInputElement>(null)
@@ -301,30 +273,22 @@ export default function ScreeningWorkspace() {
     downloadBlob(`${(name.trim() || 'screen').replace(/[^\w.-]+/g, '-')}.csv`, await response.blob())
   }
 
-  // Run and save work from inside fields too, so they live outside the single-key hotkeys.
-  const actions = useRef({ run: () => runScreen(), save: saveScreen })
-  useEffect(() => { actions.current = { run: () => runScreen(), save: saveScreen } })
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return
-      if (event.key === 'Enter') { event.preventDefault(); actions.current.run() }
-      else if (event.key.toLowerCase() === 's') { event.preventDefault(); actions.current.save() }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
-  const overlayOpen = showColumns || showScreens || showShortcuts || showDate
+  const screensKey = useHotkeyText(screeningScope.byId.screens)
+  const saveKey = useHotkeyText(screeningCommandsScope.byId.save)
+  const runKey = useHotkeyText(screeningCommandsScope.byId.run)
+  // Run and save work from inside fields and open menus too, so they have their own scope.
+  useHotkeyScope(screeningCommandsScope, { run: () => runScreen(), save: saveScreen })
+  const overlayOpen = showColumns || showScreens || showDate
   // G is kept free for the app-wide "G then a letter" page shortcuts; results keys live in ResultsTable.
-  useHotkeys({
-    n: () => addRule(),
-    N: () => addRule({ id: newGroupId(), match: 'any' }),
-    o: () => setShowScreens(true),
-    d: () => setShowDate(true),
-    c: () => setShowColumns(true),
-    b: () => setCollapsed(!collapsed),
-    r: () => runScreen(),
-    '?': () => setShowShortcuts(true),
-  }, !overlayOpen && Boolean(metrics.data))
+  useHotkeyScope(screeningScope, {
+    'add-rule': () => addRule(),
+    'add-group': () => addRule({ id: newGroupId(), match: 'any' }),
+    screens: () => setShowScreens(true),
+    date: () => setShowDate(true),
+    columns: () => setShowColumns(true),
+    collapse: () => setCollapsed(!collapsed),
+    run: () => runScreen(),
+  }, { enabled: !overlayOpen && Boolean(metrics.data) })
 
   // The workspace fills the window below its top edge; results scroll inside it, the page does not.
   useLayoutEffect(() => {
@@ -378,21 +342,21 @@ export default function ScreeningWorkspace() {
       </div>
       <div className="screening-head__actions">
         <div className="screens-anchor">
-          <button type="button" data-screens-trigger className="button button--ghost button--small" aria-expanded={showScreens} onClick={() => setShowScreens(!showScreens)} title="Open a saved or starter screen (O)"><FolderOpen aria-hidden="true" />Screens <kbd>O</kbd></button>
+          <button type="button" data-screens-trigger className="button button--ghost button--small" aria-expanded={showScreens} onClick={() => setShowScreens(!showScreens)} title={`Open a saved or starter screen (${screensKey})`}><FolderOpen aria-hidden="true" />Screens <HotkeyKbd hotkey={screeningScope.byId.screens} /></button>
           {showScreens && <ScreensMenu saved={savedItems} starters={starters} current={loadedName} canSave={canSave} onOpenSaved={screen => void openSaved(screen)} onOpenStarter={openStarter} onNew={newScreen} onDelete={removeSaved} onClose={() => setShowScreens(false)} />}
         </div>
-        <button type="button" className="button button--secondary button--small" disabled={saveMutation.isPending || !canSave} onClick={saveScreen} title={loadedName && name.trim() === loadedName ? `Save changes to “${loadedName}” (Ctrl+S)` : 'Save under this name (Ctrl+S)'}><Save aria-hidden="true" />{saveMutation.isPending ? 'Saving…' : 'Save'} <kbd>Ctrl S</kbd></button>
+        <button type="button" className="button button--secondary button--small" disabled={saveMutation.isPending || !canSave} onClick={saveScreen} title={loadedName && name.trim() === loadedName ? `Save changes to “${loadedName}” (${saveKey})` : `Save under this name (${saveKey})`}><Save aria-hidden="true" />{saveMutation.isPending ? 'Saving…' : 'Save'} <HotkeyKbd hotkey={screeningCommandsScope.byId.save} /></button>
         <div className="screens-anchor">
           <button type="button" data-asof-trigger className={screeningDate ? 'screening-date is-set' : 'screening-date'} aria-expanded={showDate} aria-label={`As of: ${formatAsOf(screeningDate)}. Change the date (D)`} onClick={() => setShowDate(!showDate)}>
             <CalendarClock aria-hidden="true" />
             <Tip content="Point in time: rules see only filings published by this date and prices up to it. Press D to change it; the screen reruns." focusable={false}><span>As of</span></Tip>
             <strong>{formatAsOf(screeningDate)}</strong>
-            <kbd>D</kbd>
+            <HotkeyKbd hotkey={screeningScope.byId.date} />
           </button>
           {showDate && <AsOfMenu value={screeningDate} onChoose={applyDate} onClose={() => setShowDate(false)} />}
         </div>
-        <button type="button" className="button button--primary button--small" disabled={run.isPending} onClick={() => runScreen()} title="Run the screen (Ctrl+Enter)"><FlaskConical aria-hidden="true" />{run.isPending ? 'Running…' : 'Run'} <kbd>Ctrl ↵</kbd></button>
-        <button type="button" className="icon-button" onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard /></button>
+        <button type="button" className="button button--primary button--small" disabled={run.isPending} onClick={() => runScreen()} title={`Run the screen (${runKey})`}><FlaskConical aria-hidden="true" />{run.isPending ? 'Running…' : 'Run'} <HotkeyKbd hotkey={screeningCommandsScope.byId.run} /></button>
+        <HotkeyHelpButton />
       </div>
     </header>
     {notice && <p className={notice.tone === 'warning' ? 'screening-notice is-warning' : 'screening-notice'} role="status">{notice.text}</p>}
@@ -404,12 +368,12 @@ export default function ScreeningWorkspace() {
             <ChevronDown aria-hidden="true" />
             <strong>{enabledRules.length} {enabledRules.length === 1 ? 'rule' : 'rules'}</strong>
             <span>{summary || 'No rules: every company matches'}</span>
-            <kbd>B</kbd>
+            <HotkeyKbd hotkey={screeningScope.byId.collapse} />
           </button>
           : <>
             <RuleBuilder criteria={criteria} match={match} options={options} ruleOptions={ruleOptions} formats={formats} tagNames={tagNames} openRuleId={openRuleId}
               onChange={setCriteria} onMatchChange={setMatch} onAddRule={addRule} />
-            {criteria.length > 0 && <button type="button" className="text-button screening-rules__collapse" onClick={() => setCollapsed(true)} title="Collapse the rules to a summary (B)"><ChevronUp aria-hidden="true" />Collapse rules <kbd>B</kbd></button>}
+            {criteria.length > 0 && <button type="button" className="text-button screening-rules__collapse" onClick={() => setCollapsed(true)} title="Collapse the rules to a summary (B)"><ChevronUp aria-hidden="true" />Collapse rules <HotkeyKbd hotkey={screeningScope.byId.collapse} /></button>}
           </>}
       </section>
 
@@ -418,9 +382,9 @@ export default function ScreeningWorkspace() {
           <h2>{displayed ? `${displayed.row_count.toLocaleString()} ${displayed.row_count === 1 ? 'company' : 'companies'}` : 'Results'}</h2>
           {lastRun && <span className="muted">{(lastRun.ms / 1000).toFixed(1)} s · {screeningDate ? `as of ${screeningDate}` : 'latest data'}</span>}
           {!lastRun && displayed && <span className="muted">Your last run{lastStored.data?.result?.updated_at ? ` · ${new Date(lastStored.data.result.updated_at).toLocaleString()}` : ''}</span>}
-          {stale && displayed && !run.isPending && <button type="button" className="screening-stale" onClick={() => runScreen()} title="The rules or columns changed since these results">Rules changed · run again <kbd>Ctrl ↵</kbd></button>}
+          {stale && displayed && !run.isPending && <button type="button" className="screening-stale" onClick={() => runScreen()} title="The rules or columns changed since these results">Rules changed · run again <HotkeyKbd hotkey={screeningCommandsScope.byId.run} /></button>}
           <span className="rule-builder__spacer" />
-          <button type="button" className="button button--ghost button--small" onClick={() => setShowColumns(true)} title="Choose output columns (C)"><Columns3 aria-hidden="true" />Columns {outputColumns.length + shownComputed.length} <kbd>C</kbd></button>
+          <button type="button" className="button button--ghost button--small" onClick={() => setShowColumns(true)} title="Choose output columns"><Columns3 aria-hidden="true" />Columns {outputColumns.length + shownComputed.length} <HotkeyKbd hotkey={screeningScope.byId.columns} /></button>
           {displayed && <>
             <button type="button" className="button button--ghost button--small" onClick={() => void exportCsv()} title="Download every matching company with the current columns"><Download aria-hidden="true" />CSV</button>
             <button type="button" className="button button--ghost button--small" disabled={compareCodes.length < 2} onClick={() => navigate(`/compare?companies=${encodeURIComponent(compareCodes.slice(0, 12).join(','))}&source=screen`)} title="Open the first 12 matches in Comparison"><GitCompare aria-hidden="true" />Compare</button>
@@ -437,6 +401,5 @@ export default function ScreeningWorkspace() {
     </div>
 
     {showColumns && <><div className="drawer-backdrop" onClick={() => setShowColumns(false)} /><ColumnsPanel catalog={catalog} options={options} columns={shownColumns} computed={shownComputed} onChange={next => { setColumns(next.columns); setComputed(next.computed) }} onClose={() => setShowColumns(false)} /></>}
-    {showShortcuts && <ShortcutsDialog groups={SHORTCUTS} onClose={() => setShowShortcuts(false)} />}
   </div>
 }

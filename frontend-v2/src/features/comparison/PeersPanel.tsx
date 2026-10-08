@@ -6,6 +6,8 @@ import { formatMetricValue, type MetricDefinition } from '../../metrics'
 import { abbreviate, MAX_COMPANIES, sizeRatio } from './comparisonModel'
 import type { CompanyInfo, Peer, PeersResponse } from './comparisonTypes'
 import { Swatch } from './CompanyPanel'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { comparisonScope } from './comparisonHotkeys'
 
 const COLLAPSED = 8
 const PERCENT: MetricDefinition = { label: '', group: '', format: 'percent' }
@@ -71,7 +73,7 @@ export function PeersPanel({ codes, info, colorIndex, data, loading, error, list
 
   return <section className="panel cmp-panel cmp-peers" aria-labelledby="cmp-peers-title">
     <header className="cmp-panel__header">
-      <h2 id="cmp-peers-title">Suggested peers <kbd aria-hidden="true">P</kbd></h2>
+      <h2 id="cmp-peers-title">Suggested peers <span aria-hidden="true"><HotkeyKbd hotkey={comparisonScope.byId.peers} /></span></h2>
       <span className="cmp-panel__meta">{industries.filter(item => item.candidates > 0).map(item => `${item.industry} · ${item.candidates} more listed`).join('; ')}</span>
       {peers.length > 0 && <button type="button" className="button button--secondary button--small" disabled={room < 1} onClick={() => onAdd(peers.slice(0, Math.min(3, room)))} title="Add the three companies closest in size (Shift+P adds the closest one)"><Plus aria-hidden="true" />{room > 0 ? `Add ${Math.min(3, room)} closest` : 'Comparison full'}</button>}
     </header>

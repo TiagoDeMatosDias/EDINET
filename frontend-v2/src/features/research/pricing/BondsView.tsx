@@ -2,7 +2,10 @@ import { RotateCcw } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 
 import { Tip } from '../../../components/Tooltip'
-import { useHotkeys } from '../../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../../hotkeys/useHotkeyScope'
+import { useHotkeyText } from '../../../hotkeys/useHotkeyText'
+import { bondsScope } from '../researchHotkeys'
 import { usePersistentState } from '../../../hooks/usePersistentState'
 import { formatMetricValue } from '../../../metrics'
 import { abbreviate } from '../../comparison/comparisonModel'
@@ -121,27 +124,30 @@ export function BondsView({ companyCode, onCompany, active }: { companyCode: str
   const focus = (element: HTMLElement | null) => { element?.focus(); element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }) }
   const reset = () => { const next = fromCompany(); if (next) { setState(next); setMarketPrice(null) } }
 
-  useHotkeys({
-    a: () => focus(pickerRef.current),
-    m: () => onCompany(''),
-    '[': () => set({ years: Math.max(1, Math.round(state.years) - 1) }),
-    ']': () => set({ years: Math.min(50, Math.round(state.years) + 1) }),
-    c: () => focus(couponRef.current),
-    y: () => focus(yieldRef.current),
-    p: () => focus(priceRef.current),
-    d: () => focus(maturityRef.current),
-    f: () => setFeeMode(feeMode === 'percent' ? 'amount' : 'percent'),
-    r: reset,
-  }, active)
+  useHotkeyScope(bondsScope, {
+    company: () => focus(pickerRef.current),
+    manual: () => onCompany(''),
+    shorter: () => set({ years: Math.max(1, Math.round(state.years) - 1) }),
+    longer: () => set({ years: Math.min(50, Math.round(state.years) + 1) }),
+    coupon: () => focus(couponRef.current),
+    yield: () => focus(yieldRef.current),
+    price: () => focus(priceRef.current),
+    maturity: () => focus(maturityRef.current),
+    fee: () => setFeeMode(feeMode === 'percent' ? 'amount' : 'percent'),
+    reset,
+  }, { enabled: active })
+  const companyKey = useHotkeyText(bondsScope.byId.company)
+  const manualKey = useHotkeyText(bondsScope.byId.manual)
+  const feeKey = useHotkeyText(bondsScope.byId.fee)
 
   const issuer = data?.company.company_name
-  const feeModeToggle = <Segmented label="Fee type" value={feeMode} onChange={setFeeMode} options={[{ value: 'percent', label: '%', title: 'A share of face value (F)' }, { value: 'amount', label: 'Set', title: 'A set amount per bond (F)' }]} />
+  const feeModeToggle = <Segmented label="Fee type" value={feeMode} onChange={setFeeMode} options={[{ value: 'percent', label: '%', title: `A share of face value (${feeKey})` }, { value: 'amount', label: 'Set', title: `A set amount per bond (${feeKey})` }]} />
   const feeHint = <>{fee > 0
     ? feeMode === 'percent' ? `${formatNumber(fee, 3)} per ${formatNumber(state.face, 0)} face, paid when buying` : `${formatPercent(fee / state.face, 3)} of face, paid when buying`
     : 'Commission or dealer markup paid when buying'}</>
   return <div className="rs-pricing rs-bonds">
     <section className="panel rs-pricing__inputs" aria-label="Bond inputs">
-      <PricingCompany code={companyCode} inputs={data} loading={inputs.isLoading} error={inputs.error} inputRef={pickerRef} onChange={onCompany} />
+      <PricingCompany code={companyCode} inputs={data} loading={inputs.isLoading} error={inputs.error} inputRef={pickerRef} onChange={onCompany} keys={{ company: companyKey, manual: manualKey }} />
       <div className="rs-fields">
         <NumberField label="Coupon" value={state.coupon} scale={100} step={0.125} digits={3} min={0} suffix="%" inputRef={couponRef} onChange={coupon => set({ coupon })} hint={data?.credit.cost_of_debt != null ? <>Company pays {formatPercent(data.credit.cost_of_debt, 2)} on its debt</> : 'Annual rate'}>
           <select className="select" aria-label="Coupons per year" value={state.frequency} onChange={event => set({ frequency: Number(event.target.value) })}><option value={1}>Annual</option><option value={2}>Semi-annual</option><option value={4}>Quarterly</option></select>
@@ -180,7 +186,7 @@ export function BondsView({ companyCode, onCompany, active }: { companyCode: str
         {source === 'spread' && <NumberField className="rs-field--inline" label="Spread" value={state.spread} scale={10_000} step={5} digits={0} min={0} suffix="bp" onChange={spread => set({ spread })} />}
         {source === 'probability' && <NumberField className="rs-field--inline" label="Annual default" value={state.annualDefault} scale={100} step={0.1} digits={2} min={0} max={99} suffix="%" onChange={annualDefault => set({ annualDefault })} />}
       </fieldset>
-      {companyCode && data && <button type="button" className="text-button rs-reset" onClick={reset}><RotateCcw aria-hidden="true" />Reset to {data.company.company_name}’s data <kbd aria-hidden="true">R</kbd></button>}
+      {companyCode && data && <button type="button" className="text-button rs-reset" onClick={reset}><RotateCcw aria-hidden="true" />Reset to {data.company.company_name}’s data <span aria-hidden="true"><HotkeyKbd hotkey={bondsScope.byId.reset} /></span></button>}
     </section>
 
     <section className="panel rs-pricing__values" aria-label="Bond price">

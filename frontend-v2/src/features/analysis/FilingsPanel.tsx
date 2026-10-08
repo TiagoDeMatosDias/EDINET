@@ -5,7 +5,9 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import { apiRequest } from '../../api/client'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { filingsPanelScope } from './analysisHotkeys'
 import { exportCompanyFilings } from '../filings/exportFilings'
 import { filingHref } from '../filings/filingFormat'
 import { FilingsTable, type FilingRow } from '../filings/FilingsTable'
@@ -19,7 +21,7 @@ export function FilingsPanel({ companyCode }: { companyCode: string }) {
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
   const rows = filings.data?.filings ?? []
-  useHotkeys({ o: () => { if (rows[0]) navigate(filingHref(rows[0].doc_id, companyCode, 'analysis')) } }, rows.length > 0)
+  useHotkeyScope(filingsPanelScope, { 'open-latest': () => { if (rows[0]) navigate(filingHref(rows[0].doc_id, companyCode, 'analysis')) } }, { enabled: rows.length > 0 })
   const exportAll = async () => {
     setExporting(true)
     setExportError('')
@@ -37,7 +39,7 @@ export function FilingsPanel({ companyCode }: { companyCode: string }) {
   const shown = expanded ? rows : rows.slice(0, COLLAPSED_ROWS)
   return <div className="filings-panel">
     <div className="filings-panel__actions">
-      <span className="muted">{rows.length} retained {rows.length === 1 ? 'report' : 'reports'} · newest first · <kbd>O</kbd> opens the latest</span>
+      <span className="muted">{rows.length} retained {rows.length === 1 ? 'report' : 'reports'} · newest first · <HotkeyKbd hotkey={filingsPanelScope.byId['open-latest']} /> opens the latest</span>
       <span className="statement-toolbar__spacer" />
       <Link className="button button--ghost button--small" to={`/filings?company=${encodeURIComponent(companyCode)}&from=analysis`}><ExternalLink aria-hidden="true" />Filing Explorer</Link>
       <button type="button" className="button button--ghost button--small" disabled={exporting} onClick={() => void exportAll()} title="Download a ZIP of every retained filing archive with a manifest"><Download aria-hidden="true" />{exporting ? 'Preparing…' : 'Export all'}</button>

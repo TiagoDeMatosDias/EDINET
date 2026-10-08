@@ -5,7 +5,9 @@ import { Link } from 'react-router-dom'
 import { apiPost, apiRequest } from '../../api/client'
 import type { SecuritySearchResult } from '../../api/types'
 import { CompanyPicker } from '../../components/CompanyPicker'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { alertsScope } from './researchHotkeys'
 import { formatMetricValue } from '../../metrics'
 import { ConfirmButton } from './ConfirmButton'
 import { invalidateResearch } from './researchQueries'
@@ -60,17 +62,17 @@ export function AlertsView({ book, active, today, onOpenCompany }: {
     },
   })
   const step = (delta: number) => { setCursor(Math.max(0, Math.min(shown.length - 1, index + delta))); setFocusRequest(request => request + 1) }
-  useHotkeys({
-    j: () => step(1),
-    k: () => step(-1),
-    n: () => pickerRef.current?.focus(),
-    t: () => setOnlyTriggered(!onlyTriggered),
-    x: () => {
+  useHotkeyScope(alertsScope, {
+    next: () => step(1),
+    previous: () => step(-1),
+    new: () => pickerRef.current?.focus(),
+    triggered: () => setOnlyTriggered(!onlyTriggered),
+    delete: () => {
       const current = shown[index]
       if (!current) return
       if (armed === current.alert_id) { setArmed(null); remove.mutate(current.alert_id) } else setArmed(current.alert_id)
     },
-  }, active)
+  }, { enabled: active })
   const onBodyKeyDown = (event: KeyboardEvent<HTMLTableSectionElement>) => {
     if (moveCursorKey(event, index, shown.length, setCursor)) return
     const current = shown[index]
@@ -89,12 +91,12 @@ export function AlertsView({ book, active, today, onOpenCompany }: {
         {create.error && <span className="form-error">{(create.error as Error).message}</span>}
         {remove.error && <span className="form-error">Could not delete the alert: {(remove.error as Error).message}</span>}
       </form>
-      <p className="rs-hint"><kbd>N</kbd> starts a new alert: pick the company with <kbd>Enter</kbd>, type the value (a leading <code>&lt;</code>, <code>&gt;=</code>… sets the condition), and press <kbd>Enter</kbd> to add it. Alerts are checked against the latest stored prices and filings each time this page loads; triggered ones are listed first.</p>
+      <p className="rs-hint"><HotkeyKbd hotkey={alertsScope.byId.new} /> starts a new alert: pick the company with <kbd>Enter</kbd>, type the value (a leading <code>&lt;</code>, <code>&gt;=</code>… sets the condition), and press <kbd>Enter</kbd> to add it. Alerts are checked against the latest stored prices and filings each time this page loads; triggered ones are listed first.</p>
     </section>
     <section className="panel" aria-label="Alerts">
       <div className="rs-toolbar">
         <span className="rs-count">{alerts.length} alerts · {triggered} triggered</span>
-        <label className="inline-toggle"><input type="checkbox" checked={onlyTriggered} onChange={event => setOnlyTriggered(event.target.checked)} />Triggered only <kbd aria-hidden="true">T</kbd></label>
+        <label className="inline-toggle"><input type="checkbox" checked={onlyTriggered} onChange={event => setOnlyTriggered(event.target.checked)} />Triggered only <span aria-hidden="true"><HotkeyKbd hotkey={alertsScope.byId.triggered} /></span></label>
       </div>
       {shown.length ? <div className="rs-table-scroll"><table className="rs-table" aria-label="Alerts">
         <thead><tr><th scope="col">Status</th><th scope="col">Company</th><th scope="col">Condition</th><th scope="col" className="num">Now</th><th scope="col" className="num" title="How far the current value is from the threshold">Gap</th><th scope="col">Added</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>

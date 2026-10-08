@@ -1,41 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowDown, ArrowUp, CircleStop, Keyboard, Play, Plus, Save, Trash2, Zap } from 'lucide-react'
+import { ArrowDown, ArrowUp, CircleStop, Play, Plus, Save, Trash2, Zap } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 
 import { apiPost, apiRequest } from '../../api/client'
 import type { Job, JobCreateResponse, JobOutput, PipelineStep } from '../../api/types'
 import { ErrorState, LoadingState } from '../../components/Feedback'
-import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { ConfigField } from './ConfigField'
 import { RunOutput, StepStateTable } from './JobDetails'
 import { configKey, DAILY_RECIPE, formatMs, isTerminalJob, jobDuration, readSetups, runPayload, SETUPS_KEY, stepLabel, stripFileUploads, type SavedSetup, type SelectedStep } from './pipelineModel'
+import { pipelineScope } from './pipelineHotkeys'
 import './pipeline.css'
 
 export { ConfigField } from './ConfigField'
-
-const SHORTCUTS: ShortcutGroup[] = [
-  { title: 'Moving around', shortcuts: [
-    { keys: ['1', '2', '3', '4', '5'], label: 'Library, Sequence, Configuration, Latest run, History' },
-    { keys: ['J', 'K'], label: 'Next or previous item in the focused list (↓ ↑)' },
-    { keys: ['F'], label: 'Filter the step library' },
-    { keys: ['?'], label: 'Show or hide this list' },
-  ] },
-  { title: 'Building a run', shortcuts: [
-    { keys: ['Enter', 'Space'], label: 'Library: add the step · Sequence: configure it' },
-    { keys: ['Shift+J', 'Shift+K'], label: 'Sequence: move the step down or up' },
-    { keys: ['O'], label: 'Sequence: overwrite on or off' },
-    { keys: ['X', 'Del'], label: 'Sequence: remove the step' },
-    { keys: ['D'], label: 'Use the daily refresh recipe' },
-    { keys: ['S'], label: 'Save the sequence as a setup' },
-    { keys: ['L'], label: 'Load a saved setup' },
-  ] },
-  { title: 'Running', shortcuts: [
-    { keys: ['Shift+R'], label: 'Run the sequence' },
-    { keys: ['C'], label: 'Cancel the running job (press twice)' },
-    { keys: ['Enter'], label: 'History: show that run' },
-  ] },
-]
 
 function statusClass(status?: string) {
   return `pl-status pl-status--${status ?? 'unknown'}`
@@ -61,7 +40,7 @@ function useRovingList(count: number) {
 
 function Region({ index, title, meta, actions, children, className = '' }: { index: number; title: string; meta?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
   return <section className={`pl-region ${className}`} id={`pl-region-${index}`} aria-labelledby={`pl-region-${index}-title`}>
-    <header><kbd aria-hidden="true">{index}</kbd><h2 id={`pl-region-${index}-title`} tabIndex={-1}>{title}</h2>{meta && <span className="pl-region__meta">{meta}</span>}{actions && <div className="pl-region__actions">{actions}</div>}</header>
+    <header><span aria-hidden="true"><HotkeyKbd hotkey={pipelineScope.byId[`region-${index}`]} /></span><h2 id={`pl-region-${index}-title`} tabIndex={-1}>{title}</h2>{meta && <span className="pl-region__meta">{meta}</span>}{actions && <div className="pl-region__actions">{actions}</div>}</header>
     {children}
   </section>
 }
@@ -76,9 +55,7 @@ export default function PipelinePage() {
   const [focusedStep, setFocusedStep] = useState<string | null>(null)
   const [showAllConfig, setShowAllConfig] = useState(false)
   const [armedCancel, setArmedCancel] = useState(false)
-  const [help, setHelp] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
-  const closeHelp = useCallback(() => setHelp(false), [])
   const filterInput = useRef<HTMLInputElement>(null)
   const setupSelect = useRef<HTMLSelectElement>(null)
   const queryClient = useQueryClient()
@@ -187,16 +164,15 @@ export default function PipelinePage() {
     if (armedCancel) { setArmedCancel(false); cancel.mutate() } else setArmedCancel(true)
   }
 
-  useHotkeys({
-    ...Object.fromEntries([1, 2, 3, 4, 5].map(index => [String(index), () => focusRegion(index)])),
-    f: () => filterInput.current?.focus(),
-    d: useDaily,
-    s: saveSetup,
-    l: () => setupSelect.current?.focus(),
-    R: startRun,
-    c: cancelRun,
-    '?': () => setHelp(true),
-  }, !help)
+  useHotkeyScope(pipelineScope, {
+    ...Object.fromEntries([1, 2, 3, 4, 5].map(index => [`region-${index}`, () => focusRegion(index)])),
+    filter: () => filterInput.current?.focus(),
+    daily: useDaily,
+    save: saveSetup,
+    load: () => setupSelect.current?.focus(),
+    run: startRun,
+    cancel: cancelRun,
+  })
 
   const configured = selected.map(item => ({ item, meta: metaFor(item.name) })).filter(entry => entry.meta && (entry.meta.input_fields ?? entry.meta.parameters ?? []).length)
   const shownConfig = showAllConfig ? configured : configured.filter(entry => entry.item.id === (focusedStep ?? selected[seqIndex]?.id))
@@ -215,9 +191,9 @@ export default function PipelinePage() {
       </div>
       <div className="pl-head__run">
         {running
-          ? <button type="button" className="button button--danger button--small" disabled={cancel.isPending || activeStatus === 'cancelling'} onClick={cancelRun}><CircleStop aria-hidden="true" />{activeStatus === 'cancelling' ? 'Cancelling…' : armedCancel ? 'Cancel: sure?' : 'Cancel run'} <kbd>C</kbd></button>
-          : <button type="button" className="button button--primary button--small" disabled={!selected.length || run.isPending} onClick={startRun}><Play aria-hidden="true" />{run.isPending ? 'Queueing…' : `Run ${selected.length} step${selected.length === 1 ? '' : 's'}`} <kbd>⇧R</kbd></button>}
-        <button type="button" className="icon-button" onClick={() => setHelp(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard /></button>
+          ? <button type="button" className="button button--danger button--small" disabled={cancel.isPending || activeStatus === 'cancelling'} onClick={cancelRun}><CircleStop aria-hidden="true" />{activeStatus === 'cancelling' ? 'Cancelling…' : armedCancel ? 'Cancel: sure?' : 'Cancel run'} <HotkeyKbd hotkey={pipelineScope.byId.cancel} /></button>
+          : <button type="button" className="button button--primary button--small" disabled={!selected.length || run.isPending} onClick={startRun}><Play aria-hidden="true" />{run.isPending ? 'Queueing…' : `Run ${selected.length} step${selected.length === 1 ? '' : 's'}`} <HotkeyKbd hotkey={pipelineScope.byId.run} /></button>}
+        <HotkeyHelpButton />
       </div>
     </header>
     {notice && <div className="pl-notice" role="status">{notice}</div>}
@@ -267,7 +243,7 @@ export default function PipelinePage() {
               </span>
             </li>
           })}
-        </ul> : <div className="pl-empty"><p>Add steps from the library (Enter), or start from the daily recipe.</p><button type="button" className="button button--primary button--small" onClick={useDaily}><Zap aria-hidden="true" />Use daily refresh recipe <kbd>D</kbd></button></div>}
+        </ul> : <div className="pl-empty"><p>Add steps from the library (Enter), or start from the daily recipe.</p><button type="button" className="button button--primary button--small" onClick={useDaily}><Zap aria-hidden="true" />Use daily refresh recipe <HotkeyKbd hotkey={pipelineScope.byId.daily} /></button></div>}
       </Region>
 
       <Region index={3} title="Configuration" meta={configured.length ? `${configured.length} step${configured.length === 1 ? '' : 's'} with settings` : 'nothing to set'} actions={configured.length > 1 && <label className="pl-overwrite"><input type="checkbox" checked={showAllConfig} onChange={event => setShowAllConfig(event.target.checked)} />All steps</label>}>
@@ -316,6 +292,5 @@ export default function PipelinePage() {
         </table> : <p className="pl-muted">No pipeline runs yet.</p>}
       </Region>
     </div>
-    {help && <ShortcutsDialog groups={SHORTCUTS} onClose={closeHelp} />}
   </div>
 }

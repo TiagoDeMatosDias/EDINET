@@ -5,7 +5,9 @@ import { useMemo, useRef, useState } from 'react'
 import { apiRequest } from '../../../api/client'
 import { EmptyState, ErrorState, LoadingState } from '../../../components/Feedback'
 import { Tip } from '../../../components/Tooltip'
-import { useHotkeys } from '../../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../../hotkeys/useHotkeyScope'
+import { statementsTabScope } from '../filingsHotkeys'
 import { downloadTextFile, safeFileName } from '../../analysis/downloads'
 import { formatChange } from '../../analysis/statementLayout'
 import {
@@ -85,7 +87,7 @@ export function StatementsTab({ docId, fileStem, active, onSelect }: { docId: st
     const next = matches[Math.max(0, Math.min(matches.length - 1, index + delta))]
     if (next) onSelect(next.statement.id)
   }
-  useHotkeys({ j: () => step(1), k: () => step(-1), f: () => filterInput.current?.focus() }, matches.length > 0)
+  useHotkeyScope(statementsTabScope, { next: () => step(1), previous: () => step(-1), filter: () => filterInput.current?.focus() }, { enabled: matches.length > 0 })
 
   if (tables.isLoading) return <LoadingState label="Building statement tables from the filing's XBRL" />
   if (tables.isError) return <ErrorState error={tables.error} retry={() => void tables.refetch()} />
@@ -100,7 +102,7 @@ export function StatementsTab({ docId, fileStem, active, onSelect }: { docId: st
       <label className="viewer-search">
         <Search aria-hidden="true" />
         <input ref={filterInput} value={filter} onChange={event => setFilter(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { setFilter(''); event.currentTarget.blur() } }} placeholder="Filter line items" aria-label="Filter line items" />
-        <kbd>F</kbd>
+        <HotkeyKbd hotkey={statementsTabScope.byId.filter} />
       </label>
       {tables.data && <p className="viewer-sidebar__count">{tables.data.fact_count.toLocaleString()} facts in {tables.data.statements.length} tables{filter ? ` · ${matches.length} match` : ''}</p>}
       {STATEMENT_GROUPS.map(group => {
@@ -119,7 +121,7 @@ export function StatementsTab({ docId, fileStem, active, onSelect }: { docId: st
           })}</ul>
         </section>
       })}
-      {matches.length > 0 && <p className="viewer-sidebar__keys"><kbd>J</kbd><kbd>K</kbd> next and previous table</p>}
+      {matches.length > 0 && <p className="viewer-sidebar__keys"><HotkeyKbd hotkey={statementsTabScope.byId.next} /><HotkeyKbd hotkey={statementsTabScope.byId.previous} /> next and previous table</p>}
     </nav>
     <div className="viewer-main">
       {!selected ? <EmptyState title={filter ? 'No matching line items' : 'No numeric facts'} description={filter ? `No table has a line item matching “${filter}”.` : 'This filing carries no numeric XBRL facts.'} /> : <>

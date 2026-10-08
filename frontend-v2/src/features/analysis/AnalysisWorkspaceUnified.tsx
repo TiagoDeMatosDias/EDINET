@@ -1,15 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BarChart3, Download, ExternalLink, GitCompare, Keyboard, RefreshCw } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { BarChart3, Download, ExternalLink, GitCompare, RefreshCw } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import { ApiError, apiPost, apiRequest, queryString } from '../../api/client'
 import type { SecurityHistory, SecurityOverview } from '../../api/types'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
 import { PageHeader } from '../../components/Page'
-import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
 import { Tip } from '../../components/Tooltip'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { useHotkeyText } from '../../hotkeys/useHotkeyText'
+import { globalScope } from '../../hotkeys/globalScopes'
 import { formatMetricValue, groupMetrics, type MetricDefinition } from '../../metrics'
 import { useAuth } from '../auth/authContext'
 import { CompanyChannelPanel } from '../chat/CompanyChannelPanel'
@@ -21,50 +24,13 @@ import { downloadTextFile, safeFileName } from './downloads'
 import { FilingsPanel } from './FilingsPanel'
 import { FinancialHistoryWorkspace } from './FinancialHistoryWorkspace'
 import { buildCompanyReport, type SnapshotGroup } from './markdownReport'
+import { ANALYSIS_SECTIONS, analysisScope } from './analysisHotkeys'
 import { PricePanel } from './PricePanel'
 import type { PriceHistoryRow } from './priceHistoryRanges'
 import './analysis.css'
 
-const SECTIONS = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'financials', label: 'Financials' },
-  { id: 'filings', label: 'Filings' },
-  { id: 'discussion', label: 'Discussion' },
-] as const
+const SECTIONS = ANALYSIS_SECTIONS
 type SectionId = typeof SECTIONS[number]['id']
-
-const SHORTCUTS: ShortcutGroup[] = [
-  { title: 'Anywhere', shortcuts: [
-    { keys: ['/'], label: 'Search companies' },
-    { keys: ['?'], label: 'Show or hide this list' },
-    { keys: ['Esc'], label: 'Close a menu or leave a field' },
-  ] },
-  { title: 'Opened from a screen or the portfolio', shortcuts: [
-    { keys: ['Shift+J'], label: 'Next company in the list' },
-    { keys: ['Shift+K'], label: 'Previous company in the list' },
-    { keys: ['G S', 'G P'], label: 'Back to the screen results or the portfolio' },
-  ] },
-  { title: 'This company', shortcuts: [
-    { keys: ['1', '2', '3', '4'], label: 'Jump to Overview, Financials, Filings, Discussion' },
-    { keys: ['D'], label: 'Write in the company’s discussion channel' },
-    { keys: ['-', '+'], label: 'Widen or narrow the price range' },
-    { keys: ['T'], label: 'Add a tag' },
-    { keys: ['N'], label: 'Write a research note' },
-    { keys: ['P'], label: 'Compare with peers' },
-    { keys: ['B'], label: 'Backtest this ticker' },
-    { keys: ['O'], label: 'Open the latest filing' },
-  ] },
-  { title: 'Financial statements', shortcuts: [
-    { keys: ['[', ']'], label: 'Previous or next statement' },
-    { keys: ['V'], label: 'Cycle Values, YoY, Common size' },
-    { keys: ['F'], label: 'Filter lines' },
-    { keys: ['E'], label: 'Show or hide empty lines' },
-    { keys: ['C'], label: 'Switch bars and lines' },
-    { keys: ['X'], label: 'Clear the chart' },
-    { keys: ['↑', '↓'], label: 'Move between lines (also J, K)' },
-    { keys: ['Space'], label: 'Chart or un-chart the focused line' },
-  ] },
-]
 
 /** Dense panels abbreviate magnitudes: "¥23.66 Trillion" → "¥23.66T". */
 function abbreviate(text: string) {
@@ -159,7 +125,7 @@ function StartAnalysis() {
   return <div className="stack dense-page analysis-empty-page">
     <PageHeader eyebrow="Company research" title="Analyze a company" description="Search by name, ticker, EDINET code, or industry to open prices, statements, ratios, and filings." />
     {companies.length > 0 && <section className="panel recent-companies" aria-labelledby="recent-companies-title">
-      <header className="panel__header"><h3 id="recent-companies-title">Recently viewed</h3><span className="panel__meta">Press <kbd>/</kbd> to search for another</span></header>
+      <header className="panel__header"><h3 id="recent-companies-title">Recently viewed</h3><span className="panel__meta">Press <HotkeyKbd hotkey={globalScope.byId.search} /> to search for another</span></header>
       <ul>{companies.map(item => <li key={item.work_id}><Link to={item.href}><strong>{item.title}</strong><small>{item.subtitle}</small><span className="muted">{formatDay(item.occurred_at)}</span></Link></li>)}</ul>
     </section>}
     {!companies.length && !recent.isLoading && <EmptyState title="Press / to search" description="Enter a name, ticker, EDINET code, or industry in the search bar above and choose a result." />}
@@ -271,8 +237,6 @@ export default function AnalysisWorkspaceUnified() {
   const tagInput = useRef<HTMLInputElement>(null)
   const discussionInput = useRef<HTMLTextAreaElement>(null)
   const noteInput = useRef<HTMLTextAreaElement>(null)
-  const [showShortcuts, setShowShortcuts] = useState(false)
-  const closeShortcuts = useCallback(() => setShowShortcuts(false), [])
   const ready = Boolean(overview.data)
   const activeSection = useActiveSection(ready)
   const header = useRef<HTMLDivElement>(null)
@@ -285,18 +249,21 @@ export default function AnalysisWorkspaceUnified() {
     observer.observe(element)
     return () => observer.disconnect()
   }, [ready])
-  useHotkeys({
-    '?': () => setShowShortcuts(true),
-    1: () => jumpTo('overview'),
-    2: () => jumpTo('financials'),
-    3: () => jumpTo('filings'),
-    4: () => jumpTo('discussion'),
-    d: () => { discussionInput.current?.focus(); discussionInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
-    t: () => { tagInput.current?.focus(); tagInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
-    n: () => { noteInput.current?.focus(); noteInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
-    p: () => { if (canonicalCode) navigate(`/compare?companies=${encodeURIComponent(canonicalCode)}`) },
-    b: () => { if (ticker) navigate(`/backtest?symbol=${encodeURIComponent(ticker)}`) },
-  }, ready && !showShortcuts)
+  const compareKey = useHotkeyText(analysisScope.byId.compare)
+  const tagKey = useHotkeyText(analysisScope.byId.tag)
+  const noteKey = useHotkeyText(analysisScope.byId.note)
+  const backtestKey = useHotkeyText(analysisScope.byId.backtest)
+  useHotkeyScope(analysisScope, {
+    'section-overview': () => jumpTo('overview'),
+    'section-financials': () => jumpTo('financials'),
+    'section-filings': () => jumpTo('filings'),
+    'section-discussion': () => jumpTo('discussion'),
+    discuss: () => { discussionInput.current?.focus(); discussionInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
+    tag: () => { tagInput.current?.focus(); tagInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
+    note: () => { noteInput.current?.focus(); noteInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
+    compare: () => { if (canonicalCode) navigate(`/compare?companies=${encodeURIComponent(canonicalCode)}`) },
+    backtest: () => { if (ticker) navigate(`/backtest?symbol=${encodeURIComponent(ticker)}`) },
+  }, { enabled: ready })
 
   if (!lookup) return <StartAnalysis />
   if (overview.isLoading) return <LoadingState label="Loading company analysis" />
@@ -385,15 +352,15 @@ export default function AnalysisWorkspaceUnified() {
         <strong>{name}</strong>
         {hasPrice && <span className="mono">{formatMetric('LatestPrice', metrics.LatestPrice ?? numberOrNull(market.latest_price))}</span>}
       </span>
-      {SECTIONS.map((section, index) => <a key={section.id} href={`#${section.id}`} className={activeSection === section.id ? 'active' : undefined} aria-current={activeSection === section.id ? 'location' : undefined} onClick={event => { event.preventDefault(); jumpTo(section.id) }}><kbd>{index + 1}</kbd>{section.label}</a>)}
+      {SECTIONS.map(section => <a key={section.id} href={`#${section.id}`} className={activeSection === section.id ? 'active' : undefined} aria-current={activeSection === section.id ? 'location' : undefined} onClick={event => { event.preventDefault(); jumpTo(section.id) }}><HotkeyKbd hotkey={analysisScope.byId[`section-${section.id}`]} />{section.label}</a>)}
       <span className="analysis-nav__spacer" />
       <div className="analysis-nav__actions">
         {params.get('from') === 'screen' && <ScreenTrailNav current={canonicalCode} />}
         {params.get('from') === 'portfolio' && <PortfolioTrailNav current={canonicalCode || tickerParam} />}
         <button type="button" className="button button--secondary button--small" disabled={!history.data} onClick={downloadReport} title={history.data ? 'Download a Markdown report with the snapshot and full financial history' : 'Financial history is still loading'}><Download aria-hidden="true" />Report</button>
-        {canonicalCode && <Link className="button button--secondary button--small" to={`/compare?companies=${encodeURIComponent(canonicalCode)}`} title="Compare with peers (P)"><GitCompare aria-hidden="true" />Compare</Link>}
-        {ticker && <Link className="button button--primary button--small" to={`/backtest?symbol=${encodeURIComponent(ticker)}`} title="Backtest this ticker (B)"><BarChart3 aria-hidden="true" />Backtest</Link>}
-        <button type="button" className="icon-button analysis-nav__keys" onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard aria-hidden="true" /></button>
+        {canonicalCode && <Link className="button button--secondary button--small" to={`/compare?companies=${encodeURIComponent(canonicalCode)}`} title={`Compare with peers (${compareKey})`}><GitCompare aria-hidden="true" />Compare</Link>}
+        {ticker && <Link className="button button--primary button--small" to={`/backtest?symbol=${encodeURIComponent(ticker)}`} title={`Backtest this ticker (${backtestKey})`}><BarChart3 aria-hidden="true" />Backtest</Link>}
+        <HotkeyHelpButton className="icon-button analysis-nav__keys" />
       </div>
     </nav>
 
@@ -419,7 +386,7 @@ export default function AnalysisWorkspaceUnified() {
             <span className="panel__meta">Private to your account · the same notes, tags, and targets as the Research page</span>
             <Link className="panel__link" to={`/research?company=${encodeURIComponent(researchCode)}`}>Open in Research</Link>
           </header>
-          <CompanyResearchPanel key={researchCode} code={researchCode} price={metrics.LatestPrice ?? numberOrNull(market.latest_price)} priceCurrency={currencies.price} compact tagRef={tagInput} noteRef={noteInput} keys={{ tag: 'T', note: 'N' }} />
+          <CompanyResearchPanel key={researchCode} code={researchCode} price={metrics.LatestPrice ?? numberOrNull(market.latest_price)} priceCurrency={currencies.price} compact tagRef={tagInput} noteRef={noteInput} keys={{ tag: tagKey, note: noteKey }} />
         </section>}
       </div>
     </Section>
@@ -435,7 +402,5 @@ export default function AnalysisWorkspaceUnified() {
     {canonicalCode && <Section id="discussion" title="Discussion" aside={<span className="analysis-section__note">The company’s public channel and mentions elsewhere. $ references another company.</span>}>
       <CompanyChannelPanel companyCode={canonicalCode} composerRef={discussionInput} />
     </Section>}
-
-    {showShortcuts && <ShortcutsDialog groups={SHORTCUTS} onClose={closeShortcuts} />}
   </div>
 }

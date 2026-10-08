@@ -1,8 +1,9 @@
 import { X } from 'lucide-react'
 import { useContext, useEffect, useRef } from 'react'
+import { Link } from 'react-router-dom'
 
 import { AuthContext } from '../features/auth/authContext'
-import { pageShortcuts } from './pageShortcuts'
+import { useGotoPages } from '../hotkeys/goto'
 
 export interface ShortcutGroup {
   title: string
@@ -13,10 +14,10 @@ export interface ShortcutGroup {
  * A keyboard reference opened with "?"; Escape or the backdrop closes it and focus returns where it was.
  * Every list ends with the "G then a letter" page shortcuts, which work everywhere.
  */
-export function ShortcutsDialog({ groups, onClose }: { groups: ShortcutGroup[]; onClose: () => void }) {
+export function ShortcutsDialog({ groups, onClose, gotoKey = 'G' }: { groups: ShortcutGroup[]; onClose: () => void; gotoKey?: string }) {
   const closeButton = useRef<HTMLButtonElement>(null)
   const user = useContext(AuthContext)?.user
-  const pages = pageShortcuts(user?.role === 'admin', Boolean(user))
+  const pages = useGotoPages(user?.role === 'admin', Boolean(user))
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
     closeButton.current?.focus()
@@ -47,11 +48,11 @@ export function ShortcutsDialog({ groups, onClose }: { groups: ShortcutGroup[]; 
           <dl>{group.shortcuts.map(shortcut => <div key={shortcut.label}><dt>{shortcut.keys.map((key, index) => <span key={key}>{index > 0 && <span className="shortcuts-dialog__or">/</span>}<kbd>{key}</kbd></span>)}</dt><dd>{shortcut.label}</dd></div>)}</dl>
         </section>)}
         <section className="shortcuts-dialog__pages">
-          <h3>Go to a page, from anywhere: <kbd>G</kbd> then</h3>
-          <dl>{pages.map(page => <div key={page.key}><dt><kbd>{page.key.toUpperCase()}</kbd></dt><dd>{page.label}</dd></div>)}</dl>
+          <h3>Go to a page, from anywhere: <kbd>{gotoKey}</kbd> then</h3>
+          <dl>{pages.map(page => <div key={page.id}><dt><kbd>{page.hint}</kbd></dt><dd>{page.label}</dd></div>)}</dl>
         </section>
       </div>
-      <p className="shortcuts-dialog__foot">Shortcuts pause while you type in a field. Press <kbd>Shift</kbd>+<kbd>Tab</kbd> to leave the field.</p>
+      <p className="shortcuts-dialog__foot">Shortcuts pause while you type in a field. Press <kbd>Shift</kbd>+<kbd>Tab</kbd> to leave the field. <Link to="/account#keyboard" onClick={onClose}>Change your shortcuts</Link></p>
     </div>
   </div>
 }

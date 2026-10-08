@@ -1,40 +1,25 @@
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, Keyboard } from 'lucide-react'
-import { useCallback, useState } from 'react'
+import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import { apiRequest, queryString } from '../../api/client'
 import { DownloadButton } from '../../components/DownloadButton'
 import { ErrorState, LoadingState } from '../../components/Feedback'
-import { ShortcutsDialog, type ShortcutGroup } from '../../components/ShortcutsDialog'
 import { Tip } from '../../components/Tooltip'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { companyName, fiscalLabel, formatBytes, formatDay, formLabel, periodSpan } from './filingFormat'
 import { FilingStatus, type FilingRow } from './FilingsTable'
 import { DetailsTab } from './viewer/DetailsTab'
 import { ReportTab } from './viewer/ReportTab'
 import { SectionsTab } from './viewer/SectionsTab'
 import { StatementsTab } from './viewer/StatementsTab'
+import { filingViewerScope } from './filingsHotkeys'
 import { VIEWER_TABS, type FilingDetail, type QualityIssue, type ReportFile, type Section, type ViewerTab } from './viewer/viewerTypes'
 import './filings.css'
 
 const TAB_KEYS = VIEWER_TABS.map(tab => tab.key) as ViewerTab[]
-
-const SHORTCUTS: ShortcutGroup[] = [
-  { title: 'Anywhere', shortcuts: [
-    { keys: ['/'], label: 'Search companies (opens Analysis)' },
-    { keys: ['?'], label: 'Show or hide this list' },
-  ] },
-  { title: 'This filing', shortcuts: [
-    { keys: ['1', '2', '3', '4'], label: 'Report, Sections, Statements, Details' },
-    { keys: ['[', ']'], label: "Older or newer report from this company" },
-    { keys: ['J', 'K'], label: 'Next or previous document, section, or table' },
-    { keys: ['T'], label: 'Switch the English translation' },
-    { keys: ['F'], label: 'Search the text or filter line items' },
-    { keys: ['A'], label: "Open the company's analysis" },
-    { keys: ['L'], label: "List the company's filings" },
-  ] },
-]
 
 export default function FilingViewerPage() {
   const { docId = '' } = useParams<{ docId: string }>()
@@ -44,8 +29,6 @@ export default function FilingViewerPage() {
   const tab: ViewerTab = requestedTab && TAB_KEYS.includes(requestedTab) ? requestedTab : 'report'
   const item = searchParams.get('item')
   const from = searchParams.get('from')
-  const [showShortcuts, setShowShortcuts] = useState(false)
-  const closeShortcuts = useCallback(() => setShowShortcuts(false), [setShowShortcuts])
 
   const detail = useQuery({
     queryKey: ['filing', docId],
@@ -104,17 +87,16 @@ export default function FilingViewerPage() {
   const selectTab = (key: ViewerTab) => update({ tab: key === 'report' ? null : key, item: null })
   const selectItem = (id: string) => update({ item: id })
 
-  useHotkeys({
-    1: () => selectTab('report'),
-    2: () => selectTab('sections'),
-    3: () => selectTab('statements'),
-    4: () => selectTab('details'),
-    '[': () => { if (older) navigate(hrefFor(older)) },
-    ']': () => { if (newer) navigate(hrefFor(newer)) },
-    a: () => { if (companyCode) navigate(`/analyze/${encodeURIComponent(companyCode)}`) },
-    l: () => { if (companyCode) navigate(`/filings?company=${encodeURIComponent(companyCode)}`) },
-    '?': () => setShowShortcuts(true),
-  }, !showShortcuts)
+  useHotkeyScope(filingViewerScope, {
+    'tab-report': () => selectTab('report'),
+    'tab-sections': () => selectTab('sections'),
+    'tab-statements': () => selectTab('statements'),
+    'tab-details': () => selectTab('details'),
+    older: () => { if (older) navigate(hrefFor(older)) },
+    newer: () => { if (newer) navigate(hrefFor(newer)) },
+    analyze: () => { if (companyCode) navigate(`/analyze/${encodeURIComponent(companyCode)}`) },
+    list: () => { if (companyCode) navigate(`/filings?company=${encodeURIComponent(companyCode)}`) },
+  })
 
   if (detail.isLoading) return <LoadingState label="Loading the filing" />
   if (detail.isError) return <ErrorState error={detail.error} retry={() => void detail.refetch()} />
@@ -156,14 +138,14 @@ export default function FilingViewerPage() {
         <div className="viewer-header__actions">
           {companyCode && <Link className="button button--secondary button--small" to={`/analyze/${encodeURIComponent(companyCode)}`} title="Open the company analysis (A)">Analysis<ArrowRight aria-hidden="true" /></Link>}
           {filing?.archive_sha256 && <DownloadButton path={`/api/filings/${encodeURIComponent(docId)}/artifact`} filename={`${docId}.zip`}>ZIP</DownloadButton>}
-          <button type="button" className="icon-button" onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><Keyboard /></button>
+          <HotkeyHelpButton />
         </div>
       </div>
     </header>
 
     <div className="viewer-tabs" role="tablist" aria-label="Filing views">
-      {VIEWER_TABS.map((option, index) => <button key={option.key} type="button" role="tab" aria-selected={tab === option.key} className={tab === option.key ? 'viewer-tab active' : 'viewer-tab'} title={option.hint} onClick={() => selectTab(option.key)}>
-        <kbd>{index + 1}</kbd>{option.label}
+      {VIEWER_TABS.map(option => <button key={option.key} type="button" role="tab" aria-selected={tab === option.key} className={tab === option.key ? 'viewer-tab active' : 'viewer-tab'} title={option.hint} onClick={() => selectTab(option.key)}>
+        <HotkeyKbd hotkey={filingViewerScope.byId[`tab-${option.key}`]} />{option.label}
         {option.key === 'details' && issues.length > 0 && <small className="viewer-tab__badge">{issues.length}</small>}
         {option.key === 'report' && files.data && <small>{files.data.files.length}</small>}
         {option.key === 'sections' && sections.data && <small>{sections.data.count}</small>}
@@ -176,6 +158,5 @@ export default function FilingViewerPage() {
       {tab === 'statements' && <StatementsTab docId={docId} fileStem={fileStem} active={item} onSelect={selectItem} />}
       {tab === 'details' && <DetailsTab docId={docId} artifacts={detail.data?.artifacts ?? []} issues={issues} issuesLoading={quality.isLoading} />}
     </div>
-    {showShortcuts && <ShortcutsDialog groups={SHORTCUTS} onClose={closeShortcuts} />}
   </div>
 }

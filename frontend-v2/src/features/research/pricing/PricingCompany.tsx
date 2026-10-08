@@ -9,20 +9,22 @@ import { PRICE_FORMAT } from '../researchQueries'
 import type { PricingInputs } from '../researchTypes'
 
 /** The company a calculator draws its inputs from, or manual inputs when none is chosen. */
-export function PricingCompany({ code, inputs, loading, error, inputRef, onChange, children }: {
+export function PricingCompany({ code, inputs, loading, error, inputRef, onChange, keys = { company: 'A', manual: 'M' }, children }: {
   code: string
   inputs?: PricingInputs
   loading: boolean
   error: unknown
   inputRef: Ref<HTMLInputElement>
   onChange: (code: string) => void
+  /** The calculator's current keys for choosing a company and for manual inputs. */
+  keys?: { company: string; manual: string }
   children?: React.ReactNode
 }) {
   const company = inputs?.company
   return <div className="rs-underlying">
     <div className="rs-underlying__picker">
       <CompanyPicker selected={null} clearOnSelect inputRef={inputRef} label="Company" placeholder={code ? 'Change company…' : 'Price for a company, or enter inputs by hand…'} onSelect={item => { if (item?.company_code) onChange(item.company_code) }} />
-      <kbd aria-hidden="true">A</kbd>
+      <kbd aria-hidden="true">{keys.company}</kbd>
     </div>
     {code ? <div className="rs-underlying__company">
       {loading && <span className="rs-dim">Loading {code}…</span>}
@@ -33,8 +35,8 @@ export function PricingCompany({ code, inputs, loading, error, inputRef, onChang
         {inputs?.spot != null && <span className="mono">{formatMetricValue(PRICE_FORMAT, inputs.spot, { price: inputs.currency.price })}{inputs.price_date && <small className="rs-dim"> · {formatDay(inputs.price_date)}</small>}</span>}
         {inputs?.spot == null && <span className="rs-dim">No stored price</span>}
       </>}
-      <button type="button" className="icon-button" aria-label="Use manual inputs instead of a company" title="Manual inputs (M)" onClick={() => onChange('')}><X /></button>
-    </div> : <span className="rs-dim rs-underlying__manual">Manual inputs <kbd aria-hidden="true">M</kbd></span>}
+      <button type="button" className="icon-button" aria-label="Use manual inputs instead of a company" title={`Manual inputs (${keys.manual})`} onClick={() => onChange('')}><X /></button>
+    </div> : <span className="rs-dim rs-underlying__manual">Manual inputs <kbd aria-hidden="true">{keys.manual}</kbd></span>}
     {children}
   </div>
 }

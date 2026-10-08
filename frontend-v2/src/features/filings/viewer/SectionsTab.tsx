@@ -4,7 +4,9 @@ import { useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { apiRequest, queryString } from '../../../api/client'
 import { EmptyState, LoadingState } from '../../../components/Feedback'
-import { useHotkeys } from '../../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../../hotkeys/useHotkeyScope'
+import { sectionsTabScope } from '../filingsHotkeys'
 import { usePersistentState } from '../../../hooks/usePersistentState'
 import type { ReportFile, Section } from './viewerTypes'
 
@@ -53,12 +55,12 @@ export function SectionsTab({ docId, files, sections, loading }: { docId: string
     setCurrent(next)
     document.getElementById(`section-${visible[next]?.section_id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
-  useHotkeys({
-    f: () => search.current?.focus(),
-    t: () => setSideBySide(!sideBySide),
-    j: () => jump(current + 1),
-    k: () => jump(current - 1),
-  }, sections.length > 0)
+  useHotkeyScope(sectionsTabScope, {
+    search: () => search.current?.focus(),
+    'side-by-side': () => setSideBySide(!sideBySide),
+    next: () => jump(current + 1),
+    previous: () => jump(current - 1),
+  }, { enabled: sections.length > 0 })
 
   const translateSection = async (sectionId: string, force = false) => {
     if (translating.has(sectionId)) return
@@ -85,7 +87,7 @@ export function SectionsTab({ docId, files, sections, loading }: { docId: string
       <label className="viewer-search">
         <Search aria-hidden="true" />
         <input ref={search} value={query} onChange={event => { setQuery(event.target.value); setCurrent(0) }} onKeyDown={event => { if (event.key === 'Escape') { setQuery(''); event.currentTarget.blur() } }} placeholder="Search the text" aria-label="Search the document text" />
-        <kbd>F</kbd>
+        <HotkeyKbd hotkey={sectionsTabScope.byId.search} />
       </label>
       {needle && <p className="viewer-sidebar__count">{visible.length} of {merged.length} sections match</p>}
       {outline.map(group => <section key={`${group.label}-${group.sections[0]?.section_id}`}>
@@ -105,7 +107,7 @@ export function SectionsTab({ docId, files, sections, loading }: { docId: string
       <header className="viewer-toolbar">
         <div className="viewer-toolbar__title"><h2>{needle ? `Sections matching “${needle}”` : 'Narrative text'}</h2><span>{visible.length} sections</span></div>
         <label className="inline-toggle"><input type="checkbox" checked={sideBySide} onChange={event => setSideBySide(event.target.checked)} /> English alongside</label>
-        <kbd title="Toggle English">T</kbd>
+        <span title="Toggle English"><HotkeyKbd hotkey={sectionsTabScope.byId['side-by-side']} /></span>
       </header>
       {sideBySide && translations.isFetching && <p className="viewer-note" role="status">Translating the complete document with the local Argos model…</p>}
       {sideBySide && translations.isError && <p className="viewer-note viewer-note--error" role="alert">{errorMessage(translations.error, 'Document translation failed')} Sections can still be translated one at a time below. <button type="button" className="text-button" onClick={() => void translations.refetch()}>Retry the whole document</button></p>}

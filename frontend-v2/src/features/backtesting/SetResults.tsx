@@ -6,6 +6,8 @@ import { DownloadButton } from '../../components/DownloadButton'
 import { chainRuns, dec, fanBands, finite, heatColor, heatText, histogram, month, pct, runKey, sortRuns, summarize, tone, type PathPoint, type RunRow, type SetResult } from './backtestModel'
 import { Kpi, Warnings } from './BacktestResults'
 import { asPercent, BENCHMARK_COLOR, DURATION_COLORS, PORTFOLIO_COLOR, percentOptions } from './charts'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { backtestScope } from './backtestHotkeys'
 
 const SET_TABS = ['time', 'distribution', 'heatmap', 'paths', 'runs'] as const
 type SetTab = typeof SET_TABS[number]
@@ -201,7 +203,7 @@ function RunsTable({ rows, selectedKey, onPick }: { rows: RunRow[]; selectedKey:
 
 function RunDetail({ row, path, holdings, onClose }: { row: RunRow; path?: PathPoint[]; holdings: string[]; onClose: () => void }) {
   return <aside className="bt-detail" aria-label="Selected run">
-    <header><h3>{month(row.period)} · {weightingLabel(row.weighting)} · {row.duration}</h3><span className={`bt-status bt-status--${row.status}`}>{STATUS_LABELS[row.status]}</span><button type="button" className="text-button" onClick={onClose}>Close <kbd>Esc</kbd></button></header>
+    <header><h3>{month(row.period)} · {weightingLabel(row.weighting)} · {row.duration}</h3><span className={`bt-status bt-status--${row.status}`}>{STATUS_LABELS[row.status]}</span><button type="button" className="text-button" onClick={onClose}>Close <HotkeyKbd hotkey={backtestScope.byId['close-detail']} /></button></header>
     <dl className="bt-facts">
       <div><dt>Annualized</dt><dd className={tone(row.annualized_return)}>{pct(row.annualized_return, 2, true)}</dd></div>
       <div><dt>Total</dt><dd className={tone(row.total_return)}>{pct(row.total_return, 1, true)}</dd></div>
@@ -292,7 +294,7 @@ export const SetResults = forwardRef<SetResultsHandle, { data: SetResult }>(func
       <div className="bt-chips" aria-label="Holding period">{durations.map(item => <button key={item} type="button" aria-pressed={activeDuration === item} className={activeDuration === item ? 'active' : ''} onClick={() => setDuration(item)}>{item}</button>)}</div>
       {weightings.length > 1 && <div className="bt-chips" aria-label="Weighting">{weightings.map(item => <button key={item} type="button" aria-pressed={activeWeighting === item} className={activeWeighting === item ? 'active' : ''} onClick={() => setWeighting(item)}>{weightingLabel(item)}</button>)}</div>}
       {tab === 'heatmap' && <div className="bt-chips" aria-label="Measure"><button type="button" aria-pressed={metric === 'return'} className={metric === 'return' ? 'active' : ''} onClick={() => setMetric('return')}>Return</button><button type="button" aria-pressed={metric === 'excess'} className={metric === 'excess' ? 'active' : ''} onClick={() => setMetric('excess')}>Excess</button></div>}
-      <span className="muted bt-keys"><kbd>[</kbd><kbd>]</kbd> view · <kbd>D</kbd> hold · {weightings.length > 1 ? <><kbd>W</kbd> weighting · </> : null}<kbd>M</kbd> measure</span>
+      <span className="muted bt-keys"><HotkeyKbd hotkey={backtestScope.byId['previous-view']} /><HotkeyKbd hotkey={backtestScope.byId['next-view']} /> view · <HotkeyKbd hotkey={backtestScope.byId['next-duration']} /> hold · {weightings.length > 1 ? <><HotkeyKbd hotkey={backtestScope.byId.weighting} /> weighting · </> : null}<HotkeyKbd hotkey={backtestScope.byId.measure} /> measure</span>
     </div>
     <div className={selected ? 'bt-split' : ''}>
       <div role="tabpanel" aria-label={TAB_LABELS[tab]} className="bt-tabpanel">

@@ -7,7 +7,10 @@ import { apiRequest } from '../../api/client'
 import type { SecuritySearchResult } from '../../api/types'
 import { CompanyPicker, searchCompanies } from '../../components/CompanyPicker'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
-import { useHotkeys } from '../../hooks/useHotkeys'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { useHotkeyText } from '../../hotkeys/useHotkeyText'
+import { bookScope } from './researchHotkeys'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { formatMetricValue } from '../../metrics'
 import { downloadTextFile } from '../analysis/downloads'
@@ -98,21 +101,24 @@ export function BookView({ book, loading, error, retry, selectedCode, onSelect, 
   const download = () => downloadTextFile(`research-${tag || status || 'companies'}.csv`.replace(/\s+/g, '-').toLowerCase(), bookCsv(rows), 'text/csv;charset=utf-8')
   const focus = (element: HTMLElement | null) => { element?.focus(); element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }) }
 
-  useHotkeys({
-    j: () => step(1),
-    k: () => step(-1),
-    o: () => { if (code) navigate(analysisHref(code)) },
-    a: () => focus(pickerRef.current),
-    f: () => focus(filterRef.current),
-    '[': () => cycleTag(-1),
-    ']': () => cycleTag(1),
-    s: () => focus(statusRef.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]') ?? statusRef.current?.querySelector<HTMLButtonElement>('button') ?? null),
-    e: () => focus(thesisRef.current),
-    t: () => focus(tagRef.current),
-    n: () => focus(noteRef.current),
-    c: compare,
-    d: download,
-  }, active)
+  useHotkeyScope(bookScope, {
+    next: () => step(1),
+    previous: () => step(-1),
+    open: () => { if (code) navigate(analysisHref(code)) },
+    add: () => focus(pickerRef.current),
+    filter: () => focus(filterRef.current),
+    'previous-tag': () => cycleTag(-1),
+    'next-tag': () => cycleTag(1),
+    status: () => focus(statusRef.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]') ?? statusRef.current?.querySelector<HTMLButtonElement>('button') ?? null),
+    thesis: () => focus(thesisRef.current),
+    tag: () => focus(tagRef.current),
+    note: () => focus(noteRef.current),
+    compare,
+    download,
+  }, { enabled: active })
+  const thesisKey = useHotkeyText(bookScope.byId.thesis)
+  const tagKey = useHotkeyText(bookScope.byId.tag)
+  const noteKey = useHotkeyText(bookScope.byId.note)
 
   const onBodyKeyDown = (event: KeyboardEvent<HTMLTableSectionElement>) => {
     if (moveCursorKey(event, cursor, rows.length, move)) return
@@ -145,12 +151,12 @@ export function BookView({ book, loading, error, retry, selectedCode, onSelect, 
       <div className="rs-toolbar">
         <div className="rs-toolbar__picker">
           <CompanyPicker selected={null} clearOnSelect inputRef={pickerRef} label="Add a company" placeholder="Add a company to research…" onSelect={company => { if (company?.company_code) { setPicked(company); onSelect(company.company_code) } }} />
-          <kbd aria-hidden="true">A</kbd>
+          <span aria-hidden="true"><HotkeyKbd hotkey={bookScope.byId.add} /></span>
         </div>
         <label className="rs-search">
           <Search aria-hidden="true" />
           <input ref={filterRef} className="input" value={query} placeholder="Filter by name, tag, or thesis" aria-label="Filter companies" onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { setQuery(''); event.currentTarget.blur() } if (event.key === 'ArrowDown') { event.preventDefault(); setFocusRequest(value => value + 1) } }} />
-          <kbd aria-hidden="true">F</kbd>
+          <span aria-hidden="true"><HotkeyKbd hotkey={bookScope.byId.filter} /></span>
         </label>
         <span className="rs-toolbar__spacer" />
         <button type="button" className="button button--ghost button--small" disabled={compareCodes.length < 2} onClick={compare} title={compareCodes.length < 2 ? 'List at least two companies to compare them' : `Compare the first ${compareCodes.length} companies listed (C)`}><GitCompare aria-hidden="true" />Compare</button>
@@ -167,7 +173,7 @@ export function BookView({ book, loading, error, retry, selectedCode, onSelect, 
             title={isPositionTag(item.name) ? 'Follows your portfolio' : undefined}
             onClick={() => onFilter({ tag: tag === item.name ? '' : item.name })}
           >{isPositionTag(item.name) && <Briefcase aria-hidden="true" />}{item.name} <small>{item.member_count}</small></button>)}
-          {tags.length > 0 && <kbd aria-hidden="true" title="Previous or next tag">[ ]</kbd>}
+          {tags.length > 0 && <span aria-hidden="true" title="Previous or next tag"><HotkeyKbd hotkey={bookScope.byId['previous-tag']} /> <HotkeyKbd hotkey={bookScope.byId['next-tag']} /></span>}
         </div>
         <div className="rs-chips" role="group" aria-label="Filter by status">
           {STATUS_FILTERS.map(item => <button key={item.key} type="button" className="rs-chip rs-chip--plain" aria-pressed={status === item.key} onClick={() => onFilter({ status: item.key })}>{item.label}</button>)}
@@ -213,7 +219,7 @@ export function BookView({ book, loading, error, retry, selectedCode, onSelect, 
             {isEdinetCode(code) && <Link to={`/research?tab=bonds&company=${encodeURIComponent(code)}`}>Credit</Link>}
           </nav>
         </header>
-        <CompanyResearchPanel key={code} code={code} price={current?.LatestPrice} priceCurrency={current?.price_currency} today={today} tagRef={tagRef} noteRef={noteRef} thesisRef={thesisRef} statusRef={statusRef} keys={{ thesis: 'E', tag: 'T', note: 'N' }} />
+        <CompanyResearchPanel key={code} code={code} price={current?.LatestPrice} priceCurrency={current?.price_currency} today={today} tagRef={tagRef} noteRef={noteRef} thesisRef={thesisRef} statusRef={statusRef} keys={{ thesis: thesisKey, tag: tagKey, note: noteKey }} />
       </> : <p className="rs-empty">Choose a company to see and edit its research.</p>}
     </aside>
   </div>

@@ -3,6 +3,9 @@ import type { ReactNode } from 'react'
 
 import { channelPrefix, sameTarget, type SidebarEntry } from './chatModel'
 import type { ChatTarget } from './chatTypes'
+import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
+import { useHotkeyText } from '../../hotkeys/useHotkeyText'
+import { chatScope } from './chatHotkeys'
 
 function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return <section className="chat-side__section"><header><h3>{title}</h3>{action}</header><ul>{children}</ul></section>
@@ -16,6 +19,7 @@ export function ChatSidebar({ entries, current, onSelect, onNewDm, onNewGroup, l
   onNewGroup: () => void
   locked: boolean
 }) {
+  const switchKey = useHotkeyText(chatScope.byId.switch)
   const item = (entry: SidebarEntry) => {
     const active = sameTarget(entry.target, current)
     const prefix = entry.icon === 'topic' ? '#' : entry.icon === 'company' ? channelPrefix({ kind: 'company' }) : null
@@ -36,12 +40,12 @@ export function ChatSidebar({ entries, current, onSelect, onNewDm, onNewGroup, l
     <ul className="chat-side__top">{of('feed').map(item)}</ul>
     {of('invite').length > 0 && <Section title="Invitations">{of('invite').map(item)}</Section>}
     <Section title="Channels" action={<Hash aria-hidden="true" />}>{of('topic').map(item)}</Section>
-    <Section title="Companies" action={<span className="chat-side__hint" title="Open any company's channel with T, or from its analysis page">T</span>}>{of('company').length ? of('company').map(item) : <li className="chat-side__empty">Press <kbd>T</kbd> and type a company</li>}</Section>
+    <Section title="Companies" action={<span className="chat-side__hint" title={`Open any company's channel with ${switchKey}, or from its analysis page`}>{switchKey}</span>}>{of('company').length ? of('company').map(item) : <li className="chat-side__empty">Press <kbd>{switchKey}</kbd> and type a company</li>}</Section>
     <Section title="Direct messages" action={<button type="button" className="icon-button" aria-label="New direct message (N)" title="New direct message (N)" onClick={onNewDm}><Plus /></button>}>
-      {of('dm').length ? of('dm').map(item) : <li className="chat-side__empty">{locked ? 'Unlock to read' : 'None yet'} · <kbd>N</kbd></li>}
+      {of('dm').length ? of('dm').map(item) : <li className="chat-side__empty">{locked ? 'Unlock to read' : 'None yet'} · <HotkeyKbd hotkey={chatScope.byId['new-dm']} /></li>}
     </Section>
     <Section title="Groups" action={<button type="button" className="icon-button" aria-label="New group (Shift+N)" title="New group (Shift+N)" onClick={onNewGroup}><MessagesSquare /></button>}>
-      {of('group').length ? of('group').map(item) : <li className="chat-side__empty">None yet · <kbd>Shift</kbd>+<kbd>N</kbd></li>}
+      {of('group').length ? of('group').map(item) : <li className="chat-side__empty">None yet · <HotkeyKbd hotkey={chatScope.byId['new-group']} /></li>}
     </Section>
   </nav>
 }

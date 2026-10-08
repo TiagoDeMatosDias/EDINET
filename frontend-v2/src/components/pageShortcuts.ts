@@ -1,25 +1,21 @@
-/** "G then a letter" destinations, in sidebar order. */
-export interface PageShortcut { key: string; to: string; label: string; adminOnly?: boolean; signedInOnly?: boolean }
+/** "G then a letter" destinations, in sidebar order. Users can rebind the letters (see hotkeys/globalScopes). */
+export interface PageShortcut { id: string; key: string; to: string; label: string; adminOnly?: boolean; signedInOnly?: boolean }
 
 export const PAGE_SHORTCUTS: PageShortcut[] = [
-  { key: 'o', to: '/overview', label: 'Overview' },
-  { key: 's', to: '/screen', label: 'Screen' },
-  { key: 'a', to: '/analyze', label: 'Analyze' },
-  { key: 'b', to: '/backtest', label: 'Backtest' },
-  { key: 'p', to: '/portfolio', label: 'Portfolio' },
-  { key: 'd', to: '/pipeline', label: 'Data pipeline', adminOnly: true },
-  { key: 'f', to: '/filings', label: 'Filings' },
-  { key: 'c', to: '/compare', label: 'Compare' },
-  { key: 'r', to: '/research', label: 'Research' },
-  { key: 'm', to: '/chat', label: 'Chat' },
-  { key: 'u', to: '/account', label: 'Account', signedInOnly: true },
-  { key: 'n', to: '/admin', label: 'Admin', adminOnly: true },
+  { id: 'overview', key: 'o', to: '/overview', label: 'Overview' },
+  { id: 'screen', key: 's', to: '/screen', label: 'Screen' },
+  { id: 'analyze', key: 'a', to: '/analyze', label: 'Analyze' },
+  { id: 'backtest', key: 'b', to: '/backtest', label: 'Backtest' },
+  { id: 'portfolio', key: 'p', to: '/portfolio', label: 'Portfolio' },
+  { id: 'pipeline', key: 'd', to: '/pipeline', label: 'Data pipeline', adminOnly: true },
+  { id: 'filings', key: 'f', to: '/filings', label: 'Filings' },
+  { id: 'compare', key: 'c', to: '/compare', label: 'Compare' },
+  { id: 'research', key: 'r', to: '/research', label: 'Research' },
+  { id: 'chat', key: 'm', to: '/chat', label: 'Chat' },
+  { id: 'account', key: 'u', to: '/account', label: 'Account', signedInOnly: true },
+  { id: 'admin', key: 'n', to: '/admin', label: 'Admin', adminOnly: true },
 ]
 
 export function pageShortcuts(isAdmin: boolean, signedIn = true) {
   return PAGE_SHORTCUTS.filter(page => (isAdmin || !page.adminOnly) && (signedIn || !page.signedInOnly))
-}
-
-export function pageShortcutFor(path: string) {
-  return PAGE_SHORTCUTS.find(page => page.to === path)
 }
