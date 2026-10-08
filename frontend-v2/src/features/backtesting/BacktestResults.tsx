@@ -1,11 +1,11 @@
 import { AlertTriangle } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Bar, Line } from 'react-chartjs-2'
-import { Link } from 'react-router-dom'
 
-import { DownloadButton } from '../../components/DownloadButton'
 import { calendarYears, dec, finite, monthlyReturns, heatColor, heatText, pct, tone, type SingleResult } from './backtestModel'
 import { asPercent, BENCHMARK_COLOR, NEGATIVE_COLOR, PORTFOLIO_COLOR, percentOptions } from './charts'
+import { HoldingDrilldown } from './HoldingDrilldown'
+import { ReportActions } from './ReportActions'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
@@ -21,38 +21,6 @@ export function Warnings({ items }: { items: string[] }) {
     <AlertTriangle aria-hidden="true" />
     <ul>{shown.map((item, index) => <li key={index}>{item}</li>)}</ul>
     {items.length > 2 && <button type="button" className="text-button" onClick={() => setOpen(value => !value)}>{open ? 'Fewer' : `${items.length - 2} more`}</button>}
-  </div>
-}
-
-type SortKey = 'Ticker' | 'weight' | 'price_return' | 'dividend_return' | 'total_return' | 'weighted_total'
-
-function HoldingsTable({ rows }: { rows: Array<Record<string, unknown>> }) {
-  const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: 'weighted_total', desc: true })
-  const sorted = useMemo(() => [...rows].sort((a, b) => {
-    const left = sort.key === 'Ticker' ? String(a.Ticker ?? '') : finite(a[sort.key]) ?? -Infinity
-    const right = sort.key === 'Ticker' ? String(b.Ticker ?? '') : finite(b[sort.key]) ?? -Infinity
-    const order = typeof left === 'string' ? left.localeCompare(String(right)) : (left as number) - (right as number)
-    return sort.desc ? -order : order
-  }), [rows, sort])
-  const header = (key: SortKey, label: string, numeric = true) => <th className={numeric ? 'num' : ''} aria-sort={sort.key === key ? (sort.desc ? 'descending' : 'ascending') : 'none'}>
-    <button type="button" onClick={() => setSort(current => ({ key, desc: current.key === key ? !current.desc : numeric }))}>{label}{sort.key === key ? (sort.desc ? ' ↓' : ' ↑') : ''}</button>
-  </th>
-  return <div className="bt-scroll">
-    <table className="bt-table">
-      <thead><tr>{header('Ticker', 'Holding', false)}{header('weight', 'Weight')}<th className="num">Start → end</th>{header('price_return', 'Price')}{header('dividend_return', 'Dividend')}{header('total_return', 'Total')}{header('weighted_total', 'Contribution')}</tr></thead>
-      <tbody>{sorted.map(row => {
-        const ticker = String(row.Ticker ?? '')
-        return <tr key={ticker}>
-          <td><Link to={`/analyze?ticker=${encodeURIComponent(ticker)}&from=backtest`}>{ticker}</Link><small>{String(row.Currency ?? '')}</small></td>
-          <td className="num">{pct(row.weight)}</td>
-          <td className="num muted">{dec(row.start_price, 0)} → {dec(row.end_price, 0)}</td>
-          <td className={`num ${tone(row.price_return)}`}>{pct(row.price_return, 1, true)}</td>
-          <td className="num">{pct(row.dividend_return)}</td>
-          <td className={`num ${tone(row.total_return)}`}>{pct(row.total_return, 1, true)}</td>
-          <td className={`num ${tone(row.weighted_total)}`}>{pct(row.weighted_total, 2, true)}</td>
-        </tr>
-      })}</tbody>
-    </table>
   </div>
 }
 
@@ -89,7 +57,7 @@ export function BacktestResults({ data }: { data: SingleResult }) {
     <header className="bt-result__head">
       <h2>{(summary.tickers as string[] | undefined)?.slice(0, 6).join(', ') || 'Backtest'}{((summary.tickers as string[] | undefined)?.length ?? 0) > 6 ? ` +${(summary.tickers as string[]).length - 6}` : ''}</h2>
       <span className="muted">{String(summary.start_date ?? '—')} → {String(summary.end_date ?? '—')} · saved {data.id}</span>
-      <DownloadButton className="button button--ghost button--small" path={`/api/backtesting/download/${encodeURIComponent(data.id)}`} filename={`backtest_${data.id}.zip`}>Download</DownloadButton>
+      <ReportActions id={data.id} />
     </header>
     <Warnings items={warnings} />
     {summary.no_data ? <p className="bt-empty">No prices were found for these holdings in this period.</p> : <>
@@ -132,10 +100,7 @@ export function BacktestResults({ data }: { data: SingleResult }) {
           <figcaption>Monthly returns, %</figcaption>
           <MonthlyTable points={cumulative} />
         </figure>
-        <figure className="bt-panel bt-panel--full">
-          <figcaption>Holdings · {data.per_company?.length ?? 0}</figcaption>
-          <HoldingsTable rows={data.per_company ?? []} />
-        </figure>
+        <HoldingDrilldown id={data.id} names={data.names} />
       </div>
     </>}
   </section>

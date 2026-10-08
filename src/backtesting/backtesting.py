@@ -48,6 +48,29 @@ logger = logging.getLogger(__name__)
 
 # ── Module-level helpers ─────────────────────────────────────────────────
 
+
+def company_names(db_path: str, tickers: list[str], company_table: str = "CompanyInfo") -> dict[str, str]:
+    """Company names for tickers, for labelling holdings in results and reports."""
+    tickers = sorted({str(ticker) for ticker in tickers if ticker})
+    if not tickers or not db_path:
+        return {}
+    try:
+        conn = connect_read(db_path, busy_timeout_ms=10_000)
+    except Exception:  # noqa: BLE001 - names are a label, never required
+        return {}
+    try:
+        placeholders = ",".join("?" for _ in tickers)
+        rows = conn.execute(
+            f"SELECT Company_Ticker, Company_Name FROM {_sql_ident(company_table)} WHERE Company_Ticker IN ({placeholders})",
+            tickers,
+        ).fetchall()
+        return {str(ticker): str(name) for ticker, name in rows if name}
+    except Exception:  # noqa: BLE001
+        return {}
+    finally:
+        conn.close()
+
+
 _DUR_YEARS: dict[str, int] = {
     "1yr": 1, "2yr": 2, "3yr": 3, "5yr": 5, "10yr": 10,
 }
@@ -663,6 +686,9 @@ def run_backtest_web(
                 ], ignore_index=True)
                 per_company_per_year_records = per_company_per_year.to_dict(orient="records")
 
+    for payment in tracker.get("dividend_ledger") or []:
+        payment["currency"] = ticker_native_currency.get(payment["ticker"], "")
+
     return {
         "metrics": metrics,
         "chart_data": chart_data,
@@ -671,6 +697,8 @@ def run_backtest_web(
         "daily": daily_records,
         "yearly_returns": legacy_yearly_records,
         "dividends_by_year": div_records,
+        "dividend_payments": tracker.get("dividend_ledger") or [],
+        "names": company_names(db_path, [*tickers, benchmark_ticker], company_table),
         "warnings": warnings,
     }
 
@@ -1012,6 +1040,8 @@ def run_backtest_set_web(
         "aggregate": aggregate,
         "runs": rolling_run_rows(as_rolling, durations, ["csv"]),
         "paths": rolling_paths(as_rolling),
+        "run_holdings": rolling_run_holdings(as_rolling),
+        "names": company_names(db_path, [ticker for item in as_rolling for ticker in item["tickers"]], company_table),
         "period_holdings": {item["period"]: item["tickers"] for item in as_rolling},
         "results": all_results,
     }
@@ -1556,6 +1586,34 @@ def _monthly_path(chart_data: dict) -> list[list]:
     return sampled
 
 
+_HOLDING_FIELDS = (
+    "weight", "start_price", "end_price", "price_return", "dividend_return",
+    "total_return", "weighted_total", "dividends_received", "capital_invested", "market_value",
+)
+
+
+def _compact_holdings(per_company: list[dict]) -> list[dict]:
+    rows = []
+    for record in per_company or []:
+        row: dict = {"ticker": str(record.get("Ticker", "")), "currency": record.get("Currency") or ""}
+        for field in _HOLDING_FIELDS:
+            value = record.get(field)
+            row[field] = None if value is None or (isinstance(value, float) and not np.isfinite(value)) else round(float(value), 6)
+        rows.append(row)
+    return sorted(rows, key=lambda row: -(row["weighted_total"] or 0.0))
+
+
+def rolling_run_holdings(all_results: list[dict]) -> dict[str, list[dict]]:
+    """Each run's holdings and their contributions, keyed ``period|weighting|duration``."""
+    holdings: dict[str, list[dict]] = {}
+    for result in all_results:
+        for wm, by_duration in (result.get("backtests") or {}).items():
+            for dur, bt in (by_duration or {}).items():
+                if bt and bt.get("metrics") and not bt.get("no_data"):
+                    holdings[f"{result.get('period', '')}|{wm}|{dur}"] = _compact_holdings(bt.get("per_company") or [])
+    return holdings
+
+
 def rolling_paths(all_results: list[dict]) -> dict[str, list[list]]:
     """Each run's monthly equity path, keyed ``period|weighting|duration``."""
     paths: dict[str, list[list]] = {}
@@ -2061,6 +2119,8 @@ def run_screening_backtest_rolling(
         "aggregate": aggregate,
         "runs": rolling_run_rows(all_results, durations, weighting_modes),
         "paths": rolling_paths(all_results),
+        "run_holdings": rolling_run_holdings(all_results),
+        "names": company_names(db_path, [ticker for item in all_results for ticker in item.get("tickers", [])], company_table),
         "period_holdings": {item["period"]: item.get("tickers", []) for item in all_results},
         "results": all_results,
     }

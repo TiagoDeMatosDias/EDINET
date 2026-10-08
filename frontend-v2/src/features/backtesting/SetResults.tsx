@@ -2,16 +2,16 @@ import { forwardRef, useImperativeHandle, useMemo, useState, type KeyboardEvent 
 import { Bar, Line } from 'react-chartjs-2'
 import { Link } from 'react-router-dom'
 
-import { DownloadButton } from '../../components/DownloadButton'
-import { chainRuns, dec, fanBands, finite, heatColor, heatText, histogram, month, pct, runKey, sortRuns, summarize, tone, type PathPoint, type RunRow, type SetResult } from './backtestModel'
+import { chainRuns, companiesAcrossRuns, dec, fanBands, finite, heatColor, heatText, histogram, holdingLabel, month, pct, runKey, sortRuns, summarize, tone, type PathPoint, type RunHolding, type RunRow, type SetResult } from './backtestModel'
 import { Kpi, Warnings } from './BacktestResults'
 import { asPercent, BENCHMARK_COLOR, DURATION_COLORS, PORTFOLIO_COLOR, percentOptions } from './charts'
 import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { backtestScope } from './backtestHotkeys'
+import { ReportActions } from './ReportActions'
 
-const SET_TABS = ['time', 'distribution', 'heatmap', 'paths', 'runs'] as const
+const SET_TABS = ['time', 'distribution', 'heatmap', 'paths', 'companies', 'runs'] as const
 type SetTab = typeof SET_TABS[number]
-const TAB_LABELS: Record<SetTab, string> = { time: 'Over time', distribution: 'Distribution', heatmap: 'Start-month heatmap', paths: 'Paths', runs: 'Runs' }
+const TAB_LABELS: Record<SetTab, string> = { time: 'Over time', distribution: 'Distribution', heatmap: 'Start-month heatmap', paths: 'Paths', companies: 'Companies', runs: 'Runs' }
 const STATUS_LABELS: Record<string, string> = { ok: 'Complete', truncated: 'Truncated', no_data: 'No prices', failed: 'Failed' }
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
@@ -160,6 +160,56 @@ function Paths({ rows, paths, selected }: { rows: RunRow[]; paths: SetResult['pa
   </figure>
 }
 
+function Companies({ rows, holdings, names, onPick, selectedKey }: { rows: RunRow[]; holdings: SetResult['run_holdings']; names?: Record<string, string>; onPick: (row: RunRow) => void; selectedKey: string | null }) {
+  const companies = useMemo(() => companiesAcrossRuns(rows, holdings), [rows, holdings])
+  const [open, setOpen] = useState<string | null>(null)
+  const complete = rows.filter(row => row.status === 'ok').length
+  if (!holdings || !Object.keys(holdings).length) return <p className="muted bt-empty">This result was saved before each run's holdings were kept; run it again to see how each company did.</p>
+  if (!companies.length) return <p className="muted bt-empty">No complete runs to break down.</p>
+  return <div className="bt-scroll bt-scroll--tall">
+    <table className="bt-table">
+      <thead><tr><th>Company</th><th className="num">Held in</th><th className="num">Mean return</th><th className="num">Median</th><th className="num">Positive</th><th className="num">Mean contribution</th></tr></thead>
+      <tbody>{companies.flatMap(company => {
+        const expanded = open === company.ticker
+        const main = <tr key={company.ticker} tabIndex={0} className={expanded ? 'is-selected' : ''} aria-expanded={expanded} onClick={() => setOpen(expanded ? null : company.ticker)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); setOpen(expanded ? null : company.ticker) } }}>
+          <td>{expanded ? '▾ ' : '▸ '}{holdingLabel(company.ticker, names?.[company.ticker])}</td>
+          <td className="num">{company.runs.length} <small>of {complete}</small></td>
+          <td className={`num ${tone(company.meanReturn)}`}>{pct(company.meanReturn, 1, true)}</td>
+          <td className={`num ${tone(company.medianReturn)}`}>{pct(company.medianReturn, 1, true)}</td>
+          <td className="num">{pct(company.positive, 0)}</td>
+          <td className={`num ${tone(company.meanContribution)}`}>{pct(company.meanContribution, 2, true)}</td>
+        </tr>
+        if (!expanded) return [main]
+        return [main, ...company.runs.map(({ row, holding }) => <tr key={`${company.ticker}|${runKey(row)}`} className={`bt-subrow ${selectedKey === runKey(row) ? 'is-selected' : ''}`} tabIndex={0} onClick={() => onPick(row)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); onPick(row) } }}>
+          <td>Run from {month(row.period)} <small>{row.start ?? ''} → {row.end ?? ''}</small></td>
+          <td className="num">{pct(holding.weight)}</td>
+          <td className={`num ${tone(holding.total_return)}`}>{pct(holding.total_return, 1, true)}</td>
+          <td className="num muted">{pct(holding.price_return, 1, true)} · {pct(holding.dividend_return)}</td>
+          <td className={`num ${tone(row.total_return)}`} title="The run's total return">{pct(row.total_return, 1, true)}</td>
+          <td className={`num ${tone(holding.weighted_total)}`}>{pct(holding.weighted_total, 2, true)}</td>
+        </tr>)]
+      })}</tbody>
+    </table>
+    <p className="muted bt-footnote">Over the complete runs of this holding period and weighting. Return is over each run's holding period; contribution is weight × return. Open a company for its runs, and a run for all of its holdings.</p>
+  </div>
+}
+
+function RunHoldings({ holdings, names }: { holdings: RunHolding[]; names?: Record<string, string> }) {
+  return <div className="bt-scroll">
+    <table className="bt-table">
+      <thead><tr><th>Holding</th><th className="num">Weight</th><th className="num">Price</th><th className="num">Div.</th><th className="num">Total</th><th className="num">Contrib.</th></tr></thead>
+      <tbody>{holdings.map(item => <tr key={item.ticker}>
+        <td><Link to={`/analyze?ticker=${encodeURIComponent(item.ticker)}&from=backtest`}>{holdingLabel(item.ticker, names?.[item.ticker])}</Link></td>
+        <td className="num">{pct(item.weight)}</td>
+        <td className={`num ${tone(item.price_return)}`}>{pct(item.price_return, 1, true)}</td>
+        <td className="num">{pct(item.dividend_return)}</td>
+        <td className={`num ${tone(item.total_return)}`}>{pct(item.total_return, 1, true)}</td>
+        <td className={`num ${tone(item.weighted_total)}`}><b>{pct(item.weighted_total, 2, true)}</b></td>
+      </tr>)}</tbody>
+    </table>
+  </div>
+}
+
 type RunSort = { key: keyof RunRow; desc: boolean }
 
 function RunsTable({ rows, selectedKey, onPick }: { rows: RunRow[]; selectedKey: string | null; onPick: (row: RunRow) => void }) {
@@ -201,7 +251,7 @@ function RunsTable({ rows, selectedKey, onPick }: { rows: RunRow[]; selectedKey:
   </div>
 }
 
-function RunDetail({ row, path, holdings, onClose }: { row: RunRow; path?: PathPoint[]; holdings: string[]; onClose: () => void }) {
+function RunDetail({ row, path, holdings, breakdown, names, onClose }: { row: RunRow; path?: PathPoint[]; holdings: string[]; breakdown?: RunHolding[]; names?: Record<string, string>; onClose: () => void }) {
   return <aside className="bt-detail" aria-label="Selected run">
     <header><h3>{month(row.period)} · {weightingLabel(row.weighting)} · {row.duration}</h3><span className={`bt-status bt-status--${row.status}`}>{STATUS_LABELS[row.status]}</span><button type="button" className="text-button" onClick={onClose}>Close <HotkeyKbd hotkey={backtestScope.byId['close-detail']} /></button></header>
     <dl className="bt-facts">
@@ -219,8 +269,10 @@ function RunDetail({ row, path, holdings, onClose }: { row: RunRow; path?: PathP
       { label: 'Benchmark', data: path.map(point => asPercent(point[2])), borderColor: BENCHMARK_COLOR, borderDash: [4, 3], borderWidth: 1.2, pointRadius: 0, spanGaps: true },
     ] }} options={percentOptions<'line'>({ xLabels: true })} /></div>}
     {row.warnings && row.warnings.length > 0 && <Warnings items={row.warnings} />}
-    <h4>Held · {holdings.length}</h4>
-    <ul className="bt-holdings">{holdings.map(ticker => <li key={ticker}><Link to={`/analyze?ticker=${encodeURIComponent(ticker)}&from=backtest`}>{ticker}</Link></li>)}</ul>
+    <h4>Held · {breakdown?.length ?? holdings.length}{breakdown?.length ? ' · by contribution' : ''}</h4>
+    {breakdown?.length
+      ? <RunHoldings holdings={breakdown} names={names} />
+      : <ul className="bt-holdings">{holdings.map(ticker => <li key={ticker}><Link to={`/analyze?ticker=${encodeURIComponent(ticker)}&from=backtest`}>{holdingLabel(ticker, names?.[ticker])}</Link></li>)}</ul>}
   </aside>
 }
 
@@ -274,7 +326,7 @@ export const SetResults = forwardRef<SetResultsHandle, { data: SetResult }>(func
     <header className="bt-result__head">
       <h2>{kind === 'csv' ? 'CSV portfolio set' : `Rolling screen · ${String(config.cadence ?? '')}`}</h2>
       <span className="muted">{kind === 'rolling' ? `top ${String(config.max_companies ?? '—')} · ranking ${ranking} · ` : ''}{config.benchmark_mode === 'portfolio' ? 'vs own portfolio' : config.benchmark_ticker ? `vs ${String(config.benchmark_ticker)}` : 'no benchmark'} · {String(config.start_period ?? runs[0]?.period ?? '').slice(0, 7)} → {String(config.end_period ?? runs[runs.length - 1]?.period ?? '').slice(0, 7)} · saved {data.id}</span>
-      <DownloadButton className="button button--ghost button--small" path={`/api/backtesting/download/${encodeURIComponent(data.id)}`} filename={`backtest_${data.id}.zip`}>Download</DownloadButton>
+      <ReportActions id={data.id} />
     </header>
     <Warnings items={notes} />
     <div className="bt-kpis">
@@ -302,9 +354,10 @@ export const SetResults = forwardRef<SetResultsHandle, { data: SetResult }>(func
         {tab === 'distribution' && <Distribution rows={group} />}
         {tab === 'heatmap' && <figure className="bt-panel"><figcaption>{metric === 'excess' ? 'Annualized excess over the benchmark' : 'Annualized return'} by start month · {activeDuration} · {weightingLabel(activeWeighting)} · outlined cells are truncated</figcaption><Heatmap rows={group} metric={metric} onPick={pick} selectedKey={selectedKey} /></figure>}
         {tab === 'paths' && <Paths rows={group} paths={data.paths} selected={selected && selected.duration === activeDuration ? selected : null} />}
+        {tab === 'companies' && <Companies rows={group} holdings={data.run_holdings} names={data.names} onPick={pick} selectedKey={selectedKey} />}
         {tab === 'runs' && <RunsTable rows={group} selectedKey={selectedKey} onPick={pick} />}
       </div>
-      {selected && <RunDetail row={selected} path={data.paths?.[runKey(selected)]} holdings={data.period_holdings?.[selected.period] ?? []} onClose={() => setSelectedKey(null)} />}
+      {selected && <RunDetail row={selected} path={data.paths?.[runKey(selected)]} holdings={data.period_holdings?.[selected.period] ?? []} breakdown={data.run_holdings?.[runKey(selected)]} names={data.names} onClose={() => setSelectedKey(null)} />}
     </div>
   </section>
 })

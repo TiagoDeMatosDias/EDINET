@@ -20,11 +20,14 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import backtesting as _bt
 from src.auth.models import AuthenticatedUser
+from src.backtesting.detail import build_single_detail
+from src.backtesting.html_report import render_report
+from src.backtesting.jobs import jobs as _rolling_jobs
 from src.backtesting.zip_export import (
     ExportSizeLimitExceeded,
     build_rolling_zip,
@@ -32,7 +35,6 @@ from src.backtesting.zip_export import (
     build_summary,
     save_rolling_backtest_zip,
 )
-from src.backtesting.jobs import jobs as _rolling_jobs
 from src.orchestrator.common.db_config import get_db2, get_db3
 from src.orchestrator.common.sqlite import connect_read
 from src.portfolio.currency import get_available_display_currencies
@@ -444,6 +446,7 @@ def get_backtest_result(backtest_id: str, http_request: Request) -> dict[str, An
             "per_company": stored.get("per_company", []),
             "yearly_returns": stored.get("yearly_returns", []),
             "dividends_by_year": stored.get("dividends_by_year", []),
+            "names": stored.get("names", {}),
         }
     if isinstance(stored, dict):
         return {
@@ -455,8 +458,43 @@ def get_backtest_result(backtest_id: str, http_request: Request) -> dict[str, An
             "runs": stored.get("runs", []),
             "paths": stored.get("paths", {}),
             "period_holdings": stored.get("period_holdings", {}),
+            "run_holdings": stored.get("run_holdings", {}),
+            "names": stored.get("names", {}),
         }
     raise HTTPException(status_code=500, detail="Backtest result has an invalid format.")
+
+
+def _stored_result(backtest_id: str, http_request: Request) -> tuple[Path, dict[str, Any]]:
+    directory = _owned_backtest_directory(backtest_id, http_request)
+    result_path = directory / "result.json"
+    if not result_path.is_file() or result_path.is_symlink():
+        raise HTTPException(status_code=404, detail="Backtest result not found.")
+    try:
+        stored = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="Backtest result could not be read.") from exc
+    if not isinstance(stored, dict):
+        raise HTTPException(status_code=500, detail="Backtest result has an invalid format.")
+    return directory, stored
+
+
+@router.get("/result/{backtest_id}/detail")
+def get_backtest_detail(backtest_id: str, http_request: Request) -> dict[str, Any]:
+    """Per-holding drill-down of a single backtest: growth, years, dividends, allocation."""
+    _directory, stored = _stored_result(backtest_id, http_request)
+    if "metrics" not in stored:
+        raise HTTPException(status_code=400, detail="Holding detail is only kept for single backtests; open a run's holdings instead.")
+    return {"id": backtest_id, **build_single_detail(stored)}
+
+
+@router.get("/report/{backtest_id}")
+def get_backtest_report(backtest_id: str, http_request: Request, inline: bool = Query(default=False)) -> HTMLResponse:
+    """A self-contained HTML report of a saved backtest, to open or share."""
+    directory, stored = _stored_result(backtest_id, http_request)
+    meta = _read_meta(directory)
+    html = render_report(stored, meta=meta, backtest_id=backtest_id)
+    disposition = "inline" if inline else "attachment"
+    return HTMLResponse(html, headers={"Content-Disposition": f'{disposition}; filename="backtest_{backtest_id}.html"'})
 
 
 @router.post("/run")
@@ -573,6 +611,7 @@ async def run_backtest(
         "per_company": result.get("per_company", []),
         "yearly_returns": result.get("yearly_returns", []),
         "dividends_by_year": result.get("dividends_by_year", []),
+        "names": result.get("names", {}),
         "warnings": result.get("warnings", []),
     }
 
@@ -638,6 +677,7 @@ async def run_from_csv(
             "successful": agg.get("successful", 0),
             "failed": agg.get("failed", 0),
         }, indent=2))
+        zf.writestr("report.html", render_report(result, meta={"kind": "csv", "title": "CSV portfolio backtest"}, backtest_id=ts))
     zip_bytes = _enforce_backtest_artifact_size(zip_buf.getvalue())
     if (
         len(result_bytes) + len(zip_bytes)
@@ -672,6 +712,8 @@ async def run_from_csv(
         "runs": result.get("runs", []),
         "paths": result.get("paths", {}),
         "period_holdings": result.get("period_holdings", {}),
+        "run_holdings": result.get("run_holdings", {}),
+        "names": result.get("names", {}),
     }
 
 
@@ -759,6 +801,8 @@ def _save_rolling_result(final_result: dict, request: RollingScreeningRequest, h
             "runs": final_result.get("runs", []),
             "paths": final_result.get("paths", {}),
             "period_holdings": final_result.get("period_holdings", {}),
+            "run_holdings": final_result.get("run_holdings", {}),
+            "names": final_result.get("names", {}),
         }, default=str),
         encoding="utf-8",
     )

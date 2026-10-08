@@ -97,14 +97,14 @@ def split_market(tmp_path):
         CREATE TABLE FinancialStatements (docID TEXT PRIMARY KEY, Company_Code TEXT, docTypeCode TEXT, submitDateTime TEXT, periodEnd TEXT);
         CREATE TABLE ShareMetrics (docID TEXT PRIMARY KEY, "Dividend paid per share" REAL, "Interim dividend paid per share" REAL,
             "Number of issued shares as of fiscal year end" REAL, "Net assets per share" REAL);
-        CREATE TABLE Stock_Prices (Date TEXT, Ticker TEXT, Currency TEXT, Price REAL);
+        CREATE TABLE Stock_Prices (Date TEXT, Ticker TEXT, Currency TEXT, Price REAL, Adjusted_Price REAL);
         INSERT INTO CompanyInfo VALUES ('E1', '72030');
         INSERT INTO FinancialStatements VALUES ('D20', 'E1', '030000', '2020-06-20 10:00', '2020-03-31'),
             ('D21', 'E1', '030000', '2021-06-20 10:00', '2021-03-31'), ('D22', 'E1', '030000', '2022-06-20 10:00', '2022-03-31');
         INSERT INTO ShareMetrics VALUES ('D20', 220, 100, 1000, 4000), ('D21', 240, 105, 1000, 4400), ('D22', 148, 120, 5000, 1000);
     """)
     days = pd.bdate_range("2020-04-01", "2022-06-30")
-    conn.executemany("INSERT INTO Stock_Prices VALUES (?, '72030', 'JPY', 1000.0)", [(day.strftime("%Y-%m-%d"),) for day in days])
+    conn.executemany("INSERT INTO Stock_Prices VALUES (?, '72030', 'JPY', 1000.0, 1000.0)", [(day.strftime("%Y-%m-%d"),) for day in days])
     conn.commit()
     conn.close()
     return str(path)
@@ -151,7 +151,7 @@ def test_yearly_rows_run_from_the_previous_close_and_compound_to_the_total():
     assert rows[(2023, "A")]["Weighted_Return"] == pytest.approx(550 / 1050 * 0.10)
     assert rows[(2023, "B")]["Weighted_Return"] == pytest.approx(500 / 1050 * -0.10)
     by_year = {}
-    for (year, ticker), row in rows.items():
+    for (year, _ticker), row in rows.items():
         by_year[year] = by_year.get(year, 0.0) + row["Weighted_Return"]
     growth = (1 + by_year[2022]) * (1 + by_year[2023])
     assert growth - 1 == pytest.approx(tracker["metrics"]["total_return"])
@@ -166,3 +166,47 @@ def test_yearly_dividends_match_what_the_daily_series_credited():
     row = next(row for row in tracker["per_company_per_year"].to_dict("records") if row["Ticker"] == "A")
     assert row["Dividend_Per_Share"] == 5.0
     assert row["Total_Dividends_Received"] == pytest.approx(tracker["daily"]["dividend_event"].sum())
+
+
+def test_a_split_restated_before_the_share_count_moves_is_found():
+    # Shin-Etsu: 5-for-1 effective 1 April 2023 with cancellations (ratio 4.94);
+    # the 2023 report already restated book value per share.
+    history = [
+        AnnualFacts(T("2022-03-31"), 416_662_793, 8007.24),
+        AnnualFacts(T("2023-03-31"), 404_824_593, 1918.37),
+        AnnualFacts(T("2024-03-31"), 1_900_000_000, 2133.17),  # a near miss: 4.69
+    ]
+    assert [(event.after, event.multiplier) for event in infer_share_count_splits(history)] == [(T("2023-03-31"), 5.0)]
+
+
+def test_per_share_figures_follow_the_filing_basis(split_market):
+    from src.orchestrator.common.corporate_actions import filing_basis_factors
+
+    conn = sqlite3.connect(split_market)
+    try:
+        factors = {doc: (restated, fiscal) for doc, restated, fiscal in filing_basis_factors(conn)}
+    finally:
+        conn.close()
+    # Reports before the split are on the old shares; the split year's report is not.
+    assert factors == {"D20": (0.2, 0.2), "D21": (0.2, 0.2)}
+
+
+def test_screens_compare_prices_with_per_share_figures_on_one_basis(split_market):
+    from src.screening.screening import build_screening_query, install_share_basis
+
+    criteria = [{
+        "comparison_mode": "full_expression",
+        "left_side": [{"type": "column", "table": "Stock_Prices", "column": "Price"}, {"type": "op", "op": "/"}, {"type": "column", "table": "ShareMetrics", "column": "Net assets per share"}],
+        "operator": "<=", "right_side": [{"type": "value", "value": 1}],
+    }]
+    sql, params = build_screening_query(criteria, ["CompanyInfo.Company_Ticker", "ShareMetrics.Net assets per share"], screening_date="2021-09-01", use_adjusted_price=True)
+    assert "temp.share_basis" in sql and sql.count("COALESCE(sb.[restated], 1.0)") >= 2
+    conn = sqlite3.connect(split_market)
+    try:
+        install_share_basis(conn, split_market)
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+    # Adjusted price 1,000 against book value 4,400 per old share is P/B 0.23
+    # unadjusted; on one basis (880 per new share) it is 1.14 and fails.
+    assert rows == []

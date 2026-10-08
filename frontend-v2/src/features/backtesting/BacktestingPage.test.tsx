@@ -33,6 +33,26 @@ const ROLLING = {
   runs: [run('2019-01-01', '1yr', 0.12, 0.05), run('2020-01-01', '1yr', -0.04, 0.02), run('2021-01-01', '1yr', 0.2, 0.1), run('2025-06-01', '1yr', 0.01, 0.0, 'truncated')],
   paths: { '2019-01-01|equal|1yr': [['2019-01-31', 0.01, 0.0], ['2019-12-31', 0.12, 0.05]] },
   period_holdings: { '2019-01-01': ['7203', '6758'] },
+  run_holdings: {
+    '2019-01-01|equal|1yr': [
+      { ticker: '7203', weight: 0.5, price_return: 0.18, dividend_return: 0.03, total_return: 0.21, weighted_total: 0.105 },
+      { ticker: '6758', weight: 0.5, price_return: 0.0, dividend_return: 0.01, total_return: 0.01, weighted_total: 0.005 },
+    ],
+    '2021-01-01|equal|1yr': [{ ticker: '7203', weight: 1, price_return: 0.18, dividend_return: 0.02, total_return: 0.2, weighted_total: 0.2 }],
+  },
+  names: { 7203: 'TOYOTA MOTOR CORPORATION', 6758: 'SONY GROUP CORPORATION' },
+}
+
+const DETAIL = {
+  id: '20261004_100000_aaaaaaaa', base_currency: 'JPY', initial_capital: 1_000_000,
+  dates: ['2024-01-04', '2025-12-30'], portfolio: [0, 0.25],
+  holdings: [{ ticker: '7203', name: 'TOYOTA MOTOR CORPORATION', currency: 'JPY', weight: 1, start_price: 2500, end_price: 3000, price_return: 0.2, dividend_return: 0.05, total_return: 0.25, contribution: 0.25, capital_invested: 1_000_000, shares: 400, market_value: 1_200_000, dividends_received: 50_000, growth: [1, 1.25],
+    years: [{ year: 2024, start_date: '2024-01-04', end_date: '2024-12-30', start_price: 2500, end_price: 2750, price_return: 0.1, dividend_return: 0.02, total_return: 0.12, contribution: 0.12, dividend_per_share: 50, dividends_received: 20000, start_weight: 1 }],
+    dividends: [{ ticker: '7203', record_date: '2024-03-31', credited_on: '2024-04-01', payment: 'final', per_share: 50, reported_per_share: 250, split_factor: 0.2, shares: 400, cash: 20000, currency: 'JPY' }] }],
+  allocation: { holdings: { 7203: [1, 0.96] }, cash: [0, 0.04] },
+  contribution: { 7203: [0, 0.25] },
+  contribution_by_year: [{ year: 2024, 7203: 0.12 }],
+  dividend_payments: [{ ticker: '7203', record_date: '2024-03-31', credited_on: '2024-04-01', payment: 'final', per_share: 50, reported_per_share: 250, split_factor: 0.2, shares: 400, cash: 20000, currency: 'JPY' }],
 }
 
 const SAVED = [
@@ -68,6 +88,7 @@ beforeEach(() => {
     }
     if (path === `/api/backtesting/result/${ROLLING.id}`) return respond(ROLLING)
     if (path === `/api/backtesting/result/${SINGLE.id}`) return respond(SINGLE)
+    if (path === `/api/backtesting/result/${SINGLE.id}/detail`) return respond(DETAIL)
     return respond({ detail: 'not found' }, 404)
   }))
 })
@@ -94,6 +115,15 @@ describe('BacktestingPage', () => {
     expect(screen.getByText('Excess ann.').nextSibling).toHaveTextContent('+6.90%')
     expect(screen.getByText('Benchmark covers only part of the period')).toBeInTheDocument()
     expect(screen.getByTestId('location')).toHaveTextContent(`result=${SINGLE.id}`)
+
+    // Drill down: the holding, then its dividends with the split factor.
+    const holding = await screen.findByRole('row', { name: /7203 Toyota Motor Corporation/ })
+    fireEvent.click(holding)
+    const panel = screen.getByRole('region', { name: '7203 Toyota Motor Corporation detail' })
+    expect(within(panel).getByText('Contribution', { selector: 'dt' }).nextSibling).toHaveTextContent('+25.00%')
+    fireEvent.click(screen.getByRole('tab', { name: 'Dividends' }))
+    expect(screen.getAllByText('0.200').length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /Share HTML/ })).toBeInTheDocument()
   })
 
   it('runs the screening draft as a background job with its ranking, then shows every run', async () => {
@@ -116,16 +146,25 @@ describe('BacktestingPage', () => {
     expect(within(result).getByText(/1 runs end before their holding period/)).toBeInTheDocument()
     expect(within(result).getByText('Beat benchmark').nextSibling).toHaveTextContent('67%')
 
-    fireEvent.keyDown(window, { key: ']' })
-    fireEvent.keyDown(window, { key: ']' })
-    fireEvent.keyDown(window, { key: ']' })
+    for (let step = 0; step < 4; step += 1) fireEvent.keyDown(window, { key: ']' })
+    // Companies: how each company did across the runs it was held in, then its runs.
+    expect(within(result).getByRole('tab', { name: 'Companies' })).toHaveAttribute('aria-selected', 'true')
+    const company = within(within(result).getByRole('tabpanel')).getByRole('row', { name: /7203 Toyota Motor Corporation/ })
+    expect(company).toHaveTextContent('2 of 3')
+    fireEvent.click(company)
+    fireEvent.click(within(within(result).getByRole('tabpanel')).getByRole('row', { name: /Run from 2021-01/ }))
+    expect(await within(result).findByRole('complementary', { name: 'Selected run' })).toHaveTextContent('2021-01')
+    fireEvent.keyDown(window, { key: 'Escape' })
+
     fireEvent.keyDown(window, { key: ']' })
     expect(within(result).getByRole('tab', { name: 'Runs' })).toHaveAttribute('aria-selected', 'true')
     const rows = within(within(result).getByRole('tabpanel')).getAllByRole('row').slice(1)
     rows[0].focus()
     fireEvent.keyDown(rows[0], { key: 'Enter' })
     const detail = await within(result).findByRole('complementary', { name: 'Selected run' })
-    expect(within(detail).getByRole('link', { name: '6758' })).toHaveAttribute('href', '/analyze?ticker=6758&from=backtest')
+    // The run's holdings, by what each added to its return.
+    expect(within(detail).getByRole('link', { name: '6758 Sony Group Corporation' })).toHaveAttribute('href', '/analyze?ticker=6758&from=backtest')
+    expect(within(detail).getByText('+10.50%')).toBeInTheDocument()
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(within(result).queryByRole('complementary', { name: 'Selected run' })).not.toBeInTheDocument()
   })

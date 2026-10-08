@@ -48,6 +48,22 @@ export interface RunRow {
 /** ``[month-end date, portfolio cumulative return, benchmark cumulative return]``. */
 export type PathPoint = [string, number | null, number | null]
 
+/** One holding of one run: its weight, returns, and contribution to the run's total. */
+export interface RunHolding {
+  ticker: string
+  currency?: string
+  weight: number | null
+  start_price?: number | null
+  end_price?: number | null
+  price_return: number | null
+  dividend_return: number | null
+  total_return: number | null
+  /** Weight × total return: what the holding added to the run's total return. */
+  weighted_total: number | null
+  dividends_received?: number | null
+  market_value?: number | null
+}
+
 export interface SetResult {
   id: string
   kind?: 'rolling' | 'csv'
@@ -56,11 +72,121 @@ export interface SetResult {
   runs?: RunRow[]
   paths?: Record<string, PathPoint[]>
   period_holdings?: Record<string, string[]>
+  run_holdings?: Record<string, RunHolding[]>
+  names?: Record<string, string>
+}
+
+export interface HoldingYear {
+  year: number
+  start_date: string | null
+  end_date: string | null
+  start_price: number | null
+  end_price: number | null
+  price_return: number | null
+  dividend_return: number | null
+  total_return: number | null
+  contribution: number | null
+  dividend_per_share: number | null
+  dividends_received: number | null
+  start_weight: number | null
+}
+
+export interface DividendPayment {
+  ticker: string
+  record_date: string
+  credited_on: string
+  payment: string
+  per_share: number
+  reported_per_share: number
+  split_factor: number
+  shares: number
+  cash: number
+  currency?: string
+}
+
+export interface HoldingDetail {
+  ticker: string
+  name: string
+  currency: string
+  weight: number | null
+  start_price: number | null
+  end_price: number | null
+  price_return: number | null
+  dividend_return: number | null
+  total_return: number | null
+  contribution: number | null
+  capital_invested: number | null
+  shares: number | null
+  market_value: number | null
+  dividends_received: number | null
+  /** Value of the holding (dividends kept as cash) over its cost, on each of ``dates``. */
+  growth: Array<number | null>
+  years: HoldingYear[]
+  dividends: DividendPayment[]
+}
+
+/** ``GET /api/backtesting/result/{id}/detail``: a single backtest broken down by holding. */
+export interface BacktestDetail {
+  id: string
+  start_date?: string
+  end_date?: string
+  base_currency: string
+  initial_capital: number
+  dates: string[]
+  portfolio: Array<number | null>
+  holdings: HoldingDetail[]
+  allocation: { holdings: Record<string, Array<number | null>>; cash: Array<number | null> }
+  contribution: Record<string, Array<number | null>>
+  contribution_by_year: Array<Record<string, number | null>>
+  dividend_payments: DividendPayment[]
+}
+
+export interface CompanyAcrossRuns {
+  ticker: string
+  runs: Array<{ row: RunRow; holding: RunHolding }>
+  meanReturn: number | null
+  medianReturn: number | null
+  positive: number | null
+  meanContribution: number | null
+}
+
+/** How each company did across the complete runs it was held in, most often held first. */
+export function companiesAcrossRuns(rows: RunRow[], holdings: Record<string, RunHolding[]> | undefined): CompanyAcrossRuns[] {
+  const byTicker = new Map<string, Array<{ row: RunRow; holding: RunHolding }>>()
+  for (const row of rows) {
+    if (row.status !== 'ok') continue
+    for (const holding of holdings?.[runKey(row)] ?? []) {
+      const list = byTicker.get(holding.ticker) ?? []
+      list.push({ row, holding })
+      byTicker.set(holding.ticker, list)
+    }
+  }
+  const average = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null
+  return [...byTicker.entries()].map(([ticker, runs]) => {
+    const returns = runs.map(item => finite(item.holding.total_return)).filter((value): value is number => value != null).sort((a, b) => a - b)
+    const contributions = runs.map(item => finite(item.holding.weighted_total)).filter((value): value is number => value != null)
+    return {
+      ticker,
+      runs: runs.sort((a, b) => a.row.period.localeCompare(b.row.period)),
+      meanReturn: average(returns),
+      medianReturn: returns.length ? quantile(returns, 0.5) : null,
+      positive: returns.length ? returns.filter(value => value > 0).length / returns.length : null,
+      meanContribution: average(contributions),
+    }
+  }).sort((a, b) => b.runs.length - a.runs.length || (b.meanContribution ?? 0) - (a.meanContribution ?? 0))
+}
+
+/** ``7203 Toyota Motor`` from a ticker and an upper-case registry name. */
+export function holdingLabel(ticker: string, name?: string | null) {
+  if (!name) return ticker
+  const nice = name === name.toUpperCase() ? name.toLowerCase().replace(/\b([a-z])/g, letter => letter.toUpperCase()) : name
+  return `${ticker} ${nice}`
 }
 
 export interface ChartPoint { date: string; portfolio?: number | null; vami?: number | null; benchmark?: number | null; price_only?: number | null; dividend_only?: number | null; total?: number | null }
 export interface SingleResult {
   id: string
+  names?: Record<string, string>
   summary: Record<string, unknown>
   chart_data?: { cumulative?: ChartPoint[]; drawdown?: ChartPoint[]; decomposition?: ChartPoint[] }
   per_company?: Array<Record<string, unknown>>

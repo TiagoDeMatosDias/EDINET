@@ -12,7 +12,7 @@ export const DURATION_COLORS: Record<string, string> = { '1yr': SERIES_COLORS[0]
 const percentTick = (value: string | number) => `${Number(value).toFixed(0)}%`
 
 /** Compact defaults: legend at the bottom, a right-hand percent axis, mono tick labels. */
-export function percentOptions<T extends 'line' | 'bar'>(extra: { xLabels?: boolean; yMax?: number; stacked?: boolean; onClick?: (index: number) => void; tooltipLabel?: (value: number, label: string) => string } = {}): ChartOptions<T> {
+export function percentOptions<T extends 'line' | 'bar'>(extra: { xLabels?: boolean; yMax?: number; yMin?: number; stacked?: boolean; onClick?: (index: number) => void; tooltipLabel?: (value: number, label: string) => string } = {}): ChartOptions<T> {
   const options: ChartOptions<'line'> = {
     responsive: true,
     maintainAspectRatio: false,
@@ -32,7 +32,7 @@ export function percentOptions<T extends 'line' | 'bar'>(extra: { xLabels?: bool
     },
     scales: {
       x: { display: extra.xLabels ?? false, stacked: extra.stacked, grid: { display: false }, ticks: { font: { family: FONT_MONO, size: 9 }, maxRotation: 0, autoSkipPadding: 12 } },
-      y: { position: 'right', stacked: extra.stacked, max: extra.yMax, grid: { color: CHART_GRID_COLOR }, ticks: { font: { family: FONT_MONO, size: 9 }, callback: percentTick } },
+      y: { position: 'right', stacked: extra.stacked, max: extra.yMax, min: extra.yMin, grid: { color: CHART_GRID_COLOR }, ticks: { font: { family: FONT_MONO, size: 9 }, callback: percentTick } },
     },
   }
   return options as unknown as ChartOptions<T>

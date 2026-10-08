@@ -181,6 +181,80 @@ _TABLE_ALIAS: dict[str, str] = {
 }
 
 
+# Per-share figures are stored as reported; stored prices are split-adjusted.
+# On the adjusted basis each is multiplied (share counts divided) by its
+# filing's factor from ``corporate_actions.filing_basis_factors``: ``restated``
+# for figures issuers restate for splits before filing, ``fiscal`` for those
+# fixed at the year end. Without this a company that split later looks two to
+# ten times cheaper on P/E or P/B in every earlier screen.
+_SHARE_BASIS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
+    "ShareMetrics": {
+        "Basic earnings (loss) per share": ("restated", "*"),
+        "Diluted earnings per share": ("restated", "*"),
+        "Net assets per share": ("restated", "*"),
+        "Dividend paid per share": ("fiscal", "*"),
+        "Interim dividend paid per share": ("fiscal", "*"),
+        "Total number of issued shares": ("fiscal", "/"),
+        "Number of issued shares as of fiscal year end": ("fiscal", "/"),
+        "Number of issued shares as of filing date": ("restated", "/"),
+    },
+    "PerShare_Metrics": {
+        "Sales Per Share": ("fiscal", "*"),
+        "Earnings Per Share": ("fiscal", "*"),
+        "Operating Cashflow Per Share": ("fiscal", "*"),
+        "Free Cashflow Per Share": ("fiscal", "*"),
+        "Net Assets Per Share": ("fiscal", "*"),
+        "NCAV Per Share": ("fiscal", "*"),
+    },
+}
+SHARE_BASIS_TABLE = "temp.share_basis"
+
+
+def _apply_share_basis(sql: str) -> str:
+    """Put per-share column references on the split-adjusted basis (idempotent)."""
+    for table, columns in _SHARE_BASIS_COLUMNS.items():
+        alias = _get_table_alias(table)
+        for column, (factor, operator) in columns.items():
+            target = f"{alias}.[{column}]"
+            if target not in sql:
+                continue
+            pattern = re.compile(r"(?<![\w\]])" + re.escape(target) + r"(?! [*/] COALESCE\(sb\.)")
+            replacement = f"({target} {operator} COALESCE(sb.[{factor}], 1.0))"
+            sql = pattern.sub(lambda _match, text=replacement: text, sql)
+    return sql
+
+
+_SHARE_BASIS_CACHE: dict[tuple[str, float, int], list[tuple[str, float, float]]] = {}
+
+
+def install_share_basis(conn: sqlite3.Connection, db_path: str) -> None:
+    """Create the TEMP lookup a share-basis screening query joins.
+
+    Screening connections are read-only (``mode=ro``) with ``query_only``;
+    a TEMP table lives outside the database file, so ``query_only`` is lifted
+    only while it is filled. Factors are cached until the database changes.
+    """
+    from src.orchestrator.common.corporate_actions import filing_basis_factors
+
+    try:
+        stat = os.stat(db_path)
+        key = (os.path.abspath(db_path), stat.st_mtime, stat.st_size)
+    except OSError:
+        key = (db_path, 0.0, 0)
+    rows = _SHARE_BASIS_CACHE.get(key)
+    if rows is None:
+        rows = filing_basis_factors(conn)
+        _SHARE_BASIS_CACHE.clear()
+        _SHARE_BASIS_CACHE[key] = rows
+    conn.execute("PRAGMA query_only = OFF")
+    try:
+        conn.execute("DROP TABLE IF EXISTS temp.share_basis")
+        conn.execute("CREATE TEMP TABLE share_basis (docID TEXT PRIMARY KEY, restated REAL, fiscal REAL)")
+        conn.executemany("INSERT OR REPLACE INTO temp.share_basis VALUES (?, ?, ?)", rows)
+    finally:
+        conn.execute("PRAGMA query_only = ON")
+
+
 def _get_table_alias(table: str) -> str:
     """Return the SQL alias for a table, falling back to the table name."""
     return _TABLE_ALIAS.get(table, table)
@@ -961,11 +1035,12 @@ def build_screening_query(
     def _column_sql(table: str, column: str, alias: str) -> str:
         if use_adjusted_price and table == "Stock_Prices" and column.lower() == "price":
             return stock_price_expr
-        return f"{alias}.[{_safe_identifier(column)}]"
+        reference = f"{alias}.[{_safe_identifier(column)}]"
+        return _apply_share_basis(reference) if use_adjusted_price else reference
 
     def _rewrite_stock_price_expression(expression_sql: str) -> str:
         if use_adjusted_price:
-            return expression_sql.replace("s_p.[Price]", stock_price_expr)
+            return _apply_share_basis(expression_sql.replace("s_p.[Price]", stock_price_expr))
         return expression_sql
 
     # Validate columns against available metrics
@@ -1284,6 +1359,9 @@ def build_screening_query(
         join_clauses.append(
             f"LEFT JOIN [{safe_table}] [{alias}] ON f.docID = [{alias}].docID"
         )
+
+    if use_adjusted_price and needed_tables & set(_SHARE_BASIS_COLUMNS):
+        join_clauses.append(f"LEFT JOIN {SHARE_BASIS_TABLE} sb ON sb.docID = f.docID")
 
     # --- Build WHERE ---
     where_parts: list[str] = []
@@ -1733,6 +1811,8 @@ def run_screening(
     conn = connect_read(db_path, busy_timeout_ms=30_000)
     logger.info("screening db connected (%.2fs)", _time.monotonic() - _connect_start)
     try:
+        if SHARE_BASIS_TABLE in sql:
+            install_share_basis(conn, db_path)
         # Log the query plan for diagnostics
         _plan_start = _time.monotonic()
         try:

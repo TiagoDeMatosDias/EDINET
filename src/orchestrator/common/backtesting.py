@@ -1340,6 +1340,8 @@ def build_daily_portfolio_tracker(
     # Per-share dividends credited, by ticker and the year they were credited:
     # the yearly table reports exactly what the daily series received.
     credited_per_share: dict[tuple[str, int], float] = {}
+    # Every payment credited, for the dividend ledger in reports.
+    ledger: list[dict] = []
     # Per-ticker daily dividend cash (for visibility / debugging)
     per_ticker_div_cash: dict[str, pd.Series] = {
         t: pd.Series(0.0, index=price_matrix.index) for t in shares
@@ -1385,6 +1387,17 @@ def build_daily_portfolio_tracker(
             cash_series.loc[cash_series.index >= effective_date] += cash
             dividend_events.loc[effective_date] += cash
             credited_per_share[(ticker, effective_date.year)] = credited_per_share.get((ticker, effective_date.year), 0.0) + div_amount
+            ledger.append({
+                "ticker": ticker,
+                "record_date": pd.Timestamp(pay_date).strftime("%Y-%m-%d"),
+                "credited_on": effective_date.strftime("%Y-%m-%d"),
+                "payment": str(row.get("payment") or ""),
+                "per_share": div_amount,
+                "reported_per_share": float(row["reported_per_share"]) if "reported_per_share" in row and pd.notna(row["reported_per_share"]) else div_amount,
+                "split_factor": float(row["split_factor"]) if "split_factor" in row and pd.notna(row["split_factor"]) else 1.0,
+                "shares": shares[ticker],
+                "cash": cash,
+            })
             # Per-ticker tracking
             per_ticker_div_cash[ticker].loc[
                 per_ticker_div_cash[ticker].index >= effective_date
@@ -1574,6 +1587,7 @@ def build_daily_portfolio_tracker(
         "per_company_per_year": pyp_df,
         "metrics": metrics,
         "notes": notes,
+        "dividend_ledger": ledger,
     }
 
 
@@ -1592,8 +1606,8 @@ def calculate_benchmark_returns(
     Returns:
         DataFrame indexed by ``Date`` with columns:
 
-        * ``benchmark_return`` â€” daily total return (price + dividends).
-        * ``cumulative_return`` â€” cumulative product of (1 + daily return).
+        * ``benchmark_return`` â€” daily total return (price + dividends held as cash).
+        * ``cumulative_return`` â€” value of one unit bought on the first day.
         * ``price_return`` â€” daily price-only return.
         * ``cum_price_return`` â€” cumulative price-only return.
         * ``dividend_return`` â€” daily dividend contribution.
@@ -1603,33 +1617,30 @@ def calculate_benchmark_returns(
     bench = bench.sort_values("Date").set_index("Date")
     bench = bench[~bench.index.duplicated(keep="last")]
 
-    # Price-only returns
-    bench["price_return"] = bench["Price"].pct_change()
-    bench["dividend_return"] = 0.0
-
-    # Add dividend yield on payment dates (using previous day's price).
-    # Dividends whose pay_date falls on a non-trading day are mapped
-    # forward to the next available trading day.
-    if dividends_df is not None and not dividends_df.empty:
+    # The benchmark is held like the portfolio: one unit bought on the first
+    # day, dividends kept as cash rather than reinvested, so the excess return
+    # compares like with like. Dividends on a non-trading day count on the
+    # next trading day.
+    price = bench["Price"].astype(float)
+    first_price = float(price.iloc[0]) if len(price) else 0.0
+    paid = pd.Series(0.0, index=bench.index)
+    if dividends_df is not None and not dividends_df.empty and first_price > 0:
         bench_divs = dividends_df[dividends_df["Ticker"] == benchmark_ticker]
         bench_idx = bench.index
         for _, row in bench_divs.iterrows():
-            pay_date = row["periodEnd"]
-            div_amount = row["PerShare_Dividends"]
-            # Find the first trading day on or after the payment date.
-            pos = bench_idx.searchsorted(pay_date, side="left")
+            pos = bench_idx.searchsorted(row["periodEnd"], side="left")
             if pos >= len(bench_idx):
                 continue
-            effective_date = bench_idx[pos]
-            loc = bench.index.get_loc(effective_date)
-            prev_price = bench["Price"].iloc[loc - 1] if loc > 0 else bench["Price"].iloc[0]
-            if prev_price and prev_price > 0:
-                bench.loc[effective_date, "dividend_return"] += div_amount / prev_price
+            paid.iloc[pos] += float(row["PerShare_Dividends"] or 0.0) / first_price
+    cash = paid.cumsum()
+    value = price / first_price + cash if first_price > 0 else price * 0.0
 
-    bench["benchmark_return"] = bench["price_return"] + bench["dividend_return"]
-    bench["cumulative_return"] = (1 + bench["benchmark_return"]).cumprod()
-    bench["cum_price_return"] = (1 + bench["price_return"]).cumprod()
-    bench["cum_dividend_return"] = (1 + bench["dividend_return"]).cumprod()
+    bench["price_return"] = price.pct_change()
+    bench["dividend_return"] = (paid / value.shift(1)).fillna(0.0)
+    bench["benchmark_return"] = value.pct_change()
+    bench["cumulative_return"] = value
+    bench["cum_price_return"] = price / first_price if first_price > 0 else price * 0.0
+    bench["cum_dividend_return"] = 1.0 + cash
 
     bench = bench.iloc[1:]  # drop the first NaN row
     return bench[[

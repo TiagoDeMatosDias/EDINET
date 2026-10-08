@@ -93,7 +93,7 @@ def infer_share_count_splits(history: list[AnnualFacts] | list[tuple[pd.Timestam
     facts = [item if isinstance(item, AnnualFacts) else AnnualFacts(item[0], item[1]) for item in history]
     points = sorted((item for item in facts if item.shares and item.shares > 0), key=lambda item: item.period_end)
     events: list[SplitEvent] = []
-    for before, after in zip(points, points[1:], strict=False):
+    for index, (before, after) in enumerate(zip(points, points[1:], strict=False)):
         if after.period_end <= before.period_end:
             continue
         ratio = float(after.shares) / float(before.shares)
@@ -102,6 +102,10 @@ def infer_share_count_splits(history: list[AnnualFacts] | list[tuple[pd.Timestam
             near = standard_split_multiplier(ratio, tolerance_large=_CONFIRMED_LARGE_TOLERANCE)
             if near is not None and (near >= 2 or near <= 0.5):
                 evidence = _moved_like_split(before.book_value_per_share, after.book_value_per_share, near)
+                # A split effective just after a year end is already restated in
+                # that year's report, a year before the share count shows it.
+                if not evidence and index > 0:
+                    evidence = _moved_like_split(points[index - 1].book_value_per_share, before.book_value_per_share, near) or evidence
                 if evidence is None:
                     evidence = _moved_like_split(before.dividend_per_share, after.dividend_per_share, near)
                 multiplier = near if evidence else None
@@ -388,3 +392,90 @@ def share_count_basis_factors(
         if factor != 1.0:
             factors[str(ticker)] = factor
     return factors
+
+
+def _restated_by(event: SplitEvent, period_end: pd.Timestamp, submitted: pd.Timestamp | None, restated_early: bool) -> bool:
+    """Are a filing's per-share figures (EPS, BPS) already on the post-split basis?
+
+    Issuers restate per-share data for a split that takes effect before the
+    report is filed, even after the year end (a split effective 1 April is
+    already in the June report of the year to March).
+    """
+    if event.exact:
+        return submitted is not None and event.until <= submitted
+    if period_end >= event.until:
+        return True
+    return restated_early and period_end >= event.after
+
+
+def filing_basis_factors(
+    conn: sqlite3.Connection,
+    *,
+    per_share_table: str = "ShareMetrics",
+    financial_statements_table: str = "FinancialStatements",
+    company_table: str = "CompanyInfo",
+) -> list[tuple[str, float, float]]:
+    """Per filing, the factors that put its per-share figures on the stored price basis.
+
+    Returns ``(docID, restated, fiscal)`` for every filing where either is not
+    1: ``restated`` multiplies figures the issuer restates for splits before
+    filing (EPS, book value per share); ``fiscal`` multiplies figures fixed at
+    the fiscal year end (dividends per share, per-share ratios computed from
+    the year-end share count). Share counts are divided by the same factors.
+    """
+    fs_columns = _table_columns(conn, financial_statements_table)
+    company_columns = _table_columns(conn, company_table)
+    if not {"docID", "periodEnd", "Company_Code"} <= fs_columns or not {"Company_Code", "Company_Ticker"} <= company_columns:
+        return []
+    tickers = [str(row[0]) for row in conn.execute(
+        f'SELECT DISTINCT Company_Ticker FROM "{company_table}" WHERE TRIM(COALESCE(Company_Ticker, \'\')) <> \'\''
+    )]
+    events = load_split_events(conn, tickers, per_share_table=per_share_table, financial_statements_table=financial_statements_table, company_table=company_table)
+    if not events:
+        return []
+    share_columns = _table_columns(conn, per_share_table)
+    bps_sql = 'p."Net assets per share"' if "Net assets per share" in share_columns else "NULL"
+    submitted_sql = "fs.submitDateTime" if "submitDateTime" in fs_columns else "NULL"
+    annual_sql = "fs.docTypeCode = '030000'" if "docTypeCode" in fs_columns else "1"
+    placeholders = ",".join("?" for _ in events)
+    rows = conn.execute(
+        f'SELECT c.Company_Ticker, fs.docID, fs.periodEnd, {submitted_sql}, {annual_sql}, {bps_sql} '
+        f'FROM "{financial_statements_table}" fs JOIN "{company_table}" c ON c.Company_Code = fs.Company_Code '
+        f'LEFT JOIN "{per_share_table}" p ON p.docID = fs.docID '
+        f"WHERE c.Company_Ticker IN ({placeholders}) ORDER BY c.Company_Ticker, fs.periodEnd",
+        list(events),
+    ).fetchall()
+    by_ticker: dict[str, list[tuple[str, pd.Timestamp, pd.Timestamp | None, bool, float | None]]] = {}
+    for ticker, doc_id, period_end, submitted, annual, bps in rows:
+        try:
+            end = pd.Timestamp(str(period_end)[:10])
+        except (TypeError, ValueError):
+            continue
+        try:
+            filed = pd.Timestamp(str(submitted)[:10]) if submitted else None
+        except (TypeError, ValueError):
+            filed = None
+        by_ticker.setdefault(str(ticker), []).append((str(doc_id), end, filed, bool(annual), float(bps) if bps else None))
+
+    out: list[tuple[str, float, float]] = []
+    for ticker, filings in by_ticker.items():
+        annual_bps = [(end, bps) for _doc, end, _filed, annual, bps in filings if annual and bps]
+        restated_early: dict[SplitEvent, bool] = {}
+        for event in events.get(ticker, []):
+            if event.exact:
+                continue
+            # The year-end report at the window's start already restated:
+            # its book value per share fell by the ratio from the year before.
+            before = [bps for end, bps in annual_bps if end < event.after]
+            at_start = [bps for end, bps in annual_bps if end == event.after]
+            restated_early[event] = bool(before and at_start and _moved_like_split(before[-1], at_start[-1], event.multiplier))
+        for doc_id, end, filed, _annual, _bps in filings:
+            restated = fiscal = 1.0
+            for event in events.get(ticker, []):
+                if not _restated_by(event, end, filed, restated_early.get(event, False)):
+                    restated /= event.multiplier
+                if (event.exact and event.until > end) or (not event.exact and event.after >= end):
+                    fiscal /= event.multiplier
+            if restated != 1.0 or fiscal != 1.0:
+                out.append((doc_id, restated, fiscal))
+    return out

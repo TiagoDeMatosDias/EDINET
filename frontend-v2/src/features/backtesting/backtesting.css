@@ -153,3 +153,26 @@
   .bt-panel--wide { grid-column: auto; }
   .bt-keys { display: none; }
 }
+
+/* Report actions in a result header */
+.bt-report-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-left: auto; }
+
+/* Holding drill-down under a single backtest */
+.bt-drill { gap: 6px; }
+.bt-drill__head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.bt-drill__head h3 { margin: 0; font-size: .82rem; }
+.bt-drill__head .muted { font-size: .68rem; }
+.bt-swatch { display: inline-block; flex: 0 0 auto; width: 8px; height: 8px; margin-right: 6px; border-radius: 2px; vertical-align: 1px; }
+.bt-footnote { margin: 4px 2px 0; font-size: .64rem; }
+.bt-table td.is-flagged { color: var(--warning); font-weight: 500; }
+.bt-holding-detail { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border-strong); border-left: 3px solid var(--primary); border-radius: var(--radius); background: var(--bg); }
+.bt-holding-detail header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.bt-holding-detail h3 { margin: 0; font-size: .9rem; }
+.bt-holding-detail header .text-button { margin-left: auto; font-size: .72rem; }
+.bt-holding-detail .bt-facts { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+.bt-holding-detail .bt-chart { height: 200px; }
+.bt-details > summary { padding: 4px 2px; color: var(--muted); font-size: .72rem; cursor: pointer; }
+.bt-table tbody tr.bt-subrow td { padding-top: 2px; padding-bottom: 2px; color: var(--text); background: var(--bg); font-size: .7rem; }
+.bt-table tbody tr.bt-subrow td:first-child { padding-left: 18px; }
+.bt-table td small { margin-left: 4px; color: var(--muted); font-size: .62rem; }
+@media (max-width: 900px) { .bt-report-actions { margin-left: 0; } }

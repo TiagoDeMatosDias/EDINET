@@ -40,3 +40,18 @@ export async function downloadApiFile(path: string, fallbackFilename: string): P
   const blob = await response.blob()
   downloadBlob(filenameFromDisposition(response.headers.get('content-disposition')) ?? fallbackFilename, blob)
 }
+
+/** Open an authenticated API page (an HTML report) in a new tab without saving it first. */
+export async function openApiPage(path: string): Promise<void> {
+  // Opened before the request so the browser treats it as a user action.
+  const tab = window.open('', '_blank')
+  const response = await authenticatedFetch(path)
+  if (!response.ok) {
+    tab?.close()
+    throw new ApiError(`Could not open the report (${response.status})`, response.status, null)
+  }
+  const url = URL.createObjectURL(await response.blob())
+  if (tab) tab.location.href = url
+  else window.open(url, '_blank')
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}

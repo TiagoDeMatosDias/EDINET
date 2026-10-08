@@ -148,6 +148,21 @@ Responsibility: EDINET API wrapper, document listing, download/unzip, CSV ingest
 	- `def load_financial_data(self, financialFiles, table_name, doc, connection=None) -> None` - Read extracted TSV/CSV financial files into a DataFrame and persist.
 	- `def store_edinetCodes(self, csv_file, target_database=None, table_name=None) -> None` - Load EDINET company codes CSV into the DB.
 
+### [src/orchestrator/common/corporate_actions.py](../src/orchestrator/common/corporate_actions.py)
+
+Responsibility: put reported per-share figures on the split-adjusted share basis of the stored prices. Split events come from confirmed `Stock_Splits` rows (exact dates) and from fiscal-year-end issued share counts in annual reports (standard ratios; near misses confirmed by book value or dividends per share).
+
+- `load_split_events(conn, tickers, ...) -> dict[str, list[SplitEvent]]` — every known split per ticker.
+- `dividend_payments(rows) -> DataFrame` — annual dividends as interim and final payments at their record dates.
+- `adjust_payments_for_splits(payments, events, raw_events=None) -> DataFrame` — divides each payment by the later splits (interim payments inside an inferred window are placed by amount); adds `split_factor` and `reported_per_share`.
+- `raw_basis_events(conn, prices_table, events)` — events across which the price series still jumps (left unadjusted).
+- `share_count_basis_factors(conn, tickers, as_of)` — factors for market caps from a screen's price and reported share count.
+- `filing_basis_factors(conn) -> list[(docID, restated, fiscal)]` — per filing, the factor for figures issuers restate for splits before filing (EPS, BPS) and for figures fixed at the year end (dividends, year-end share counts); screening joins them as `temp.share_basis`.
+
+### [src/backtesting/detail.py](../src/backtesting/detail.py), [src/backtesting/html_report.py](../src/backtesting/html_report.py)
+
+Responsibility: drill-down views and the shareable report of saved backtests. `build_single_detail(result)` turns a stored single result into per-holding growth, yearly rows, dividends, allocation drift, and cumulative contributions (`GET /api/backtesting/result/{id}/detail`). `render_report(stored, meta=None, backtest_id="")` renders a saved single, rolling, or CSV result as one self-contained HTML page with inline SVG charts (`GET /api/backtesting/report/{id}`; also `report.html` in archives).
+
 ### [src/orchestrator/common/backtesting.py](../src/orchestrator/common/backtesting.py)
 
 Responsibility: portfolio construction, price/dividend ingestion, return calculations, performance metrics, human-readable reports and charts. (Was `src/backtesting.py` before the orchestration rework.)

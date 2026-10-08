@@ -81,6 +81,7 @@ def build_single_backtest_zip(result: dict[str, Any]) -> bytes:
             per_company_per_year=result.get("per_company_per_year"),
         )
         zf.writestr("report.txt", report)
+        zf.writestr("report.html", _report_html(result))
 
         # CSVs
         if metrics:
@@ -93,6 +94,10 @@ def build_single_backtest_zip(result: dict[str, Any]) -> bytes:
         pyp = result.get("per_company_per_year")
         if pyp:
             _write_csv(zf, "per_company_per_year.csv", pyp)
+
+        payments = result.get("dividend_payments")
+        if payments:
+            _write_csv(zf, "dividend_payments.csv", payments)
 
         # Daily data is too large for the ZIP; saved separately as
         # per_company_per_day.csv on disk.
@@ -112,6 +117,17 @@ def build_single_backtest_zip(result: dict[str, Any]) -> bytes:
     return buf.getvalue()
 
 
+def _report_html(result: dict[str, Any]) -> str:
+    """The shareable HTML report for an archive (imported here: it uses this module)."""
+    from src.backtesting.html_report import render_report
+
+    try:
+        return render_report(result)
+    except Exception:  # noqa: BLE001 - the archive is still useful without it
+        logger.warning("Could not render the HTML report", exc_info=True)
+        return "<!doctype html><title>Backtest report</title><p>The report could not be rendered; see report.txt.</p>"
+
+
 def build_rolling_zip(rolling_result: dict[str, Any]) -> bytes:
     """Build a ZIP archive from a rolling backtest result."""
     buf = io.BytesIO()
@@ -129,6 +145,7 @@ def _write_rolling_zip(
     aggregate = rolling_result.get("aggregate", {})
     results = rolling_result.get("results", [])
     _add_summary_txt(archive, config, aggregate)
+    archive.writestr("report.html", _report_html(rolling_result))
     _add_summary_csv(archive, aggregate)
     _add_heatmap_csv(archive, aggregate)
     _add_backtest_files(archive, results)
