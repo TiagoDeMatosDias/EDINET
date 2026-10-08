@@ -25,6 +25,13 @@ import sqlite3
 import numpy as np
 import pandas as pd
 
+from src.orchestrator.common.corporate_actions import (
+    adjust_payments_for_splits,
+    dividend_payments,
+    load_split_events,
+    raw_basis_events,
+)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -35,6 +42,11 @@ logger = logging.getLogger(__name__)
 #   - a plain float  (backward compat, treated as a weight fraction)
 #   - a dict with {"mode": "weight"|"shares"|"value", "value": <number>}
 ALLOCATION_MODES = ("weight", "shares", "value")
+
+_DIVIDEND_COLUMNS = [
+    "Ticker", "periodEnd", "PerShare_Dividends", "fiscal_period_end",
+    "payment", "split_factor", "reported_per_share",
+]
 
 
 def _sql_ident(name: str) -> str:
@@ -286,8 +298,9 @@ def get_dividend_data(
     financial_statements_table: str = "FinancialStatements",
     dividend_column: str | None = None,
     conn: sqlite3.Connection | None = None,
+    prices_table: str | None = "Stock_Prices",
 ) -> pd.DataFrame:
-    """Fetch per-share dividends mapped to tickers for the given period.
+    """Fetch per-share dividend payments mapped to tickers for the given period.
 
         Expects the ``ShareMetrics``-style schema with:
 
@@ -307,8 +320,16 @@ def get_dividend_data(
         dividend_column: Optional explicit dividend column name.
         conn: Optional existing database connection.
 
+    Each annual dividend becomes its interim and final payments, dated at
+    their record dates (half-year and fiscal year end) and kept when that
+    date falls in the period. Amounts are put on the split-adjusted share
+    basis of the stored prices (see :mod:`corporate_actions`); the as-paid
+    amount stays in ``reported_per_share``.
+
     Returns:
-        DataFrame with columns ``Ticker``, ``periodEnd``, ``PerShare_Dividends``.
+        DataFrame with columns ``Ticker``, ``periodEnd`` (the payment's record
+        date), ``PerShare_Dividends``, ``fiscal_period_end``, ``payment``,
+        ``split_factor``, and ``reported_per_share``.
     """
     own_conn = conn is None
     if own_conn:
@@ -317,9 +338,7 @@ def get_dividend_data(
         conn = sqlite3.connect(db_path)
     try:
         if not tickers:
-            return pd.DataFrame(
-                columns=["Ticker", "periodEnd", "PerShare_Dividends"]
-            )
+            return pd.DataFrame(columns=_DIVIDEND_COLUMNS)
 
         table_info = conn.execute(
             f"PRAGMA table_info({_sql_ident(per_share_table)})"
@@ -340,9 +359,7 @@ def get_dividend_data(
                 per_share_table,
                 ["Dividend paid per share", "PerShare_Dividends", "Dividends"],
             )
-            return pd.DataFrame(
-                columns=["Ticker", "periodEnd", "PerShare_Dividends"]
-            )
+            return pd.DataFrame(columns=_DIVIDEND_COLUMNS)
 
         variants, variant_to_original = _ticker_variants(tickers)
 
@@ -375,10 +392,13 @@ def get_dividend_data(
 
         # ShareMetrics schema path: ShareMetrics(docID, Dividend paid per share) â†’
         # FinancialStatements(docID, Company_Code, periodEnd) â†’ companyInfo.
+        interim_col = "Interim dividend paid per share"
+        interim_sql = f"p.{_sql_ident(interim_col)}" if interim_col in col_names else "NULL"
         if "docID" in col_names:
             query = (
                 f"SELECT c.Company_Ticker AS Ticker, fs.periodEnd, "
-                f"p.{_sql_ident(div_col)} AS PerShare_Dividends "
+                f"p.{_sql_ident(div_col)} AS PerShare_Dividends, "
+                f"{interim_sql} AS Interim_Dividends "
                 f"FROM {_sql_ident(per_share_table)} p "
                 f"JOIN {_sql_ident(financial_statements_table)} fs ON fs.docID = p.docID "
                 f"JOIN {_sql_ident(company_table)} c ON c.{_sql_ident(ci_code_col)} = fs.{_sql_ident(fs_code_col)} "
@@ -392,19 +412,33 @@ def get_dividend_data(
                 "(expected docID).",
                 per_share_table,
             )
-            return pd.DataFrame(
-                columns=["Ticker", "periodEnd", "PerShare_Dividends"]
-            )
+            return pd.DataFrame(columns=_DIVIDEND_COLUMNS)
 
-        params = [*variants, start_date, end_date]
+        # A fiscal year ending up to six months after the period still has
+        # its interim payment inside it.
+        query_end = (pd.Timestamp(end_date) + pd.DateOffset(months=6)).strftime("%Y-%m-%d")
+        params = [*variants, start_date, query_end]
         df = pd.read_sql_query(query, conn, params=params)
         df["periodEnd"] = pd.to_datetime(df["periodEnd"])
-        df["PerShare_Dividends"] = pd.to_numeric(
-            df["PerShare_Dividends"], errors="coerce"
-        ).fillna(0.0)
+        for column in ("PerShare_Dividends", "Interim_Dividends"):
+            df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0.0)
+
+        payments = dividend_payments(df)
+        window = (payments["periodEnd"] >= pd.Timestamp(start_date)) & (payments["periodEnd"] <= pd.Timestamp(end_date))
+        payments = payments[window]
+        events = load_split_events(
+            conn, sorted(set(payments["Ticker"].astype(str))),
+            per_share_table=per_share_table,
+            financial_statements_table=financial_statements_table,
+            company_table=company_table,
+            company_code_column=ci_code_col,
+            fs_code_column=fs_code_col,
+        )
+        raw = raw_basis_events(conn, prices_table, events) if prices_table and events else set()
+        payments = adjust_payments_for_splits(payments, events, raw_events=raw)
         # Map DB tickers back to original portfolio keys
-        df["Ticker"] = df["Ticker"].map(variant_to_original).fillna(df["Ticker"])
-        return df
+        payments["Ticker"] = payments["Ticker"].map(variant_to_original).fillna(payments["Ticker"])
+        return payments.sort_values("periodEnd").reset_index(drop=True)[_DIVIDEND_COLUMNS]
     finally:
         if own_conn:
             conn.close()
@@ -1303,6 +1337,9 @@ def build_daily_portfolio_tracker(
 
     # --- 5. Cash balance (accumulated dividends) ----------------------
     dividend_events = pd.Series(0.0, index=price_matrix.index)
+    # Per-share dividends credited, by ticker and the year they were credited:
+    # the yearly table reports exactly what the daily series received.
+    credited_per_share: dict[tuple[str, int], float] = {}
     # Per-ticker daily dividend cash (for visibility / debugging)
     per_ticker_div_cash: dict[str, pd.Series] = {
         t: pd.Series(0.0, index=price_matrix.index) for t in shares
@@ -1347,6 +1384,7 @@ def build_daily_portfolio_tracker(
             cash = shares[ticker] * div_amount
             cash_series.loc[cash_series.index >= effective_date] += cash
             dividend_events.loc[effective_date] += cash
+            credited_per_share[(ticker, effective_date.year)] = credited_per_share.get((ticker, effective_date.year), 0.0) + div_amount
             # Per-ticker tracking
             per_ticker_div_cash[ticker].loc[
                 per_ticker_div_cash[ticker].index >= effective_date
@@ -1404,99 +1442,72 @@ def build_daily_portfolio_tracker(
     # --- 8. Per-company-per-year aggregate (from ORIGINAL price matrix,
     #       NOT the truncated daily_df — the first row was dropped for
     #       pct_change, but price data needs all rows) -------------------
+    # Each year runs from the previous year's last close (or the purchase,
+    # in the year a holding is bought) to this year's last close, so the
+    # years compound to the whole period; contributions use the weights at
+    # the start of each year, after the holdings have drifted.
     years = sorted(set(price_matrix.index.year))
-    # Build lookup DataFrames keyed by year
-    pm_by_year: dict[int, pd.DataFrame] = {}
-    cs_by_year: dict[int, pd.Series] = {}
-    for y in years:
-        mask = price_matrix.index.year == y
-        pm_by_year[y] = price_matrix[mask]
-        cs_by_year[y] = cash_series[mask]
-
     pyp_rows: list[dict] = []
     running_cash = 0.0
 
+    def _year_window(t: str, year: int) -> tuple[pd.Timestamp, float, pd.Timestamp, float] | None:
+        series = price_matrix[t]
+        in_year = series[(series.index.year == year) & (series.index >= entry_dates[t])].dropna()
+        if in_year.empty:
+            return None
+        before = series[(series.index.year < year) & (series.index >= entry_dates[t])].dropna()
+        if not before.empty:
+            start_date, start_price = before.index[-1], float(before.iloc[-1])
+        else:
+            start_date, start_price = in_year.index[0], float(in_year.iloc[0])
+        return start_date, start_price, in_year.index[-1], float(in_year.iloc[-1])
+
     for year in years:
-        yr_pm = pm_by_year[year]
+        windows = {t: window for t in shares if (window := _year_window(t, year)) is not None}
 
-        # Prices held that year: a later listing has none before it trades.
-        held = {t: yr_pm[t][yr_pm.index >= entry_dates[t]].dropna() for t in shares}
-        held = {t: series for t, series in held.items() if not series.empty}
+        port_start_val = running_cash + sum(shares[t] * window[1] for t, window in windows.items())
+        year_divs_per_share = {t: credited_per_share.get((t, year), 0.0) for t in windows}
+        total_year_divs_cash = sum(shares[t] * year_divs_per_share[t] for t in windows)
+        port_end_val_yr = running_cash + total_year_divs_cash + sum(shares[t] * window[3] for t, window in windows.items())
 
-        # Total portfolio start value (using FIRST trading day of year)
-        port_start_val = running_cash
-        for t in held:
-            port_start_val += shares[t] * float(held[t].iloc[0])
-
-        # Yearly dividends per ticker
-        year_divs_per_share: dict[str, float] = {t: 0.0 for t in shares}
-        if dividends_df is not None and not dividends_df.empty:
-            div_yr = dividends_df.copy()
-            div_yr["Year"] = div_yr["periodEnd"].dt.year
-            for t in shares:
-                td = div_yr[(div_yr["Ticker"] == t) & (div_yr["Year"] == year)]
-                year_divs_per_share[t] = float(td["PerShare_Dividends"].sum())
-
-        total_year_divs_cash = 0.0
-
-        # Ticker rows
-        for t in held:
-            s_price = float(held[t].iloc[0])
-            e_price = float(held[t].iloc[-1])
+        for t, (start_day, s_price, end_day, e_price) in windows.items():
             div_ps = year_divs_per_share[t]
             s_shares = shares[t]
-
-            tot_divs = s_shares * div_ps
-            total_year_divs_cash += tot_divs
-            e_shares = s_shares  # buy-and-hold
-
             start_mkt = s_shares * s_price
-            end_mkt = e_shares * e_price
-
+            end_mkt = s_shares * e_price
             price_ret = (e_price - s_price) / s_price if s_price > 0 else 0.0
             div_ret = div_ps / s_price if s_price > 0 else 0.0
             total_ret = price_ret + div_ret
-
             wtd_start = start_mkt / port_start_val if port_start_val > 0 else 0.0
-            # Weighted end value uses actual portfolio end value
-            port_end_val_yr = running_cash + total_year_divs_cash
-            for t2 in held:
-                port_end_val_yr += shares[t2] * float(held[t2].iloc[-1])
-            wtd_end = end_mkt / port_end_val_yr if port_end_val_yr > 0 else 0.0
-            wtd_ret = active[t] * total_ret
-
             pyp_rows.append({
                 "Year": year,
                 "Ticker": t,
+                "Start_Date": start_day.strftime("%Y-%m-%d"),
+                "End_Date": end_day.strftime("%Y-%m-%d"),
                 "Starting_Shares": s_shares,
                 "Dividend_Per_Share": div_ps,
                 "Start_Price": s_price,
                 "End_Price": e_price,
-                "Total_Dividends_Received": tot_divs,
+                "Total_Dividends_Received": s_shares * div_ps,
                 "Dividend_Currency": "",
-                "Ending_Shares": e_shares,
+                "Ending_Shares": s_shares,  # buy-and-hold
                 "Starting_Market_Value": start_mkt,
                 "Ending_Market_Value": end_mkt,
                 "Price_Return_Pct": price_ret,
                 "Dividend_Return_Pct": div_ret,
                 "Total_Return_Pct": total_ret,
                 "Weighted_Value_Start": wtd_start,
-                "Weighted_Value_End": wtd_end,
-                "Weighted_Return": wtd_ret,
+                "Weighted_Value_End": end_mkt / port_end_val_yr if port_end_val_yr > 0 else 0.0,
+                # Contribution to the year's portfolio return.
+                "Weighted_Return": wtd_start * total_ret,
             })
 
-        # Cash row
         cash_end_yr = running_cash + total_year_divs_cash
-        port_end_val_yr2 = cash_end_yr
-        for t in held:
-            port_end_val_yr2 += shares[t] * float(held[t].iloc[-1])
-
-        cash_wtd_start = running_cash / port_start_val if port_start_val > 0 else 0.0
-        cash_wtd_end = cash_end_yr / port_end_val_yr2 if port_end_val_yr2 > 0 else 0.0
-
         pyp_rows.append({
             "Year": year,
             "Ticker": cash_label,
+            "Start_Date": "",
+            "End_Date": "",
             "Starting_Shares": running_cash,
             "Dividend_Per_Share": 0.0,
             "Start_Price": 1.0,
@@ -1509,11 +1520,10 @@ def build_daily_portfolio_tracker(
             "Price_Return_Pct": 0.0,
             "Dividend_Return_Pct": 0.0,
             "Total_Return_Pct": 0.0,
-            "Weighted_Value_Start": cash_wtd_start,
-            "Weighted_Value_End": cash_wtd_end,
+            "Weighted_Value_Start": running_cash / port_start_val if port_start_val > 0 else 0.0,
+            "Weighted_Value_End": cash_end_yr / port_end_val_yr if port_end_val_yr > 0 else 0.0,
             "Weighted_Return": 0.0,
         })
-
         running_cash = cash_end_yr
 
     pyp_df = pd.DataFrame(pyp_rows) if pyp_rows else pd.DataFrame()
@@ -1529,7 +1539,8 @@ def build_daily_portfolio_tracker(
 
     # Annualized
     if len(daily_df) > 0:
-        dt_start = daily_df.index[0]
+        # Returns run from the purchase on the first price day.
+        dt_start = price_matrix.index[0]
         dt_end = daily_df.index[-1]
         yrs = max((dt_end - dt_start).days / 365.25, 1 / 365.25)
         annualized_return = (1.0 + total_return) ** (1.0 / yrs) - 1.0 if total_return > -1.0 else -1.0
@@ -1552,7 +1563,7 @@ def build_daily_portfolio_tracker(
         "volatility": daily_vol,
         "sharpe_ratio": sharpe,
         "max_drawdown": max_dd,
-        "start_date": str(daily_df.index[0].date()) if len(daily_df) > 0 else "",
+        "start_date": str(price_matrix.index[0].date()) if len(daily_df) > 0 else "",
         "end_date": str(daily_df.index[-1].date()) if len(daily_df) > 0 else "",
         "initial_capital": initial_capital,
         "risk_free_rate": risk_free_rate,
@@ -1613,7 +1624,7 @@ def calculate_benchmark_returns(
             loc = bench.index.get_loc(effective_date)
             prev_price = bench["Price"].iloc[loc - 1] if loc > 0 else bench["Price"].iloc[0]
             if prev_price and prev_price > 0:
-                bench.loc[effective_date, "dividend_return"] = div_amount / prev_price
+                bench.loc[effective_date, "dividend_return"] += div_amount / prev_price
 
     bench["benchmark_return"] = bench["price_return"] + bench["dividend_return"]
     bench["cumulative_return"] = (1 + bench["benchmark_return"]).cumprod()

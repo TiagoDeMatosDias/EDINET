@@ -37,6 +37,7 @@ from src.orchestrator.common.backtesting import (
     get_portfolio_prices,
     resolve_portfolio_allocations,
 )
+from src.orchestrator.common.corporate_actions import share_count_basis_factors
 from src.orchestrator.common.sqlite import connect_read
 
 if TYPE_CHECKING:
@@ -160,31 +161,36 @@ def _swap_native_prices_in_pyp(
     per_company_per_year["Base_Starting_Market_Value"] = per_company_per_year["Starting_Market_Value"]
     per_company_per_year["Base_Ending_Market_Value"] = per_company_per_year["Ending_Market_Value"]
 
-    # Build native start/end price lookup
-    native_start: dict[str, float] = {}
-    native_end: dict[str, float] = {}
+    # Native prices on each row's own start and end dates (the previous
+    # year's close and this year's close), not the whole period's.
+    native_series: dict[str, pd.Series] = {}
     for tk in tickers:
-        if tk in native_prices:
+        if tk in native_prices and len(native_prices[tk]) > 0:
             npx = native_prices[tk].sort_values("Date")
-            if len(npx) > 0:
-                native_start[tk] = float(npx[f"native_price_{tk}"].iloc[0])
-                native_end[tk] = float(npx[f"native_price_{tk}"].iloc[-1])
+            native_series[tk] = pd.Series(npx[f"native_price_{tk}"].to_numpy(dtype=float), index=pd.DatetimeIndex(npx["Date"]))
 
-    per_company_per_year["Start_Price"] = per_company_per_year["Ticker"].map(
-        lambda t: native_start.get(t, 1.0 if t == base_currency else None)
-    )
-    per_company_per_year["End_Price"] = per_company_per_year["Ticker"].map(
-        lambda t: native_end.get(t, 1.0 if t == base_currency else None)
-    )
+    def _native_at(ticker: str, day: object) -> float | None:
+        series = native_series.get(ticker)
+        if series is None or not day:
+            return None
+        value = series.asof(pd.Timestamp(str(day)))
+        return None if pd.isna(value) else float(value)
 
-    # Native market values
+    has_dates = "Start_Date" in per_company_per_year.columns
     for idx, row in per_company_per_year.iterrows():
         tk = row["Ticker"]
-        if tk in native_start:
-            shares_val = row["Starting_Shares"] if row["Starting_Shares"] > 0 else 0
-            if shares_val > 0:
-                per_company_per_year.at[idx, "Starting_Market_Value"] = shares_val * native_start[tk]
-                per_company_per_year.at[idx, "Ending_Market_Value"] = shares_val * native_end[tk]
+        if tk not in native_series:
+            per_company_per_year.at[idx, "Start_Price"] = 1.0 if tk == base_currency else None
+            per_company_per_year.at[idx, "End_Price"] = 1.0 if tk == base_currency else None
+            continue
+        start = _native_at(tk, row["Start_Date"]) if has_dates else float(native_series[tk].iloc[0])
+        end = _native_at(tk, row["End_Date"]) if has_dates else float(native_series[tk].iloc[-1])
+        per_company_per_year.at[idx, "Start_Price"] = start
+        per_company_per_year.at[idx, "End_Price"] = end
+        shares_val = row["Starting_Shares"] if row["Starting_Shares"] > 0 else 0
+        if shares_val > 0 and start is not None and end is not None:
+            per_company_per_year.at[idx, "Starting_Market_Value"] = shares_val * start
+            per_company_per_year.at[idx, "Ending_Market_Value"] = shares_val * end
 
     # Cash row prices are always 1.0
     cash_mask = per_company_per_year["Start_Price"].isna()
@@ -364,9 +370,10 @@ def run_backtest_web(
                                ticker_native_currency, tickers,
                                base_currency or "")
 
-    # Set dates from the daily tracker (actual data range, not requested)
+    # Set dates from the daily tracker (actual data range, not requested);
+    # the tracker's start is the purchase day, before the first daily return.
     if len(daily_df) > 0:
-        metrics["start_date"] = str(daily_df.index[0].date())
+        metrics["start_date"] = metrics.get("start_date") or str(daily_df.index[0].date())
         metrics["end_date"] = str(daily_df.index[-1].date())
     else:
         metrics["start_date"] = start_date
@@ -596,28 +603,30 @@ def run_backtest_web(
             bench_px_all["Year"] = bench_px_all["Date"].dt.year
             bench_divs_all = all_dividends_df[all_dividends_df["Ticker"] == benchmark_ticker].copy() if len(all_dividends_df) > 0 else pd.DataFrame()
             bench_yearly_rows = []
+            bench_px_all = bench_px_all.sort_values("Date")
+            bench_native = native_prices.get(benchmark_ticker)
+            bench_native_series = (
+                pd.Series(bench_native[f"native_price_{benchmark_ticker}"].to_numpy(dtype=float), index=pd.DatetimeIndex(bench_native["Date"])).sort_index()
+                if bench_native is not None and len(bench_native) else None
+            )
+            bench_div_years: dict[int, float] = {}
+            if len(bench_divs_all) > 0:
+                for record_date, amount in zip(pd.to_datetime(bench_divs_all["periodEnd"]), bench_divs_all["PerShare_Dividends"], strict=True):
+                    if bench_px_all["Date"].iloc[0] <= record_date <= bench_px_all["Date"].iloc[-1]:
+                        bench_div_years[record_date.year] = bench_div_years.get(record_date.year, 0.0) + float(amount or 0.0)
             for year in sorted(per_company_per_year["Year"].unique()):
-                yr_px = bench_px_all[bench_px_all["Year"] == year].sort_values("Date")
+                yr_px = bench_px_all[bench_px_all["Year"] == year]
                 if len(yr_px) == 0:
                     continue
-                s_price = float(yr_px["Price"].iloc[0])
+                # Like the holdings: from the previous year's close.
+                before = bench_px_all[bench_px_all["Year"] < year]
+                start_row = before.iloc[-1] if len(before) else yr_px.iloc[0]
+                s_price = float(start_row["Price"])
                 e_price = float(yr_px["Price"].iloc[-1])
-                # Native prices for benchmark
-                bench_native_start = None
-                bench_native_end = None
-                if benchmark_ticker in native_prices:
-                    bnp = native_prices[benchmark_ticker]
-                    bnp["Year"] = bnp["Date"].dt.year
-                    bnp_yr = bnp[bnp["Year"] == year].sort_values("Date")
-                    if len(bnp_yr) > 0:
-                        bench_native_start = float(bnp_yr[f"native_price_{benchmark_ticker}"].iloc[0])
-                        bench_native_end = float(bnp_yr[f"native_price_{benchmark_ticker}"].iloc[-1])
-                # Benchmark dividends for this year
-                div_ps = 0.0
-                if len(bench_divs_all) > 0:
-                    bd = bench_divs_all.copy()
-                    bd["Year"] = bd["periodEnd"].dt.year
-                    div_ps = float(bd[bd["Year"] == year]["PerShare_Dividends"].sum())
+                start_day, end_day = start_row["Date"], yr_px["Date"].iloc[-1]
+                bench_native_start = float(bench_native_series.asof(start_day)) if bench_native_series is not None else None
+                bench_native_end = float(bench_native_series.asof(end_day)) if bench_native_series is not None else None
+                div_ps = bench_div_years.get(int(year), 0.0)
                 price_ret = (e_price - s_price) / s_price if s_price > 0 else 0.0
                 div_ret = div_ps / s_price if s_price > 0 else 0.0
                 bench_start_mkt = effective_initial_capital  # same capital invested
@@ -625,6 +634,8 @@ def run_backtest_web(
                 bench_yearly_rows.append({
                     "Year": year,
                     "Ticker": f"BENCH:{benchmark_ticker}",
+                    "Start_Date": start_day.strftime("%Y-%m-%d"),
+                    "End_Date": end_day.strftime("%Y-%m-%d"),
                     "Starting_Shares": 0,
                     "Dividend_Per_Share": div_ps,
                     "Start_Price": bench_native_start if bench_native_start is not None else s_price,
@@ -1332,8 +1343,13 @@ def _build_portfolios(
     shares_outstanding_col: str | None = None,
     latest_price_col: str = "LatestPrice",
     ticker_col: str = "Ticker",
+    share_basis_factors: dict[str, float] | None = None,
 ) -> tuple[dict[str, dict[str, dict]], list[str]]:
     """Build portfolio dicts for each weighting mode.
+
+    ``share_basis_factors`` maps a ticker to the split factor its adjusted
+    price carries at the date of the reported share count; market caps are
+    divided by it so a company that split later is not under-weighted.
 
     Returns:
         A 2-tuple ``(portfolios_by_mode, warnings)`` where
@@ -1417,6 +1433,8 @@ def _build_portfolios(
                 df[latest_price_col].astype(float)
                 * df[shares_col].astype(float)
             )
+            if share_basis_factors:
+                df["_mcap"] = df["_mcap"] / df[resolved_ticker_col].astype(str).map(share_basis_factors).fillna(1.0)
             df = df[df["_mcap"] > 0]
 
             if len(df) < 2:
@@ -1877,12 +1895,27 @@ def run_screening_backtest_rolling(
         shares_col = _resolve_matching_column(
             list(screen_df.columns), SHARES_OUTSTANDING_CANDIDATES,
         )
+        basis_factors: dict[str, float] = {}
+        if "market_cap" in weighting_modes:
+            basis_conn = connect_read(db_path, busy_timeout_ms=10_000)
+            try:
+                basis_factors = share_count_basis_factors(
+                    basis_conn, tickers, screening_date,
+                    per_share_table=ratios_table,
+                    financial_statements_table=financial_statements_table,
+                    company_table=company_table,
+                )
+            except Exception:  # noqa: BLE001 - weights fall back to the unadjusted product
+                logger.warning("Could not read split history for market-cap weights", exc_info=True)
+            finally:
+                basis_conn.close()
         portfolios_by_mode, pf_warnings = _build_portfolios(
             tickers, weighting_modes,
             screen_df=screen_df,
             shares_outstanding_col=shares_col,
             latest_price_col="LatestPrice",
             ticker_col=ticker_col,
+            share_basis_factors=basis_factors,
         )
         period_warnings.extend(pf_warnings)
 
