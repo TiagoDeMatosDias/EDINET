@@ -87,7 +87,10 @@ def _legacy_install(root: Path) -> None:
     (state / "secrets" / "chat_message_keys.json").write_text(json.dumps({"active": 1, "keys": {"1": "a2V5"}}))
     (state / "screening_history.jsonl").write_text('{"name": "test_run"}\n')
     (state / "jobs" / "job-1" / "uploads").mkdir(parents=True)
-    (root / "data" / "Backtests" / "20260101_000000").mkdir(parents=True)
+    backtest = root / "data" / "Backtests" / "20260101_000000"
+    backtest.mkdir(parents=True)
+    (backtest / "owner.json").write_text(json.dumps({"owner_user_id": "u1"}))
+    (backtest / "meta.json").write_text(json.dumps({"kind": "single", "title": "Toyota", "subtitle": "", "headline": {"cagr": 0.1}}))
     (root / "data" / "certs").mkdir(parents=True)
     (root / "data" / "certs" / "cert.pem").write_text("certificate")
     (root / "config" / "database_paths.json").write_text(
@@ -164,7 +167,11 @@ def test_migration_reaches_the_new_layout_without_losing_anything(install):
     assert _rows(data / "chat.db", "SELECT id FROM messages") == [("m1",)]
 
     assert (data / "artifacts" / "jobs" / "job-1" / "uploads").is_dir()
-    assert (data / "artifacts" / "backtests" / "20260101_000000").is_dir()
+    backtest = data / "artifacts" / "backtests" / "20260101_000000"
+    assert _rows(app_db, "SELECT backtest_id, owner_user_id, kind, title, headline_json FROM saved_backtests") == [
+        ("20260101_000000", "u1", "single", "Toyota", '{"cagr": 0.1}'),
+    ]
+    assert not (backtest / "owner.json").exists() and (backtest / "owner.json.migrated").exists()
     assert (data / "certs" / "cert.pem").read_text() == "certificate"
 
     # Merged and imported files are kept, renamed; moved ones are gone.

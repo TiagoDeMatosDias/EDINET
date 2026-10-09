@@ -14,7 +14,7 @@ Everything the application writes lives in one data folder: `data/` beside `main
 
 | Path | Holds | Rebuildable |
 |---|---|---|
-| `app.db` | Settings and secrets, accounts, research, pipeline jobs, and portfolio | No: back it up |
+| `app.db` | Settings and secrets, accounts, research, pipeline jobs, portfolio, and who ran each saved backtest | No: back it up |
 | `chat.db` | Chat channels and messages (kept apart because it grows with use) | No: back it up |
 | `market.db` | EDINET document index (`DocumentList`), taxonomy, company info, statements, ratios, rolling metrics, prices, splits, and bonds | Yes, by the pipeline |
 | `filings.db` | Provider ZIPs, XBRL facts, catalog, and translations | Yes, by the pipeline |
@@ -57,7 +57,7 @@ Earlier versions kept nine databases in `data/databases/` and `config/state/data
 .\.venv3\Scripts\python.exe main.py migrate
 ```
 
-auth, research, pipeline-jobs, and Portfolio are merged into `app.db`; Standardized, Base, and Bonds into `market.db`; chat and Filings are moved. The API key from `.env` and the chat key ring become settings. Nothing is deleted: merged or imported files keep a `.migrated` suffix, and the rest is moved, which is a rename on the same disk. Every step is skipped once its target exists, so an interrupted run resumes. The migration refuses to run while any old database is open (stop the server and the pipeline first). Until it has run, database lookups refuse to create empty databases beside the old ones. The old shared `screening_history.jsonl` is kept but not imported, because its entries have no owner; history is now kept per user. Environment variables earlier versions read are reported on start with the setting that replaced them.
+auth, research, pipeline-jobs, and Portfolio are merged into `app.db`; Standardized, Base, and Bonds into `market.db`; chat and Filings are moved. The API key from `.env` and the chat key ring become settings, and each saved backtest's `owner.json` and `meta.json` become a row of `saved_backtests`. Nothing is deleted: merged or imported files keep a `.migrated` suffix, and the rest is moved, which is a rename on the same disk. Every step is skipped once its target exists, so an interrupted run resumes. The migration refuses to run while any old database is open (stop the server and the pipeline first). Until it has run, database lookups refuse to create empty databases beside the old ones. The old shared `screening_history.jsonl` is kept but not imported, because its entries have no owner; history is now kept per user. Environment variables earlier versions read are reported on start with the setting that replaced them.
 
 Create the environment and install declared extras:
 

@@ -319,9 +319,13 @@ Responsibility: the four database locations.
 Responsibility: the one-time move from the old nine-database layout (`data/databases`, `config/state`, `config/database_paths.json`, `.env`) into the data folder. Only runs for the default data folder.
 
 - `def plan(app_dir=None, data_dir=None) -> list[Step]` - every step still needed, each skipped once its target exists.
-- `def migrate_legacy_layout(*, dry_run=False, report=print) -> list[str]` - checks no old database is open, then merges auth/research/pipeline_jobs/Portfolio into `app.db` (built as `app.db.partial`, renamed when complete), imports the chat key ring and the `.env` API key as settings, moves chat and Filings, merges Base and Bonds into Standardized and renames it `market.db`, moves generated folders into `artifacts/`, and keeps every merged or imported file with a `.migrated` suffix.
+- `def migrate_legacy_layout(*, dry_run=False, report=print) -> list[str]` - checks no old database is open, then merges auth/research/pipeline_jobs/Portfolio into `app.db` (built as `app.db.partial`, renamed when complete), imports the chat key ring and the `.env` API key as settings, moves chat and Filings, merges Base and Bonds into Standardized and renames it `market.db`, moves generated folders into `artifacts/`, records each saved backtest's `owner.json`/`meta.json` in `saved_backtests`, and keeps every merged or imported file with a `.migrated` suffix.
 - `def pending_databases() -> list[Path]` - old database files whose new home does not exist yet.
 - Copies a database by executing each object's stored DDL and `INSERT … SELECT *`; unscoped `schema_migrations` rows are recorded under the owning component, and `sqlite_sequence` counters are carried over.
+
+### [src/backtesting/catalog.py](../src/backtesting/catalog.py)
+
+Responsibility: `BacktestCatalog` owns the `saved_backtests` table in `app.db`: the account that ran each saved backtest (`record_owner`) and the kind, title, subtitle, and headline figures the saved-results list shows (`describe`, `get`, `all`). The result files stay in their folder under `data/artifacts/backtests`; a folder without a row is an unowned legacy result, visible to administrators only.
 
 ### [src/orchestrator/common/database_bootstrap.py](../src/orchestrator/common/database_bootstrap.py)
 

@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from src import backtesting as _bt
 from src.auth.models import AuthenticatedUser
+from src.backtesting.catalog import BacktestCatalog
 from src.backtesting.detail import build_single_detail
 from src.backtesting.html_report import render_report
 from src.backtesting.jobs import jobs as _rolling_jobs
@@ -52,6 +53,7 @@ router = APIRouter(prefix="/api/backtesting", tags=["backtesting"])
 _MAX_CONCURRENT = 2
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 _BACKTEST_ROOT = backtests_dir().resolve(strict=False)
+catalog = BacktestCatalog(get_app_db())
 _BACKTEST_ID = re.compile(r"^\d{8}_\d{6}(?:_[0-9a-f]{8})?$")
 
 
@@ -96,9 +98,6 @@ def _backtest_directory(backtest_id: str, *, require_existing: bool) -> Path:
     return candidate
 
 
-_OWNER_FILE = "owner.json"
-
-
 def _request_user(http_request: Request | None) -> AuthenticatedUser | None:
     user = getattr(getattr(http_request, "state", None), "user", None)
     return user if isinstance(user, AuthenticatedUser) else None
@@ -107,11 +106,7 @@ def _request_user(http_request: Request | None) -> AuthenticatedUser | None:
 def _write_owner(out_dir: Path, http_request: Request | None) -> None:
     """Record which account produced a saved backtest directory."""
     user = _request_user(http_request)
-    owner = user.user_id if user is not None else None
-    (out_dir / _OWNER_FILE).write_text(
-        json.dumps({"owner_user_id": owner}),
-        encoding="utf-8",
-    )
+    catalog.record_owner(out_dir.name, user.user_id if user is not None else None)
 
 
 def _portfolio_owner(http_request: Request | None) -> str:
@@ -120,48 +115,26 @@ def _portfolio_owner(http_request: Request | None) -> str:
     return user.user_id if user is not None else ""
 
 
-_META_FILE = "meta.json"
-
-
 def _write_meta(out_dir: Path, *, kind: str, title: str, subtitle: str = "", headline: dict[str, Any] | None = None) -> None:
     """A small description of a saved result, for the saved-results list."""
-    (out_dir / _META_FILE).write_text(
-        json.dumps({"kind": kind, "title": title, "subtitle": subtitle, "headline": headline or {}}, default=str),
-        encoding="utf-8",
-    )
+    catalog.describe(out_dir.name, kind=kind, title=title, subtitle=subtitle, headline=headline)
 
 
 def _read_meta(directory: Path) -> dict[str, Any]:
-    path = directory / _META_FILE
-    if not path.is_file() or path.is_symlink():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    return catalog.get(directory.name) or {}
 
 
-def _read_owner(directory: Path) -> str | None:
-    owner_path = directory / _OWNER_FILE
-    if not owner_path.is_file() or owner_path.is_symlink():
-        return None
-    try:
-        payload = json.loads(owner_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    owner = payload.get("owner_user_id") if isinstance(payload, dict) else None
-    return owner if isinstance(owner, str) and owner else None
-
-
-def _can_access(directory: Path, user: AuthenticatedUser | None) -> bool:
+def _owner_may_see(owner: str | None, user: AuthenticatedUser | None) -> bool:
     """Owners see their own results; unowned (legacy) results are admin-only."""
     if user is None:
         return False
-    owner = _read_owner(directory)
-    if owner is None:
+    if not owner:
         return user.role == "admin"
     return owner == user.user_id
+
+
+def _can_access(directory: Path, user: AuthenticatedUser | None) -> bool:
+    return _owner_may_see(_read_meta(directory).get("owner_user_id"), user)
 
 
 def _owned_backtest_directory(backtest_id: str, http_request: Request) -> Path:
@@ -352,16 +325,17 @@ def list_backtests(http_request: Request) -> dict:
     if not _BACKTEST_ROOT.exists():
         return {"backtests": []}
     user = _request_user(http_request)
+    described = catalog.all()
     items = []
     for d in sorted(_BACKTEST_ROOT.iterdir(), reverse=True):
+        meta = described.get(d.name, {})
         if (
             _BACKTEST_ID.fullmatch(d.name)
             and d.is_dir()
             and not d.is_symlink()
-            and _can_access(d, user)
+            and _owner_may_see(meta.get("owner_user_id"), user)
         ):
             zip_file = d / "backtest.zip"
-            meta = _read_meta(d)
             items.append({
                 "id": d.name,
                 "path": d.name,

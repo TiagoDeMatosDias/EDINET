@@ -54,7 +54,7 @@ def test_rolling_run_uses_dedicated_artifact_limit(monkeypatch, tmp_path):
     def save_archive(result, base_dir, max_bytes):
         captured.update(result=result, base_dir=base_dir, max_bytes=max_bytes)
         # The real saver creates the result directory; the API then adds
-        # result.json and owner.json next to the archive.
+        # result.json next to the archive and records the owner in app.db.
         saved = tmp_path / "20260723_120000_1234abcd"
         saved.mkdir()
         return str(saved)

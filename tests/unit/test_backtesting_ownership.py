@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import src.backtesting.api as backtesting_api
+from src.backtesting.catalog import BacktestCatalog
 from src.web_app.security import AppSettings, install_security
 
 PASSWORD = "correct horse battery staple"
@@ -26,15 +27,14 @@ def _save(root: Path, backtest_id: str, owner: str | None) -> None:
     )
     (directory / "backtest.zip").write_bytes(b"PK\x05\x06" + b"\x00" * 18)
     if owner is not None:
-        (directory / "owner.json").write_text(
-            json.dumps({"owner_user_id": owner}), encoding="utf-8"
-        )
+        backtesting_api.catalog.record_owner(backtest_id, owner)
 
 
 @pytest.fixture
 def accounts(tmp_path, monkeypatch):
     root = tmp_path / "backtests"
     monkeypatch.setattr(backtesting_api, "_BACKTEST_ROOT", root)
+    monkeypatch.setattr(backtesting_api, "catalog", BacktestCatalog(tmp_path / "app.db"))
     app = FastAPI()
     app.include_router(backtesting_api.router)
     install_security(
@@ -98,10 +98,12 @@ def test_saved_runs_record_their_owner(tmp_path, monkeypatch):
 
     from src.auth.models import AuthenticatedUser
 
+    monkeypatch.setattr(backtesting_api, "catalog", BacktestCatalog(tmp_path / "app.db"))
     request = Request({"type": "http", "state": {}})
     request.state.user = AuthenticatedUser("owner-1", "owner", None, "member", "active")
     backtesting_api._write_owner(tmp_path, request)
-    assert json.loads((tmp_path / "owner.json").read_text()) == {"owner_user_id": "owner-1"}
+    assert backtesting_api.catalog.get(tmp_path.name)["owner_user_id"] == "owner-1"
+    assert not (tmp_path / "owner.json").exists()
     assert backtesting_api._can_access(tmp_path, request.state.user)
     other = AuthenticatedUser("owner-2", "other", None, "admin", "active")
     assert not backtesting_api._can_access(tmp_path, other)

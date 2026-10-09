@@ -57,6 +57,7 @@ def ensure_application_databases(
         path.parent.mkdir(parents=True, exist_ok=True)
 
     from src.auth.storage import AuthStore
+    from src.backtesting.catalog import BacktestCatalog
     from src.bonds.store import ensure_bond_tables
     from src.chat.storage import ChatStore
     from src.filings.catalog import FilingCatalog
@@ -72,6 +73,7 @@ def ensure_application_databases(
     ResearchStore(paths["app"], busy_timeout_ms=timeout)
     JobStore(paths["app"], busy_timeout_ms=timeout)
     create_portfolio_tables(str(paths["app"]))
+    BacktestCatalog(paths["app"], busy_timeout_ms=timeout)
 
     ChatStore(paths["chat"], busy_timeout_ms=timeout)
 

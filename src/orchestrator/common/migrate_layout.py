@@ -7,7 +7,8 @@ ring in ``config/state/secrets``, and generated files under ``config/state``,
 ``data/``, and ``logs/``. The new layout is described in ``src.paths``:
 
     app.db      auth.db + research.db + pipeline_jobs.db + Portfolio.db,
-                plus the API key and the chat key ring as settings
+                plus the API key and the chat key ring as settings, and
+                each saved backtest's owner.json and meta.json as a row
     chat.db     chat.db
     market.db   Standardized.db + Base.db + Bonds.db
     filings.db  Filings.db
@@ -350,6 +351,46 @@ def _market_db_steps(legacy: dict[str, Path], market_db: Path) -> list[Step]:
     return [Step(f"Combine {names} into {market_db}", build)]
 
 
+def _backtest_index_steps(app_dir: Path, data_dir: Path, app_db: Path) -> list[Step]:
+    """Record each saved backtest's owner.json and meta.json as a row in app.db."""
+    folder = data_dir / "artifacts" / "backtests"
+    legacy_folder = app_dir / "data" / "Backtests"
+    files = ("owner.json", "meta.json")
+    if not legacy_folder.is_dir() and not any(folder.glob("*/owner.json")) and not any(folder.glob("*/meta.json")):
+        return []
+
+    def index() -> None:
+        from src.backtesting.catalog import BacktestCatalog
+
+        catalog = BacktestCatalog(app_db)
+        for result in sorted(path for path in folder.iterdir() if path.is_dir()) if folder.is_dir() else []:
+            owner, meta = (_read_json(result / name) for name in files)
+            if owner is not None:
+                catalog.record_owner(result.name, owner.get("owner_user_id") or None)
+            if meta is not None:
+                catalog.describe(
+                    result.name,
+                    kind=str(meta.get("kind") or ""),
+                    title=str(meta.get("title") or ""),
+                    subtitle=str(meta.get("subtitle") or ""),
+                    headline=meta.get("headline") if isinstance(meta.get("headline"), dict) else {},
+                )
+            for name in files:
+                _retire(result / name)
+
+    return [Step(f"Record the owner and description of each saved backtest in {app_db}", index)]
+
+
+def _read_json(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _move_step(source: Path, target: Path) -> list[Step]:
     if not source.exists() or target.exists() or source.resolve() == target.resolve():
         return []
@@ -377,6 +418,7 @@ def plan(app_dir: Path | None = None, data_dir: Path | None = None) -> list[Step
     ]
     for old, new in _FOLDERS.items():
         steps += _move_step(app_dir / old, data_dir / new)
+    steps += _backtest_index_steps(app_dir, data_dir, app_db)
     steps += _retire_step(
         app_dir / "config" / "state" / "screening_history.jsonl",
         "its entries have no owner; history is now kept per user",
