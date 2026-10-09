@@ -9,7 +9,6 @@
       "args": ["--no-reload"],
       "cwd": "${workspaceFolder}",
       "python": "${command:python.interpreterPath}",
-      "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
       "justMyCode": true,
       "preLaunchTask": "Install project requirements"
