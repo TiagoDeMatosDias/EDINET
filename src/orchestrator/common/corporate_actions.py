@@ -264,6 +264,47 @@ def _booked_split(facts: AnnualFacts, following: AnnualFacts | None) -> float | 
     return multiplier
 
 
+def _without_heuristic_twins(records: list[tuple[SplitEvent, object]], history: list[AnnualFacts]) -> list[SplitEvent]:
+    """Recorded splits, less a price-heuristic record the provider's split of the same ratio explains.
+
+    A crash read as a 2-for-1 split in March and confirmed by a share count
+    that doubled by the next year end, when the provider records the
+    2-for-1 split in October of that year and the count moved by its ratio
+    only once, is the provider's split.
+    """
+    ends = sorted(item.period_end for item in history if item.shares)
+    shares = {item.period_end: item.shares for item in history if item.shares}
+
+    def window(event: SplitEvent) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+        before = [end for end in ends if _held_before(event, end)]
+        after = [end for end in ends if not _held_before(event, end)]
+        return (before[-1], after[0]) if before and after else None
+
+    kept = []
+    for event, method in records:
+        span = window(event) if method == "price_heuristic" else None
+        twin = span and any(
+            other_method == "provider" and other is not event and abs(math.log(other.multiplier / event.multiplier)) < 0.01 and window(other) == span
+            for other, other_method in records
+        )
+        if twin and abs(math.log(shares[span[1]] / shares[span[0]] / event.multiplier)) < 0.15:
+            continue
+        kept.append(event)
+    return kept
+
+
+def _company_key_sql(alias: str = "c", code_column: str = "Company_Code") -> str:
+    """A company's key: its ticker, or its EDINET code when it has none.
+
+    A delisted company keeps its reports but loses its ticker in the company
+    list; its splits still show in its share counts.
+    """
+    return (
+        f"CASE WHEN TRIM(COALESCE({alias}.Company_Ticker, '')) = '' "
+        f'THEN {alias}."{code_column}" ELSE {alias}.Company_Ticker END'
+    )
+
+
 def _traded_price(per: object, eps: object) -> float | None:
     """The year-end price a report gives as its P/E times its EPS.
 
@@ -534,6 +575,7 @@ def load_split_events(
         return {}
     placeholders = ",".join("?" for _ in tickers)
     recorded: dict[str, list[SplitEvent]] = {}
+    recorded_methods: dict[str, list[tuple[SplitEvent, object]]] = {}
     split_columns = _table_columns(conn, "Stock_Splits")
     if {"ticker", "split_date", "ratio_from", "ratio_to"} <= split_columns:
         clauses = []
@@ -562,10 +604,11 @@ def load_split_events(
         for ticker, ticker_records in records.items():
             # One split recorded twice (a provider's duplicate, or the price
             # heuristic's beside the provider's) is one split.
-            recorded[ticker] = [
-                SplitEvent(pd.Timestamp(day) - pd.Timedelta(days=1), pd.Timestamp(day), multiplier, "Stock_Splits")
-                for day, multiplier, _method in distinct_split_records(ticker_records)
+            recorded_methods[ticker] = [
+                (SplitEvent(pd.Timestamp(day) - pd.Timedelta(days=1), pd.Timestamp(day), multiplier, "Stock_Splits"), method)
+                for day, multiplier, method in distinct_split_records(ticker_records)
             ]
+            recorded[ticker] = [event for event, _method in recorded_methods[ticker]]
 
     history: dict[str, list[AnnualFacts]] = {}
     share_columns = _table_columns(conn, per_share_table)
@@ -592,14 +635,15 @@ def load_split_events(
                 f'(SELECT {price_expr} FROM "{prices_table}" sp WHERE sp.Ticker = c.Company_Ticker '
                 "AND sp.Date <= fs.periodEnd AND sp.Date >= date(fs.periodEnd, '-10 days') ORDER BY sp.Date DESC LIMIT 1)"
             )
+        key_sql = _company_key_sql("c", company_code_column)
         query = (
-            f'SELECT c.Company_Ticker, fs.periodEnd, {count_sql}, {column_sql("Net assets per share")}, '
+            f'SELECT {key_sql}, fs.periodEnd, {count_sql}, {column_sql("Net assets per share")}, '
             f'{column_sql("Dividend paid per share")}, {column_sql("Number of issued shares as of fiscal year end")}, '
             f'{column_sql("Number of issued shares as of filing date")}, {filed_sql}, '
             f'{column_sql("Price-earnings ratio")}, {column_sql("Basic earnings (loss) per share")}, {stored_price_sql}, {net_assets_sql} FROM "{per_share_table}" p '
             f'JOIN "{financial_statements_table}" fs ON fs.docID = p.docID '
             f'JOIN "{company_table}" c ON c."{company_code_column}" = fs."{fs_code_column}" '
-            f"WHERE c.Company_Ticker IN ({placeholders}) {annual} ORDER BY fs.periodEnd"
+            f"WHERE {key_sql} IN ({placeholders}) {annual} ORDER BY fs.periodEnd"
         )
         try:
             for ticker, period_end, shares, bps, dps, year_end, filing, filed, per, eps, stored, net_assets in conn.execute(query, tickers):
@@ -623,6 +667,9 @@ def load_split_events(
 
     price_columns = _table_columns(conn, prices_table)
     price_sql = 'COALESCE("Adjusted_Price", "Price")' if "Adjusted_Price" in price_columns else '"Price"'
+
+    for ticker, methods in recorded_methods.items():
+        recorded[ticker] = _without_heuristic_twins(methods, history.get(ticker, []))
 
     events: dict[str, list[SplitEvent]] = {}
     for ticker in {*recorded, *history}:
@@ -745,10 +792,10 @@ def _book_value_bases(
     placeholders = ",".join("?" for _ in tickers)
     bases: dict[tuple[str, pd.Timestamp], float] = {}
     for ticker, period_end, bps, shares, net_assets in conn.execute(
-        f'SELECT c.Company_Ticker, fs.periodEnd, p."Net assets per share", {count_sql}, b."Net assets" '
+        f'SELECT {_company_key_sql()}, fs.periodEnd, p."Net assets per share", {count_sql}, b."Net assets" '
         f'FROM "{per_share_table}" p JOIN "{financial_statements_table}" fs ON fs.docID = p.docID '
         f'JOIN "{balance_sheet_table}" b ON b.docID = fs.docID '
-        f'JOIN "{company_table}" c ON c.Company_Code = fs.Company_Code WHERE c.Company_Ticker IN ({placeholders}) {annual}',
+        f'JOIN "{company_table}" c ON c.Company_Code = fs.Company_Code WHERE {_company_key_sql()} IN ({placeholders}) {annual}',
         tickers,
     ):
         if _positive(bps) and _positive(shares) and _positive(net_assets):
@@ -776,11 +823,11 @@ def _year_end_price_factors(
     placeholders = ",".join("?" for _ in tickers)
     factors: dict[tuple[str, pd.Timestamp], float] = {}
     for ticker, period_end, per, eps, stored in conn.execute(
-        f'SELECT c.Company_Ticker, fs.periodEnd, p."Price-earnings ratio", p."Basic earnings (loss) per share", '
+        f'SELECT {_company_key_sql()}, fs.periodEnd, p."Price-earnings ratio", p."Basic earnings (loss) per share", '
         f'(SELECT {price_expr} FROM "{prices_table}" sp WHERE sp.Ticker = c.Company_Ticker AND sp.Date <= fs.periodEnd '
         "AND sp.Date >= date(fs.periodEnd, '-10 days') ORDER BY sp.Date DESC LIMIT 1) "
         f'FROM "{per_share_table}" p JOIN "{financial_statements_table}" fs ON fs.docID = p.docID '
-        f'JOIN "{company_table}" c ON c.Company_Code = fs.Company_Code WHERE c.Company_Ticker IN ({placeholders}) {annual}',
+        f'JOIN "{company_table}" c ON c.Company_Code = fs.Company_Code WHERE {_company_key_sql()} IN ({placeholders}) {annual}',
         tickers,
     ):
         traded = _traded_price(per, eps)
@@ -857,7 +904,7 @@ def filing_basis_factors(
         return []
     if tickers is None:
         tickers = [str(row[0]) for row in conn.execute(
-            f'SELECT DISTINCT Company_Ticker FROM "{company_table}" WHERE TRIM(COALESCE(Company_Ticker, \'\')) <> \'\''
+            f'SELECT DISTINCT {_company_key_sql("c")} FROM "{company_table}" c WHERE {_company_key_sql("c")} IS NOT NULL'
         )]
     if events is None:
         events = load_split_events(conn, tickers, per_share_table=per_share_table, financial_statements_table=financial_statements_table, company_table=company_table)
@@ -874,11 +921,11 @@ def filing_basis_factors(
     annual_sql = "fs.docTypeCode = '030000'" if "docTypeCode" in fs_columns else "1"
     placeholders = ",".join("?" for _ in events)
     rows = conn.execute(
-        f'SELECT c.Company_Ticker, fs.docID, fs.periodEnd, {submitted_sql}, {annual_sql}, '
+        f'SELECT {_company_key_sql()}, fs.docID, fs.periodEnd, {submitted_sql}, {annual_sql}, '
         f'{column_sql("Net assets per share")}, {column_sql("Dividend paid per share")}, {column_sql("Interim dividend paid per share")} '
         f'FROM "{financial_statements_table}" fs JOIN "{company_table}" c ON c.Company_Code = fs.Company_Code '
         + (f'LEFT JOIN "{per_share_table}" p ON p.docID = fs.docID ' if "docID" in share_columns else "")
-        + f"WHERE c.Company_Ticker IN ({placeholders}) ORDER BY c.Company_Ticker, fs.periodEnd",
+        + f"WHERE {_company_key_sql()} IN ({placeholders}) ORDER BY 1, fs.periodEnd",
         list(events),
     ).fetchall()
     by_ticker: dict[str, list[tuple[str, pd.Timestamp, pd.Timestamp | None, bool, float | None, float | None, float | None]]] = {}
@@ -972,6 +1019,25 @@ def filing_basis_factors(
         start, end = price_factors.get((ticker, event.after)), price_factors.get((ticker, following_end))
         return bool(start and end) and _near(start / end, 1.0 / event.multiplier, event.multiplier)
 
+    def restated_before_effect(ticker: str, event: SplitEvent, ends: list[pd.Timestamp], all_ends: list[pd.Timestamp]) -> bool:
+        """Did the last report filed before a split already restate for it?
+
+        Its price as traded (P/E × EPS) then steps by the ratio against the
+        stored price from the report before, or its book value per share is
+        on 1/m of the year-end shares while the next report's matches its
+        net assets.
+        """
+        end, previous = ends[-1], (ends[-2] if len(ends) > 1 else None)
+        start, now = (price_factors.get((ticker, previous)) if previous else None), price_factors.get((ticker, end))
+        if start and now and _near(start / now, 1.0 / event.multiplier, event.multiplier):
+            return True
+        following_end = next((other for other in all_ends if other > end), None)
+        ratio = book_bases.get((ticker, end))
+        following = book_bases.get((ticker, following_end)) if following_end else None
+        if not ratio or not following or abs(math.log(following)) > 0.25:
+            return False
+        return abs(math.log(ratio * event.multiplier)) < 0.25 and abs(math.log(ratio)) > 0.4
+
     out: list[FilingBasis] = []
     for ticker, filings in by_ticker.items():
         ticker_events = events.get(ticker, [])
@@ -998,6 +1064,31 @@ def filing_basis_factors(
             )
         annual_ends = sorted(annual_bps)
         kept_old = {event for event in ticker_events if event.source == "filing date count" and kept_old_shares(ticker, event, annual_ends)}
+        # A recorded split's last report before it: one filed before the split
+        # that already restated for it (a board's decision in May, effective
+        # in September), or one filed after it that kept the old shares.
+        exact_verdict: dict[SplitEvent, tuple[pd.Timestamp, bool]] = {}
+        for event in ticker_events:
+            if not event.exact:
+                continue
+            # The last year end still on the old shares (a 31 March record date leaves March's on them).
+            ends = [end for end in annual_ends if _held_before(event, end)]
+            if not ends:
+                continue
+            filed = annual_filed.get(ends[-1])
+            following = next((end for end in annual_ends if end > ends[-1]), None)
+            # Another split between the reports compared, or around the
+            # earlier one's year end, moves the same figures: then they cannot
+            # tell which split a report is on.
+            span_start = (ends[-2] if len(ends) > 1 else ends[-1]) - pd.DateOffset(years=1)
+            span_end = following or event.until
+            if any(other is not event and span_start < other.until <= span_end + _RECORD_DATE_LAG for other in ticker_events):
+                continue
+            if filed is not None and filed > event.until + _RECORD_DATE_LAG:
+                if kept_old_shares(ticker, SplitEvent(ends[-1], event.until, event.multiplier, event.source), annual_ends):
+                    exact_verdict[event] = (ends[-1], False)
+            elif restated_before_effect(ticker, event, ends, annual_ends):
+                exact_verdict[event] = (ends[-1], True)
         for event in ticker_events:
             if event.exact or event.source != "annual reports":
                 continue
@@ -1027,7 +1118,12 @@ def filing_basis_factors(
             restated = fiscal = interim_factor = 1.0
             interim_record = end - pd.DateOffset(months=6)
             for event in ticker_events:
-                if not _restated_by(event, end, filed, restated_early.get(event, False), event in kept_old):
+                verdict = exact_verdict.get(event)
+                if verdict and end == verdict[0]:
+                    on_new_shares = verdict[1]
+                else:
+                    on_new_shares = _restated_by(event, end, filed, restated_early.get(event, False), event in kept_old)
+                if not on_new_shares:
                     restated /= event.multiplier
                 if _held_before(event, end):
                     fiscal /= event.multiplier

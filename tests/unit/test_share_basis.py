@@ -414,3 +414,102 @@ def test_a_report_filed_after_a_split_that_kept_the_old_shares_is_not_restated(t
         conn.close()
     assert basis["F21"].restated == pytest.approx(0.2)
     assert "F22" not in basis
+
+
+def _recorded_split_db(path, ticker, split_date, reports, prices):
+    conn = sqlite3.connect(path)
+    conn.executescript(f"""
+        CREATE TABLE CompanyInfo (Company_Code TEXT, Company_Ticker TEXT);
+        CREATE TABLE FinancialStatements (docID TEXT PRIMARY KEY, Company_Code TEXT, docTypeCode TEXT, submitDateTime TEXT, periodEnd TEXT);
+        CREATE TABLE ShareMetrics (docID TEXT PRIMARY KEY, [{YEAR_END_SHARES}] REAL, [{FILING_SHARES}] REAL, [Net assets per share] REAL,
+            [{EPS}] REAL, [Price-earnings ratio] REAL);
+        CREATE TABLE BalanceSheet (docID TEXT PRIMARY KEY, [Net assets] REAL);
+        CREATE TABLE Stock_Prices (Date TEXT, Ticker TEXT, Currency TEXT, Price REAL, Price_Basis TEXT, Provider TEXT);
+        CREATE TABLE Stock_Splits (ticker TEXT, split_date TEXT, ratio_from REAL, ratio_to REAL, confirmation TEXT, detection_method TEXT);
+        INSERT INTO CompanyInfo VALUES ('E1', '{ticker}');
+        INSERT INTO Stock_Splits VALUES ('{ticker}', '{split_date}', 1, 2, 'confirmed', 'provider');
+    """)
+    for doc, end, filed, shares, filing, bps, eps, per, net_assets in reports:
+        conn.execute("INSERT INTO FinancialStatements VALUES (?, 'E1', '030000', ?, ?)", (doc, filed, end))
+        conn.execute("INSERT INTO ShareMetrics VALUES (?, ?, ?, ?, ?, ?)", (doc, shares, filing, bps, eps, per))
+        conn.execute("INSERT INTO BalanceSheet VALUES (?, ?)", (doc, net_assets))
+    conn.executemany(f"INSERT INTO Stock_Prices VALUES (?, '{ticker}', 'JPY', ?, 'adjusted', 'Yahoo Finance chart')", prices)
+    conn.commit()
+    return conn
+
+
+def test_a_report_filed_before_a_split_that_already_restated_for_it(tmp_path):
+    from src.orchestrator.common.corporate_actions import filing_basis_factors
+
+    # A 2-for-1 split on 29 September 2025, decided before the June report for
+    # March 2025: its EPS (¥24.66) is half the profit per year-end share, its
+    # book value per share half the net assets per share, and its P/E × EPS
+    # (¥389.6) is the price on the new shares.
+    conn = _recorded_split_db(str(tmp_path / "early.db"), "72170", "2025-09-29", [
+        ("F24", "2024-03-31", "2024-06-27 09:00", 5_400_000, 5_400_000, 1227.0, 90.25, 11.1, 6_625_800_000),
+        ("F25", "2025-03-31", "2025-06-25 09:00", 5_000_000, 5_000_000, 620.94, 24.66, 15.8, 6_209_400_000),
+        ("F26", "2026-03-31", "2026-06-24 09:00", 10_000_000, 9_811_308, 686.43, 33.97, 11.6, 6_864_300_000),
+    ], [("2024-03-29", 499.0), ("2025-03-31", 390.0), ("2026-03-31", 395.0)])
+    try:
+        basis = {row.doc_id: row for row in filing_basis_factors(conn)}
+    finally:
+        conn.close()
+    assert basis["F24"].restated == pytest.approx(0.5)
+    assert (basis["F25"].restated, basis["F25"].fiscal) == (1.0, pytest.approx(0.5))
+
+
+def test_a_report_filed_after_a_split_that_kept_the_old_shares(tmp_path):
+    from src.orchestrator.common.corporate_actions import filing_basis_factors
+
+    # A 2-for-1 split on 29 May 2017; the June report for March 2017 kept EPS
+    # (¥162.32) and book value per share on the 8.36 million old shares, and
+    # its P/E × EPS (¥3,149) is the price on them.
+    conn = _recorded_split_db(str(tmp_path / "late.db"), "66150", "2017-05-29", [
+        ("F17", "2017-03-31", "2017-06-28 09:00", 8_356_140, None, 2067.52, 162.32, 19.4, 17_276_500_000),
+        ("F18", "2018-03-31", "2018-06-27 09:00", 16_743_080, None, 1126.15, 94.3, 28.2, 18_855_200_000),
+    ], [("2017-03-31", 1572.5), ("2018-03-30", 2657.0)])
+    try:
+        basis = {row.doc_id: row for row in filing_basis_factors(conn)}
+    finally:
+        conn.close()
+    assert (basis["F17"].restated, basis["F17"].fiscal) == (pytest.approx(0.5), pytest.approx(0.5))
+
+
+def test_a_heuristic_split_the_providers_split_explains_is_dropped():
+    from src.orchestrator.common.corporate_actions import (
+        AnnualFacts,
+        SplitEvent,
+        _without_heuristic_twins,
+    )
+
+    T = pd.Timestamp
+    crash = SplitEvent(T("2020-03-08"), T("2020-03-09"), 2.0, "Stock_Splits")
+    split = SplitEvent(T("2020-10-28"), T("2020-10-29"), 2.0, "Stock_Splits")
+    history = [AnnualFacts(T("2020-02-29"), 3_146_660), AnnualFacts(T("2021-02-28"), 6_704_560)]
+    # The count doubled once between the two year ends: the provider's split.
+    assert _without_heuristic_twins([(crash, "price_heuristic"), (split, "provider")], history) == [split]
+    # Doubled twice: both are splits.
+    history[1] = AnnualFacts(T("2021-02-28"), 12_586_640)
+    assert _without_heuristic_twins([(crash, "price_heuristic"), (split, "provider")], history) == [crash, split]
+
+
+
+def test_a_company_without_a_ticker_is_put_on_one_share_basis(tmp_path):
+    from src.orchestrator.common.corporate_actions import filing_basis_factors
+
+    # A delisted company keeps its reports but has no ticker in the company
+    # list: a 2-for-1 split shows in its share count and book value per share.
+    conn = sqlite3.connect(str(tmp_path / "delisted.db"))
+    conn.executescript(f"""
+        CREATE TABLE CompanyInfo (Company_Code TEXT, Company_Ticker TEXT);
+        CREATE TABLE FinancialStatements (docID TEXT PRIMARY KEY, Company_Code TEXT, docTypeCode TEXT, submitDateTime TEXT, periodEnd TEXT);
+        CREATE TABLE ShareMetrics (docID TEXT PRIMARY KEY, [{YEAR_END_SHARES}] REAL, [Net assets per share] REAL, [{EPS}] REAL);
+        INSERT INTO CompanyInfo VALUES ('E25817', NULL);
+        INSERT INTO FinancialStatements VALUES ('F21', 'E25817', '030000', '2021-09-29 09:00', '2021-06-30'), ('F22', 'E25817', '030000', '2022-09-28 09:00', '2022-06-30');
+        INSERT INTO ShareMetrics VALUES ('F21', 7_200_000, 1500.0, 120.0), ('F22', 14_400_000, 800.0, 70.0);
+    """)
+    try:
+        basis = {row.doc_id: row for row in filing_basis_factors(conn)}
+    finally:
+        conn.close()
+    assert (basis["F21"].restated, basis["F21"].fiscal) == (pytest.approx(0.5), pytest.approx(0.5))

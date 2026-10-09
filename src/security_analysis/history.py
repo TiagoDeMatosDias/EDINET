@@ -82,9 +82,8 @@ def _company_share_basis(core, conn, schema, company_code: str) -> tuple[list[Sp
             f"WHERE {core._quote_ident(schema.company_code_col)} = ? LIMIT 1",
             (company_code,),
         ).fetchone()
-        ticker = str(row[0]).strip() if row and row[0] is not None else ""
-        if not ticker:
-            return [], {}
+        # A company without a ticker (delisted) is keyed by its EDINET code.
+        ticker = (str(row[0]).strip() if row and row[0] is not None else "") or company_code
         events = load_split_events(conn, [ticker]).get(ticker, [])
         if not events:
             return [], {}
