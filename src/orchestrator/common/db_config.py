@@ -94,6 +94,7 @@ DATABASES: tuple[DatabaseSpec, ...] = (
     DatabaseSpec("db1", "Base.db", rebuildable=True),
     DatabaseSpec("db2", "Standardized.db", rebuildable=True),
     DatabaseSpec("filings_db", "Filings.db", rebuildable=True),
+    DatabaseSpec("bonds_db", "Bonds.db", rebuildable=True),
     DatabaseSpec("db3", "Portfolio.db", rebuildable=False),
     DatabaseSpec("auth_db", "auth.db", rebuildable=False),
     DatabaseSpec("research_db", "research.db", rebuildable=False),
@@ -196,6 +197,11 @@ def get_chat_db() -> str:
 def get_filings_db() -> str:
     """Return the absolute path to the rebuildable filing catalog database."""
     return database_path("filings_db")
+
+
+def get_bonds_db() -> str:
+    """Return the absolute path to the rebuildable bond terms and yield-curve database."""
+    return database_path("bonds_db")
 
 
 def resolve_db_path(db_value: str | None) -> str | None:

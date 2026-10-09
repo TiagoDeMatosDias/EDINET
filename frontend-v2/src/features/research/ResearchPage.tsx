@@ -7,6 +7,7 @@ import { PageHeader } from '../../components/Page'
 import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
 import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
+import { BondMarketView } from '../bonds/BondMarketView'
 import { AlertsView } from './AlertsView'
 import { BookView } from './BookView'
 import { NotesView } from './NotesView'
@@ -55,6 +56,7 @@ export default function ResearchPage() {
     alerts: book.data ? (triggered ? `${triggered} triggered` : String(book.data.alerts.length)) : '',
     options: '',
     bonds: '',
+    'bond-market': '',
   }
   const description = [
     `${companies.length} ${companies.length === 1 ? 'company' : 'companies'}`,
@@ -112,7 +114,8 @@ export default function ResearchPage() {
       {tab === 'notes' && <NotesView companies={companies} companyCode={company} onCompany={code => update({ company: code })} active={active} today={today} />}
       {tab === 'alerts' && <AlertsView book={book.data} active={active} today={today} onOpenCompany={code => navigate(`/research?company=${encodeURIComponent(code)}`)} />}
       {tab === 'options' && <OptionsView companyCode={company} onCompany={code => update({ company: code })} active={active} />}
-      {tab === 'bonds' && <BondsView companyCode={company} onCompany={code => update({ company: code })} active={active} />}
+      {tab === 'bonds' && <BondsView companyCode={company} bondId={params.get('bond') ?? ''} onCompany={code => update({ company: code, bond: '' })} active={active} />}
+      {tab === 'bond-market' && <BondMarketView bondId={params.get('bond') ?? ''} issuer={params.get('issuer') ?? ''} onChange={update} active={active} />}
     </div>
   </div>
 }

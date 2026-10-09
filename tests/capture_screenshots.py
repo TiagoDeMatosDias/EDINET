@@ -236,6 +236,7 @@ def create_demo_runtime(*, seed_research: bool = False) -> tuple[Path, dict[str,
         "research_db": str(database_dir / "research.db"),
         "pipeline_jobs_db": str(database_dir / "pipeline_jobs.db"),
         "filings_db": str(database_dir / "Filings.db"),
+        "bonds_db": str(database_dir / "Bonds.db"),
     }
     _base_database(Path(paths["db1"]))
     market_path = create_docs_market_database(paths["db2"])

@@ -163,6 +163,21 @@ Responsibility: put reported per-share figures on the split-adjusted share basis
 
 Responsibility: drill-down views and the shareable report of saved backtests. `build_single_detail(result)` turns a stored single result into per-holding growth, yearly rows, dividends, allocation drift, and cumulative contributions (`GET /api/backtesting/result/{id}/detail`). `render_report(stored, meta=None, backtest_id="")` renders a saved single, rolling, or CSV result as one self-contained HTML page with inline SVG charts (`GET /api/backtesting/report/{id}`; also `report.html` in archives).
 
+### [src/bonds/](../src/bonds/)
+
+Responsibility: corporate bonds from EDINET filings, valued on the JGB curve and JSDA reference prices; stored in the rebuildable `Bonds.db` (`db_config.get_bonds_db()`).
+
+- `parsing.py` — `parse_issuance(zip)` reads a shelf-registration supplement's label/value tables (merged cells expanded, multi-row fields joined, notes attached to their bond) into `IssuedBond`s with amount, issue price, coupon and kind, frequency, maturity, first call, collateral, covenants, features, seniority, and ratings; `parse_bond_schedule(zip)` reads the annual report's 社債明細表 (or the IFRS bonds-and-borrowings note) into `ScheduleRow`s with issuer, balances, coupon, maturity, and currency. Helpers normalise era dates, 億/百万円 amounts, percentages, and ratings (`rating_notch`, `notch_label`: AAA = 1).
+- `valuation.py` — clean/dirty price, yield, and modified duration on the browser calculator's conventions; `CurveBook`/`Curve` give the JGB par curve on or before a date, linear between tenors.
+- `market.py` — Ministry of Finance JGB curve CSVs (`parse_jgb_csv`, `fetch_jgb_curve`). `jsda.py` — JSDA reference-price files (`parse_reference_csv`, `fetch_reference_prices` with rate-limit handling) and `match_quotes` by maturity, coupon, series, and issuer name.
+- `build.py` — `build_bonds(conn, db2_path)` merges the latest schedule per company with supplements (by series and maturity, or maturity and coupon), marks redeemed, matured, and likely-private bonds, infers issuer ratings by ranking, and adds spreads at issue and matched JSDA yields and spreads.
+- `update.py` — `update_bonds(...)` runs the step: pending supplements (downloaded four at a time and stored), pending annual reports (read from `Filings.db` one archive at a time, selecting on pre-BLOB columns), the curve, JSDA prices, and the rebuild.
+- `service.py` and `api.py` — `GET /api/bonds/status`, `/company/{edinet_code}` (bonds, totals, ladder, documents), `/market` (every outstanding bond, gzipped; company fields once per company), `/bond/{bond_id}` (terms, valuation, peer fair value, similar bonds, spread curve, price history), and `/documents/{doc_id}` (the stored supplement ZIP; accounts only).
+
+### [src/orchestrator/update_bonds/update_bonds.py](../src/orchestrator/update_bonds/update_bonds.py)
+
+Responsibility: the `update_bonds` pipeline step; reads the API key from the pipeline config or `EDINET_API_TOKEN` and passes the step's flags to `src.bonds.update.update_bonds`.
+
 ### [src/orchestrator/common/backtesting.py](../src/orchestrator/common/backtesting.py)
 
 Responsibility: portfolio construction, price/dividend ingestion, return calculations, performance metrics, human-readable reports and charts. (Was `src/backtesting.py` before the orchestration rework.)

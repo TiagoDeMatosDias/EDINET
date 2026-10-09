@@ -6,6 +6,7 @@ export const RESEARCH_TABS = [
   { key: 'alerts', label: 'Alerts' },
   { key: 'options', label: 'Options' },
   { key: 'bonds', label: 'Bonds & credit' },
+  { key: 'bond-market', label: 'Bond market' },
 ] as const
 
 export const researchScope = defineScope({
@@ -105,5 +106,23 @@ export const bondsScope = defineScope({
     { id: 'yield', keys: 'y', label: 'Risk-free yield' },
     { id: 'price', keys: 'p', label: 'Market price, for the implied yield and default risk' },
     { id: 'reset', keys: 'r', label: 'Reset to the company’s data', role: 'reset' },
+  ],
+})
+
+export const bondMarketScope = defineScope({
+  id: 'research.bond-market',
+  label: 'Bond market',
+  screen: 'Research',
+  parent: 'research',
+  hotkeys: [
+    { id: 'next', keys: 'j', label: 'Next bond (↓ in the list)', role: 'next' },
+    { id: 'previous', keys: 'k', label: 'Previous bond (↑ in the list)', role: 'previous' },
+    { id: 'open', keys: 'o', label: 'Open the issuer in Analysis (Enter in the list)', role: 'open' },
+    { id: 'filter', keys: 'f', label: 'Filter bonds', role: 'filter' },
+    { id: 'issuer', keys: 'i', label: 'Show only this issuer’s bonds, or all again' },
+    { id: 'calculator', keys: 'c', label: 'Price the bond in the calculator' },
+    { id: 'previous-rating', keys: '[', label: 'Previous rating group', role: 'previous' },
+    { id: 'next-rating', keys: ']', label: 'Next rating group', role: 'next' },
+    { id: 'download', keys: 'd', label: 'Download the bonds listed as CSV', role: 'download' },
   ],
 })

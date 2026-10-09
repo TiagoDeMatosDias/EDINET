@@ -4,6 +4,7 @@ export const ANALYSIS_SECTIONS = [
   { id: 'overview', label: 'Overview' },
   { id: 'financials', label: 'Financials' },
   { id: 'filings', label: 'Filings' },
+  { id: 'bonds', label: 'Bonds' },
   { id: 'discussion', label: 'Discussion' },
 ] as const
 
@@ -57,5 +58,16 @@ export const filingsPanelScope = defineScope({
   parent: 'analysis',
   hotkeys: [
     { id: 'open-latest', keys: 'o', label: 'Open the latest filing', role: 'open' },
+  ],
+})
+
+export const bondsPanelScope = defineScope({
+  id: 'analysis.bonds',
+  label: 'Bonds',
+  screen: 'Analysis',
+  parent: 'analysis',
+  hotkeys: [
+    { id: 'market', keys: 'm', label: 'Compare the company’s bonds in the bond market' },
+    { id: 'redeemed', keys: 'h', label: 'Show or hide matured and redeemed bonds (history)' },
   ],
 })

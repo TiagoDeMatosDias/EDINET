@@ -40,6 +40,7 @@ _TEST_DATABASE_PATHS = {
     "pipeline_jobs_db": str(_TEST_DATABASE_DIR / "pipeline_jobs.db"),
     "filings_db": str(_TEST_DATABASE_DIR / "Filings.db"),
     "chat_db": str(_TEST_DATABASE_DIR / "chat.db"),
+    "bonds_db": str(_TEST_DATABASE_DIR / "Bonds.db"),
 }
 with sqlite3.connect(_TEST_DATABASE_PATHS["db1"]):
     pass

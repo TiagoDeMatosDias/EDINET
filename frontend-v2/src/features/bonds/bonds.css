@@ -1,0 +1,77 @@
+/* Bonds: the Analysis section and the Research bond market. Builds on research.css (rs-*). */
+.bd-company { display: flex; flex-direction: column; gap: 8px; }
+.bd-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: .78rem; }
+.bd-actions .button svg { width: 13px; height: 13px; }
+.bd-none { margin: 0; color: var(--muted); font-size: .8rem; }
+
+.bd-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.bd-kpi { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 7px 10px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); margin: 0 -1px -1px 0; }
+.bd-kpi > span { color: var(--muted); font-size: .68rem; }
+.bd-kpi strong { font-family: var(--font-mono); font-size: 1rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.bd-kpi small { overflow: hidden; color: var(--muted); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
+
+.bd-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 8px; }
+.bd-chart-panel { min-width: 0; }
+.rs-chart__canvas.bd-chart--short { height: 220px; }
+.rs-chart__canvas.bd-chart--tall { height: 300px; }
+
+.bd-table-wrap { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.bd-table td, .bd-table th { vertical-align: top; }
+.bd-table tbody tr { cursor: pointer; }
+.bd-table tbody tr:hover { background: var(--surface-subtle); }
+.bd-table tbody tr:focus-visible { outline: 1px solid var(--ink); outline-offset: -1px; }
+.bd-table tr.is-inactive { color: var(--muted); }
+.bd-bond-cell { display: flex; flex-direction: column; gap: 1px; max-width: 320px; }
+.bd-bond-cell strong { overflow: hidden; font-weight: 500; text-overflow: ellipsis; }
+.bd-bond-cell small { display: flex; flex-wrap: wrap; gap: 3px; overflow: hidden; text-overflow: ellipsis; }
+.bd-label { display: inline-block; max-width: 300px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+.bd-table--compact .bd-label { max-width: 190px; }
+.bd-tag { display: inline-block; padding: 0 5px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: var(--surface-subtle); font-size: .64rem; line-height: 1.5; }
+.bd-tag--muted { color: var(--muted); background: transparent; }
+.bd-tags { display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0 0; }
+.bd-sub { display: block; color: var(--muted); font-size: .66rem; }
+.bd-issuer { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.bd-links { display: flex; gap: 8px; }
+.bd-links a { display: inline-flex; align-items: center; gap: 2px; color: var(--text); font-size: .72rem; }
+.bd-links svg, .bd-sources svg { width: 11px; height: 11px; }
+.bd-hint { padding: 0; }
+
+.bd-sources { font-size: .76rem; }
+.bd-sources summary { color: var(--muted); cursor: pointer; }
+.bd-sources ul { display: flex; flex-direction: column; gap: 3px; margin: 6px 0; padding: 0; list-style: none; }
+.bd-sources li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.bd-sources li a, .bd-sources li .text-button { display: inline-flex; align-items: center; gap: 2px; color: var(--text); font-size: .74rem; }
+.bd-sources .rs-hint { padding: 0; }
+
+.bd-market { grid-template-columns: minmax(0, 1.35fr) minmax(380px, .9fr); }
+.bd-market .rs-toolbar .select { flex: 0 1 200px; width: auto; min-width: 140px; min-height: 28px; padding: 2px 22px 2px 6px; font-size: .78rem; }
+.bd-market .rs-search { flex: 1 1 220px; }
+.bd-ticker { margin-left: 6px; color: var(--muted); font-family: var(--font-mono); font-size: .68rem; font-weight: 400; }
+.bd-market .bd-bond-cell { max-width: 250px; }
+.bd-market .bd-table td, .bd-market .bd-table th { padding-right: 6px; padding-left: 6px; }
+.bd-market .bd-bond-cell small { align-items: center; }
+.bd-toggles { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: .76rem; }
+.bd-toggles .check { font-weight: 400; }
+.bd-divider { width: 1px; align-self: stretch; margin: 0 4px; background: var(--border); }
+.bd-scatter { border-bottom: 1px solid var(--border); }
+.bd-market .rs-chip svg { width: 11px; height: 11px; }
+
+.bd-detail h2 { margin: 0; font-size: 1rem; }
+.bd-detail h2 a { color: var(--text); }
+.bd-section { border-bottom: 1px solid var(--border); }
+.bd-section > h3 { margin: 0; padding: 8px 10px 4px; font-size: .8rem; font-weight: 500; }
+.bd-section > .rs-hint { padding-top: 0; }
+.bd-detail .rs-detail__links a { display: inline-flex; align-items: center; gap: 3px; }
+.bd-detail .rs-detail__links svg { width: 12px; height: 12px; }
+.bd-terms dd { font-family: var(--font-sans); font-size: .8rem; }
+.bd-basis { margin-left: 1px; color: var(--muted); font-family: var(--font-sans); font-size: .62rem; }
+
+@media (max-width: 1100px) {
+  .bd-market { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 760px) {
+  .bd-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bd-charts { grid-template-columns: minmax(0, 1fr); }
+  .bd-market .bd-bond-cell { max-width: 200px; }
+}

@@ -9,6 +9,7 @@ from src.api.router import cleanup_completed_jobs
 from src.auth.api import admin_router as _admin_router
 from src.auth.api import router as _auth_router
 from src.backtesting.api import router as _backtesting_router
+from src.bonds.api import router as _bonds_router
 from src.chat.api import router as _chat_router
 from src.chat.profiles_api import router as _profiles_router
 from src.comparison.api import router as _comparison_router
@@ -38,6 +39,7 @@ _ROUTERS = (
     _splits_router,
     _tags_router,
     _backtesting_router,
+    _bonds_router,
     _comparison_router,
     _portfolio_router,
     _chat_router,

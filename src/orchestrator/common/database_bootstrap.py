@@ -9,6 +9,7 @@ from typing import Any
 
 from src.orchestrator.common.db_config import (
     get_auth_db,
+    get_bonds_db,
     get_chat_db,
     get_db1,
     get_db2,
@@ -69,6 +70,7 @@ def ensure_application_databases(
     jobs_db_path: str | Path | None = None,
     filings_db_path: str | Path | None = None,
     chat_db_path: str | Path | None = None,
+    bonds_db_path: str | Path | None = None,
     busy_timeout_ms: int | None = None,
 ) -> dict[str, Path]:
     """Ensure all configured application databases and schemas exist.
@@ -113,12 +115,17 @@ def ensure_application_databases(
             "EDINET_CHAT_DB",
             get_chat_db(),
         ),
+        "bonds": _configured_path(bonds_db_path, None, get_bonds_db()),
     }
 
     # These stores are rebuildable or pipeline-owned, so only their files are
     # created here; their table schemas are materialized by pipeline steps.
     _touch_sqlite_database(paths["db1"], busy_timeout_ms=effective_busy_timeout)
     _touch_sqlite_database(paths["db2"], busy_timeout_ms=effective_busy_timeout)
+    _touch_sqlite_database(paths["bonds"], busy_timeout_ms=effective_busy_timeout)
+    from src.bonds.store import ensure_bond_tables
+
+    ensure_bond_tables(paths["bonds"])
 
     # Portfolio has a stable, versioned schema and must be ready immediately.
     from src.portfolio.schema import create_tables

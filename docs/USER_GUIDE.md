@@ -63,11 +63,13 @@ The as-of date (`D`) limits a screen to data that was available by a historical 
 
 ### Company Analysis
 
-Choose a company from the global search (press `/` from anywhere, then `↑`/`↓` and `Enter`) or open `/analyze/:companyCode`. The page has three sections, reachable from the sticky section bar or with `1`, `2`, and `3`:
+Choose a company from the global search (press `/` from anywhere, then `↑`/`↓` and `Enter`) or open `/analyze/:companyCode`. The page has five sections, reachable from the sticky section bar or with `1` to `5`:
 
 - **Overview** — the latest close with its one-day move, market cap, and 52-week range in the header; a split-adjusted price chart (1M to All, remembered per browser, `-`/`=` to widen or narrow) whose hover readout shows the date, close, and move since the start of the range; key statistics grouped as valuation, quality, income, and balance sheet, each with a tooltip saying how it is calculated (ROE and ROA are three-year averages); and the company profile with its business description, identifiers, and research links (Filing Explorer, Comparison, option pricing, credit and bonds, Yahoo Finance, Yahoo! Finance Japan, Kabutan). Below them, **Your research** is the same panel as on the Research page (also for a holding without EDINET filings, opened by ticker): thesis status, target price with the gap to today's price, review date, thesis, tags (`T`), notes (`N`), and alerts. Once you set a status or target, it also appears beside the company name in the header. Unlisted companies show statement-based statistics without an empty price panel.
 - **Financial statements** — one tab per statement table with values, and rolling multi-year averages and growth rates alongside (`[`/`]` switch tabs). Lines appear in filing order with components nested under their subtotal, concepts EDINET renamed between years (for example *Capital stock* and *Share capital*) are combined into one line, and lines the company never reported stay hidden until you ask for them (`E`). Each line shows a trend sparkline, the latest year-on-year change, and its compound annual growth. Switch between reported values, year-on-year change, and common size (`V`); click lines or press `Space` on the focused line to chart up to six of them as bars or lines (`C`); `F` filters lines and **CSV** exports the lines shown with unrounded values.
 - **Filings** — the retained EDINET annual reports with fiscal period, form, submission time, document ID, archive size, and parse status; `O` opens the latest. Export all downloads every retained archive with a manifest.
+- **Bonds** — the company's bonds, from its bond supplements and the bond schedule in its latest annual report (filled by the **Update bonds** pipeline step). Tiles show the amount outstanding, the average coupon and remaining life, what falls due within a year, the ratings at its latest issue, and its spread against bonds rated the same. A maturity ladder stacks the company's own bonds and its subsidiaries', and a chart places each bond against today's government (JGB) curve. The table lists every bond with its ranking (senior, secured, subordinated, hybrid, convertible), coupon, issue and maturity dates (and first call), years left, balance, rating, spread over JGBs, and price: the JSDA reference price where dealers quote it, otherwise an estimate at today's JGB yield plus the spread at issue (marked `*`). **Terms** opens the bond supplement on EDINET, **Report** the annual report in the Filing Explorer, and **Price** the calculator; clicking a bond compares it in the bond market (`M` opens the company's bonds there). `H` shows matured and redeemed bonds; **Sources** lists every filing used, with a ZIP of each stored supplement.
+- **Discussion** — the company's public channel and mentions elsewhere.
 
 Press `?` on the page for the full list of keyboard shortcuts. Shortcuts pause while a field has focus. **Report** downloads a Markdown report with the snapshot and the full financial history; **Compare** (`P`) and **Backtest** (`B`) hand the company to those workspaces.
 
@@ -120,7 +122,7 @@ Validated translations are cached in the `filing_translations` table inside `Fil
 
 ## Research: your companies, notes, alerts, and pricing
 
-Research at `/research` holds your private, account-owned research and two calculators. Its five tabs are reachable with `1` to `5` (or `←`/`→` in the tab list); the address bar keeps the tab and the chosen company, so `/research?company=E02144` or `/research?tab=bonds&company=E02144` can be bookmarked or linked. Press `?` for the shortcuts of the tab in use.
+Research at `/research` holds your private, account-owned research, two calculators, and the bond market. Its six tabs are reachable with `1` to `6` (or `←`/`→` in the tab list); the address bar keeps the tab and the chosen company, so `/research?company=E02144` or `/research?tab=bonds&company=E02144` can be bookmarked or linked. Press `?` for the shortcuts of the tab in use.
 
 **Companies** lists every company you follow: one you have tagged, written a note on, given a status or target, or set an alert on. Each row shows the status (Watch, Buy, Hold, Sell), the latest price, the gap to your target, when it is due for review (overdue in red), P/E, dividend yield, and its notes and alerts, with alerts that hold today marked. Sort by any column, filter by text (`F`), by tag (chips, or `[`/`]` to step through them), or by status, reviews due, or triggered alerts. `J`/`K` move through the list and `O` (or `Enter` in the list) opens the company's Analysis page. **Compare** (`C`) opens the companies listed in Comparison, and **CSV** (`D`) downloads them.
 
@@ -150,6 +152,14 @@ With a company chosen (`A`), its credit profile comes from the latest fiscal yea
 - Altman's Z and Z″ scores with their safe, grey, and distress zones.
 
 The probabilities are risk-neutral, so they run above historical default rates. Banks, insurers, and securities firms are flagged, because deposits and policy reserves make these models overstate their risk.
+
+Opened from a bond (its **Price** link), the calculator starts from that bond: its coupon and frequency, the years to maturity (or to its first call), today's JGB yield for that term as the risk-free yield, and its spread as the credit spread.
+
+**Bond market** lists every outstanding bond of every issuer from the **Update bonds** step: by default public, yen bonds issued by the filing company itself, largest first. Filter by rating group (chips, or `[`/`]`), ranking, term, industry, or text (`F`); include private placements (bank-guaranteed bonds and small placements, whose coupons leave out the guarantee fee) or subsidiaries' bonds with the checkboxes; `I` shows only the selected bond's issuer and again everyone. The credit curve plots each bond's spread over JGBs against its years left (to the first call for callable bonds), coloured by rating; click a dot to select it. Spreads come from JSDA reference prices where the bond is quoted, and otherwise are the spread at issue (marked `i`, with the yield an estimate marked `*`). `J`/`K` move through the table, `O` opens the issuer in Analysis, `C` prices the bond in the calculator, and `D` downloads the bonds listed as CSV.
+
+The selected bond's panel shows its terms (coupon and how it resets, issue price, maturity and first call, amount issued and outstanding, every agency's rating, security, negative pledge, offering), its valuation (the reference price with the yield and spread it implies and their change since issue, the spread at issue, today's JGB yield, modified duration), and a peer fair value: the median spread of comparable bonds of other issuers (same ranking, rated within a notch, within two years of its tenor — wider if few are found; quoted spreads, or spreads at issue of bonds issued in the last three years) applied to today's curve, with whether the bond is cheap or rich against them. A chart shows those peers' spreads, the issuer's other bonds, the bond, and the median used; below are the reference price history, the fifteen closest bonds of other issuers (one per company), and the issuer's other bonds.
+
+How the numbers are made: spreads are yields less the Ministry of Finance JGB par yield for the same tenor on the same day, interpolated between the published 1- to 40-year points; yields compound semi-annually (or at the bond's own frequency) like the JSDA's compound yield, and callable bonds are measured to their first call. A bond's comparison rating is its R&I rating, then JCR, S&P, Moody's (Moody's grades map one to one: A2 is A); a bond without a rating of its own shows the issuer's latest rating for the same ranking, marked `*`. Bonds JSDA lists without a coupon — most perpetual and many subordinated bank bonds — keep their spread at issue.
 
 Favorites are ordinary private tags (for example one named `Favorite`); tags work in Screening and Analysis as well.
 
@@ -203,6 +213,7 @@ Important current behavior:
 - Import Stock Prices (CSV) uses a local file picker and accepts up to 500 MiB.
 - Multipart uploads are attached only to the step that declares the file field, so mixed recipes can include ordinary steps and one or more upload steps.
 - Download XBRL supports `explicit`, `backfill`, and `all`. `all` reads eligible `DocumentList` rows, honors the document-type filter, skips completed records, uses no more than five concurrent downloads, batches status updates, and reuses HTTP connections.
+- Update bonds reads new bond supplements (it downloads them, so it needs the EDINET API key), the bond schedules in the latest annual reports already in `Filings.db`, the JGB curve, and JSDA reference prices; run it after Get Documents and Download XBRL, daily or weekly.
 - Generate Financial Statements accepts `Source_Mode=csv` for the legacy `financialData_full` input or `Source_Mode=filings` for compact numeric facts in `Filings.db`.
 - Jobs persist across browser reloads. The UI shows current step, progress, cancellation, terminal status, and bounded output.
 
@@ -218,7 +229,8 @@ The server creates missing configured database parents, files, managed schemas, 
 - Auth — users, credentials, sessions, tokens, policy, and audit state;
 - Research — tags, notes, thesis state, alerts, screens, report recipes, and runs;
 - Pipeline jobs — durable job and step state;
-- Filings — retained compressed ZIPs, compact numeric XBRL index, quality/provenance metadata, and translation cache.
+- Filings — retained compressed ZIPs, compact numeric XBRL index, quality/provenance metadata, and translation cache;
+- Bonds — bond terms read from EDINET bond supplements and annual-report bond schedules, the stored supplements, the JGB curve, and JSDA reference prices (rebuildable: the **Update bonds** step recreates it).
 
 New filing ingests keep the compressed provider ZIP in SQLite, omit duplicate extracted member BLOBs, retain numeric/non-nil analytical facts, and reconstruct narrative sections on demand. Existing filing databases can be compacted or rebuilt with the scripts documented in [Running the Application](RUNNING.md).
 

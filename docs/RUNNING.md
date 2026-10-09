@@ -326,6 +326,54 @@ stays with the Yahoo provider events and price heuristics in
 
 ---
 
+### `update_bonds`
+Reads corporate bonds into `Bonds.db` (rebuildable, in `data/databases` by
+default; override with `bonds_db` in `config/database_paths.json`):
+
+1. **Bond supplements** — every shelf-registration supplement
+   (発行登録追補書類, document type 100, with XBRL) listed in `DocumentList`
+   and not read yet is downloaded from EDINET with the API key and kept in
+   `Bond_Documents`; each bond's terms and ratings go to `Bond_Issuances`.
+   Supplements EDINET no longer serves are marked unavailable.
+2. **Annual-report bond schedules** — each company's latest annual report in
+   `Filings.db` (form 030000) is read for its bond schedule (社債明細表;
+   the bonds-and-borrowings note for IFRS filers) into `Bond_Schedule_Rows`.
+   Run `download_xbrl` first so new reports are in the catalog.
+3. **JGB curve** — the Ministry of Finance par-yield curve (`JGB_Yields`):
+   the full history on the first run or after a missed month, then the
+   current month.
+4. **JSDA reference prices** — the newest daily OTC reference-price files
+   (公社債店頭売買参考統計値) not stored yet, into `Bond_Market_Prices`. The
+   site limits request rates: files are read ten seconds apart and a refusal
+   (HTTP 429) ends this part of the run; the rest are read next time.
+5. **Merge** — rebuilds `Bonds`: one row per bond from the latest schedule
+   plus bonds issued since, with ratings, private-placement flags, spreads at
+   issue, and the matched JSDA price, yield, and spread.
+
+Everything already read is skipped, so a daily run takes seconds after the
+first (about 40 s for 561 supplements and 4,948 annual reports when stored).
+**Overwrite** re-reads every stored supplement and report with the current
+parser, without downloading again.
+
+```json
+"update_bonds_config": {
+  "issuance_documents": true,
+  "annual_reports": true,
+  "jgb_curve": true,
+  "market_prices": true,
+  "market_days": 5,
+  "max_documents": 0
+}
+```
+
+- `issuance_documents` — download and read new bond supplements (needs `API_KEY` or `EDINET_API_TOKEN`).
+- `annual_reports` — read the bond schedules of the latest annual reports.
+- `jgb_curve` — refresh the government curve.
+- `market_prices` / `market_days` — read up to this many of the newest JSDA files not stored yet.
+- `max_documents` — cap on new filings of each kind per run; `0` reads them all.
+
+---
+
 ### `parse_taxonomy`
 Syncs EDINET taxonomy releases into normalized taxonomy tables, or imports a local XSD file for offline use.
 

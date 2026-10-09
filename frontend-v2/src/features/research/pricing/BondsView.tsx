@@ -31,6 +31,10 @@ import { Segmented } from './Segmented'
 import { addDays, daysBetween } from './optionsModel'
 import { usePricingInputs } from '../researchQueries'
 import { PricingCompany } from './PricingCompany'
+import { useBondDetail } from '../../bonds/bondQueries'
+import { bondMarketHref } from '../../bonds/bondFormat'
+import type { Bond } from '../../bonds/bondTypes'
+import { Link } from 'react-router-dom'
 
 type CreditSource = 'merton' | 'spread' | 'probability' | 'none'
 
@@ -57,9 +61,22 @@ function bp(value: number) {
   return `${value > 0 ? '+' : ''}${Math.round(value * 10_000)}`
 }
 
-export function BondsView({ companyCode, onCompany, active }: { companyCode: string; onCompany: (code: string) => void; active: boolean }) {
+/** A stored bond's terms for the calculator: its coupon, time to maturity (or first call), today's JGB yield, and its spread at issue. */
+function bondTerms(bond: Bond): Partial<BondState> {
+  const terms: Partial<BondState> = {}
+  if (bond.coupon != null) terms.coupon = bond.coupon
+  if (bond.horizon != null && bond.horizon > 0) terms.years = Math.round(bond.horizon * 100) / 100
+  if (bond.frequency) terms.frequency = bond.frequency
+  if (bond.jgb_now != null) terms.riskFree = bond.jgb_now
+  if (bond.issue_spread != null) { terms.source = 'spread'; terms.spread = Math.max(bond.issue_spread, 0) }
+  return terms
+}
+
+export function BondsView({ companyCode, bondId = '', onCompany, active }: { companyCode: string; bondId?: string; onCompany: (code: string) => void; active: boolean }) {
   const inputs = usePricingInputs(companyCode)
   const data = companyCode ? inputs.data : undefined
+  const bondQuery = useBondDetail(bondId)
+  const bond = bondId && bondQuery.data?.bond.edinet_code === companyCode ? bondQuery.data.bond : null
   const currency = data?.currency.reporting ?? data?.currency.price ?? null
   const [rates, setRates] = usePersistentState<Record<string, number>>('research.rates', {})
   const [state, setState] = useState<BondState>(MANUAL)
@@ -79,18 +96,21 @@ export function BondsView({ companyCode, onCompany, active }: { companyCode: str
   const fromCompany = (): BondState | null => {
     if (!data) return null
     const cost = data.credit.cost_of_debt
-    return {
+    const company: BondState = {
       ...state,
       // The company's own borrowing cost, rounded, is a natural coupon for a new bond.
       coupon: cost != null && cost > 0 && cost < 0.3 ? Math.round(cost * 2000) / 2000 : state.coupon,
       riskFree: rates[data.currency.price ?? 'JPY'] ?? defaultRate(data.currency.price),
       source: data.market_cap ? 'merton' : 'spread',
     }
+    // A bond chosen in the bond market brings its own terms.
+    return bond ? { ...company, ...bondTerms(bond) } : company
   }
-  // Prefill once per company, while rendering, so the first paint already shows its numbers; later edits are the user's.
+  // Prefill once per company (and bond), while rendering, so the first paint already shows its numbers; later edits are the user's.
   const loadedCode = data?.company.company_code ?? ''
-  if (loadedCode && applied !== loadedCode) {
-    setApplied(loadedCode)
+  const loadedKey = loadedCode && (!bondId || bond || bondQuery.isError) ? `${loadedCode}|${bond?.bond_id ?? ''}` : ''
+  if (loadedKey && applied !== loadedKey) {
+    setApplied(loadedKey)
     const next = fromCompany()
     if (next) { setState(next); setMarketPrice(null) }
   }
@@ -148,6 +168,7 @@ export function BondsView({ companyCode, onCompany, active }: { companyCode: str
   return <div className="rs-pricing rs-bonds">
     <section className="panel rs-pricing__inputs" aria-label="Bond inputs">
       <PricingCompany code={companyCode} inputs={data} loading={inputs.isLoading} error={inputs.error} inputRef={pickerRef} onChange={onCompany} keys={{ company: companyKey, manual: manualKey }} />
+      {bond && <p className="rs-market-read">Pricing <strong>{bond.label}</strong>: {bond.horizon_to === 'call' ? 'to its first call' : 'to maturity'}, at the {formatNumber(Math.round((bond.issue_spread ?? 0) * 10_000), 0)} bp spread it was issued at over today’s JGB yield. <Link to={bondMarketHref(bond.bond_id, bond.edinet_code)}>Compare it with similar bonds</Link></p>}
       <div className="rs-fields">
         <NumberField label="Coupon" value={state.coupon} scale={100} step={0.125} digits={3} min={0} suffix="%" inputRef={couponRef} onChange={coupon => set({ coupon })} hint={data?.credit.cost_of_debt != null ? <>Company pays {formatPercent(data.credit.cost_of_debt, 2)} on its debt</> : 'Annual rate'}>
           <select className="select" aria-label="Coupons per year" value={state.frequency} onChange={event => set({ frequency: Number(event.target.value) })}><option value={1}>Annual</option><option value={2}>Semi-annual</option><option value={4}>Quarterly</option></select>

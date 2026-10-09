@@ -15,6 +15,7 @@ import { useHotkeyText } from '../../hotkeys/useHotkeyText'
 import { globalScope } from '../../hotkeys/globalScopes'
 import { formatMetricValue, groupMetrics, type MetricDefinition } from '../../metrics'
 import { useAuth } from '../auth/authContext'
+import { CompanyBondsPanel } from '../bonds/CompanyBondsPanel'
 import { CompanyChannelPanel } from '../chat/CompanyChannelPanel'
 import { PortfolioTrailNav } from '../portfolio/PortfolioTrailNav'
 import { CompanyResearchPanel } from '../research/CompanyResearchPanel'
@@ -257,6 +258,7 @@ export default function AnalysisWorkspaceUnified() {
     'section-overview': () => jumpTo('overview'),
     'section-financials': () => jumpTo('financials'),
     'section-filings': () => jumpTo('filings'),
+    'section-bonds': () => jumpTo('bonds'),
     'section-discussion': () => jumpTo('discussion'),
     discuss: () => { discussionInput.current?.focus(); discussionInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
     tag: () => { tagInput.current?.focus(); tagInput.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
@@ -397,6 +399,10 @@ export default function AnalysisWorkspaceUnified() {
 
     {canonicalCode && <Section id="filings" title="Filings" aside={<span className="analysis-section__note">Retained EDINET annual reports with their XBRL data.</span>}>
       <FilingsPanel companyCode={canonicalCode} />
+    </Section>}
+
+    {canonicalCode && <Section id="bonds" title="Bonds" aside={<span className="analysis-section__note">Terms from EDINET bond supplements and annual-report bond schedules; spreads over JGBs at issue.</span>}>
+      <CompanyBondsPanel companyCode={canonicalCode} />
     </Section>}
 
     {canonicalCode && <Section id="discussion" title="Discussion" aside={<span className="analysis-section__note">The company’s public channel and mentions elsewhere. $ references another company.</span>}>

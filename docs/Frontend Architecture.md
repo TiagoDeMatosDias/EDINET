@@ -54,6 +54,7 @@ frontend-v2/
 │   │   ├── comparison/
 │   │   ├── filings/
 │   │   ├── research/
+│   │   ├── bonds/           # Analysis Bonds section and the Research bond market
 │   │   ├── backtesting/
 │   │   ├── portfolio/
 │   │   └── pipeline/

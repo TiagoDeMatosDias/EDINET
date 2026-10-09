@@ -19,6 +19,7 @@ def test_ensure_application_databases_creates_all_configured_databases(tmp_path)
             "pipeline_jobs",
             "filings",
             "chat",
+            "bonds",
         )
     }
 
@@ -31,6 +32,7 @@ def test_ensure_application_databases_creates_all_configured_databases(tmp_path)
         jobs_db_path=paths["pipeline_jobs"],
         filings_db_path=paths["filings"],
         chat_db_path=paths["chat"],
+        bonds_db_path=paths["bonds"],
     )
 
     assert set(result) == set(paths)
@@ -57,6 +59,7 @@ def test_ensure_application_databases_creates_all_configured_databases(tmp_path)
         "pipeline_jobs": "pipeline_jobs",
         "filings": "filings",
         "chat": "messages",
+        "bonds": "Bonds",
     }
     for database_name, table_name in expected_tables.items():
         with sqlite3.connect(paths[database_name]) as conn:
