@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from src.portfolio.manual_entries import ManualEntryError, ManualTransaction, normalized_entry
-from tests.unit.test_portfolio_api import client, empty_api_database, populated_api_database  # noqa: F401
+from tests.unit.test_portfolio_api import (  # noqa: F401
+    client,
+    empty_api_database,
+    populated_api_database,
+)
 
 
 def test_trades_follow_the_broker_sign_conventions():

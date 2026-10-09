@@ -264,6 +264,10 @@ def _row_series(rows: list[dict[str, Any]], count: int, labels: tuple[str, ...],
     return series
 
 
+def _difference(left: float | None, right: float | None) -> float | None:
+    return left - right if left is not None and right is not None else None
+
+
 def _ratio(numerator: float | None, denominator: float | None, positive: bool = False) -> float | None:
     if numerator is None or denominator is None or denominator == 0 or (positive and denominator < 0):
         return None
@@ -289,10 +293,7 @@ def statement_series(history: dict[str, Any], metric_refs: list[str] | None = No
         "Revenue": revenue,
         "OperatingIncome": raw["OperatingIncome"],
         "NetIncome": net_income,
-        "GrossMargin": each(lambda i: _ratio(
-            sales[i] - raw["CostOfSales"][i] if sales[i] is not None and raw["CostOfSales"][i] is not None else None,
-            sales[i],
-        )),
+        "GrossMargin": each(lambda i: _ratio(_difference(sales[i], raw["CostOfSales"][i]), sales[i])),
         "OperatingMargin": each(lambda i: _ratio(raw["OperatingIncome"][i], revenue[i])),
         "NetMargin": each(lambda i: _ratio(net_income[i], revenue[i])),
         "ReturnOnEquity": each(lambda i: _ratio(net_income[i], equity[i], positive=True)),

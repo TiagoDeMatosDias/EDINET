@@ -253,8 +253,8 @@ def parse_labels(contents: Iterable[bytes]) -> dict[tuple[str, str], str]:
 
 def humanize(name: str) -> str:
     """Readable text from an element or role name, e.g. ``NetSalesIFRS`` -> ``Net sales IFRS``."""
-    words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", name))
-    words = words.replace("_", " ").replace("-", " ").split()
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", name))
+    words = spaced.replace("_", " ").replace("-", " ").split()
     words = [word if word.isupper() and len(word) > 1 else word.lower() for word in words]
     text = " ".join(words)
     return text[:1].upper() + text[1:]

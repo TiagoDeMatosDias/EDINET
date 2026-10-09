@@ -9,6 +9,7 @@ import sqlite3
 import uuid
 
 import pytest
+from cryptography.exceptions import InvalidTag
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -138,9 +139,9 @@ def test_a_ciphertext_cannot_be_moved_to_another_channel_or_sender(tmp_path):
     cipher = ChannelCipher(tmp_path / "app.db")
     sealed = cipher.seal("hello", channel_associated_data("topic:stocks", "u1", "m1"))
     assert cipher.open(sealed, channel_associated_data("topic:stocks", "u1", "m1")) == "hello"
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidTag):
         cipher.open(sealed, channel_associated_data("topic:bonds", "u1", "m1"))
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidTag):
         cipher.open(Sealed(sealed.ciphertext, sealed.nonce, sealed.key_version), channel_associated_data("topic:stocks", "u2", "m1"))
     # The key ring survives a restart.
     assert ChannelCipher(tmp_path / "app.db").open(sealed, channel_associated_data("topic:stocks", "u1", "m1")) == "hello"
