@@ -23,35 +23,16 @@ from src import screening as _screening
 from src import security_analysis as _security
 from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
+from src.paths import exports_dir
 from src.research.runtime import store as _research_store
 from src.screening.display_formats import catalog_column_formats, result_column_formats
 from src.screening.persistence import normalize_screening_date
-from src.utilities.runtime_paths import state_dir
 from src.web_app.security import get_settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/screening", tags=["screening"])
-
-# ---------------------------------------------------------------------------
-# Persistence paths (same as Tk UI controllers)
-# ---------------------------------------------------------------------------
-
-_STATE_DIR = state_dir()
-_SAVED_SCREENINGS_DIR = _STATE_DIR / "saved_screenings"
-_SCREENING_HISTORY_PATH = _STATE_DIR / "screening_history.jsonl"
-
-
-def _screening_save_dir() -> str:
-    _SAVED_SCREENINGS_DIR.mkdir(parents=True, exist_ok=True)
-    return str(_SAVED_SCREENINGS_DIR)
-
-
-def _screening_history_path() -> str:
-    _SCREENING_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    return str(_SCREENING_HISTORY_PATH)
-
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -200,7 +181,7 @@ class ScreeningHistoryEntry(ScreeningDateRequest):
 
 def _resolve_db() -> str:
     """The server's configured Standardized database; requests cannot name another."""
-    path = Path(get_db2())
+    path = Path(get_market_db())
     if not path.is_file():
         raise HTTPException(status_code=503, detail="The screening database is not available.")
     return str(path)
@@ -646,21 +627,17 @@ def get_history(
     limit: int = Query(50, ge=1, le=500, description="Max entries to return"),
     offset: int = Query(0, ge=0, description="Number of entries to skip"),
 ) -> dict:
-    """Return screening run history with pagination (most recent first)."""
-    _require_user(request)
-    entries = _screening.load_screening_history(_screening_history_path())
-    total = len(entries)
-    page = entries[offset:offset + limit]
+    """Return the user's screening run history with pagination (most recent first)."""
+    user = _require_user(request)
+    page, total = _research_store.list_screening_runs(user.user_id, limit=limit, offset=offset)
     return {"entries": page, "total": total, "limit": limit, "offset": offset}
 
 
 @router.post("/history")
-def save_history(entry: ScreeningHistoryEntry = Body(...)) -> dict:
-    """Append a screening run to history."""
-    _screening.save_screening_history(
-        entry.model_dump(exclude_none=True),
-        _screening_history_path(),
-    )
+def save_history(request: Request, entry: ScreeningHistoryEntry = Body(...)) -> dict:
+    """Record a screening run in the user's history."""
+    user = _require_user(request)
+    _research_store.record_screening_run(user.user_id, entry.model_dump(exclude_none=True))
     return {"saved": True}
 
 
@@ -744,7 +721,7 @@ def _export_backtest_content(
     computed_columns: list[dict],
 ) -> str:
     """Generate a backtest file in an owned, request-unique workspace."""
-    export_root = _STATE_DIR / "exports"
+    export_root = exports_dir()
     export_root.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="screening-", dir=export_root) as temp_dir:
         output_path = Path(temp_dir) / "screening_backtest_export.csv"

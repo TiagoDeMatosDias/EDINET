@@ -20,6 +20,21 @@ def test_watchlists_and_notes_are_owner_scoped(tmp_path):
     assert [note["title"] for note in store.list_notes("user-b")] == ["Private"]
 
 
+def test_screening_run_history_is_owner_scoped_and_newest_first(tmp_path):
+    store = ResearchStore(tmp_path / "app.db")
+    for count in (1, 2, 3):
+        store.record_screening_run("alice", {"name": f"run {count}", "result_count": count})
+    store.record_screening_run("bob", {"name": "other"})
+
+    page, total = store.list_screening_runs("alice", limit=2, offset=0)
+
+    assert total == 3
+    assert [entry["name"] for entry in page] == ["run 3", "run 2"]
+    assert all("timestamp" in entry for entry in page)
+    assert store.list_screening_runs("alice", limit=5, offset=2)[0][0]["name"] == "run 1"
+    assert store.list_screening_runs("carol", limit=5, offset=0) == ([], 0)
+
+
 def test_company_research_thesis_and_targets(tmp_path):
     store = ResearchStore(tmp_path / "research.db")
     result = store.upsert_company_research("user-a", "E00001", thesis_status="buy", target_value=5000, target_currency="JPY")

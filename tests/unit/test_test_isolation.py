@@ -22,21 +22,20 @@ def test_outbound_network_is_blocked():
 def test_runtime_roots_are_outside_the_project():
     import src.backtesting.api as backtesting_api
     import src.reports.runtime as reports_runtime
-    import src.web_app.api.screening as screening_api
+    from src import paths
     from src.orchestrator.common import db_config
-    from src.utilities import runtime_paths
     from src.web_app import security
 
     roots = [
-        runtime_paths.state_dir(),
-        runtime_paths.backtest_root(),
-        runtime_paths.report_root(),
+        paths.data_dir(),
         backtesting_api._BACKTEST_ROOT,
         reports_runtime.REPORT_ROOT,
-        screening_api._STATE_DIR,
         security._DEFAULT_JOB_WORKSPACE_ROOT,
         security.AppSettings().auth_db_path,
-        *(Path(path) for path in db_config._load_config().values()),
+        db_config.get_app_db(),
+        db_config.get_chat_db(),
+        db_config.get_market_db(),
+        db_config.get_filings_db(),
     ]
     for root in roots:
         resolved = Path(root).resolve()

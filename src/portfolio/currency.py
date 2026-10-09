@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 from src.orchestrator.common.sqlite import connect_read
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ def get_fx_series(
     Non-EUR cross pairs triangulate through EUR:
     ``USD_value × (EURJPY / EURUSD) = JPY_value``.
     """
-    db2_path = db2_path or get_db2()
+    db2_path = db2_path or get_market_db()
     fc = str(from_currency).upper()
     tc = str(to_currency).upper()
 
@@ -206,7 +206,7 @@ def get_available_display_currencies(
     Scans Stock_Prices for distinct Currency values where Ticker='EUR'
     (FX data).  Also includes EUR itself.
     """
-    db2_path = db2_path or get_db2()
+    db2_path = db2_path or get_market_db()
     conn = connect_read(db2_path)
     try:
         rows = conn.execute(
@@ -235,7 +235,7 @@ def get_asset_native_currency(
 
     For stocks/ETFs, returns the Currency column value.
     """
-    db2_path = db2_path or get_db2()
+    db2_path = db2_path or get_market_db()
     conn = connect_read(db2_path)
     try:
         row = conn.execute(

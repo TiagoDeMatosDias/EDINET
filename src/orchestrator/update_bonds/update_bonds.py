@@ -13,10 +13,10 @@ Auto-discovered by ``build_step_registry()`` in
 from __future__ import annotations
 
 import logging
-import os
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
-from src.orchestrator.common.db_config import get_bonds_db, get_db1, get_db2, get_filings_db
+from src.orchestrator.common.db_config import get_filings_db, get_market_db
+from src.settings import edinet_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ def run_update_bonds(config, overwrite=False, context=None):
 
     step_cfg = config.get("update_bonds_config", {}) or {}
     issuances = _flag(step_cfg.get("issuance_documents"), True)
-    token = str(config.get("API_KEY", "") or os.getenv("EDINET_API_TOKEN", "")).strip()
+    token = edinet_api_key()
     client = EdinetDownloadClient(token) if issuances and token else None
     if issuances and client is None:
         logger.warning("update_bonds: no EDINET API key, so only bond supplements already stored can be read.")
@@ -47,9 +47,7 @@ def run_update_bonds(config, overwrite=False, context=None):
 
     try:
         result = update_bonds(
-            bonds_db=get_bonds_db(),
-            db1_path=get_db1(),
-            db2_path=get_db2(),
+            market_db=get_market_db(),
             filings_db_path=get_filings_db(),
             client=client,
             issuances=issuances,
@@ -71,7 +69,6 @@ def run_update_bonds(config, overwrite=False, context=None):
 STEP_DEFINITION = StepDefinition(
     name="update_bonds",
     handler=run_update_bonds,
-    required_keys=(),
     display_name="Update bonds",
     supports_overwrite=True,
     input_fields=(

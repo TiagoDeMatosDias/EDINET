@@ -210,8 +210,8 @@ class FakeClient:
 
 
 def _sources(tmp_path: Path) -> dict[str, str]:
-    db1 = tmp_path / "Base.db"
-    with _db(db1) as conn:
+    market = tmp_path / "market.db"
+    with _db(market) as conn:
         conn.execute("CREATE TABLE DocumentList (docID TEXT, edinetCode TEXT, filerName TEXT, submitDateTime TEXT, periodEnd TEXT, formCode TEXT, docDescription TEXT, docTypeCode TEXT, xbrlFlag TEXT, withdrawalStatus TEXT)")
         conn.executemany("INSERT INTO DocumentList VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
             ("S100ISS1", "E99001", "テスト工業株式会社", "2026-09-14 10:00", "", "120003", "発行登録追補書類（株券､社債券等）", "100", "1", "0"),
@@ -225,14 +225,13 @@ def _sources(tmp_path: Path) -> dict[str, str]:
             ("S100OLD1", "E99001", "テスト工業株式会社", "2024-04-01", "2025-03-31", "2025-06-25T10:00:00", "030000", "1", _zip("<html></html>")),
             ("S100ANN1", "E99001", "テスト工業株式会社", "2025-04-01", "2026-03-31", "2026-06-25T10:00:00", "030000", "1", _zip(ANNUAL_HTML)),
         ])
-    db2 = tmp_path / "Standardized.db"
-    with _db(db2) as conn:
+    with _db(market) as conn:
         conn.execute('CREATE TABLE CompanyInfo (Company_Code TEXT, "Submitter Name" TEXT, Company_Name TEXT, Company_Ticker TEXT, Company_Industry TEXT, Listed TEXT)')
         conn.executemany("INSERT INTO CompanyInfo VALUES (?, ?, ?, ?, ?, ?)", [
             ("E99001", "テスト工業株式会社", "TEST INDUSTRIES", "99990", "Machinery", "Listed company"),
             ("E99002", "比較電機株式会社", "PEER ELECTRIC", "99980", "Electric Appliances", "Listed company"),
         ])
-    return {"db1": str(db1), "filings": str(filings), "db2": str(db2), "bonds": str(tmp_path / "Bonds.db")}
+    return {"filings": str(filings), "bonds": str(market)}
 
 
 def _curve(path: str) -> None:
@@ -261,7 +260,7 @@ def updated(tmp_path):
     _curve(paths["bonds"])
     client = FakeClient({"S100ISS1": _zip(ISSUANCE_HTML)})
     result = update.update_bonds(
-        bonds_db=paths["bonds"], db1_path=paths["db1"], db2_path=paths["db2"], filings_db_path=paths["filings"],
+        market_db=paths["bonds"], filings_db_path=paths["filings"],
         client=client, curve=False, market_prices=False, today=TODAY,
     )
     return paths, result, client
@@ -304,9 +303,9 @@ def test_update_reads_supplements_and_the_latest_schedule(updated):
 def test_a_second_run_reads_nothing_new_and_overwrite_reads_from_storage(updated):
     paths, _, _ = updated
     client = FakeClient({})
-    again = update.update_bonds(bonds_db=paths["bonds"], db1_path=paths["db1"], db2_path=paths["db2"], filings_db_path=paths["filings"], client=client, curve=False, market_prices=False, today=TODAY)
+    again = update.update_bonds(market_db=paths["bonds"], filings_db_path=paths["filings"], client=client, curve=False, market_prices=False, today=TODAY)
     assert again["issuances"]["documents"] == 0 and again["annual_reports"]["documents"] == 0 and client.requests == []
-    reparsed = update.update_bonds(bonds_db=paths["bonds"], db1_path=paths["db1"], db2_path=paths["db2"], filings_db_path=paths["filings"], client=client, curve=False, market_prices=False, reparse=True, today=TODAY)
+    reparsed = update.update_bonds(market_db=paths["bonds"], filings_db_path=paths["filings"], client=client, curve=False, market_prices=False, reparse=True, today=TODAY)
     # The stored archive is re-read without a download; only the unavailable filing is tried again.
     assert reparsed["issuances"]["bonds"] == 2 and client.requests == ["S100GONE"]
 
@@ -361,7 +360,7 @@ def test_reference_prices_give_market_yields_and_spreads(updated):
     try:
         assert update.update_market_prices(conn, 3, fetch=fetch)["rows"] == 2
         update.update_market_prices(conn, 3, fetch=fetch)
-        update.rebuild(conn, paths["db2"], today=TODAY)
+        update.rebuild(conn, today=TODAY)
     finally:
         conn.close()
     assert fetched == [(3, set()), (3, {"2026-10-07"})]
@@ -416,7 +415,7 @@ def test_market_view_and_bond_detail_compare_with_other_issuers(updated):
 @pytest.fixture
 def client(updated, monkeypatch, tmp_path):
     paths, _, _ = updated
-    monkeypatch.setattr(bonds_api, "get_bonds_db", lambda: paths["bonds"])
+    monkeypatch.setattr(bonds_api, "get_market_db", lambda: paths["bonds"])
     app = FastAPI()
     app.include_router(bonds_api.router)
     install_security(app, AppSettings(auth_mode="accounts", registration_mode="open", auth_db_path=tmp_path / "auth.db"))
@@ -445,7 +444,7 @@ def test_api_serves_company_market_bond_and_stored_documents(client):
 
 
 def test_api_without_a_bond_database_says_how_to_create_one(monkeypatch, tmp_path):
-    monkeypatch.setattr(bonds_api, "get_bonds_db", lambda: str(tmp_path / "missing.db"))
+    monkeypatch.setattr(bonds_api, "get_market_db", lambda: str(tmp_path / "missing.db"))
     app = FastAPI()
     app.include_router(bonds_api.router)
     http = TestClient(app)
@@ -456,7 +455,7 @@ def test_api_without_a_bond_database_says_how_to_create_one(monkeypatch, tmp_pat
 
 def test_market_payload_is_gzipped_on_request(updated, monkeypatch):
     paths, _, _ = updated
-    monkeypatch.setattr(bonds_api, "get_bonds_db", lambda: paths["bonds"])
+    monkeypatch.setattr(bonds_api, "get_market_db", lambda: paths["bonds"])
 
     class Request:
         headers = {"accept-encoding": "gzip, deflate"}

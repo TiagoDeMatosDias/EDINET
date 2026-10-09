@@ -197,10 +197,8 @@ def test_handler_selects_filings_database_for_filings_mode(monkeypatch, tmp_path
         calls.update(kwargs)
         return {"status": "completed"}
 
-    monkeypatch.setattr(handler_module, "get_db1", lambda: str(tmp_path / "Base.db"))
-    monkeypatch.setattr(handler_module, "get_db2", lambda: str(tmp_path / "Standardized.db"))
-    monkeypatch.setattr(handler_module, "get_filings_db", lambda: str(tmp_path / "configured.db"))
-    monkeypatch.setenv("EDINET_FILINGS_DB", str(tmp_path / "Filings.db"))
+    monkeypatch.setattr(handler_module, "get_market_db", lambda: str(tmp_path / "market.db"))
+    monkeypatch.setattr(handler_module, "get_filings_db", lambda: str(tmp_path / "filings.db"))
     monkeypatch.setattr(
         handler_module.financial_statement_services,
         "generate_financial_statements",
@@ -217,8 +215,8 @@ def test_handler_selects_filings_database_for_filings_mode(monkeypatch, tmp_path
     )
 
     assert result == {"status": "completed"}
-    assert calls["source_database"] == str(tmp_path / "Filings.db")
-    assert calls["target_database"] == str(tmp_path / "Standardized.db")
+    assert calls["source_database"] == str(tmp_path / "filings.db")
+    assert calls["target_database"] == str(tmp_path / "market.db")
     assert calls["source_mode"] == "filings"
     assert calls["granularity_level"] == 2
 

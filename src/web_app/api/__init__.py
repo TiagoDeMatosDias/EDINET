@@ -17,6 +17,7 @@ from src.filings.api import router as _filings_router
 from src.portfolio.api import router as _portfolio_router
 from src.reports.api import router as _reports_router
 from src.research.api import router as _research_router
+from src.settings.api import router as _admin_settings_router
 from src.web_app.api.overview import router as _overview_router
 from src.web_app.api.screening import router as _screening_router
 from src.web_app.api.security_analysis import router as _security_router
@@ -31,6 +32,7 @@ router_app = _api_app
 _ROUTERS = (
     _auth_router,
     _admin_router,
+    _admin_settings_router,
     _filings_router,
     _research_router,
     _reports_router,

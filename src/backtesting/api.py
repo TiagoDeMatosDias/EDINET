@@ -35,11 +35,11 @@ from src.backtesting.zip_export import (
     build_summary,
     save_rolling_backtest_zip,
 )
-from src.orchestrator.common.db_config import get_db2, get_db3
+from src.orchestrator.common.db_config import get_app_db, get_market_db
 from src.orchestrator.common.sqlite import connect_read
+from src.paths import backtests_dir
 from src.portfolio.currency import get_available_display_currencies
 from src.portfolio.performance import get_risk_free_rate
-from src.utilities.runtime_paths import backtest_root
 from src.web_app.security import get_settings
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ router = APIRouter(prefix="/api/backtesting", tags=["backtesting"])
 # ---------------------------------------------------------------------------
 _MAX_CONCURRENT = 2
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
-_BACKTEST_ROOT = backtest_root().resolve(strict=False)
+_BACKTEST_ROOT = backtests_dir().resolve(strict=False)
 _BACKTEST_ID = re.compile(r"^\d{8}_\d{6}(?:_[0-9a-f]{8})?$")
 
 
@@ -61,7 +61,7 @@ _BACKTEST_ID = re.compile(r"^\d{8}_\d{6}(?:_[0-9a-f]{8})?$")
 
 def _resolve_db() -> str:
     """The server's configured Standardized database; requests cannot name another."""
-    resolved = get_db2()
+    resolved = get_market_db()
     if not resolved or not Path(resolved).is_file():
         raise HTTPException(status_code=503, detail="The backtesting database is not available.")
     return resolved
@@ -69,7 +69,7 @@ def _resolve_db() -> str:
 
 def _resolve_db3() -> str:
     """Resolve the portfolio database (db3) path."""
-    db3 = get_db3()
+    db3 = get_app_db()
     if not db3 or not Path(db3).is_file():
         raise HTTPException(
             status_code=400,
@@ -229,7 +229,7 @@ def _resolve_risk_free_rate(explicit_rf: float, base_currency: str) -> float:
     if explicit_rf > 0:
         return explicit_rf
     try:
-        db2 = get_db2()
+        db2 = get_market_db()
         if db2:
             return get_risk_free_rate(db2, base_currency or "EUR")
     except Exception:
@@ -829,7 +829,7 @@ def _archive_limit_message(exc: ExportSizeLimitExceeded) -> str:
     return (
         "Backtest completed, but its download archive exceeded "
         f"the {limit_mib} MiB limit. Reduce the period range or "
-        "increase EDINET_MAX_BACKTEST_ARTIFACT_BYTES and restart."
+        "raise the limits.max_backtest_artifact_bytes setting on the Admin page and restart."
     )
 
 

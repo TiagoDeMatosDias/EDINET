@@ -4,8 +4,13 @@ import json
 from typing import Any
 
 from config import Config
+from src.settings import get_setting, spec_for
 
 from . import StepDefinition
+
+
+class MissingSettingsError(RuntimeError):
+    """A selected step needs a setting that is not set; the message is safe to show."""
 
 
 def has_config_value(value: Any) -> bool:
@@ -104,6 +109,7 @@ def validate_pipeline_input(
     *,
     step_definitions: dict[str, StepDefinition],
 ) -> None:
+    missing_settings: dict[str, list[str]] = {}
     missing_map: dict[str, list[str]] = {}
     invalid_map: dict[str, list[str]] = {}
     unknown_steps: list[str] = []
@@ -121,9 +127,9 @@ def validate_pipeline_input(
             continue
         seen_steps.add(raw_step_name)
 
-        for key in definition.required_keys:
-            if not has_config_value(config.get(key)):
-                missing_map.setdefault(key, []).append(raw_step_name)
+        for key in definition.required_settings:
+            if not has_config_value(get_setting(key)):
+                missing_settings.setdefault(key, []).append(raw_step_name)
 
         cfg_name = definition.resolved_config_key
         step_cfg_raw = config.settings.get(cfg_name, {}) or {}
@@ -151,10 +157,20 @@ def validate_pipeline_input(
     if duplicate_steps:
         raise RuntimeError(f"Duplicate orchestrator step(s): {', '.join(sorted(duplicate_steps))}")
 
+    if missing_settings:
+        raise MissingSettingsError(
+            "Set "
+            + "; ".join(
+                f"{spec_for(key).label} ({key}), needed by {', '.join(steps_needing)}"
+                for key, steps_needing in sorted(missing_settings.items())
+            )
+            + " on the Admin page before running these steps."
+        )
+
     if missing_map or invalid_map:
         lines: list[str] = []
         if missing_map:
-            lines.append("The following required settings are missing from .env / config:")
+            lines.append("The following required step settings are missing:")
             for key, steps_needing in sorted(missing_map.items()):
                 lines.append(f"  • {key}  (needed by: {', '.join(steps_needing)})")
 
@@ -166,5 +182,5 @@ def validate_pipeline_input(
                 lines.append(f"  • {key}  ({'; '.join(problems)})")
 
         lines.append("")
-        lines.append("Set them in the step configuration dialogs or add them to the config / .env files.")
+        lines.append("Set them in the step configuration dialogs.")
         raise RuntimeError("\n".join(lines))

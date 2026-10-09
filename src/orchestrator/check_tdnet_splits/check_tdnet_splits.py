@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 from src.utilities.tdnet import (
     DEFAULT_SPLIT_KEYWORDS,
     TDNET_MAX_LOOKBACK_DAYS,
@@ -50,7 +50,7 @@ def run_check_tdnet_splits(config, overwrite=False, context=None):
         dict with ``events_seen``, ``events_new``, ``window_start``,
         ``window_end``, and ``keywords``.
     """
-    db2_path = get_db2()
+    db2_path = get_market_db()
     # Idempotent schema check for the event table.
     ensure_tdnet_tables(db2_path=db2_path)
 
@@ -81,7 +81,6 @@ def run_check_tdnet_splits(config, overwrite=False, context=None):
 STEP_DEFINITION = StepDefinition(
     name="check_tdnet_splits",
     handler=run_check_tdnet_splits,
-    required_keys=(),
     display_name="Check TDnet splits",
     supports_overwrite=False,
     input_fields=(

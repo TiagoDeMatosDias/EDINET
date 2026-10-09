@@ -2,7 +2,7 @@ import json
 import logging
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 
 from . import taxonomy_processing
 
@@ -23,7 +23,7 @@ def run_parse_taxonomy(config, overwrite=False, context=None):
     if xsd_file:
         release_year = step_cfg.get("release_year")
         kwargs = dict(
-            target_database=get_db2(),
+            target_database=get_market_db(),
             xsd_file=xsd_file,
             namespace_prefix=step_cfg.get("namespace_prefix"),
             release_label=step_cfg.get("release_label"),
@@ -50,7 +50,7 @@ def run_parse_taxonomy(config, overwrite=False, context=None):
             raw_namespaces = [raw_namespaces]
 
     kwargs = dict(
-        target_database=get_db2(),
+        target_database=get_market_db(),
         release_selection=step_cfg.get("release_selection", "all"),
         release_years=release_years,
         namespaces=raw_namespaces,

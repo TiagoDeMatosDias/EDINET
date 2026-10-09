@@ -1,6 +1,6 @@
 """Tests for Security Analysis API endpoints.
 
-Uses in-memory SQLite databases injected via monkeypatched get_db2().
+Uses in-memory SQLite databases injected via monkeypatched get_market_db().
 The frontend never sends database paths — they are resolved server-side.
 """
 
@@ -49,7 +49,7 @@ def db(tmp_path, monkeypatch):
     p = str(tmp_path / "test.db")
     _create_db(p)
     import src.web_app.api.security_analysis as m
-    monkeypatch.setattr(m, "get_db2", lambda: p)
+    monkeypatch.setattr(m, "get_market_db", lambda: p)
     return p
 
 

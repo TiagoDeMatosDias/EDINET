@@ -16,7 +16,7 @@ from datetime import date as Date
 
 import numpy as np
 
-from src.orchestrator.common.db_config import get_db2, get_db3
+from src.orchestrator.common.db_config import get_app_db, get_market_db
 from src.orchestrator.common.sqlite import connect_read
 from src.portfolio import analytics
 from src.portfolio.market_data import MarketData
@@ -36,7 +36,7 @@ def get_risk_free_rate(db2_path: str | None = None, base_currency: str = "EUR") 
     Rates come from ``RiskFree_{CUR}`` (three-month government yield or the
     overnight rate), stored by the FX and inflation pipeline step.
     """
-    db2_path = db2_path or get_db2()
+    db2_path = db2_path or get_market_db()
     try:
         conn = connect_read(db2_path)
     except (OSError, sqlite3.Error):
@@ -316,8 +316,8 @@ def calculate_metrics(
         ``period``, ``risk_free``, ``inflation``, ``series`` (weekday path for
         charts), ``monthly_returns``, ``annual_returns``, and ``warnings``.
     """
-    db3_path = db3_path or get_db3()
-    db2_path = db2_path or get_db2()
+    db3_path = db3_path or get_app_db()
+    db2_path = db2_path or get_market_db()
     currency = (base_currency or "EUR").upper()
     empty = {"start_date": start_date or "", "end_date": end_date or "", "base_currency": currency}
 

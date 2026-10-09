@@ -4,7 +4,7 @@ import sqlite3
 import pandas as pd
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 from src.utilities import stock_prices
 from src.utilities.price_provenance import source_id as build_source_id
 from src.utilities.price_provenance import utc_now
@@ -188,7 +188,7 @@ def run_import_stock_prices_csv(config, overwrite=False, context=None):
         context.report_progress(0, 1, "Importing stock-price CSV")
 
     result = import_stock_prices_csv(
-        db_name=get_db2(),
+        db_name=get_market_db(),
         prices_table="Stock_Prices",
         csv_path=str(csv_file_value),
         default_ticker=step_cfg.get("default_ticker", step_cfg.get("ticker", "")),
@@ -207,7 +207,6 @@ STEP_DEFINITION = StepDefinition(
     name="import_stock_prices_csv",
     handler=run_import_stock_prices_csv,
     display_name="Import Stock Prices (CSV)",
-    required_keys=(),
     input_fields=(
         StepFieldDefinition(
             "csv_file",

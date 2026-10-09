@@ -12,7 +12,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from config import Config
-from src.utilities.runtime_paths import state_dir
+from src.paths import manual_uploads_dir
 
 from .common import StepDefinition, build_step_registry
 from .common.validation import (
@@ -29,7 +29,7 @@ DISCOVERED_STEP_MODULES: tuple[str, ...] = ()
 
 _DEFAULT_UPLOAD_LIMIT = 10 * 1024 * 1024
 _UPLOAD_CHUNK_SIZE = 1024 * 1024
-_MANUAL_UPLOAD_ROOT = state_dir() / "manual_jobs"
+_MANUAL_UPLOAD_ROOT = manual_uploads_dir()
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WINDOWS_RESERVED_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL"}

@@ -12,6 +12,7 @@ from starlette.datastructures import UploadFile
 from config import Config
 from src.auth.models import AuthenticatedUser
 from src.orchestrator import validate_input
+from src.orchestrator.common.validation import MissingSettingsError
 from src.orchestrator.orchestrator import (
     InvalidUploadError,
     UploadTooLargeError,
@@ -129,7 +130,7 @@ async def submit_pipeline(request: Request) -> JobCreateResponse:
     except UploadTooLargeError as exc:
         manager.discard_workspace(job_id)
         raise HTTPException(status_code=413, detail=str(exc)) from exc
-    except InvalidUploadError as exc:
+    except (InvalidUploadError, MissingSettingsError) as exc:
         manager.discard_workspace(job_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (RuntimeError, TypeError, ValueError) as exc:

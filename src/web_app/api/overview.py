@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from src.auth.models import AuthenticatedUser
-from src.orchestrator.common.db_config import get_db2, get_db3
+from src.orchestrator.common.db_config import get_app_db, get_market_db
 from src.orchestrator.common.sqlite import connect_read
 
 logger = logging.getLogger(__name__)
@@ -134,7 +134,7 @@ def research_summary(owner_user_id: str) -> dict[str, Any]:
 def data_summary() -> dict[str, Any]:
     """How current the shared market and filing data are, for everyone."""
     result: dict[str, Any] = {"latest_price_date": None, "priced_securities": None}
-    conn = _read(get_db2())
+    conn = _read(get_market_db())
     if conn is not None:
         try:
             # The Date index makes the latest date instant; the count reads one day's rows.
@@ -161,7 +161,7 @@ def data_summary() -> dict[str, Any]:
 def overview(request: Request) -> dict[str, Any]:
     user = _user(request)
     return {
-        "portfolio": portfolio_summary(get_db3(), user.user_id),
+        "portfolio": portfolio_summary(get_app_db(), user.user_id),
         "research": research_summary(user.user_id),
         "data": data_summary(),
         "today": date.today().isoformat(),

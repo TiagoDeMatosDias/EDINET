@@ -59,7 +59,7 @@ def test_all_mode_adds_status_column_and_selects_eligible_documents(tmp_path, mo
 
     from src.orchestrator.common import db_config
 
-    monkeypatch.setattr(db_config, "get_db1", lambda: str(base_path))
+    monkeypatch.setattr(db_config, "get_market_db", lambda: str(base_path))
 
     assert download_step._all_ids({"doc_type_code": "120"}) == ["A", "C"]
     conn = connect_write(base_path)
@@ -89,7 +89,7 @@ def test_all_mode_updates_base_statuses_and_retries_failures(tmp_path, monkeypat
     from src.filings import acquisition, runtime
     from src.orchestrator.common import db_config
 
-    monkeypatch.setattr(db_config, "get_db1", lambda: str(base_path))
+    monkeypatch.setattr(db_config, "get_market_db", lambda: str(base_path))
 
     class FakeCatalog:
         def get_filing(self, document_id):
@@ -118,13 +118,13 @@ def test_all_mode_updates_base_statuses_and_retries_failures(tmp_path, monkeypat
 
     monkeypatch.setattr(acquisition, "EdinetDownloadClient", FakeClient)
     monkeypatch.setattr(runtime, "catalog", FakeCatalog())
+    monkeypatch.setattr(download_step, "edinet_api_key", lambda: "token")
 
     result = download_step.run_download_xbrl(
         {
             "download_xbrl_config": {
                 "mode": "all",
                 "doc_type_code": "",
-                "provider_token": "token",
             }
         }
     )

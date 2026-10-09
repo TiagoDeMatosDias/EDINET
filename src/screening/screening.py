@@ -2347,68 +2347,11 @@ def delete_screening_criteria(name: str, save_dir: str) -> None:
     logger.info("Deleted screening criteria '%s'", name)
 
 
-# ---------------------------------------------------------------------------
-# Persistence — screening history
-# ---------------------------------------------------------------------------
-
-def save_screening_history(entry: dict, history_path: str) -> None:
-    """Append a screening run record to the history file.
-
-    Each entry is stored as one JSON object per line (JSON-lines format).
-
-    Args:
-        entry: Dict with screening run details (timestamp, criteria, etc.).
-        history_path: Path to the history file.
-    """
-    path = Path(history_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Add timestamp if not present
-    if "timestamp" not in entry:
-        entry["timestamp"] = datetime.now().isoformat()
-
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-    logger.info("Saved screening history entry")
-
-
-def load_screening_history(history_path: str) -> list[dict]:
-    """Load screening history from a JSON-lines file.
-
-    Args:
-        history_path: Path to the history file.
-
-    Returns:
-        List of history entry dicts, most recent first.
-    """
-    path = Path(history_path)
-    if not path.exists():
-        return []
-
-    entries: list[dict] = []
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    logger.warning("Skipping malformed history line")
-                    continue
-
-    # Most recent first
-    entries.reverse()
-    return entries
-
-
 # Stable facade: cohesive implementations live in focused modules.
 from .formatting import format_financial_value  # noqa: E402,F401,F811
 from .persistence import (  # noqa: E402,F401,F811
     delete_screening_criteria,
     list_saved_screenings,
     load_screening_criteria,
-    load_screening_history,
     save_screening_criteria,
-    save_screening_history,
 )

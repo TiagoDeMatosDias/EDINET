@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from typing import Any
 
@@ -43,10 +42,11 @@ class EdinetDownloadClient:
         self._sessions_lock = threading.Lock()
 
     @classmethod
-    def from_environment(cls) -> "EdinetDownloadClient":
-        """Build the acquisition client from the provider-only environment key."""
-        token = os.getenv("EDINET_API_TOKEN", "")
-        return cls(token)
+    def from_settings(cls) -> "EdinetDownloadClient":
+        """Build the acquisition client from the ``edinet.api_key`` setting."""
+        from src.settings import edinet_api_key
+
+        return cls(edinet_api_key())
 
     def download_type1(self, doc_id: str) -> bytes:
         """Download one submitted document ZIP without logging credentials or URLs."""

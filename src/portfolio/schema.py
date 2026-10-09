@@ -16,6 +16,8 @@ from src.orchestrator.common.sqlite import (
     connect_read,
     connect_write,
     initialize_managed_database,
+    record_schema_version,
+    schema_version,
     table_exists,
 )
 
@@ -53,6 +55,8 @@ from src.portfolio.models import (
 from src.portfolio.models import (
     UploadResponse as UploadResponse,
 )
+
+_SCHEMA_COMPONENT = "portfolio"
 
 logger = logging.getLogger(__name__)
 
@@ -559,25 +563,19 @@ def _apply_migrations(path: Path) -> None:
     conn = connect_write(path)
     try:
         initialize_managed_database(conn)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS schema_migrations ("
-            "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
-        )
+        current_version = schema_version(conn, _SCHEMA_COMPONENT)
         conn.commit()
-        row = conn.execute(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
-        ).fetchone()
-        current_version = int(row[0])
         for version, migration in _MIGRATIONS:
             if version <= current_version:
                 continue
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 migration(conn)
-                conn.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) "
-                    "VALUES (?, ?)",
-                    (version, datetime.now(timezone.utc).isoformat()),
+                record_schema_version(
+                    conn,
+                    _SCHEMA_COMPONENT,
+                    version,
+                    datetime.now(timezone.utc).isoformat(),
                 )
                 conn.commit()
             except Exception:

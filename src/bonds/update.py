@@ -47,14 +47,11 @@ def _processed(conn: sqlite3.Connection, kind: str, reparse: bool) -> set[str]:
     return {row[0] for row in rows}
 
 
-def pending_issuances(conn: sqlite3.Connection, db1_path: str, *, reparse: bool = False) -> list[dict[str, Any]]:
+def pending_issuances(conn: sqlite3.Connection, *, reparse: bool = False) -> list[dict[str, Any]]:
     """Bond supplements in ``DocumentList`` that have not been read by this parser version."""
-    if not db1_path or not os.path.exists(db1_path):
-        return []
     done = _processed(conn, "issuance", reparse)
-    source = connect_read(db1_path)
     try:
-        rows = source.execute(
+        rows = conn.execute(
             "SELECT docID, edinetCode, filerName, submitDateTime, periodEnd, formCode, docDescription FROM DocumentList "
             "WHERE docTypeCode = ? AND xbrlFlag = '1' AND COALESCE(withdrawalStatus, '0') = '0' "
             "ORDER BY submitDateTime DESC",
@@ -62,8 +59,6 @@ def pending_issuances(conn: sqlite3.Connection, db1_path: str, *, reparse: bool 
         ).fetchall()
     except sqlite3.Error:
         return []
-    finally:
-        source.close()
     return [
         {
             "doc_id": str(row[0]).strip(), "edinet_code": row[1] or "", "filer_name": row[2] or "",
@@ -119,7 +114,7 @@ def _downloads(client: Any, conn: sqlite3.Connection, documents: list[dict[str, 
         return
     if client is None:
         for document in missing:
-            yield document, None, RuntimeError("No EDINET API key: set API_KEY in the pipeline settings or EDINET_API_TOKEN")
+            yield document, None, RuntimeError("No EDINET API key: set edinet.api_key on the Admin page")
         return
     queue = iter(missing)
     with ThreadPoolExecutor(max_workers=_DOWNLOAD_WORKERS, thread_name_prefix="bond-download") as executor:
@@ -229,8 +224,8 @@ def update_market_prices(conn: sqlite3.Connection, days: int, fetch: Callable[..
     return {**detail, "rows": len(rows), "latest": latest}
 
 
-def rebuild(conn: sqlite3.Connection, db2_path: str | None, *, today: str | None = None) -> dict[str, Any]:
-    bonds = build.build_bonds(conn, db2_path, today=today)
+def rebuild(conn: sqlite3.Connection, *, today: str | None = None) -> dict[str, Any]:
+    bonds = build.build_bonds(conn, today=today)
     store.replace_bonds(conn, bonds)
     detail = build.summary(bonds)
     store.mark_update(conn, "bonds", detail)
@@ -240,9 +235,7 @@ def rebuild(conn: sqlite3.Connection, db2_path: str | None, *, today: str | None
 
 def update_bonds(
     *,
-    bonds_db: str,
-    db1_path: str | None,
-    db2_path: str | None,
+    market_db: str,
     filings_db_path: str | None,
     client: Any = None,
     issuances: bool = True,
@@ -255,12 +248,12 @@ def update_bonds(
     progress: Progress = _no_progress,
     today: str | None = None,
 ) -> dict[str, Any]:
-    store.ensure_bond_tables(bonds_db)
-    conn = connect_write(bonds_db)
+    store.ensure_bond_tables(market_db)
+    conn = connect_write(market_db)
     result: dict[str, Any] = {}
     try:
         if issuances:
-            documents = pending_issuances(conn, db1_path or "", reparse=reparse)
+            documents = pending_issuances(conn, reparse=reparse)
             if max_documents > 0:
                 documents = documents[:max_documents]
             result["issuances"] = read_issuances(conn, documents, client, progress)
@@ -286,7 +279,7 @@ def update_bonds(
                 logger.warning("JSDA reference prices could not be read: %s", exc)
                 result["market_prices"] = {"error": str(exc)}
         progress(1, 1, "Merging bonds")
-        result["bonds"] = rebuild(conn, db2_path, today=today)
+        result["bonds"] = rebuild(conn, today=today)
     finally:
         conn.close()
     return result

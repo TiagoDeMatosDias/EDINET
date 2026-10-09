@@ -13,8 +13,11 @@ from src.orchestrator.common.sqlite import (
     DEFAULT_BUSY_TIMEOUT_MS,
     connect_write,
     initialize_managed_database,
+    record_schema_version,
+    schema_version,
 )
 
+_SCHEMA_COMPONENT = "pipeline_jobs"
 ACTIVE_STATUSES = frozenset({"pending", "running", "cancelling"})
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed", "interrupted"})
 
@@ -102,34 +105,18 @@ class JobStore:
     def _migrate(self) -> None:
         with self._connect() as conn:
             initialize_managed_database(conn)
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS schema_migrations ("
-                "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
-            )
-            row = conn.execute(
-                "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations"
-            ).fetchone()
-            version = int(row["version"])
+            version = schema_version(conn, _SCHEMA_COMPONENT)
             if version < 1:
                 conn.executescript(_MIGRATION_1)
-                conn.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                    (1, utc_now()),
-                )
+                record_schema_version(conn, _SCHEMA_COMPONENT, 1, utc_now())
                 version = 1
             if version < 2:
                 self._migrate_progress_columns(conn)
-                conn.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                    (2, utc_now()),
-                )
+                record_schema_version(conn, _SCHEMA_COMPONENT, 2, utc_now())
                 version = 2
             if version < 3:
                 conn.executescript(_MIGRATION_3)
-                conn.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                    (3, utc_now()),
-                )
+                record_schema_version(conn, _SCHEMA_COMPONENT, 3, utc_now())
 
     @staticmethod
     def _migrate_progress_columns(conn: sqlite3.Connection) -> None:

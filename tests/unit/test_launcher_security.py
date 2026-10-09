@@ -23,18 +23,19 @@ def _isolated_launcher(monkeypatch):
     monkeypatch.setattr("src.utilities.logger.setup_logging", lambda *args, **kwargs: None)
 
 
-def test_launcher_rejects_remote_bind_without_opt_in(monkeypatch):
-    monkeypatch.delenv("EDINET_AUTH_MODE", raising=False)
-    monkeypatch.delenv("EDINET_TRUSTED_HOSTS", raising=False)
-    with pytest.raises(SecurityConfigurationError, match="ALLOW_REMOTE"):
+def test_launcher_rejects_remote_bind_without_opt_in(monkeypatch, tmp_path):
+    monkeypatch.setenv("EDINET_DATA_DIR", str(tmp_path))
+    with pytest.raises(SecurityConfigurationError, match="--allow-remote"):
         launcher._run_web(host="0.0.0.0", allow_remote=False)
 
 
 def test_launcher_propagates_validated_remote_settings(monkeypatch, tmp_path):
+    from src.settings import set_setting
+
     captured = {}
-    monkeypatch.setenv("EDINET_AUTH_MODE", "accounts")
-    monkeypatch.setenv("EDINET_TRUSTED_HOSTS", "research.example")
-    monkeypatch.setenv("EDINET_CERT_DIR", str(tmp_path))
+    monkeypatch.setenv("EDINET_DATA_DIR", str(tmp_path))
+    set_setting("auth.mode", "accounts")
+    set_setting("server.trusted_hosts", ["research.example"])
     monkeypatch.setattr(
         uvicorn,
         "run",
@@ -53,8 +54,8 @@ def test_launcher_propagates_validated_remote_settings(monkeypatch, tmp_path):
         "host": "0.0.0.0",
         "port": 8123,
         "reload": False,
-        "ssl_certfile": tmp_path / "cert.pem",
-        "ssl_keyfile": tmp_path / "key.pem",
+        "ssl_certfile": tmp_path / "certs" / "cert.pem",
+        "ssl_keyfile": tmp_path / "certs" / "key.pem",
     }
-    assert (tmp_path / "cert.pem").is_file()
-    assert (tmp_path / "key.pem").is_file()
+    assert (tmp_path / "certs" / "cert.pem").is_file()
+    assert (tmp_path / "certs" / "key.pem").is_file()

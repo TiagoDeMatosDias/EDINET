@@ -127,10 +127,10 @@ def sync_position_tags(store: ResearchStore, user_id: str, positions: list[dict[
 
 def sync_from_portfolio(store: ResearchStore, user_id: str) -> dict[str, Any] | None:
     """Re-tag from the configured portfolio database; ``None`` (and no change) if it cannot be read."""
-    from src.orchestrator.common.db_config import get_db2, get_db3
+    from src.orchestrator.common.db_config import get_app_db, get_market_db
 
     try:
-        positions = portfolio_positions(get_db3(), get_db2(), user_id)
+        positions = portfolio_positions(get_app_db(), get_market_db(), user_id)
     except Exception as exc:  # noqa: BLE001 - never clear tags because the portfolio was unreadable
         _LOGGER.warning("Could not read portfolio positions for tagging: %s", exc)
         return None

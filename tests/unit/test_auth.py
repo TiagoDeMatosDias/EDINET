@@ -94,15 +94,16 @@ def test_register_login_refresh_rotation_and_logout(tmp_path):
     ).status_code == 401
 
 
-def test_provider_token_is_not_loaded_as_application_auth(monkeypatch, tmp_path):
-    monkeypatch.setenv("EDINET_API_TOKEN", "provider-only-secret")
-    monkeypatch.delenv("EDINET_APP_TOKEN", raising=False)
-    monkeypatch.setenv("EDINET_AUTH_MODE", "accounts")
-    monkeypatch.setenv("EDINET_AUTH_DB", str(tmp_path / "auth.db"))
+def test_provider_token_is_not_an_application_credential(tmp_path):
+    from src.settings import set_setting
 
-    settings = AppSettings.from_env()
-    assert settings.application_token is None
-    assert settings.api_token is None
+    app = _app(tmp_path)
+    set_setting("edinet.api_key", "provider-only-secret", app_db=tmp_path / "app.db")
+    client = TestClient(app)
+
+    response = client.get("/api/private", headers={"Authorization": "Bearer provider-only-secret"})
+
+    assert response.status_code == 401
 
 
 def test_personal_api_token_is_opaque_and_revocable(tmp_path):

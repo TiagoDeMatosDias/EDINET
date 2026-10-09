@@ -1,8 +1,7 @@
 import logging
-import os
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
-from src.orchestrator.common.db_config import get_db1, get_db2, get_filings_db
+from src.orchestrator.common.db_config import get_filings_db, get_market_db
 
 from . import service as financial_statement_services
 
@@ -13,13 +12,13 @@ def run_generate_financial_statements(config, overwrite=False, context=None):
     logger.info("Generating financial statements...")
     step_cfg = config.get("generate_financial_statements_config", {})
     source_mode = str(step_cfg.get("Source_Mode", "csv") or "csv").strip().casefold()
-    source_database = get_db1()
+    source_database = get_market_db()
     if source_mode == "filings":
-        source_database = os.getenv("EDINET_FILINGS_DB") or get_filings_db()
+        source_database = get_filings_db()
 
     kwargs = dict(
         source_database=source_database,
-        target_database=get_db2(),
+        target_database=get_market_db(),
         granularity_level=step_cfg.get("Granularity_level", 3),
         overwrite=overwrite,
     )

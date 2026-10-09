@@ -58,8 +58,8 @@ def test_research_summary_counts_and_lists_due_reviews(tmp_path, monkeypatch):
 def test_overview_route_answers_for_the_signed_in_user(portfolio_db, monkeypatch, market_db_path):
     from src.web_app.server import app
 
-    monkeypatch.setattr(overview_module, "get_db3", lambda: portfolio_db)
-    monkeypatch.setattr(overview_module, "get_db2", lambda: market_db_path)
+    monkeypatch.setattr(overview_module, "get_app_db", lambda: portfolio_db)
+    monkeypatch.setattr(overview_module, "get_market_db", lambda: market_db_path)
     body = TestClient(app).get("/api/overview").json()
     assert set(body) == {"portfolio", "research", "data", "today"}
     assert body["data"]["latest_price_date"] is not None

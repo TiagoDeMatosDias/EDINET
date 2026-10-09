@@ -56,7 +56,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--source",
-        default=os.getenv("EDINET_FILINGS_DB") or get_filings_db(),
+        default=get_filings_db(),
         help="Source Filings.db (default: configured filings database)",
     )
     parser.add_argument(

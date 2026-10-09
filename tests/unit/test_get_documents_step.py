@@ -24,7 +24,7 @@ def test_missing_dates_use_latest_document_date_and_today(monkeypatch, tmp_path)
     db_path = tmp_path / "base.db"
     _document_list(db_path, ["2025-02-01 09:00", "2025-04-15 10:30"])
     client = MagicMock()
-    monkeypatch.setattr(get_documents, "get_db1", lambda: str(db_path))
+    monkeypatch.setattr(get_documents, "get_market_db", lambda: str(db_path))
     monkeypatch.setattr(get_documents, "Edinet", lambda **_: client)
 
     get_documents.run_get_documents({"API_KEY": "key", "get_documents_config": {}})
@@ -38,7 +38,7 @@ def test_explicit_dates_are_preserved(monkeypatch, tmp_path):
     db_path = tmp_path / "base.db"
     _document_list(db_path, ["2025-04-15 10:30"])
     client = MagicMock()
-    monkeypatch.setattr(get_documents, "get_db1", lambda: str(db_path))
+    monkeypatch.setattr(get_documents, "get_market_db", lambda: str(db_path))
     monkeypatch.setattr(get_documents, "Edinet", lambda **_: client)
 
     get_documents.run_get_documents(

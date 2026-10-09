@@ -95,6 +95,54 @@ def transaction(
         conn.close()
 
 
+def schema_version(conn: sqlite3.Connection, component: str) -> int:
+    """Return the newest migration a component has applied in this database.
+
+    Several components share ``app.db``, so migrations are recorded per
+    component. A database created before that keeps a ``schema_migrations``
+    table without a ``component`` column; such a file held a single
+    component, so its rows are adopted by whichever component opens it first.
+    """
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(schema_migrations)").fetchall()
+    }
+    if columns and "component" not in columns:
+        conn.execute("ALTER TABLE schema_migrations RENAME TO schema_migrations_unscoped")
+        columns = set()
+    if not columns:
+        conn.execute(
+            "CREATE TABLE schema_migrations ("
+            "component TEXT NOT NULL, version INTEGER NOT NULL, applied_at TEXT NOT NULL, "
+            "PRIMARY KEY (component, version))"
+        )
+    if table_exists(conn, "schema_migrations_unscoped"):
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(component, version, applied_at) "
+            "SELECT ?, version, applied_at FROM schema_migrations_unscoped",
+            (component,),
+        )
+        conn.execute("DROP TABLE schema_migrations_unscoped")
+    row = conn.execute(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations WHERE component = ?",
+        (component,),
+    ).fetchone()
+    return int(row[0])
+
+
+def record_schema_version(
+    conn: sqlite3.Connection,
+    component: str,
+    version: int,
+    applied_at: str,
+) -> None:
+    """Record that a component's migration has been applied."""
+    conn.execute(
+        "INSERT INTO schema_migrations(component, version, applied_at) VALUES (?, ?, ?)",
+        (component, version, applied_at),
+    )
+
+
 def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",

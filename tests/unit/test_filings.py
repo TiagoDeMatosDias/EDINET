@@ -281,9 +281,14 @@ def test_archive_rejects_duplicate_members(tmp_path):
         archive_zip(content, "S100DUP", tmp_path / "archive")
 
 
-def test_provider_token_is_only_constructed_for_acquisition(monkeypatch):
-    monkeypatch.setenv("EDINET_API_TOKEN", "provider-secret")
-    client = EdinetDownloadClient.from_environment()
+def test_acquisition_client_reads_the_api_key_setting():
+    from src.settings import set_setting, unset_setting
+
+    set_setting("edinet.api_key", "provider-secret")
+    try:
+        client = EdinetDownloadClient.from_settings()
+    finally:
+        unset_setting("edinet.api_key")
     assert client.provider_token == "provider-secret"
 
 

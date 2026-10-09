@@ -59,7 +59,7 @@ def market(tmp_path):
 @pytest.fixture
 def chat(tmp_path, monkeypatch, market):
     store = ChatStore(tmp_path / "chat.db")
-    cipher = ChannelCipher(tmp_path / "secrets" / "keys.json")
+    cipher = ChannelCipher(tmp_path / "app.db")
     for module in (chat_api, profiles_api):
         monkeypatch.setattr(module, "store", store)
         monkeypatch.setattr(module, "cipher", cipher)
@@ -135,7 +135,7 @@ def test_channel_messages_are_encrypted_at_rest_and_resolve_company_references(c
 
 
 def test_a_ciphertext_cannot_be_moved_to_another_channel_or_sender(tmp_path):
-    cipher = ChannelCipher(tmp_path / "keys.json")
+    cipher = ChannelCipher(tmp_path / "app.db")
     sealed = cipher.seal("hello", channel_associated_data("topic:stocks", "u1", "m1"))
     assert cipher.open(sealed, channel_associated_data("topic:stocks", "u1", "m1")) == "hello"
     with pytest.raises(Exception):
@@ -143,7 +143,7 @@ def test_a_ciphertext_cannot_be_moved_to_another_channel_or_sender(tmp_path):
     with pytest.raises(Exception):
         cipher.open(Sealed(sealed.ciphertext, sealed.nonce, sealed.key_version), channel_associated_data("topic:stocks", "u2", "m1"))
     # The key ring survives a restart.
-    assert ChannelCipher(tmp_path / "keys.json").open(sealed, channel_associated_data("topic:stocks", "u1", "m1")) == "hello"
+    assert ChannelCipher(tmp_path / "app.db").open(sealed, channel_associated_data("topic:stocks", "u1", "m1")) == "hello"
 
 
 def test_company_channels_open_for_known_companies_only(chat):

@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
 from src.auth.models import AuthenticatedUser
-from src.orchestrator.common.db_config import get_db1, get_db2
+from src.orchestrator.common.db_config import get_market_db
 from src.orchestrator.common.sqlite import connect_read
 
 from .acquisition import EdinetAcquisitionError, EdinetDownloadClient
@@ -188,7 +188,7 @@ def _company_directory(codes: Iterable[str]) -> dict[str, dict[str, str]]:
     if not wanted:
         return {}
     try:
-        conn = connect_read(get_db2())
+        conn = connect_read(get_market_db())
     except (OSError, sqlite3.Error, TypeError):
         return {}
     directory: dict[str, dict[str, str]] = {}
@@ -304,7 +304,7 @@ def _taxonomy_labels(qnames: Iterable[str]) -> dict[str, str]:
     names = list(qnames)
     labels: dict[str, str] = {}
     try:
-        conn = connect_read(get_db2())
+        conn = connect_read(get_market_db())
     except (OSError, sqlite3.Error):
         return labels
     try:
@@ -419,7 +419,7 @@ def acquire_filing(request: Request, payload: AcquireRequest) -> dict[str, Any]:
     _require_operator(request)
     metadata = payload.model_dump(exclude_none=True)
     try:
-        client = EdinetDownloadClient.from_environment()
+        client = EdinetDownloadClient.from_settings()
         fact_count = client.acquire_type1(
             payload.doc_id,
             catalog,
@@ -443,7 +443,7 @@ def list_xbrl_eligible(
     """
     if not isinstance(getattr(request.state, "user", None), AuthenticatedUser):
         raise HTTPException(status_code=401, detail="Account authentication is required")
-    db1_path = get_db1()
+    db1_path = get_market_db()
     if not os.path.exists(db1_path):
         return {"eligible": [], "total": 0}
 
@@ -502,7 +502,7 @@ def trigger_xbrl_backfill(
     Leave empty for all document types. Requires operator or admin permission.
     """
     _require_operator(request)
-    db1_path = get_db1()
+    db1_path = get_market_db()
     if not os.path.exists(db1_path):
         return {"downloaded": 0, "skipped": 0, "failed": 0, "total": 0}
 
@@ -529,7 +529,7 @@ def trigger_xbrl_backfill(
     finally:
         conn.close()
 
-    client = EdinetDownloadClient.from_environment()
+    client = EdinetDownloadClient.from_settings()
     downloaded = 0
     skipped = 0
     failed = 0

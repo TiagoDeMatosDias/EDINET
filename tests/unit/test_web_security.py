@@ -28,11 +28,14 @@ def test_loopback_hosts_do_not_require_remote_opt_in():
     assert AppSettings().validate().authentication_required is True
 
 
-def test_backtest_artifact_limit_is_independent(monkeypatch):
-    monkeypatch.setenv("EDINET_MAX_EXPORT_BYTES", "1024")
-    monkeypatch.setenv("EDINET_MAX_BACKTEST_ARTIFACT_BYTES", "4096")
+def test_backtest_artifact_limit_is_independent(tmp_path):
+    from src.settings import set_setting
 
-    settings = AppSettings.from_env(host="127.0.0.1", allow_remote=False)
+    app_db = tmp_path / "app.db"
+    set_setting("limits.max_export_bytes", 1024, app_db=app_db)
+    set_setting("limits.max_backtest_artifact_bytes", 4096, app_db=app_db)
+
+    settings = AppSettings.load(host="127.0.0.1", allow_remote=False, app_db=app_db)
 
     assert settings.max_export_bytes == 1024
     assert settings.max_backtest_artifact_bytes == 4096
@@ -113,7 +116,7 @@ def test_remote_api_requires_valid_bearer_and_hides_500_details(tmp_path):
 
 
 def test_remote_settings_require_explicit_trusted_hosts():
-    with pytest.raises(SecurityConfigurationError, match="TRUSTED_HOSTS"):
+    with pytest.raises(SecurityConfigurationError, match="server.trusted_hosts"):
         AppSettings(
             host="0.0.0.0",
             allow_remote=True,
@@ -371,9 +374,9 @@ def test_unhandled_error_response_carries_correlation_header():
 
 
 def test_bare_settings_never_default_to_a_cwd_relative_auth_database():
-    from src.orchestrator.common.db_config import get_auth_db
+    from src.orchestrator.common.db_config import get_app_db
 
-    assert AppSettings().auth_db_path == Path(get_auth_db())
+    assert AppSettings().auth_db_path == Path(get_app_db())
 
 
 @pytest.mark.parametrize(
@@ -390,7 +393,7 @@ def test_requests_cannot_choose_a_database(method, path, body):
     from src.web_app.server import app
 
     client = TestClient(app)
-    private = db_config.get_auth_db()
+    private = db_config.get_app_db()
     if method == "get":
         response = client.get(path, params={"db_path": private})
         assert response.status_code == 200

@@ -48,7 +48,7 @@ from src.orchestrator.common.corporate_actions import (  # noqa: E402
     load_split_events,
     standard_split_multiplier,
 )
-from src.orchestrator.common.db_config import get_db2  # noqa: E402
+from src.orchestrator.common.db_config import get_market_db  # noqa: E402
 from src.orchestrator.common.share_basis import share_basis_rule  # noqa: E402
 
 # A company without a ticker (delisted) is keyed by its EDINET code, as in corporate_actions.
@@ -218,7 +218,7 @@ def main() -> int:
     parser.add_argument("--skip-history", action="store_true", help="Skip the history payload check (about a minute)")
     args = parser.parse_args()
     logging.disable(logging.WARNING)
-    db_path = args.db or get_db2()
+    db_path = args.db or get_market_db()
     conn = sqlite3.connect(f"file:{Path(db_path).resolve()}?mode=ro", uri=True)
     price, book, earnings = price_and_book_checks(conn)
     both = price.merge(earnings, on=["ticker", "from", "to"]) if len(price) and len(earnings) else price.iloc[0:0]

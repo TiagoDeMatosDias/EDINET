@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -999,6 +1000,34 @@ class ResearchStore:
                 (user_id, screen_id),
             )
             return result.rowcount == 1
+
+    # -- screening run history --
+
+    def record_screening_run(self, user_id: str, summary: dict[str, Any]) -> dict[str, Any]:
+        """Record one screening run; ``summary`` is stored as given plus its timestamp."""
+        now = _timestamp()
+        entry = {**summary, "timestamp": now}
+        with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
+            conn.execute(
+                """INSERT INTO screening_runs (run_id, user_id, requested_at, as_of, summary_json)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (str(uuid.uuid4()), user_id, now, summary.get("screening_date"), json.dumps(entry, ensure_ascii=False)),
+            )
+        return entry
+
+    def list_screening_runs(self, user_id: str, *, limit: int, offset: int) -> tuple[list[dict[str, Any]], int]:
+        """One page of a user's screening runs, most recent first, and the total count."""
+        conn = self._connection()
+        try:
+            total = conn.execute("SELECT COUNT(*) FROM screening_runs WHERE user_id = ?", (user_id,)).fetchone()[0]
+            rows = conn.execute(
+                "SELECT summary_json FROM screening_runs WHERE user_id = ? "
+                "ORDER BY requested_at DESC, rowid DESC LIMIT ? OFFSET ?",
+                (user_id, limit, offset),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [json.loads(row["summary_json"]) for row in rows], int(total)
 
     def _connection(self) -> sqlite3.Connection:
         return connect_write(self.path, busy_timeout_ms=self.busy_timeout_ms)

@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from src.auth.models import AuthenticatedUser
 from src.orchestrator import validate_input
+from src.orchestrator.common.validation import MissingSettingsError
 
 from . import runtime
 from .models import (
@@ -31,6 +32,8 @@ def _validate_pipeline(steps: list[dict], config: dict) -> None:
     try:
         validate_input(config=config, steps=steps)
         json.dumps(config, separators=(",", ":"))
+    except MissingSettingsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (RuntimeError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Invalid pipeline sequence") from exc
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
@@ -142,27 +142,3 @@ def delete_screening_criteria(name: str, save_dir: str) -> None:
         raise FileNotFoundError(f"Screening '{name}' not found in {directory}")
     path.unlink()
     logger.info("Deleted screening criteria '%s'", name)
-
-
-def save_screening_history(entry: dict, history_path: str) -> None:
-    path = Path(history_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = dict(entry)
-    payload.setdefault("timestamp", datetime.now().isoformat())
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-
-def load_screening_history(history_path: str) -> list[dict]:
-    path = Path(history_path)
-    if not path.exists():
-        return []
-    entries = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            if line.strip():
-                entries.append(json.loads(line))
-        except json.JSONDecodeError:
-            logger.warning("Skipping malformed history line")
-    entries.reverse()
-    return entries

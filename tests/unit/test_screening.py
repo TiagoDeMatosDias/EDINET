@@ -25,10 +25,8 @@ from src.screening import (
     get_default_columns,
     list_saved_screenings,
     load_screening_criteria,
-    load_screening_history,
     run_screening,
     save_screening_criteria,
-    save_screening_history,
 )
 
 
@@ -1094,38 +1092,6 @@ def test_delete_screening_criteria(tmp_path):
 def test_delete_nonexistent_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         delete_screening_criteria("nonexistent", str(tmp_path))
-
-
-# ---------------------------------------------------------------------------
-# Tests — persistence (history)
-# ---------------------------------------------------------------------------
-
-def test_save_and_load_history(tmp_path):
-    """Save multiple entries, load, verify order and contents."""
-    history_path = str(tmp_path / "history.jsonl")
-
-    entry1 = {"criteria": [{"table": "Valuation", "column": "PERatio", "operator": ">", "value": 5}],
-              "result_count": 10, "period": "2024"}
-    entry2 = {"criteria": [{"table": "Quality", "column": "ROE", "operator": ">", "value": 0.1}],
-              "result_count": 5, "period": "2023"}
-
-    save_screening_history(entry1, history_path)
-    save_screening_history(entry2, history_path)
-
-    history = load_screening_history(history_path)
-    assert len(history) == 2
-    # Most recent first
-    assert history[0]["result_count"] == 5
-    assert history[1]["result_count"] == 10
-    # Timestamps should have been added
-    assert "timestamp" in history[0]
-    assert "timestamp" in history[1]
-
-
-def test_load_history_empty(tmp_path):
-    """Loading from nonexistent file should return empty list."""
-    history = load_screening_history(str(tmp_path / "nope.jsonl"))
-    assert history == []
 
 
 # ---------------------------------------------------------------------------

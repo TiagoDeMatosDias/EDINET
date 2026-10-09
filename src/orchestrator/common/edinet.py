@@ -20,7 +20,7 @@ from src.utilities import utils as h
 
 logger = logging.getLogger(__name__)
 
-# Hardcoded EDINET API base URL (was in .env)
+# Hardcoded EDINET API base URL
 EDINET_BASE_URL = "https://api.edinet-fsa.go.jp/api/v2/documents"
 
 
@@ -37,7 +37,7 @@ def _acquire_xbrl(doc: dict, working_folder: str) -> None:
         from src.filings.acquisition import EdinetDownloadClient
         from src.filings.runtime import catalog
 
-        client = EdinetDownloadClient.from_environment()
+        client = EdinetDownloadClient.from_settings()
         client.acquire_type1(
             doc_id,
             catalog,

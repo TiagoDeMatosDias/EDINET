@@ -3,8 +3,7 @@
 Channel messages are readable by anyone who can open the channel, so the
 server must be able to decrypt them to serve them. They are still stored
 encrypted (AES-256-GCM) so a copy of ``chat.db`` alone reveals nothing: the
-key ring lives in a separate file in the state directory (or the
-``EDINET_CHAT_KEYS`` file), created with owner-only permissions.
+key ring is a secret row in ``app.db``, a separate file.
 
 Direct and group messages never pass through here. They are encrypted in the
 browser with keys the server never sees (see ``storage.ChatStore``).
@@ -13,8 +12,6 @@ browser with keys the server never sees (see ``storage.ChatStore``).
 from __future__ import annotations
 
 import base64
-import json
-import os
 import secrets
 import threading
 from dataclasses import dataclass
@@ -22,10 +19,12 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from src.utilities.runtime_paths import state_dir
+from src.orchestrator.common.db_config import get_app_db
+from src.settings.store import SettingsStore
 
 SERVER_SCHEME = "server-aes-gcm-v1"
 E2E_SCHEME = "e2e-aes-gcm-v1"
+KEY_RING_SETTING = "chat.message_keys"
 _NONCE_BYTES = 12
 
 
@@ -37,13 +36,6 @@ def _unb64(value: str) -> bytes:
     return base64.b64decode(value.encode("ascii"), validate=True)
 
 
-def default_keyring_path() -> Path:
-    configured = os.getenv("EDINET_CHAT_KEYS", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return state_dir() / "secrets" / "chat_message_keys.json"
-
-
 @dataclass(frozen=True)
 class Sealed:
     ciphertext: str
@@ -52,10 +44,14 @@ class Sealed:
 
 
 class ChannelCipher:
-    """A versioned AES-GCM key ring; new messages use the newest key."""
+    """A versioned AES-GCM key ring; new messages use the newest key.
 
-    def __init__(self, path: str | Path | None = None) -> None:
-        self.path = Path(path) if path is not None else default_keyring_path()
+    The ring is created on first use and stored in the ``settings`` table of
+    the given application database (``app.db`` by default).
+    """
+
+    def __init__(self, app_db: str | Path | None = None) -> None:
+        self.app_db = Path(app_db) if app_db is not None else Path(get_app_db())
         self._lock = threading.Lock()
         self._keys: dict[int, AESGCM] | None = None
         self._active = 0
@@ -64,30 +60,14 @@ class ChannelCipher:
         with self._lock:
             if self._keys is not None:
                 return self._keys
-            if self.path.exists():
-                data = json.loads(self.path.read_text(encoding="utf-8"))
-            else:
-                data = {"active": 1, "keys": {"1": _b64(secrets.token_bytes(32))}}
-                self._write_new(data)
+            fresh = {"active": 1, "keys": {"1": _b64(secrets.token_bytes(32))}}
+            data = SettingsStore(self.app_db).set_if_missing(KEY_RING_SETTING, fresh)
             keys = {int(version): AESGCM(_unb64(value)) for version, value in data["keys"].items()}
             active = int(data["active"])
             if active not in keys:
-                raise ValueError(f"Chat key ring {self.path} names a missing active key")
+                raise ValueError("The chat key ring names a missing active key")
             self._keys, self._active = keys, active
             return keys
-
-    def _write_new(self, data: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        # O_EXCL: two processes starting together must not each write a key.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        try:
-            descriptor = os.open(self.path, flags, 0o600)
-        except FileExistsError:
-            data.clear()
-            data.update(json.loads(self.path.read_text(encoding="utf-8")))
-            return
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(data, handle)
 
     def seal(self, plaintext: str, associated: str) -> Sealed:
         keys = self._load()

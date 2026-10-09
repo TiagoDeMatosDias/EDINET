@@ -41,9 +41,9 @@ def _public_key_bytes(cert_path, key_path) -> tuple[bytes, bytes]:
     )
 
 
-def test_default_cert_dir_honors_env_override(tmp_path, monkeypatch):
-    monkeypatch.setenv("EDINET_CERT_DIR", str(tmp_path / "elsewhere"))
-    assert default_cert_dir() == tmp_path / "elsewhere"
+def test_default_cert_dir_is_in_the_data_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("EDINET_DATA_DIR", str(tmp_path / "elsewhere"))
+    assert default_cert_dir() == tmp_path / "elsewhere" / "certs"
 
 
 def test_provision_generates_self_signed_pair_when_folder_empty(tmp_path):

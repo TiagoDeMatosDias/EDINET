@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from src.auth.models import AuthenticatedUser
-from src.orchestrator.common.db_config import get_bonds_db
+from src.orchestrator.common.db_config import get_market_db
 
 from . import service
 
@@ -21,7 +21,7 @@ _EMPTY = {"bonds": 0, "outstanding": 0, "companies": 0, "curve_date": None, "upd
 
 
 def _database() -> str | None:
-    path = get_bonds_db()
+    path = get_market_db()
     return path if path and Path(path).is_file() else None
 
 

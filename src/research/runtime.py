@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-from src.orchestrator.common.db_config import get_research_db
+from src.orchestrator.common.db_config import get_app_db
 
 from .storage import ResearchStore
 
-RESEARCH_DB_PATH = Path(os.getenv("EDINET_RESEARCH_DB") or get_research_db()).expanduser()
+RESEARCH_DB_PATH = Path(get_app_db())
 store = ResearchStore(RESEARCH_DB_PATH)

@@ -19,7 +19,7 @@ from src import security_analysis as _security
 from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
 from src.comparison.service import METRIC_DEFINITIONS, flatten_overview
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 from src.orchestrator.common.sqlite import connect_read
 from src.security_analysis.company_descriptions import get_or_fetch_description, yahoo_symbol
 
@@ -34,7 +34,7 @@ router = APIRouter(prefix="/api/security", tags=["security_analysis"])
 
 def _resolve_db() -> str:
     """The server's configured Standardized database."""
-    db_path = get_db2()
+    db_path = get_market_db()
     if not db_path or not Path(db_path).is_file():
         raise HTTPException(status_code=503, detail="Database not found.")
     return db_path

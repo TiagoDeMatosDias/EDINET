@@ -209,11 +209,11 @@ def migrate_legacy_tags(request: Request) -> dict:
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Administrator permission required")
 
-    from src.orchestrator.common.db_config import get_db2
+    from src.orchestrator.common.db_config import get_market_db
     from src.orchestrator.common.sqlite import connect_read
 
     try:
-        conn = connect_read(get_db2())
+        conn = connect_read(get_market_db())
         rows = conn.execute(
             "SELECT edinetCode, tag FROM Company_Tags ORDER BY edinetCode, tag"
         ).fetchall()

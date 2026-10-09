@@ -6,7 +6,7 @@ import sqlite3
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common import ratios as ratio_services
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 
 logger = logging.getLogger(__name__)
 
@@ -529,7 +529,7 @@ def run_generate_ratios(config, overwrite=False, context=None):
     step_cfg = config.get("generate_ratios_config", {})
 
     kwargs = dict(
-        database=get_db2(),
+        database=get_market_db(),
         overwrite=overwrite,
         batch_size=step_cfg.get("batch_size", 5000),
     )

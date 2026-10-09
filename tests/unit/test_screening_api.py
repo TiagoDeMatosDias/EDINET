@@ -23,7 +23,7 @@ client = TestClient(app)
 
 def _use_database(monkeypatch, path) -> str:
     """Make ``path`` the server's configured screening database."""
-    monkeypatch.setattr(screening_api, "get_db2", lambda: str(path))
+    monkeypatch.setattr(screening_api, "get_market_db", lambda: str(path))
     return str(path)
 
 
@@ -712,9 +712,9 @@ def test_export_backtest(test_db_path, monkeypatch):
     content = resp.text
     assert "Year" in content
     assert "Tickers" in content
-    assert generated_path["value"].parent.parent == (
-        screening_api._STATE_DIR / "exports"
-    )
+    from src.paths import exports_dir
+
+    assert generated_path["value"].parent.parent == exports_dir()
     assert not generated_path["value"].parent.exists()
 
 

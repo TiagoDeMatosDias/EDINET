@@ -17,6 +17,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
+from src.settings import edinet_api_key
 
 logger = logging.getLogger(__name__)
 _MAX_DOCUMENTS_PER_RUN = 100
@@ -44,12 +45,12 @@ def _backfill_ids(step_cfg: dict) -> list[str]:
     max_docs = int(step_cfg.get("max_documents", _MAX_DOCUMENTS_PER_RUN))
     doc_type_code = str(step_cfg.get("doc_type_code", "120")).strip()
     try:
-        from src.orchestrator.common.db_config import get_db1
+        from src.orchestrator.common.db_config import get_market_db
         from src.orchestrator.common.sqlite import connect_read
     except Exception:
         return []
 
-    db1_path = get_db1()
+    db1_path = get_market_db()
     if not os.path.exists(db1_path):
         return []
 
@@ -140,12 +141,12 @@ def _create_document_list_indexes(
 def _ensure_document_list_indexes() -> None:
     """Ensure the document lookup index exists for non-all XBRL modes."""
     try:
-        from src.orchestrator.common.db_config import get_db1
+        from src.orchestrator.common.db_config import get_market_db
         from src.orchestrator.common.sqlite import connect_write
     except Exception:
         return
 
-    db1_path = get_db1()
+    db1_path = get_market_db()
     if not os.path.exists(db1_path):
         return
 
@@ -172,12 +173,12 @@ def _ensure_xbrl_status_column():
     lazily to keep existing databases backwards compatible.
     """
     try:
-        from src.orchestrator.common.db_config import get_db1
+        from src.orchestrator.common.db_config import get_market_db
         from src.orchestrator.common.sqlite import connect_write, quote_identifier
     except Exception:
         return None
 
-    db1_path = get_db1()
+    db1_path = get_market_db()
     if not os.path.exists(db1_path):
         return None
 
@@ -333,12 +334,12 @@ def _load_base_metadata(document_ids: list[str]) -> dict[str, dict]:
         return {}
 
     try:
-        from src.orchestrator.common.db_config import get_db1
+        from src.orchestrator.common.db_config import get_market_db
         from src.orchestrator.common.sqlite import connect_read
     except Exception:
         return {}
 
-    db1_path = get_db1()
+    db1_path = get_market_db()
     if not os.path.exists(db1_path):
         return {}
 
@@ -509,23 +510,16 @@ def run_download_xbrl(config, overwrite=False, context=None):
             f"download_xbrl mode must be explicit, backfill, or all; got {mode!r}"
         )
 
-    provider_token = str(step_cfg.get("provider_token", "")).strip()
+    provider_token = edinet_api_key()
     if not provider_token:
-        provider_token = str(config.get("API_KEY", ""))
-    if not provider_token:
-        provider_token = os.getenv("EDINET_API_TOKEN", "")
-    if not provider_token:
-        logger.warning(
-            "download_xbrl: no provider token available. "
-            "Set API_KEY in pipeline config, EDINET_API_TOKEN env var, or provider_token in step config."
-        )
+        logger.warning("download_xbrl: no EDINET API key. Set edinet.api_key on the Admin page.")
         return {
             "mode": mode,
             "candidates": len(document_ids),
             "downloaded": 0,
             "skipped": 0,
             "failed": 0,
-            "error": "No EDINET provider token configured",
+            "error": "No EDINET API key configured",
         }
     client = EdinetDownloadClient(provider_token)
 
@@ -625,13 +619,6 @@ STEP_DEFINITION = StepDefinition(
             default="120",
             label="Document type filter",
             description="Backfill/all filter: 120=annual, 130=semi-annual, 140=quarterly; leave empty for all types.",
-        ),
-        StepFieldDefinition(
-            "provider_token",
-            "str",
-            default="",
-            label="Provider token (optional)",
-            description="Override the API key. Uses pipeline API_KEY or EDINET_API_TOKEN env var when empty.",
         ),
     ),
 )

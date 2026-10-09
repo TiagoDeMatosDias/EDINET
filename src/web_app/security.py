@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from src.utilities.runtime_paths import state_dir
+from src.paths import jobs_dir
 
 logger = logging.getLogger(__name__)
 
@@ -27,16 +27,16 @@ _DEFAULT_MAX_EXPORT_BYTES = 25 * 1024 * 1024
 _DEFAULT_MAX_BACKTEST_ARTIFACT_BYTES = 256 * 1024 * 1024
 _DEFAULT_MAX_REPORT_ARTIFACT_BYTES = 128 * 1024 * 1024
 _REQUEST_ENVELOPE_OVERHEAD_BYTES = 1024 * 1024
-_DEFAULT_JOB_WORKSPACE_ROOT = state_dir() / "jobs"
+_DEFAULT_JOB_WORKSPACE_ROOT = jobs_dir()
 _DEFAULT_AUTH_DB_PATH: Path | None = None
 
 
 def _default_auth_db_path() -> Path:
     global _DEFAULT_AUTH_DB_PATH
     if _DEFAULT_AUTH_DB_PATH is None:
-        from src.orchestrator.common.db_config import get_auth_db
+        from src.orchestrator.common.db_config import get_app_db
 
-        _DEFAULT_AUTH_DB_PATH = Path(get_auth_db())
+        _DEFAULT_AUTH_DB_PATH = Path(get_app_db())
     return _DEFAULT_AUTH_DB_PATH
 _PUBLIC_AUTH_PATHS = frozenset(
     {
@@ -178,8 +178,7 @@ class PathPolicyError(ValueError):
     """Raised when an untrusted filesystem path is outside the allowed scope."""
 
 
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
+def _flag(name: str, raw: str | None, default: bool = False) -> bool:
     if raw is None:
         return default
     normalized = raw.strip().casefold()
@@ -215,9 +214,6 @@ class AppSettings:
     # Resolved through db_config so a bare AppSettings() never falls back to
     # a cwd-relative path that could be an operator database.
     auth_db_path: Path = field(default_factory=lambda: _default_auth_db_path())
-    application_token: str | None = None
-    # Deprecated compatibility field; never populated from a provider token.
-    api_token: str | None = None
     allowed_data_roots: tuple[Path, ...] = ()
     max_upload_bytes: int = _DEFAULT_MAX_UPLOAD_BYTES
     max_export_bytes: int = _DEFAULT_MAX_EXPORT_BYTES
@@ -238,7 +234,7 @@ class AppSettings:
 
     def validate(self) -> "AppSettings":
         if not 1 <= self.port <= 65_535:
-            raise SecurityConfigurationError("EDINET_PORT must be between 1 and 65535")
+            raise SecurityConfigurationError("--port must be between 1 and 65535")
         if (
             self.max_upload_bytes < 1
             or self.max_export_bytes < 1
@@ -250,125 +246,82 @@ class AppSettings:
             )
         if self.sqlite_busy_timeout_ms < 1:
             raise SecurityConfigurationError(
-                "EDINET_SQLITE_BUSY_TIMEOUT_MS must be positive"
+                "The SQLite busy timeout must be positive"
             )
         if self.job_retention_hours < 1:
             raise SecurityConfigurationError(
-                "EDINET_JOB_RETENTION_HOURS must be positive"
+                "jobs.retention_hours must be positive"
             )
         if self.auth_mode not in {"disabled", "accounts"}:
             raise SecurityConfigurationError(
-                "EDINET_AUTH_MODE must be disabled or accounts"
+                "auth.mode must be disabled or accounts"
             )
         if self.registration_mode not in {"open", "closed"}:
             raise SecurityConfigurationError(
-                "EDINET_REGISTRATION_MODE must be open or closed"
+                "The registration mode must be open or closed"
             )
         if self.remote and not self.allow_remote:
             raise SecurityConfigurationError(
-                "Non-loopback binding requires EDINET_ALLOW_REMOTE=true"
+                "Non-loopback binding requires the --allow-remote launch option"
             )
         if self.remote and self.auth_mode != "accounts":
             raise SecurityConfigurationError(
-                "Non-loopback binding requires EDINET_AUTH_MODE=accounts"
+                "Non-loopback binding requires the auth.mode setting to be accounts"
             )
         if self.remote and not self.trusted_hosts:
             raise SecurityConfigurationError(
-                "Non-loopback binding requires EDINET_TRUSTED_HOSTS"
+                "Non-loopback binding requires the server.trusted_hosts setting"
             )
         return self
 
     @classmethod
-    def from_env(
+    def load(
         cls,
         *,
         host: str | None = None,
         port: int | None = None,
         allow_remote: bool | None = None,
+        app_db: str | Path | None = None,
     ) -> "AppSettings":
-        roots_value = os.getenv("EDINET_ALLOWED_DATA_ROOTS", "")
-        roots = tuple(
-            Path(item.strip()).expanduser()
-            for item in roots_value.split(os.pathsep)
-            if item.strip()
-        )
-        trusted_hosts = tuple(
-            item.strip()
-            for item in os.getenv("EDINET_TRUSTED_HOSTS", "").split(",")
-            if item.strip()
-        )
-        configured_host = (
-            host
-            if host is not None
-            else (os.getenv("EDINET_HOST") or "127.0.0.1")
-        )
+        """Combine the launch options with the settings stored in ``app.db``.
+
+        The launcher hands its options to the server process (which uvicorn
+        may start separately) through ``EDINET_HOST``, ``EDINET_PORT``, and
+        ``EDINET_ALLOW_REMOTE``; an explicit argument takes precedence.
+        """
+        from src.settings import load_settings
+
+        stored = load_settings(app_db=app_db)
+        configured_host = host if host is not None else (os.getenv("EDINET_HOST") or "127.0.0.1")
         settings = cls(
             host=configured_host.strip(),
             port=port if port is not None else int(os.getenv("EDINET_PORT", "8000")),
             allow_remote=(
                 allow_remote
                 if allow_remote is not None
-                else _env_flag("EDINET_ALLOW_REMOTE")
+                else _flag("--allow-remote", os.getenv("EDINET_ALLOW_REMOTE"))
             ),
-            auth_mode=(os.getenv("EDINET_AUTH_MODE") or "accounts").strip().casefold(),
-            registration_mode=(
-                os.getenv("EDINET_REGISTRATION_MODE") or "open"
-            ).strip().casefold(),
-            auth_db_path=Path(
-                os.getenv("EDINET_AUTH_DB") or str(_default_auth_db_path())
-            ).expanduser(),
-            application_token=os.getenv("EDINET_APP_TOKEN") or None,
-            allowed_data_roots=roots,
-            max_upload_bytes=int(
-                os.getenv(
-                    "EDINET_MAX_UPLOAD_BYTES",
-                    str(_DEFAULT_MAX_UPLOAD_BYTES),
-                )
-            ),
-            max_export_bytes=int(
-                os.getenv(
-                    "EDINET_MAX_EXPORT_BYTES",
-                    str(_DEFAULT_MAX_EXPORT_BYTES),
-                )
-            ),
-            max_backtest_artifact_bytes=int(
-                os.getenv(
-                    "EDINET_MAX_BACKTEST_ARTIFACT_BYTES",
-                    str(_DEFAULT_MAX_BACKTEST_ARTIFACT_BYTES),
-                )
-            ),
-            max_report_artifact_bytes=int(
-                os.getenv(
-                    "EDINET_MAX_REPORT_ARTIFACT_BYTES",
-                    str(_DEFAULT_MAX_REPORT_ARTIFACT_BYTES),
-                )
-            ),
-            sqlite_busy_timeout_ms=int(
-                os.getenv("EDINET_SQLITE_BUSY_TIMEOUT_MS", "30000")
-            ),
-            job_retention_hours=int(
-                os.getenv("EDINET_JOB_RETENTION_HOURS", "24")
-            ),
-            job_workspace_root=Path(
-                os.getenv(
-                    "EDINET_JOB_WORKSPACE_ROOT",
-                    str(_DEFAULT_JOB_WORKSPACE_ROOT),
-                )
-            ).expanduser(),
-            trusted_hosts=trusted_hosts,
+            auth_mode=stored["auth.mode"],
+            allowed_data_roots=tuple(Path(item).expanduser() for item in stored["pipeline.allowed_data_roots"]),
+            max_upload_bytes=stored["limits.max_upload_bytes"],
+            max_export_bytes=stored["limits.max_export_bytes"],
+            max_backtest_artifact_bytes=stored["limits.max_backtest_artifact_bytes"],
+            max_report_artifact_bytes=stored["limits.max_report_artifact_bytes"],
+            job_retention_hours=stored["jobs.retention_hours"],
+            trusted_hosts=tuple(stored["server.trusted_hosts"]),
         )
         return settings.validate()
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> AppSettings:
-    """The process's settings, read from the environment once.
+    """The process's settings, read from ``app.db`` once.
 
     Every module reads settings through this function so they always agree.
-    The launcher passes command-line overrides through the environment, and
-    tests replace this function (or clear its cache) to change a setting.
+    Settings marked as needing a restart take effect the next time the server
+    starts. Tests replace this function (or clear its cache) to change one.
     """
-    return AppSettings.from_env()
+    return AppSettings.load()
 
 
 class PathPolicy:

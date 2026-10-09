@@ -12,7 +12,7 @@ import sqlite3
 
 import pandas as pd
 
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 from src.orchestrator.common.sqlite import connect_write
 from src.portfolio.etf_data import fetch_etf_history, is_etf
 from src.utilities.stock_prices import (
@@ -105,13 +105,13 @@ def ensure_prices_for_tickers(
     European ETF suffix fallback is handled by ``load_ticker_data`` itself.
 
     Args:
-        db2_path: Path to the Standardized DB (defaults to ``get_db2()``).
+        db2_path: Path to the Standardized DB (defaults to ``get_market_db()``).
         ticker_currency_map: ``{ticker: currency}`` dict from parsed XML.
 
     Returns:
         ``{'fetched': [...], 'already_present': [...], 'failed': [...]}``
     """
-    db2_path = db2_path or get_db2()
+    db2_path = db2_path or get_market_db()
     ticker_currency_map = ticker_currency_map or {}
 
     fetched: list[str] = []

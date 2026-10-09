@@ -8,7 +8,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 from src.orchestrator.common.sqlite import connect_read
 from src.utilities.stock_prices import tse_code
 
@@ -77,7 +77,7 @@ class Company:
 
 def _market_db() -> Path | None:
     try:
-        path = Path(get_db2())
+        path = Path(get_market_db())
     except Exception:  # noqa: BLE001 - chat works without market data
         return None
     return path if path.is_file() else None

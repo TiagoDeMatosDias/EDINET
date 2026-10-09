@@ -2,15 +2,15 @@
 Logging utility for the Shade Research application.
 
 This module provides centralized logging functionality that:
-- Writes all output to a rotating log file under the project's ``logs/`` folder
+- Writes all output to a rotating log file in the data folder's ``logs/``
 - Duplicates all output to both console and log file
 
 Design notes
 ------------
-The log directory is resolved to an **absolute path anchored at the project
-root**, so the server always logs to ``<project_root>/logs/`` no matter which
-working directory it is launched from (``main.py``, ``scripts/share.sh``, a
-frozen exe, a test harness, ...).
+The log directory is resolved to an **absolute path in the data folder**
+(``src.paths.logs_dir``), so the server always logs to ``data/logs/`` no
+matter which working directory it is launched from (``main.py``,
+``scripts/share.sh``, a frozen exe, a test harness, ...).
 
 The log file has a **stable name** (``server.log``) and is managed by a
 :class:`logging.handlers.RotatingFileHandler`.  A stable name means a running
@@ -26,7 +26,7 @@ import logging.handlers
 import os
 from pathlib import Path
 
-from src.paths import app_dir
+from src.paths import app_dir, logs_dir
 
 # Rotation policy: cap each log file and keep a small number of backups so the
 # logs/ folder stays bounded even for multi-day runs.  10 MiB x 6 files keeps
@@ -41,15 +41,14 @@ DEFAULT_LOG_FILENAME = "server.log"
 
 
 def _resolve_log_dir(log_dir: "str | os.PathLike | None") -> Path:
-    """Resolve the log directory to an absolute path anchored at the project root.
+    """Resolve the log directory to an absolute path.
 
-    Relative paths are interpreted relative to the project root, so the server
-    always logs to ``<project_root>/logs/`` regardless of the current working
-    directory.  Absolute paths are used as-is (useful for tests and for
-    operators who want to redirect logs elsewhere).
+    ``None`` is the data folder's ``logs/``. Relative paths are interpreted
+    relative to the application folder, never the current working directory.
+    Absolute paths are used as-is (useful for tests).
     """
     if log_dir is None:
-        return app_dir() / "logs"
+        return logs_dir()
     path = Path(log_dir)
     if path.is_absolute():
         return path
@@ -61,16 +60,16 @@ class LogSetup:
 
     def __init__(
         self,
-        log_dir: "str | os.PathLike | None" = "logs",
+        log_dir: "str | os.PathLike | None" = None,
         log_filename: str = DEFAULT_LOG_FILENAME,
     ):
         """
         Initialize logging setup.
 
         Args:
-            log_dir: Directory to store logs.  Relative paths are anchored at
-                the project root so the server always logs to
-                ``<project_root>/logs/``.  Defaults to ``logs``.
+            log_dir: Directory to store logs.  Defaults to the data folder's
+                ``logs/``; relative paths are anchored at the application
+                folder.
             log_filename: Stable log file name.  Defaults to ``server.log``.
         """
         self.log_dir = _resolve_log_dir(log_dir)
@@ -157,7 +156,7 @@ def reconfigure_uvicorn_logging() -> None:
 
 
 def setup_logging(
-    log_dir: "str | os.PathLike | None" = "logs",
+    log_dir: "str | os.PathLike | None" = None,
     archive_dir: "str | os.PathLike | None" = None,
     log_filename: str = DEFAULT_LOG_FILENAME,
 ):
@@ -165,8 +164,8 @@ def setup_logging(
     Convenience function to set up logging.
 
     Args:
-        log_dir: Directory to store logs.  Relative paths are anchored at the
-            project root so the server always logs to ``<project_root>/logs/``.
+        log_dir: Directory to store logs.  Defaults to the data folder's
+            ``logs/``; relative paths are anchored at the application folder.
         archive_dir: Retained for backward compatibility.  Rotation replaces the
             old archive-on-startup behaviour, so this argument is ignored.
         log_filename: Stable log file name.  Defaults to ``server.log``.

@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 
 from src.orchestrator.common import StepDefinition
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 from src.orchestrator.common.sqlite import connect_write, quote_identifier
 from src.utilities import stock_prices
 
@@ -362,13 +362,12 @@ def run_update_stock_prices(config, overwrite=False, context=None):
         kwargs["context"] = context
     if overwrite:
         kwargs["overwrite"] = True
-    return update_all_stock_prices(get_db2(), **kwargs)
+    return update_all_stock_prices(get_market_db(), **kwargs)
 
 
 STEP_DEFINITION = StepDefinition(
     name="update_stock_prices",
     handler=run_update_stock_prices,
-    required_keys=(),
     supports_overwrite=True,
     input_fields=(),
 )

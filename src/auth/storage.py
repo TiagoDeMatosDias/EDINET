@@ -47,10 +47,6 @@ class AuthStore:
             initialize_managed_database(conn)
             conn.executescript(
                 """
-                CREATE TABLE IF NOT EXISTS schema_migrations (
-                    version INTEGER PRIMARY KEY,
-                    applied_at TEXT NOT NULL
-                );
                 CREATE TABLE IF NOT EXISTS users (
                     user_id TEXT PRIMARY KEY,
                     username TEXT NOT NULL UNIQUE,

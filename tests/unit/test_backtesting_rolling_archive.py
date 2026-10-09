@@ -88,4 +88,4 @@ def test_rolling_archive_limit_returns_actionable_error(monkeypatch):
 
     assert response.status_code == 200
     assert "Backtest completed" in response.text
-    assert "EDINET_MAX_BACKTEST_ARTIFACT_BYTES" in response.text
+    assert "limits.max_backtest_artifact_bytes" in response.text

@@ -135,7 +135,7 @@ def test_history_reads_per_share_lines_on_todays_shares(split_db):
 def test_the_history_api_returns_both_bases(split_db, monkeypatch):
     import src.web_app.api.security_analysis as api
 
-    monkeypatch.setattr(api, "get_db2", lambda: split_db)
+    monkeypatch.setattr(api, "get_market_db", lambda: split_db)
     data = client.get("/api/security/history", params={"company_code": "E1", "periods": 10}).json()
     eps = next(metric for metric in data["tables"]["ShareMetrics"]["metrics"] if metric["field"] == EPS)
     assert eps["values"][0] == pytest.approx(100.0)
@@ -151,7 +151,7 @@ def test_valuations_use_the_latest_filing_on_todays_shares(split_db, monkeypatch
     conn.execute("INSERT INTO Stock_Splits VALUES (1, '72030', '2023-10-02', 1, 2, 'confirmed', NULL)")
     conn.commit()
     conn.close()
-    monkeypatch.setattr(api, "get_db2", lambda: split_db)
+    monkeypatch.setattr(api, "get_market_db", lambda: split_db)
     metrics = client.get("/api/security/overview", params={"company_code": "E1"}).json()["metrics"]
     assert metrics["PERatio"] == pytest.approx(1500.0 / 75.0)
     assert metrics["SharesOutstanding"] == pytest.approx(10_000.0)

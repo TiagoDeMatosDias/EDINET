@@ -1,7 +1,7 @@
 import logging
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition, backtesting
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +11,7 @@ def run_backtest_set(config, overwrite=False, context=None):
     step_cfg = config.get("backtest_set_config", {})
 
     kwargs = dict(
-        db_path=get_db2(),
+        db_path=get_market_db(),
         prices_table="Stock_Prices",
         ratios_table=step_cfg.get("PerShare_Table") or "ShareMetrics",
         company_table="CompanyInfo",
@@ -26,7 +26,6 @@ STEP_DEFINITION = StepDefinition(
     name="backtest_set",
     handler=run_backtest_set,
     display_name="Backtest Set (CSV)",
-    required_keys=(),
     input_fields=(
         StepFieldDefinition("PerShare_Table", "str", default="ShareMetrics"),
         StepFieldDefinition(

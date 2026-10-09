@@ -17,7 +17,7 @@ from collections import defaultdict
 from datetime import date as Date
 from datetime import timedelta
 
-from src.orchestrator.common.db_config import get_db2, get_db3
+from src.orchestrator.common.db_config import get_app_db, get_market_db
 from src.orchestrator.common.sqlite import connect_read, connect_write
 from src.portfolio import option_pricing as _op
 from src.portfolio.market_data import is_share_split
@@ -428,8 +428,8 @@ def build_portfolio_state(
     happen rather than when the next transaction arrives.
 
     Args:
-        db3_path: Path to Portfolio.db (default ``get_db3()``).
-        db2_path: Path to Standardized.db (default ``get_db2()``).
+        db3_path: Path to Portfolio.db (default ``get_app_db()``).
+        db2_path: Path to Standardized.db (default ``get_market_db()``).
         start_date: Override earliest date (YYYY-MM-DD). None = auto.
         end_date: Override latest date (YYYY-MM-DD). None = today.
         base_currency: Kept for callers; stored values are always EUR and
@@ -440,8 +440,8 @@ def build_portfolio_state(
     """
     from src.portfolio.market_data import MarketData
 
-    db3_path = db3_path or get_db3()
-    db2_path = db2_path or get_db2()
+    db3_path = db3_path or get_app_db()
+    db2_path = db2_path or get_market_db()
 
     create_tables(db3_path)
 
@@ -875,7 +875,7 @@ def get_daily_values(
     owner_user_id: str = "",
 ) -> list[dict]:
     """Return daily portfolio value series."""
-    db3_path = db3_path or get_db3()
+    db3_path = db3_path or get_app_db()
     conn = connect_read(db3_path)
     where = ["owner_user_id = ?"]
     params = [owner_user_id]
@@ -905,7 +905,7 @@ def get_current_holdings(
     rate on the valuation date; otherwise at the rate of a holding in the
     same currency.
     """
-    db3_path = db3_path or get_db3()
+    db3_path = db3_path or get_app_db()
     conn = connect_read(db3_path)
     today = Date.today().isoformat()
 
@@ -985,7 +985,7 @@ def get_holdings_at_date(
     owner_user_id: str = "",
 ) -> list[dict]:
     """Return holdings snapshot at a specific date."""
-    db3_path = db3_path or get_db3()
+    db3_path = db3_path or get_app_db()
     create_tables(db3_path)
     conn = connect_read(db3_path)
     rows = conn.execute("""
@@ -1006,7 +1006,7 @@ def get_holdings_at_date(
 
 def get_closed_positions(db3_path: str | None = None, owner_user_id: str = "") -> list[dict]:
     """Return positions that were fully closed (sold/expired) for one user."""
-    db3_path = db3_path or get_db3()
+    db3_path = db3_path or get_app_db()
     create_tables(db3_path)
     conn = connect_read(db3_path)
     try:
@@ -1300,8 +1300,8 @@ def get_holding_performance(
     import numpy as np
 
     from src.portfolio.currency import get_rate_at_date_any
-    db3_path = db3_path or get_db3()
-    db2_path = db2_path or get_db2()
+    db3_path = db3_path or get_app_db()
+    db2_path = db2_path or get_market_db()
     conn = connect_read(db3_path)
 
     txns = conn.execute(
@@ -1511,8 +1511,8 @@ def get_all_holdings_performance(
     import numpy as np
 
     from src.portfolio.currency import get_fx_series
-    db3_path = db3_path or get_db3()
-    db2_path = db2_path or get_db2()
+    db3_path = db3_path or get_app_db()
+    db2_path = db2_path or get_market_db()
 
     holdings = get_current_holdings(db3_path, owner_user_id=owner_user_id, db2_path=db2_path)
     result: list[dict] = []

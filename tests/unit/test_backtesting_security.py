@@ -19,10 +19,10 @@ def _database(path):
 
 def test_backtests_read_the_configured_database(tmp_path, monkeypatch):
     configured = _database(tmp_path / "Standardized.db")
-    monkeypatch.setattr(backtesting_api, "get_db2", lambda: str(configured))
+    monkeypatch.setattr(backtesting_api, "get_market_db", lambda: str(configured))
     assert backtesting_api._resolve_db() == str(configured)
 
-    monkeypatch.setattr(backtesting_api, "get_db2", lambda: str(tmp_path / "missing.db"))
+    monkeypatch.setattr(backtesting_api, "get_market_db", lambda: str(tmp_path / "missing.db"))
     with pytest.raises(HTTPException) as exc_info:
         backtesting_api._resolve_db()
     assert exc_info.value.status_code == 503

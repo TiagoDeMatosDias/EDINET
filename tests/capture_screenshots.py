@@ -226,32 +226,28 @@ def _seed_portfolio(path: Path, market_path: Path) -> None:
 
 def create_demo_runtime(*, seed_research: bool = False) -> tuple[Path, dict[str, str]]:
     runtime = Path(tempfile.mkdtemp(prefix="edinet-docs-demo-")).resolve()
-    database_dir = runtime / "databases"
-    database_dir.mkdir(parents=True)
-    paths = {
-        "db1": str(database_dir / "Base.db"),
-        "db2": str(database_dir / "Standardized.db"),
-        "db3": str(database_dir / "Portfolio.db"),
-        "auth_db": str(database_dir / "auth.db"),
-        "research_db": str(database_dir / "research.db"),
-        "pipeline_jobs_db": str(database_dir / "pipeline_jobs.db"),
-        "filings_db": str(database_dir / "Filings.db"),
-        "bonds_db": str(database_dir / "Bonds.db"),
-    }
-    _base_database(Path(paths["db1"]))
-    market_path = create_docs_market_database(paths["db2"])
-
-    os.environ["EDINET_AUTH_MODE"] = "disabled"
-    os.environ["EDINET_AUTH_DB"] = paths["auth_db"]
-    os.environ["EDINET_ALLOWED_DATA_ROOTS"] = str(runtime)
+    data_dir = runtime / "data"
+    data_dir.mkdir(parents=True)
+    os.environ["EDINET_DATA_DIR"] = str(data_dir)
     os.environ["EDINET_FRONTEND_DIST"] = str((ROOT / "frontend-v2" / "dist").resolve())
     from src.orchestrator.common import db_config
+    from src.settings.store import SettingsStore
 
-    db_config._cache = dict(paths)
-    _seed_portfolio(Path(paths["db3"]), market_path)
+    paths = {
+        "app": db_config.get_app_db(),
+        "market": db_config.get_market_db(),
+        "filings": db_config.get_filings_db(),
+    }
+    market_path = create_docs_market_database(paths["market"])
+    _base_database(market_path)
+
+    settings = SettingsStore(paths["app"])
+    settings.set("auth.mode", "disabled")
+    settings.set("pipeline.allowed_data_roots", [str(runtime)])
+    _seed_portfolio(Path(paths["app"]), market_path)
     if seed_research:
-        _seed_research(Path(paths["research_db"]))
-    _seed_filings(Path(paths["filings_db"]))
+        _seed_research(Path(paths["app"]))
+    _seed_filings(Path(paths["filings"]))
     return runtime, paths
 
 
@@ -391,7 +387,7 @@ def main() -> int:
         _capture_with_playwright(
             base_url,
             args.output.resolve(),
-            Path(paths["research_db"]),
+            Path(paths["app"]),
         )
         print(f"Captured documentation screenshots in {args.output.resolve()}")
         return 0

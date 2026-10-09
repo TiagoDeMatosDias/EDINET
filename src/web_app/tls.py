@@ -1,8 +1,7 @@
 """TLS certificate provisioning for the local web workstation.
 
 The server always terminates TLS. On startup it reuses the first usable
-certificate/key pair found in the certificate directory (default
-``data/certs/`` next to the project or packaged executable), and when no
+certificate/key pair found in the data folder's ``certs/``, and when no
 pair is present it generates a fresh self-signed pair there so later
 startups reuse the same certificate.
 """
@@ -12,7 +11,6 @@ from __future__ import annotations
 import datetime
 import ipaddress
 import logging
-import os
 from pathlib import Path
 
 from cryptography import x509
@@ -20,7 +18,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from src.paths import app_dir
+from src.paths import certs_dir
 from src.web_app.security import SecurityConfigurationError
 
 logger = logging.getLogger(__name__)
@@ -43,15 +41,8 @@ _SELF_SIGNED_KEY_SIZE_BITS = 2048
 
 
 def default_cert_dir() -> Path:
-    """Return the certificate directory used when none is supplied.
-
-    Resolves to ``<EDINET_CERT_DIR>`` when set, otherwise ``data/certs`` next
-    to the packaged executable (frozen builds) or next to the project root.
-    """
-    override = os.getenv("EDINET_CERT_DIR")
-    if override:
-        return Path(override).expanduser()
-    return app_dir() / "data" / "certs"
+    """Return the certificate directory used when none is supplied: ``data/certs``."""
+    return certs_dir()
 
 
 def _find_certificate_pair(cert_dir: Path) -> tuple[Path, Path] | None:

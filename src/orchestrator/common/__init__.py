@@ -60,7 +60,8 @@ class StepFieldDefinition:
 class StepDefinition:
     name: str
     handler: Callable
-    required_keys: tuple[str, ...] = ()
+    # Settings (``src.settings`` keys) that must be set before the step runs.
+    required_settings: tuple[str, ...] = ()
     config_key: str | None = None
     display_name: str | None = None
     supports_overwrite: bool = False
@@ -93,7 +94,7 @@ class StepDefinition:
             "name": self.name,
             "display_name": self.resolved_display_name,
             "config_key": self.resolved_config_key,
-            "required_keys": list(self.required_keys),
+            "required_settings": list(self.required_settings),
             "required_config_fields": [
                 [self.resolved_config_key, field.key]
                 for field in self.required_input_fields

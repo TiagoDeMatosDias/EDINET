@@ -57,10 +57,10 @@ def ingest_content(
     # If no company metadata was provided, try to look it up from Base.db
     if not metadata.get("edinet_code") and not metadata.get("submitter_name"):
         try:
-            from src.orchestrator.common.db_config import get_db1
+            from src.orchestrator.common.db_config import get_market_db
             from src.orchestrator.common.sqlite import connect_read
 
-            db1 = get_db1()
+            db1 = get_market_db()
             if os.path.exists(db1):
                 conn = connect_read(db1)
                 row = conn.execute(

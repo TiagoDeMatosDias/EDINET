@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 
 from src.orchestrator.common import StepDefinition
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 from src.utilities import stock_prices
 from src.utilities.price_provenance import source_id as build_source_id
 from src.utilities.price_provenance import utc_now
@@ -324,7 +324,7 @@ def _fetch_all_inflation_prices() -> pd.DataFrame:
         # Scale DBnomics data to match existing OECD base if we have overlap.
         # OECD and IMF use different base years, so absolute index values
         # differ even though month-to-month inflation rates are the same.
-        _conn = sqlite3.connect(get_db2())
+        _conn = sqlite3.connect(get_market_db())
         _existing = _conn.execute(
             "SELECT Date, Price FROM Stock_Prices WHERE Ticker = ? ORDER BY Date DESC LIMIT 1",
             (ticker,),
@@ -544,7 +544,7 @@ def run_update_fx_data(config, overwrite=False, context=None):  # noqa: ARG001
     """Handler invoked by the orchestrator."""
     logger.info("Updating FX and inflation data...")
     kwargs = dict(
-        db_name=get_db2(),
+        db_name=get_market_db(),
         prices_table="Stock_Prices",
     )
     if context is not None:
@@ -556,6 +556,5 @@ STEP_DEFINITION = StepDefinition(
     name="update_fx_data",
     handler=run_update_fx_data,
     display_name="Update FX Data",
-    required_keys=(),
     input_fields=(),
 )

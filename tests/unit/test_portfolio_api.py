@@ -17,18 +17,18 @@ from src.web_app.security import AppSettings, install_security
 
 app = FastAPI()
 app.include_router(router)
-install_security(app, AppSettings.from_env())
+install_security(app, AppSettings.load())
 client = TestClient(app)
 
 
 def _configure_database(monkeypatch, portfolio_path: str, market_path: str) -> None:
-    monkeypatch.setattr("src.portfolio.api.get_db3", lambda: portfolio_path)
-    monkeypatch.setattr("src.portfolio.api.get_db2", lambda: market_path)
-    monkeypatch.setattr("src.portfolio.price_fetcher.get_db2", lambda: market_path)
-    monkeypatch.setattr("src.portfolio.portfolio_state.get_db3", lambda: portfolio_path)
-    monkeypatch.setattr("src.portfolio.portfolio_state.get_db2", lambda: market_path)
-    monkeypatch.setattr("src.portfolio.performance.get_db3", lambda: portfolio_path)
-    monkeypatch.setattr("src.portfolio.performance.get_db2", lambda: market_path)
+    monkeypatch.setattr("src.portfolio.api.get_app_db", lambda: portfolio_path)
+    monkeypatch.setattr("src.portfolio.api.get_market_db", lambda: market_path)
+    monkeypatch.setattr("src.portfolio.price_fetcher.get_market_db", lambda: market_path)
+    monkeypatch.setattr("src.portfolio.portfolio_state.get_app_db", lambda: portfolio_path)
+    monkeypatch.setattr("src.portfolio.portfolio_state.get_market_db", lambda: market_path)
+    monkeypatch.setattr("src.portfolio.performance.get_app_db", lambda: portfolio_path)
+    monkeypatch.setattr("src.portfolio.performance.get_market_db", lambda: market_path)
 
 
 @pytest.fixture

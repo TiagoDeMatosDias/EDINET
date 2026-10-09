@@ -1,28 +1,27 @@
 import logging
-import os
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
-from src.orchestrator.common.db_config import get_db1
+from src.orchestrator.common.db_config import get_market_db
 from src.orchestrator.common.edinet import EDINET_BASE_URL, Edinet
-from src.paths import app_dir
+from src.paths import downloads_dir
+from src.settings import edinet_api_key
 
 logger = logging.getLogger(__name__)
 
-# Hardcoded raw documents path (was in .env)
-_RAW_DOCUMENTS_PATH = os.path.join(app_dir(), "data", "raw_documents")
+_RAW_DOCUMENTS_PATH = str(downloads_dir())
 
 
 def run_download_documents(config, overwrite=False, context=None):
     logger.info("Downloading documents...")
     step_cfg = config.get("download_documents_config", {})
-    # Hardcoded table names (moved out of .env)
+    # Hardcoded table names
     doc_list_table = "DocumentList"
     financial_data_table = "financialData_full"
 
     edinet = Edinet(
         base_url=EDINET_BASE_URL,
-        api_key=config.get("API_KEY"),
-        db_path=get_db1(),
+        api_key=edinet_api_key(),
+        db_path=get_market_db(),
         raw_docs_path=_RAW_DOCUMENTS_PATH,
         doc_list_table=doc_list_table,
     )
@@ -42,7 +41,7 @@ STEP_DEFINITION = StepDefinition(
     name="download_documents",
     handler=run_download_documents,
     display_name="Download EDINET documents",
-    required_keys=("API_KEY",),
+    required_settings=("edinet.api_key",),
     input_fields=(
         StepFieldDefinition(
             "docTypeCode",

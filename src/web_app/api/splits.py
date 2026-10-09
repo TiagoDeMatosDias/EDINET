@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 from src.orchestrator.common.sqlite import connect_read, connect_write
 from src.portfolio.portfolio_state import _invalidate_split_cache
 from src.utilities.price_provenance import refresh_split_adjusted_prices
@@ -45,7 +45,7 @@ def list_splits(
         limit: Max rows to return.
         offset: Pagination offset.
     """
-    db2_path = get_db2()
+    db2_path = get_market_db()
     from src.portfolio.split_schema import ensure_split_tables
     ensure_split_tables(db2_path)
     conn = connect_read(db2_path)
@@ -89,7 +89,7 @@ def list_splits(
 @router.get("/{split_id}")
 def get_split(split_id: int) -> dict:
     """Get a single split event by its database ID."""
-    db2_path = get_db2()
+    db2_path = get_market_db()
     from src.portfolio.split_schema import ensure_split_tables
     ensure_split_tables(db2_path)
     conn = connect_read(db2_path)
@@ -126,7 +126,7 @@ def update_split(
             detail="confirmation must be 'confirmed', 'pending', or 'rejected'",
         )
 
-    db2_path = get_db2()
+    db2_path = get_market_db()
     from src.portfolio.split_schema import ensure_split_tables
     ensure_split_tables(db2_path)
     conn = connect_write(db2_path)
@@ -186,7 +186,7 @@ def trigger_detection(
 
     from src.portfolio.split_detection import run_split_detection
 
-    db2_path = get_db2()
+    db2_path = get_market_db()
     tickers = [ticker.strip()] if ticker and ticker.strip() else None
 
     results = run_split_detection(

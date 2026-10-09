@@ -24,7 +24,7 @@ import sqlite3
 import sys
 from datetime import date as Date
 
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 from src.portfolio.portfolio_state import _get_adjusted_price, _invalidate_split_cache
 from src.portfolio.split_schema import ensure_split_tables
 from src.utilities.stock_prices import reconcile_ticker_price_basis
@@ -123,7 +123,7 @@ def main() -> int:
     parser.add_argument("--ticker", type=str, default=None)
     args = parser.parse_args()
 
-    db_path = get_db2()
+    db_path = get_market_db()
     ensure_split_tables(db_path)
     _invalidate_split_cache()
 

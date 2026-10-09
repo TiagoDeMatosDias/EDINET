@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from src.orchestrator.common.db_config import get_db3
+from src.orchestrator.common.db_config import get_app_db
 from src.orchestrator.common.sqlite import connect_read, transaction
 from src.portfolio.schema import create_tables
 
@@ -32,7 +32,7 @@ def _json_default(value: Any) -> Any:
 
 
 def _path(db_path: str | None = None) -> str:
-    resolved = str(db_path or get_db3()).strip()
+    resolved = str(db_path or get_app_db()).strip()
     if not resolved:
         raise ValueError("Portfolio database is not configured")
     return resolved

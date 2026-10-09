@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -26,7 +25,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--database",
-        default=os.getenv("EDINET_FILINGS_DB") or get_filings_db(),
+        default=get_filings_db(),
         help="Filings.db path (default: configured filings database)",
     )
     parser.add_argument(

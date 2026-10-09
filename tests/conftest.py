@@ -2,7 +2,6 @@ import ipaddress
 import os
 import shutil
 import socket
-import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -15,8 +14,6 @@ from tests.factories import create_market_database, sample_ibkr_xml, write_sampl
 # artifacts. Tests that exercise authentication construct an explicit
 # account-mode app instead.
 _TEST_RUNTIME_DIR = Path(tempfile.mkdtemp(prefix="edinet-pytest-")).resolve()
-_TEST_DATABASE_DIR = _TEST_RUNTIME_DIR / "databases"
-_TEST_DATABASE_DIR.mkdir(parents=True)
 _TEST_FRONTEND_DIST = _TEST_RUNTIME_DIR / "frontend-dist"
 (_TEST_FRONTEND_DIST / "app-assets").mkdir(parents=True)
 (_TEST_FRONTEND_DIST / "index.html").write_text(
@@ -30,40 +27,23 @@ _TEST_FRONTEND_DIST = _TEST_RUNTIME_DIR / "frontend-dist"
     encoding="utf-8",
 )
 
-_TEST_DB2 = create_market_database(_TEST_DATABASE_DIR / "Standardized.db")
-_TEST_DATABASE_PATHS = {
-    "db1": str(_TEST_DATABASE_DIR / "Base.db"),
-    "db2": str(_TEST_DB2),
-    "db3": str(_TEST_DATABASE_DIR / "Portfolio.db"),
-    "auth_db": str(_TEST_DATABASE_DIR / "auth.db"),
-    "research_db": str(_TEST_DATABASE_DIR / "research.db"),
-    "pipeline_jobs_db": str(_TEST_DATABASE_DIR / "pipeline_jobs.db"),
-    "filings_db": str(_TEST_DATABASE_DIR / "Filings.db"),
-    "chat_db": str(_TEST_DATABASE_DIR / "chat.db"),
-    "bonds_db": str(_TEST_DATABASE_DIR / "Bonds.db"),
-}
-with sqlite3.connect(_TEST_DATABASE_PATHS["db1"]):
-    pass
-
-os.environ["EDINET_AUTH_MODE"] = "disabled"
-os.environ["EDINET_AUTH_DB"] = _TEST_DATABASE_PATHS["auth_db"]
-os.environ["EDINET_ALLOWED_DATA_ROOTS"] = str(_TEST_DATABASE_DIR)
+# Every database and generated file lives in the data folder, so pointing
+# EDINET_DATA_DIR at a temporary folder before any application module is
+# imported keeps the whole suite away from operator-owned data.
+_TEST_DATA_DIR = _TEST_RUNTIME_DIR / "data"
+_TEST_DATA_DIR.mkdir()
+os.environ["EDINET_DATA_DIR"] = str(_TEST_DATA_DIR)
 os.environ["EDINET_FRONTEND_DIST"] = str(_TEST_FRONTEND_DIST)
-# Generated artifacts and mutable state default to folders inside the
-# project (data/, config/state/). Redirect every root before any application
-# module is imported so no test can write next to operator-owned data.
-os.environ["EDINET_STATE_DIR"] = str(_TEST_RUNTIME_DIR / "state")
-os.environ["EDINET_JOB_WORKSPACE_ROOT"] = str(_TEST_RUNTIME_DIR / "state" / "jobs")
-os.environ["EDINET_BACKTEST_DIR"] = str(_TEST_RUNTIME_DIR / "backtests")
-os.environ["EDINET_REPORT_DIR"] = str(_TEST_RUNTIME_DIR / "reports")
-os.environ["EDINET_CERT_DIR"] = str(_TEST_RUNTIME_DIR / "certs")
 
-# db_config intentionally reads one project-level JSON file in production.
-# Supplying its cache before test collection gives every imported module the
-# same isolated runtime paths without modifying the operator's configuration.
-from src.orchestrator.common import db_config  # noqa: E402
+_TEST_DB2 = create_market_database(_TEST_DATA_DIR / "market.db")
 
-db_config._cache = dict(_TEST_DATABASE_PATHS)
+# Settings live in app.db: run the suite without sign-in, and let pipeline
+# steps read inputs from the data folder.
+from src.settings.store import SettingsStore  # noqa: E402
+
+_settings = SettingsStore(_TEST_DATA_DIR / "app.db")
+_settings.set("auth.mode", "disabled")
+_settings.set("pipeline.allowed_data_roots", [str(_TEST_DATA_DIR)])
 
 # The server creates missing databases in its startup hook, which plain
 # ``TestClient(app)`` calls never run. Bootstrap the isolated set once here.

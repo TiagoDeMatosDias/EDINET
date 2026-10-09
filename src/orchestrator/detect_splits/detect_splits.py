@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
-from src.orchestrator.common.db_config import get_db2
+from src.orchestrator.common.db_config import get_market_db
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ def run_detect_splits(config, overwrite=False, context=None):
     from src.portfolio.split_detection import run_split_detection
     from src.portfolio.split_schema import ensure_split_tables
 
-    db2_path = get_db2()
+    db2_path = get_market_db()
 
     # Idempotent schema check
     ensure_split_tables(db2_path)
@@ -68,7 +68,6 @@ def run_detect_splits(config, overwrite=False, context=None):
 STEP_DEFINITION = StepDefinition(
     name="detect_splits",
     handler=run_detect_splits,
-    required_keys=(),
     input_fields=(
         StepFieldDefinition(
             key="mode",

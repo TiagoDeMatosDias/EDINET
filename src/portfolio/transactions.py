@@ -10,7 +10,7 @@ import logging
 import sqlite3
 from collections import defaultdict
 
-from src.orchestrator.common.db_config import get_db3
+from src.orchestrator.common.db_config import get_app_db
 from src.orchestrator.common.sqlite import connect_read, transaction
 from src.portfolio.schema import create_tables
 
@@ -42,7 +42,7 @@ def insert_entries(
     """Insert parsed entries with deduplication on transactionID.
 
     Args:
-        db_path: Path to Portfolio.db (defaults to ``get_db3()``).
+        db_path: Path to Portfolio.db (defaults to ``get_app_db()``).
         entries: List of normalized entry dicts from ``normalize_entries()``.
         source_file: Original XML filename for the ``source_file`` column.
 
@@ -51,7 +51,7 @@ def insert_entries(
           'new_tickers': [...]}`` where *updated* counts stored records that
         gained details (see ``_BACKFILL_COLS``).
     """
-    db_path = db_path or get_db3()
+    db_path = db_path or get_app_db()
     entries = entries or []
 
     if not entries:
@@ -166,7 +166,7 @@ def get_transactions(
         )
     else:
         cols = "*"
-    db_path = db_path or get_db3()
+    db_path = db_path or get_app_db()
     create_tables(db_path)  # idempotent
     conn = connect_read(db_path)
 
@@ -201,7 +201,7 @@ def get_transactions(
 
 def get_unique_symbols(db_path: str | None = None, owner_user_id: str = "") -> list[dict]:
     """Return distinct symbols with asset categories from Transactions."""
-    db_path = db_path or get_db3()
+    db_path = db_path or get_app_db()
     create_tables(db_path)
     conn = connect_read(db_path)
     try:
@@ -217,7 +217,7 @@ def get_unique_symbols(db_path: str | None = None, owner_user_id: str = "") -> l
 
 def get_date_range(db_path: str | None = None, owner_user_id: str = "") -> dict:
     """Return min and max trade_date from Transactions."""
-    db_path = db_path or get_db3()
+    db_path = db_path or get_app_db()
     create_tables(db_path)
     conn = connect_read(db_path)
     try:
@@ -233,7 +233,7 @@ def get_date_range(db_path: str | None = None, owner_user_id: str = "") -> dict:
 
 def get_activity_summary(db_path: str | None = None, owner_user_id: str = "") -> dict:
     """Return counts by activity_type."""
-    db_path = db_path or get_db3()
+    db_path = db_path or get_app_db()
     create_tables(db_path)
     conn = connect_read(db_path)
     try:
@@ -249,7 +249,7 @@ def get_activity_summary(db_path: str | None = None, owner_user_id: str = "") ->
 
 def delete_by_source(db_path: str | None = None, source_file: str = "", owner_user_id: str = "") -> int:
     """Delete all transactions from a given source file. Returns deleted count."""
-    db_path = db_path or get_db3()
+    db_path = db_path or get_app_db()
     create_tables(db_path)
     with transaction(db_path) as conn:
         cursor = conn.execute(
@@ -265,7 +265,7 @@ def get_import_files(db_path: str | None = None, owner_user_id: str = "") -> lis
     A record belongs to the file that first imported it: later files that
     overlap skip the records already stored.
     """
-    db_path = db_path or get_db3()
+    db_path = db_path or get_app_db()
     create_tables(db_path)
     conn = connect_read(db_path)
     try:
@@ -317,7 +317,7 @@ def _selection(
 
 def summarize_selection(db_path: str | None = None, owner_user_id: str = "", **selection) -> dict:
     """What a delete would remove: counts by type, the date span, files, and symbols."""
-    db_path = db_path or get_db3()
+    db_path = db_path or get_app_db()
     create_tables(db_path)
     where, params = _selection(owner_user_id, **selection)
     conn = connect_read(db_path)
@@ -359,7 +359,7 @@ def summarize_selection(db_path: str | None = None, owner_user_id: str = "", **s
 
 def delete_selection(db_path: str | None = None, owner_user_id: str = "", **selection) -> int:
     """Delete the owner's chosen records; returns how many were removed."""
-    db_path = db_path or get_db3()
+    db_path = db_path or get_app_db()
     create_tables(db_path)
     where, params = _selection(owner_user_id, **selection)
     with transaction(db_path) as conn:

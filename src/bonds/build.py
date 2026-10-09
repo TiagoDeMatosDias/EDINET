@@ -65,21 +65,13 @@ def composite_rating(ratings: list[dict[str, str]]) -> tuple[str | None, str | N
     return None, None, None
 
 
-def _company_info(db2_path: str | None) -> dict[str, dict[str, Any]]:
-    if not db2_path:
-        return {}
-    try:
-        conn = sqlite3.connect(f"file:{db2_path}?mode=ro", uri=True)
-    except sqlite3.Error:
-        return {}
+def _company_info(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     try:
         rows = conn.execute(
             'SELECT Company_Code, "Submitter Name", Company_Name, Company_Ticker, Company_Industry, Listed FROM CompanyInfo'
         ).fetchall()
     except sqlite3.Error:
         return {}
-    finally:
-        conn.close()
     return {
         str(code): {"name": name or "", "name_en": name_en or "", "ticker": ticker or "", "industry": industry or "", "listed": 1 if str(listed or "").lower().startswith("listed") else 0}
         for code, name, name_en, ticker, industry, listed in rows
@@ -165,10 +157,10 @@ def _status(bond: dict[str, Any], today: str) -> str:
     return "outstanding"
 
 
-def build_bonds(conn: sqlite3.Connection, db2_path: str | None = None, *, today: str | None = None) -> list[dict[str, Any]]:
+def build_bonds(conn: sqlite3.Connection, *, today: str | None = None) -> list[dict[str, Any]]:
     """Every bond the stored filings describe, merged; see the module docstring."""
     today = today or date.today().isoformat()
-    companies = _company_info(db2_path)
+    companies = _company_info(conn)
     curves = CurveBook.load(conn)
     filers = {row[0]: row[1] or "" for row in conn.execute("SELECT edinet_code, filer_name FROM Bond_Documents")}
 

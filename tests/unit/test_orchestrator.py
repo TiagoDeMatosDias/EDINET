@@ -50,7 +50,7 @@ def _write_step_package(
             STEP_DEFINITION = StepDefinition(
                 name="{step_name}",
                 handler=run_{step_name},
-                required_keys=("API_KEY",),
+                required_settings=("edinet.api_key",),
                 input_fields=(
                     StepFieldDefinition("Target_Database", "database", required=True),
                 ),
@@ -61,6 +61,17 @@ def _write_step_package(
     )
 
 
+@pytest.fixture
+def edinet_api_key():
+    """Store an EDINET API key for steps that require one."""
+    from src.settings import set_setting, unset_setting
+
+    set_setting("edinet.api_key", "key123")
+    yield "key123"
+    unset_setting("edinet.api_key")
+
+
+@pytest.mark.usefixtures("edinet_api_key")
 class TestRunPipeline:
     """Test orchestrator.run with mocked step execution."""
 
@@ -72,10 +83,7 @@ class TestRunPipeline:
 
     @staticmethod
     def _make_pipeline_config() -> Config:
-        return Config.from_dict({
-            "baseURL": "http://example.com",
-            "API_KEY": "key123",
-        })
+        return Config.from_dict({"baseURL": "http://example.com"})
 
     @patch("src.orchestrator.orchestrator.execute_step")
     def test_basic_run(self, mock_execute):
@@ -198,7 +206,7 @@ def test_build_step_registry_discovers_custom_step_package(tmp_path, monkeypatch
 
     assert "alpha_step" in handlers
     assert step_definitions["alpha_step"].name == "alpha_step"
-    assert step_definitions["alpha_step"].required_keys == ("API_KEY",)
+    assert step_definitions["alpha_step"].required_settings == ("edinet.api_key",)
     assert step_definitions["alpha_step"].resolved_config_key == "alpha_step_config"
     assert step_definitions["alpha_step"].required_input_fields[0].key == "Target_Database"
     assert f"{package_name}.alpha_step" in discovered_modules
@@ -245,13 +253,17 @@ class TestValidateInput:
         with pytest.raises(RuntimeError, match="missing"):
             validate_input(config, steps=[{"name": "import_stock_prices_csv"}])
 
-    def test_all_keys_present_passes(self):
+    def test_missing_api_key_names_the_setting(self):
+        from src.orchestrator import validate_input
+        from src.orchestrator.common.validation import MissingSettingsError
+
+        with pytest.raises(MissingSettingsError, match="edinet.api_key"):
+            validate_input(Config.from_dict({}), steps=[{"name": "get_documents"}])
+
+    def test_all_keys_present_passes(self, edinet_api_key):
         from src.orchestrator import validate_input
 
-        config = Config.from_dict({
-            "baseURL": "http://example.com",
-            "API_KEY": "key123",
-        })
+        config = Config.from_dict({"baseURL": "http://example.com"})
         validate_input(config, steps=[{"name": "get_documents"}])  # should not raise
 
     def test_validate_input_applies_step_defined_defaults(self):
@@ -316,7 +328,7 @@ class TestGenerateRatiosStep:
 
         with (
             patch(
-                "src.orchestrator.generate_ratios.generate_ratios.get_db2",
+                "src.orchestrator.generate_ratios.generate_ratios.get_market_db",
                 return_value="ratios.db",
             ),
             patch(
@@ -354,7 +366,7 @@ class TestParseTaxonomyStep:
 
         with (
             patch(
-                "src.orchestrator.parse_taxonomy.parse_taxonomy.get_db2",
+                "src.orchestrator.parse_taxonomy.parse_taxonomy.get_market_db",
                 return_value="taxonomy.db",
             ),
             patch(
@@ -394,7 +406,7 @@ class TestImportStockPricesCsvStep:
 
         with (
             patch(
-                "src.orchestrator.import_stock_prices_csv.import_stock_prices_csv.get_db2",
+                "src.orchestrator.import_stock_prices_csv.import_stock_prices_csv.get_market_db",
                 return_value="prices.db",
             ),
             patch(
@@ -430,7 +442,7 @@ class TestUpdateStockPricesStep:
 
         with (
             patch(
-                "src.orchestrator.update_stock_prices.update_stock_prices.get_db2",
+                "src.orchestrator.update_stock_prices.update_stock_prices.get_market_db",
                 return_value="prices.db",
             ),
             patch(
@@ -452,7 +464,7 @@ class TestUpdateStockPricesStep:
 
         with (
             patch(
-                "src.orchestrator.update_stock_prices.update_stock_prices.get_db2",
+                "src.orchestrator.update_stock_prices.update_stock_prices.get_market_db",
                 return_value="prices.db",
             ),
             patch(
@@ -799,12 +811,8 @@ class TestGenerateFinancialStatementsStep:
 
         with (
             patch(
-                "src.orchestrator.generate_financial_statements.generate_financial_statements.get_db1",
-                return_value="base.db",
-            ),
-            patch(
-                "src.orchestrator.generate_financial_statements.generate_financial_statements.get_db2",
-                return_value="standardized.db",
+                "src.orchestrator.generate_financial_statements.generate_financial_statements.get_market_db",
+                return_value="market.db",
             ),
             patch(
                 "src.orchestrator.generate_financial_statements.generate_financial_statements.financial_statement_services.generate_financial_statements"
@@ -813,8 +821,8 @@ class TestGenerateFinancialStatementsStep:
             run_generate_financial_statements(config, overwrite=False)
 
         mock_generate.assert_called_once_with(
-            source_database="base.db",
-            target_database="standardized.db",
+            source_database="market.db",
+            target_database="market.db",
             granularity_level=5,
             overwrite=False,
         )
@@ -838,7 +846,7 @@ class TestGenerateRollingMetricsStep:
 
         with (
             patch(
-                "src.orchestrator.generate_rolling_metrics.generate_rolling_metrics.get_db2",
+                "src.orchestrator.generate_rolling_metrics.generate_rolling_metrics.get_market_db",
                 return_value="standardized.db",
             ),
             patch(

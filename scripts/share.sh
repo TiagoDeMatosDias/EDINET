@@ -55,10 +55,10 @@ PYTHON="$ROOT/.venv3/bin/python"
 [[ -n "$PYTHON" ]] || die "Python not found; create .venv3 first (see Readme.md)."
 command -v curl >/dev/null || die "curl is required."
 
-if [[ "${EDINET_AUTH_MODE:-accounts}" != "accounts" ]]; then
-  die "EDINET_AUTH_MODE=${EDINET_AUTH_MODE} would publish the workspace without sign-in. Unset it to share."
+AUTH_MODE="$(cd "$ROOT" && "$PYTHON" main.py config get auth.mode)" || die "Could not read the auth.mode setting."
+if [[ "$AUTH_MODE" != "accounts" ]]; then
+  die "auth.mode is $AUTH_MODE, which would publish the workspace without sign-in. Run '$PYTHON main.py config set auth.mode accounts' to share."
 fi
-export EDINET_AUTH_MODE=accounts
 
 # -- frontend -----------------------------------------------------------------
 # The built bundle is not tracked, so it can be older than the sources. A stale
@@ -103,9 +103,10 @@ fi
 if [[ $START_SERVER -eq 1 ]] && curl -sk --max-time 2 "https://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
   die "Something already answers on port $PORT. Stop it, choose another port with --port, or share it with --no-server."
 fi
-mkdir -p "$ROOT/logs"
-SERVER_LOG="$ROOT/logs/share-server.log"
-TUNNEL_LOG="$ROOT/logs/share-tunnel.log"
+LOG_DIR="${EDINET_DATA_DIR:-$ROOT/data}/logs"
+mkdir -p "$LOG_DIR"
+SERVER_LOG="$LOG_DIR/share-server.log"
+TUNNEL_LOG="$LOG_DIR/share-tunnel.log"
 SERVER_PID=""
 TUNNEL_PID=""
 cleanup() {
