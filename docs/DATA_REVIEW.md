@@ -259,17 +259,19 @@ year on, is a price move, not a split.
   last 9 (2007–2012: rallies, crashes after the March 2011 earthquake, ¥10/¥20
   ticks) were rejected by review with the reason recorded, none confirmed by
   a report or by Yahoo's split list.
-- **Stretches of a repeated close.** 430 stretches of 20 trading days or
-  more repeat one close in both Yahoo's and the older import's history
-  (98 since 2015). Yahoo's volume shows 58 of the 98 traded on fewer than a
-  third of their days, where an unchanged close between trades is the price
-  as traded. The other 40 traded on most days while Yahoo reports a moving
-  day's range (low and high a tick either side) around the same close: the
-  close is likely stale, and the true one lies within the day's range,
-  about ±3–10 %, mostly in stocks priced under ¥100. No independent daily
-  source was reachable to replace them (Stooq does not answer from this
-  machine, and Yahoo Japan's history refuses the request). A full re-download from Yahoo would also bring back the 159
-  frozen stretches replaced above.
+- **Stretches of a repeated close are real.** 430 stretches of 20 trading
+  days or more repeat one close in both Yahoo's and the older import's
+  history (98 since 2015). Yahoo's volume shows 58 of the 98 traded on fewer
+  than a third of their days, where an unchanged close between trades is the
+  price as traded. The other 40 traded on most days, and every one of them
+  is a stock pinned at one price: undoing later splits and consolidations,
+  the price as traded is ¥19.5 at the median, and the day's range is within
+  2.5 of the exchange's price ticks either side of the close (a ¥19 stock
+  trading between ¥18 and ¥20 and closing at ¥19). Where the exchange's own
+  quotes cover a stretch (two in 2026), JPX shows the same close every day
+  (¥72 for 24 days, ¥20 for 23). A full re-download from Yahoo would bring
+  back the 159 frozen stretches replaced above, where the older import
+  moved and Yahoo did not.
 - **Parent-only statements.** IFRS and US GAAP filers (Toyota, Sony, SoftBank
   Group, Makita) have only their parent-only Japanese GAAP statements in the
   income statement, balance sheet, and cash flow tables: their margins and
