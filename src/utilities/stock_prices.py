@@ -15,7 +15,9 @@ import requests
 
 from src.utilities.price_provenance import (
     ensure_price_provenance_columns,
+    is_squeeze_out,
     refresh_split_adjusted_prices,
+    table_columns,
     utc_now,
 )
 from src.utilities.price_provenance import (
@@ -646,6 +648,25 @@ def _validate_yahoo_response(response: requests.Response) -> None:
         raise _ProviderRateLimitError("Yahoo Finance returned a rate-limit payload")
 
 
+def _undo_squeeze_outs(price_df: pd.DataFrame, split_events: list[dict]) -> tuple[pd.DataFrame, list[dict]]:
+    """Take a squeeze-out back out of a Yahoo series and its split events.
+
+    Yahoo "split-adjusts" for the consolidation that squeezes out minority
+    holders before a delisting (3,377,178 shares into one), multiplying every
+    earlier close by millions. Earlier closes are restored to the price as
+    traded and rows from the consolidation on, after trading ended, dropped.
+    """
+    squeeze_outs = [event for event in split_events if is_squeeze_out(event["ratio_from"], event["ratio_to"])]
+    if not squeeze_outs:
+        return price_df, split_events
+    first = min(event["split_date"] for event in squeeze_outs)
+    dates = price_df["Date"].dt.strftime("%Y-%m-%d")
+    kept = price_df[dates < first].copy()
+    kept["Close"] = kept["Close"] * [_split_restore_factor(squeeze_outs, date) for date in dates[dates < first]]
+    kept.attrs = dict(price_df.attrs)
+    return kept, [event for event in split_events if event not in squeeze_outs]
+
+
 def _parse_yahoo_chart_payload(payload: dict) -> tuple[pd.DataFrame, list[dict]]:
     """Convert a Yahoo chart payload into prices and authoritative splits."""
     chart = payload.get("chart", {})
@@ -690,7 +711,7 @@ def _parse_yahoo_chart_payload(payload: dict) -> tuple[pd.DataFrame, list[dict]]
     reported_currency = (result.get("meta") or {}).get("currency")
     if reported_currency:
         price_df.attrs["currency"] = str(reported_currency)
-    return price_df, _extract_split_events(result)
+    return _undo_squeeze_outs(price_df, _extract_split_events(result))
 
 
 # Yahoo quotes some listings in a currency's minor unit (London in pence).
@@ -1645,6 +1666,56 @@ def resolve_price_currency(
     return "JPY" if tse_code(ticker) else "USD"
 
 
+def repair_squeeze_out_prices(conn, prices_table: str, ticker: str) -> int:
+    """Restore closes a provider multiplied for a squeeze-out; return rows changed.
+
+    Rows stored before the parser took squeeze-outs out of Yahoo series carry
+    the consolidation ratio (¥1,309 stored as ¥1,886,167,168). Those before
+    the consolidation are divided back to the price as traded, and those from
+    it on, after trading ended, are deleted. A row is inflated when it is
+    more than a tenth of the ratio above the closes a month or more before.
+    """
+    try:
+        events = conn.execute(
+            "SELECT split_date, ratio_from, ratio_to FROM Stock_Splits WHERE ticker = ? AND confirmation = 'confirmed'",
+            (ticker,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    table = _quote_identifier(prices_table)
+    adjusted = "Adjusted_Price" in table_columns(conn, prices_table)
+    changed = 0
+    for split_date, ratio_from, ratio_to in events:
+        if not is_squeeze_out(ratio_from, ratio_to):
+            continue
+        multiplier = float(ratio_to) / float(ratio_from)
+        day = pd.Timestamp(str(split_date)[:10])
+        reference = conn.execute(
+            f"SELECT Price FROM {table} WHERE Ticker = ? AND Date < ? AND Date >= ? AND Price > 0 ORDER BY Date DESC LIMIT 20",
+            (ticker, (day - pd.Timedelta(days=30)).strftime("%Y-%m-%d"), (day - pd.Timedelta(days=150)).strftime("%Y-%m-%d")),
+        ).fetchall()
+        if not reference:
+            continue
+        typical = sorted(float(price) for (price,) in reference)[len(reference) // 2]
+        inflated = typical / multiplier / 10
+        rows = conn.execute(
+            f"SELECT Date FROM {table} WHERE Ticker = ? AND Date >= ? AND Price > ?",
+            (ticker, (day - pd.Timedelta(days=30)).strftime("%Y-%m-%d"), inflated),
+        ).fetchall()
+        for (date_value,) in rows:
+            if str(date_value)[:10] >= day.strftime("%Y-%m-%d"):
+                conn.execute(f"DELETE FROM {table} WHERE Ticker = ? AND Date = ?", (ticker, date_value))
+            else:
+                conn.execute(
+                    f"UPDATE {table} SET Price = Price * ?{', Adjusted_Price = Adjusted_Price * ?' if adjusted else ''} WHERE Ticker = ? AND Date = ?",
+                    (multiplier, *((multiplier,) if adjusted else ()), ticker, date_value),
+                )
+            changed += 1
+    if changed:
+        logger.info("Restored %d price row(s) of %s inflated by a squeeze-out", changed, ticker)
+    return changed
+
+
 def load_ticker_data(ticker, prices_table, conn, currency: str | None = None) -> bool:
     """Download and store historical price data for a single ticker.
 
@@ -1656,6 +1727,7 @@ def load_ticker_data(ticker, prices_table, conn, currency: str | None = None) ->
         ensure_price_provenance_columns(conn, prices_table, ticker=ticker)
         quoted_table = _quote_identifier(prices_table)
         repair_price_currency_labels(conn, prices_table, ticker)
+        repair_squeeze_out_prices(conn, prices_table, ticker)
         last_date_query = (
             f"SELECT MAX(Date) AS Last_Date FROM {quoted_table} WHERE Ticker = ?"
         )

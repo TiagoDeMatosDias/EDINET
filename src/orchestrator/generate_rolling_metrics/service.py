@@ -1,54 +1,49 @@
+"""Multi-year averages and growth rates of the annual statement figures.
+
+Windows count fiscal years, not rows: a ``window``-year figure needs a filing
+for each of the last ``window`` fiscal years (an average skips a line a
+filing left out), and growth compounds over the time between the two year
+ends. Per-share figures and share counts are put on one share basis first
+(``share_basis``), so a split inside the window does not read as a collapse
+in earnings per share; averages are then stored on their filing's own basis,
+like the figures they average, and growth rates need no basis. A trust bank's
+windows read its own annual reports, not those it files for its trusts.
+"""
+
 import json
 import logging
 import os
 import random
-import re
 import sqlite3
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from src.orchestrator.common.sqlite import OrchestratorProcessorBase
+from src.orchestrator.common.corporate_actions import FilingBasis, filing_basis_factors
+from src.orchestrator.common.own_filings import own_filings_sql
+from src.orchestrator.common.rolling_columns import (  # noqa: F401 - re-exported
+    ROLLING_WINDOWS,
+    parse_rolling_column,
+    rolling_average_column,
+    rolling_growth_column,
+    rolling_source_table,
+    rolling_table_name,
+)
+from src.orchestrator.common.share_basis import SHARE_BASIS_COLUMNS, share_basis_rule
+from src.orchestrator.common.sqlite import OrchestratorProcessorBase, connect_read
 
 logger = logging.getLogger("src.data_processing")
 
 _DB_HELPER = OrchestratorProcessorBase()
 
-_ROLLING_WINDOWS = (2, 3, 5, 10)
 _PROGRESS_LOG_EVERY_ROWS = 5000
+# Year ends this many months off a whole number of years still count as one
+# fiscal year apart (a year end moved from 31 March to 30 April, say).
+_YEAR_END_SLACK_MONTHS = 2
 ROLLING_METRICS_CONFIG_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "rolling_metrics.json")
 )
-_ROLLING_TABLE_SUFFIX = "_Rolling"
-_ROLLING_COLUMN = re.compile(r"^(?P<metric>.+)_(?P<kind>Average|Growth)_(?P<window>\d+)_Year$")
-
-
-def rolling_average_column(metric_column: str, window: int) -> str:
-    return f"{metric_column}_Average_{window}_Year"
-
-
-def rolling_growth_column(metric_column: str, window: int) -> str:
-    """Compound annual growth over ``window`` years, stored as a fraction."""
-    return f"{metric_column}_Growth_{window}_Year"
-
-
-def rolling_table_name(source_table: str) -> str:
-    return f"{source_table}{_ROLLING_TABLE_SUFFIX}"
-
-
-def rolling_source_table(table: str) -> str | None:
-    """The source table a rolling table was generated from, if it is one."""
-    if table.endswith(_ROLLING_TABLE_SUFFIX) and len(table) > len(_ROLLING_TABLE_SUFFIX):
-        return table[: -len(_ROLLING_TABLE_SUFFIX)]
-    return None
-
-
-def parse_rolling_column(column: str) -> tuple[str, str] | None:
-    """``(source metric column, "average" | "growth")`` for a rolling column name."""
-    match = _ROLLING_COLUMN.match(column)
-    if match is None:
-        return None
-    return match["metric"], match["kind"].lower()
 
 
 def _find_docid_column(conn, schema_name, table_name, helper=None):
@@ -81,6 +76,52 @@ def _resolve_column_name_in_schema(conn, schema_name, table_name, column_name, h
     return by_lower.get(str(column_name or "").lower())
 
 
+_AGGREGATIONS = ("firstnonnull", "max")
+
+
+@dataclass(frozen=True)
+class RollingMetric:
+    """One rolling metric: its output name and the source columns it reads.
+
+    A line EDINET files under several names takes the first that is present
+    (``firstnonnull``); ``max`` takes the largest, for revenue reported as
+    net sales by some filers and as a larger operating revenue by others.
+    ``when`` maps a column to columns one of which must be reported beside
+    it (a bank's ordinary revenue counts where its ordinary expenses do).
+    """
+
+    name: str
+    columns: tuple[str, ...]
+    aggregation: str = "firstnonnull"
+    when: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+
+def _parse_metric(entry, table_name):
+    if isinstance(entry, str):
+        name = entry.strip()
+        return RollingMetric(name, (name,)) if name else None
+    if isinstance(entry, dict):
+        name = str(entry.get("name") or "").strip()
+        columns: list[str] = []
+        when: list[tuple[str, tuple[str, ...]]] = []
+        for column in entry.get("columns") or ():
+            if isinstance(column, dict):
+                column_name = str(column.get("column") or "").strip()
+                conditions = tuple(str(other).strip() for other in column.get("when") or () if str(other).strip())
+                if column_name and conditions:
+                    columns.append(column_name)
+                    when.append((column_name, conditions))
+            elif str(column).strip():
+                columns.append(str(column).strip())
+        aggregation = str(entry.get("aggregation") or "firstnonnull").strip().lower()
+        if name and columns and aggregation in _AGGREGATIONS:
+            return RollingMetric(name, tuple(columns), aggregation, tuple(when))
+    raise RuntimeError(
+        f"rolling_metrics.json table '{table_name}' has an invalid metric {entry!r}: use a column name "
+        f"or {{\"name\", \"columns\", \"aggregation\" ({' or '.join(_AGGREGATIONS)})}}."
+    )
+
+
 def _load_rolling_metrics_table_spec(config_path):
     with open(config_path, "r", encoding="utf-8") as handle:
         raw = json.load(handle)
@@ -88,7 +129,7 @@ def _load_rolling_metrics_table_spec(config_path):
     if not isinstance(raw, dict) or not raw:
         raise RuntimeError("rolling_metrics.json must be a non-empty object mapping tables to column lists.")
 
-    normalized: dict[str, list[str]] = {}
+    normalized: dict[str, list[RollingMetric]] = {}
     for table_name, columns in raw.items():
         if not isinstance(table_name, str) or not table_name.strip():
             raise RuntimeError("rolling_metrics.json contains an invalid table name.")
@@ -96,8 +137,7 @@ def _load_rolling_metrics_table_spec(config_path):
             raise RuntimeError(
                 f"rolling_metrics.json table '{table_name}' must provide a column list."
             )
-        normalized_columns = [str(column).strip() for column in columns if str(column).strip()]
-        normalized[table_name] = normalized_columns
+        normalized[table_name] = [metric for metric in (_parse_metric(entry, table_name) for entry in columns) if metric]
 
     return normalized
 
@@ -139,26 +179,61 @@ def list_docid_primary_key_tables(
     return sorted(discovered)
 
 
-def _resolve_metric_columns(conn, schema_name, table_name, configured_columns, helper=None):
+def _resolve_metric_columns(conn, schema_name, table_name, configured_metrics, helper=None):
+    """The configured metrics with the source columns that exist, by their actual names."""
     helper = helper or _DB_HELPER
-    resolved_columns = []
-    for column_name in configured_columns:
-        actual_column = _resolve_column_name_in_schema(
-            conn,
-            schema_name,
-            table_name,
-            column_name,
-            helper=helper,
-        )
-        if not actual_column:
+
+    def resolve(column):
+        return _resolve_column_name_in_schema(conn, schema_name, table_name, column, helper=helper)
+
+    resolved = []
+    for metric in configured_metrics:
+        conditions = dict(metric.when)
+        columns: list[str] = []
+        when: list[tuple[str, tuple[str, ...]]] = []
+        for column in metric.columns:
+            actual = resolve(column)
+            if not actual:
+                continue
+            if column in conditions:
+                present = tuple(found for found in (resolve(other) for other in conditions[column]) if found)
+                if not present:
+                    continue
+                when.append((actual, present))
+            columns.append(actual)
+        if not columns:
             logger.warning(
-                "Generate Rolling Metrics: column '%s' not found in table '%s'; skipping column.",
-                column_name,
+                "Generate Rolling Metrics: no column of metric '%s' (%s) found in table '%s'; skipping metric.",
+                metric.name,
+                ", ".join(metric.columns),
                 table_name,
             )
             continue
-        resolved_columns.append(actual_column)
-    return resolved_columns
+        # A single-column metric keeps the column's own spelling as its name.
+        name = columns[0] if metric.columns == (metric.name,) else metric.name
+        resolved.append(RollingMetric(name, tuple(columns), metric.aggregation, tuple(when)))
+    return resolved
+
+
+def _metric_sql(metric, alias, helper=None):
+    helper = helper or _DB_HELPER
+    conditions = dict(metric.when)
+
+    def column_sql(column):
+        reference = f"{alias}.{helper._sql_ident(column)}"
+        if column not in conditions:
+            return reference
+        present = " OR ".join(f"{alias}.{helper._sql_ident(other)} IS NOT NULL" for other in conditions[column])
+        return f"(CASE WHEN {present} THEN {reference} END)"
+
+    columns = [column_sql(column) for column in metric.columns]
+    if len(columns) == 1:
+        return columns[0]
+    if metric.aggregation == "max":
+        # SQLite's max() is NULL when any argument is: compare each column
+        # with the others standing in for it when it is missing.
+        return "MAX(" + ", ".join(f"COALESCE({', '.join([column, *(other for other in columns if other != column)])})" for column in columns) + ")"
+    return f"COALESCE({', '.join(columns)})"
 
 
 def _is_numeric_declared_type(declared_type):
@@ -190,38 +265,116 @@ def _collect_numeric_metric_columns(conn, schema_name, table_name, docid_column,
     return numeric_columns
 
 
-def _compute_rolling_dataframe(df, metric_columns):
+def _basis_factors(df, kind):
+    """Each row's share-basis factor of *kind* (1.0 when its filing has none)."""
+    if kind is None:
+        return None
+    return np.array([getattr(basis, kind) if basis is not None else 1.0 for basis in df["_basis"]], dtype=float)
+
+
+def _on_basis(values, factors, operator, inverse=False):
+    if factors is None:
+        return values
+    multiply = (operator == "*") != inverse
+    return values * factors if multiply else values / factors
+
+
+def _window_masks(months, window):
+    """Rows each row's ``window``-year figures use: ``(members, base)``.
+
+    ``members[t, i]`` marks the filings inside row *t*'s window, which must
+    reach back a full ``window`` fiscal years with a filing for each;
+    ``base[t]`` is the filing ``window`` years before, or -1.
+    """
+    age = months[:, None] - months[None, :]
+    span = 12 * (window - 1)
+    members = (age >= 0) & (age <= span + _YEAR_END_SLACK_MONTHS)
+    oldest = np.where(members, age, -1).max(axis=1)
+    covered = (members.sum(axis=1) >= window) & (oldest >= span - _YEAR_END_SLACK_MONTHS)
+    members &= covered[:, None]
+    members = members.astype(float)
+    distance = np.abs(age - 12 * window).astype(float)
+    distance[distance > _YEAR_END_SLACK_MONTHS] = np.inf
+    base = np.where(np.isfinite(distance.min(axis=1)), distance.argmin(axis=1), -1)
+    return members, base
+
+
+def _compute_rolling_dataframe(df, metric_columns, source_table=None, filing_basis=None):
+    """Rolling averages and growth rates for every row of *df* (any companies).
+
+    *filing_basis* maps a docID to its ``FilingBasis``; columns of
+    *source_table* with a share-basis rule are adjusted with it first.
+    """
     if df.empty:
         return pd.DataFrame(columns=["docID"])  # normalized output shape
 
     df = df.copy()
     df["periodEnd"] = pd.to_datetime(df["periodEnd"], errors="coerce")
+    df = df[df["periodEnd"].notna()]
     df.sort_values(["company_code", "periodEnd", "docID"], inplace=True)
+    df["_basis"] = df["docID"].map(filing_basis or {})
+    df["_basis"] = df["_basis"].astype(object).where(df["_basis"].notna(), None)
 
-    computed_columns = {
-        "docID": df["docID"],
-    }
-
+    output_columns = ["docID"]
     for metric_column in metric_columns:
-        series = pd.to_numeric(df[metric_column], errors="coerce")
-        grouped = series.groupby(df["company_code"])
+        for window in ROLLING_WINDOWS:
+            output_columns.extend([rolling_average_column(metric_column, window), rolling_growth_column(metric_column, window)])
 
-        for window in _ROLLING_WINDOWS:
-            avg_col = rolling_average_column(metric_column, window)
-            growth_col = rolling_growth_column(metric_column, window)
+    frames = []
+    for _, group in df.groupby("company_code", sort=False):
+        months = (group["periodEnd"].dt.year * 12 + group["periodEnd"].dt.month).to_numpy()
+        masks = {window: _window_masks(months, window) for window in ROLLING_WINDOWS}
+        computed = {"docID": group["docID"].to_numpy()}
+        for metric_column in metric_columns:
+            values = pd.to_numeric(group[metric_column], errors="coerce").to_numpy(dtype=float)
+            rule = share_basis_rule(source_table, metric_column) if source_table else None
+            if rule is not None:
+                values = _on_basis(values, _basis_factors(group, rule[0]), rule[1])
+            present = (~np.isnan(values)).astype(float)
+            filled = np.where(present > 0, values, 0.0)
+            for window in ROLLING_WINDOWS:
+                members, base = masks[window]
+                counts = members @ present
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    average = np.where(counts > 0, (members @ filled) / counts, np.nan)
+                average_rule = share_basis_rule(rolling_table_name(source_table), rolling_average_column(metric_column, window)) if rule else None
+                if average_rule is not None:
+                    average = _on_basis(average, _basis_factors(group, average_rule[0]), average_rule[1], inverse=True)
+                computed[rolling_average_column(metric_column, window)] = average
 
-            computed_columns[avg_col] = grouped.transform(
-                lambda s, w=window: s.rolling(window=w, min_periods=1).mean()
-            )
+                previous = np.where(base >= 0, values[np.maximum(base, 0)], np.nan)
+                years = np.where(base >= 0, (months - months[np.maximum(base, 0)]) / 12.0, np.nan)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    growth = np.where(
+                        (previous > 0) & (values >= 0),
+                        np.power(values / previous, 1.0 / years) - 1.0,
+                        np.nan,
+                    )
+                computed[rolling_growth_column(metric_column, window)] = growth
+        frames.append(pd.DataFrame(computed, index=group.index))
 
-            prev = grouped.transform(lambda s, shift=window: s.shift(shift))
-            computed_columns[growth_col] = np.where(
-                (prev > 0) & (series >= 0),
-                np.power(series / prev, 1.0 / window) - 1.0,
-                np.nan,
-            )
+    if not frames:
+        return pd.DataFrame(columns=["docID"])
+    return pd.concat(frames)[output_columns]
 
-    return pd.DataFrame(computed_columns, index=df.index)
+
+def _load_filing_basis(source_db, table_spec) -> dict[str, FilingBasis]:
+    """Share-basis factors by docID, when a configured table holds per-share figures."""
+    if not any(table in SHARE_BASIS_COLUMNS for table in table_spec):
+        return {}
+    try:
+        conn = connect_read(source_db)
+    except (OSError, sqlite3.Error):
+        return {}
+    try:
+        rows = filing_basis_factors(conn)
+    except sqlite3.Error:
+        logger.warning("Generate Rolling Metrics: could not load split history; per-share figures stay as reported.", exc_info=True)
+        return {}
+    finally:
+        conn.close()
+    logger.info("Generate Rolling Metrics: %d filing(s) put on the split-adjusted share basis.", len(rows))
+    return {row.doc_id: row for row in rows}
 
 
 def _ensure_rolling_table_schema(conn, table_name, metric_columns, helper=None, overwrite=False):
@@ -242,7 +395,7 @@ def _ensure_rolling_table_schema(conn, table_name, metric_columns, helper=None, 
 
     rolling_columns = []
     for metric_column in metric_columns:
-        for window in _ROLLING_WINDOWS:
+        for window in ROLLING_WINDOWS:
             rolling_columns.append(rolling_average_column(metric_column, window))
             rolling_columns.append(rolling_growth_column(metric_column, window))
 
@@ -351,6 +504,10 @@ def generate_rolling_metrics(
         skipped_tables = []
 
         fs_ref = f"{helper._sql_ident(source_schema)}.{helper._sql_ident(fs_actual)}"
+        filing_basis = _load_filing_basis(source_db, table_spec)
+        own_filings = ""
+        if _resolve_column_name_in_schema(conn, source_schema, fs_actual, "docTypeCode", helper=helper):
+            own_filings = " AND " + own_filings_sql("fs", fs_ref, helper._sql_ident(fs_code_column))
 
         table_count = len(table_spec)
         for table_index, (
@@ -384,7 +541,7 @@ def generate_rolling_metrics(
                 continue
 
             if configured_columns:
-                metric_columns = _resolve_metric_columns(
+                metrics = _resolve_metric_columns(
                     conn,
                     source_schema,
                     source_table,
@@ -396,14 +553,18 @@ def generate_rolling_metrics(
                     "Generate Rolling Metrics: table '%s' has no configured columns; discovering all numeric columns.",
                     source_table,
                 )
-                metric_columns = _collect_numeric_metric_columns(
-                    conn,
-                    source_schema,
-                    source_table,
-                    source_docid_column,
-                    metric_columns=None,
-                    helper=helper,
-                )
+                metrics = [
+                    RollingMetric(column, (column,))
+                    for column in _collect_numeric_metric_columns(
+                        conn,
+                        source_schema,
+                        source_table,
+                        source_docid_column,
+                        metric_columns=None,
+                        helper=helper,
+                    )
+                ]
+            metric_columns = [metric.name for metric in metrics]
             if not metric_columns:
                 skipped_tables.append(source_table)
                 continue
@@ -425,7 +586,7 @@ def generate_rolling_metrics(
                 source_schema,
                 source_table,
                 source_docid_column,
-                metric_columns=metric_columns,
+                metric_columns=[column for metric in metrics for column in metric.columns],
                 helper=helper,
             )
 
@@ -443,8 +604,8 @@ def generate_rolling_metrics(
                 continue
 
             metric_select_sql = ", ".join(
-                f"s.{helper._sql_ident(col)} AS {helper._sql_ident(col)}"
-                for col in metric_columns
+                f"{_metric_sql(metric, 's', helper=helper)} AS {helper._sql_ident(metric.name)}"
+                for metric in metrics
             )
             numeric_not_null_predicate = ""
             if numeric_metric_columns:
@@ -476,14 +637,16 @@ def generate_rolling_metrics(
                     f"ON fs.{helper._sql_ident(fs_docid_column)} = s.{helper._sql_ident(source_docid_column)} "
                     f"WHERE s.{helper._sql_ident(source_docid_column)} IS NOT NULL "
                     f"AND fs.{helper._sql_ident(fs_code_column)} = ?"
-                    f"{numeric_not_null_predicate}"
+                    f"{own_filings}{numeric_not_null_predicate}"
                 )
 
                 df = pd.read_sql_query(select_sql, conn, params=(company_code,))
                 if df.empty:
                     continue
 
-                rolling_df = _compute_rolling_dataframe(df, metric_columns)
+                rolling_df = _compute_rolling_dataframe(
+                    df, metric_columns, source_table=source_table, filing_basis=filing_basis,
+                )
                 _upsert_rolling_rows(conn, target_table, rolling_df, helper=helper)
                 processed_any_rows = True
                 rows_processed_for_table += len(df)

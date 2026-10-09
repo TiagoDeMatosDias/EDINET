@@ -135,7 +135,12 @@ def _latest_statement_value(
     rows: list[dict[str, Any]],
     periods: list[str],
     labels: tuple[str, ...],
+    largest: bool = False,
 ) -> tuple[float | None, str | None]:
+    if largest:
+        series = _revenue_series(rows, len(periods), labels)
+        index = next((index for index in range(len(series) - 1, -1, -1) if series[index] is not None), None)
+        return (series[index], periods[index]) if index is not None else (None, None)
     wanted = {_normalise_label(label) for label in labels}
     for row in rows:
         row_label = _normalise_label(row.get("field") or row.get("record_field") or row.get("metric"))
@@ -153,8 +158,16 @@ def _latest_statement_value(
 
 # Statement lines read for each fundamental, by source table and label, shared by
 # the snapshot (latest value) and the trend charts (every year).
+# Revenue is the largest of its lines: a parent-only holding company files a
+# small net sales line inside a larger operating revenue, a railway files
+# operating revenue alone. Gross margin stays on net sales where there is
+# one, as its cost of sales goes with them.
 _STATEMENT_LABELS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "Revenue": (("IncomeStatement", "income_statement"), ("Net sales", "Net sales (revenue)", "Total revenue")),
+    "Revenue": (
+        ("IncomeStatement", "income_statement"),
+        ("Net sales", "Net sales (revenue)", "Total revenue", "Operating Revenue - Operating revenue", "Operating revenue"),
+    ),
+    "NetSales": (("IncomeStatement", "income_statement"), ("Net sales", "Net sales (revenue)")),
     "CostOfSales": (("IncomeStatement", "income_statement"), ("Cost of sales",)),
     "OperatingIncome": (("IncomeStatement", "income_statement"), ("Operating income - Operating profit (loss)", "Operating income")),
     "NetIncome": (("IncomeStatement", "income_statement"), ("Profit (loss)", "Net income (loss)", "Net income")),
@@ -164,6 +177,26 @@ _STATEMENT_LABELS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "CurrentAssets": (("BalanceSheet", "balance_sheet"), ("Current assets",)),
     "CurrentLiabilities": (("BalanceSheet", "balance_sheet"), ("Current liabilities",)),
 }
+
+
+_LARGEST_LINES = {"Revenue"}
+# A bank's or insurer's revenue is its ordinary revenue (経常収益); the line
+# counts as revenue only beside ordinary expenses, as elsewhere the same label
+# can hold ordinary profit.
+_ORDINARY_REVENUE = ("Ordinary Income - Ordinary income",)
+_ORDINARY_EXPENSES = ("Ordinary Expenses - Operating expenses", "Ordinary expenses")
+
+
+def _revenue_series(rows: list[dict[str, Any]], count: int, labels: tuple[str, ...]) -> list[float | None]:
+    """Each year's largest revenue line, ordinary revenue included where it is one."""
+    revenue = _row_series(rows, count, labels, largest=True)
+    ordinary = _row_series(rows, count, _ORDINARY_REVENUE)
+    expenses = _row_series(rows, count, _ORDINARY_EXPENSES)
+    series: list[float | None] = []
+    for line, banking, costs in zip(revenue, ordinary, expenses, strict=True):
+        candidates = [value for value in (line, banking if costs is not None else None) if value is not None]
+        series.append(max(candidates) if candidates else None)
+    return series
 
 
 def extract_latest_statement_metrics(history: dict[str, Any]) -> tuple[dict[str, float | None], str | None]:
@@ -183,7 +216,7 @@ def extract_latest_statement_metrics(history: dict[str, Any]) -> tuple[dict[str,
     metrics: dict[str, float | None] = {}
     metric_periods: list[str] = []
     for metric, (sources, labels) in lines.items():
-        value, period = _latest_statement_value(_statement_rows(history, sources), periods, labels)
+        value, period = _latest_statement_value(_statement_rows(history, sources), periods, labels, largest=metric in _LARGEST_LINES)
         metrics[metric] = value
         if period:
             metric_periods.append(period)
@@ -210,8 +243,8 @@ TREND_METRICS: dict[str, dict[str, str]] = {
 }
 
 
-def _row_series(rows: list[dict[str, Any]], count: int, labels: tuple[str, ...]) -> list[float | None]:
-    """Per-period values of the first matching row that has one, as the snapshot reads the latest."""
+def _row_series(rows: list[dict[str, Any]], count: int, labels: tuple[str, ...], largest: bool = False) -> list[float | None]:
+    """Per-period values of the first matching row that has one (or the largest), as the snapshot reads the latest."""
     wanted = {_normalise_label(label) for label in labels}
     matching = [
         row["values"] for row in rows
@@ -220,6 +253,10 @@ def _row_series(rows: list[dict[str, Any]], count: int, labels: tuple[str, ...])
     ]
     series: list[float | None] = []
     for index in range(count):
+        if largest:
+            present = [value for values in matching if index < len(values) and (value := _number(values[index])) is not None]
+            series.append(max(present) if present else None)
+            continue
         series.append(next(
             (value for values in matching if index < len(values) and (value := _number(values[index])) is not None),
             None,
@@ -238,7 +275,8 @@ def statement_series(history: dict[str, Any], metric_refs: list[str] | None = No
     periods = [str(period) for period in history.get("periods", [])]
     count = len(periods)
     raw = {
-        key: _row_series(_statement_rows(history, sources), count, labels)
+        key: _revenue_series(_statement_rows(history, sources), count, labels) if key in _LARGEST_LINES
+        else _row_series(_statement_rows(history, sources), count, labels)
         for key, (sources, labels) in _STATEMENT_LABELS.items()
     }
 
@@ -246,13 +284,14 @@ def statement_series(history: dict[str, Any], metric_refs: list[str] | None = No
         return [fn(index) for index in range(count)]
 
     revenue, net_income, equity = raw["Revenue"], raw["NetIncome"], raw["TotalEquity"]
+    sales = [net if net is not None else total for net, total in zip(raw["NetSales"], revenue, strict=True)]
     series: dict[str, list[float | None]] = {
         "Revenue": revenue,
         "OperatingIncome": raw["OperatingIncome"],
         "NetIncome": net_income,
         "GrossMargin": each(lambda i: _ratio(
-            revenue[i] - raw["CostOfSales"][i] if revenue[i] is not None and raw["CostOfSales"][i] is not None else None,
-            revenue[i],
+            sales[i] - raw["CostOfSales"][i] if sales[i] is not None and raw["CostOfSales"][i] is not None else None,
+            sales[i],
         )),
         "OperatingMargin": each(lambda i: _ratio(raw["OperatingIncome"][i], revenue[i])),
         "NetMargin": each(lambda i: _ratio(net_income[i], revenue[i])),

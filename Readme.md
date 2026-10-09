@@ -4,6 +4,75 @@ Shade Research is a local-first company research workstation: one FastAPI + Reac
 
 It always serves HTTPS, from `https://127.0.0.1:8000/` on the public homepage and from `/overview` once you are signed in. A self-signed certificate is generated into `data/certs/` on first start. The `/pricing` page advertises one informational plan at €10/month or €100/year; payment processing and subscription enforcement are not implemented.
 
+## Architecture
+
+One HTTPS process: a React single-page app in the browser talks to a FastAPI server, which serves the app bundle and the `/api/*` routes. Every route is backed by a backend service in `src/`; the orchestrator runs the data pipeline; and all state lives in SQLite databases split into rebuildable market data and irreplaceable operator state.
+
+```mermaid
+flowchart TB
+    subgraph Browser["Browser"]
+        SPA["React SPA<br/>frontend-v2/"]
+    end
+
+    subgraph Server["FastAPI server · HTTPS"]
+        SERVE["Serves SPA + static<br/>/app-assets · /brand-assets"]
+        API["API layer<br/>/api/* · /health"]
+    end
+
+    subgraph Services["Backend services · src/"]
+        AUTH["Auth & accounts"]
+        SCREEN["Screening"]
+        SEC["Security analysis"]
+        FIL["Filings & XBRL"]
+        COMP["Comparison"]
+        PORT["Portfolio"]
+        RES["Research & tags"]
+        BONDS["Bonds"]
+        BT["Backtesting"]
+        REP["Reports"]
+        CHAT["Chat"]
+    end
+
+    subgraph Pipeline["Orchestrator · src/orchestrator/"]
+        ORCH["16 pipeline steps<br/>ingest · transform · update"]
+    end
+
+    subgraph Data["SQLite databases"]
+        REBUILD["Rebuildable · data/databases/<br/>Base · Standardized · Filings · Bonds"]
+        STATE["State · config/state/databases/<br/>Portfolio · auth · research · jobs · chat"]
+    end
+
+    SPA -->|"HTTPS"| API
+    SPA -.->|"static"| SERVE
+    API --> AUTH
+    API --> SCREEN
+    API --> SEC
+    API --> FIL
+    API --> COMP
+    API --> PORT
+    API --> RES
+    API --> BONDS
+    API --> BT
+    API --> REP
+    API --> CHAT
+    API --> ORCH
+    ORCH --> REBUILD
+    SCREEN --> REBUILD
+    SEC --> REBUILD
+    FIL --> REBUILD
+    BONDS --> REBUILD
+    BT --> REBUILD
+    COMP --> REBUILD
+    AUTH --> STATE
+    RES --> STATE
+    PORT --> STATE
+    CHAT --> STATE
+    ORCH --> STATE
+```
+
+The frontend never opens a database directly; it only calls the API. The orchestrator is a thin dispatcher that discovers its step packages, so adding a pipeline step does not touch the server. See [Frontend Architecture](docs/Frontend%20Architecture.md) for the UI layer and [Application Details](docs/Application%20Details.md) for the backend module reference.
+
+
 ## Capabilities
 
 - **One company finder everywhere** — Analysis, Comparison, Filings, Research, and the global header search the same index of names, tickers, EDINET codes, industries, markets, and price tickers, degrading gracefully when a configured database is incomplete.
@@ -11,8 +80,9 @@ It always serves HTTPS, from `https://127.0.0.1:8000/` on the public homepage an
 - **Company comparison** — 2–12 companies, standard metrics, any numeric `Table.Column` metric, common-size statements, and optional peer percentiles.
 - **Filing Explorer** — retains compressed type-1 ZIPs, indexes compact numeric XBRL facts, reconstructs narrative content on demand, and keeps Japanese and complete English translations side by side.
 - **Research and tagging** — one private tag system shared by favorites, watchlists, Analysis, and Screening, plus notes, thesis state, targets, review dates, and in-app alerts.
+- **Chat** — company channels and direct messages: direct and group conversations are end-to-end encrypted in the browser, channel messages are encrypted at rest, with per-channel company context, profiles, and unread badges.
 - **Testing ideas** — expression screening, point-in-time rolling backtests, manual and CSV backtests, IBKR FlexQuery portfolio imports, and reproducible report ZIPs.
-- **Data pipeline** — 13 dynamically discovered steps, durable job state, cancellation, progress reporting, safe file uploads, XBRL `explicit`/`backfill`/`all` modes, and financial statements generated from CSV or compact filing facts.
+- **Data pipeline** — 16 dynamically discovered steps, durable job state, cancellation, progress reporting, safe file uploads, XBRL `explicit`/`backfill`/`all` modes, and financial statements generated from CSV or compact filing facts.
 - **Optional accounts** — registration, login, rotating sessions, personal API tokens, administrator controls, and an administrator-set 5–128-character password minimum.
 - **Zero-setup databases** — missing configured databases and their managed schemas are created automatically at startup.
 
@@ -93,6 +163,7 @@ For frontend development, keep FastAPI serving HTTPS on port 8000 and run `npm r
 | `/backtest` | Manual, CSV-set, and point-in-time rolling-screen backtests |
 | `/portfolio` | IBKR import, holdings, activity, performance, and risk views |
 | `/pipeline` | Pipeline recipes, uploads, run controls, progress, and job history |
+| `/chat` | Encrypted company channels, direct messages, and profiles |
 | `/account`, `/admin` | Account settings and administrator controls |
 
 `/security` and `/backtesting` remain compatibility aliases for `/analyze` and `/backtest`.
@@ -104,16 +175,19 @@ The step library is discovered from `src/orchestrator/` and currently contains:
 1. Get Documents
 2. Download EDINET Documents (CSV/type-5)
 3. Download XBRL Filings (type-1)
-4. Populate Company Info
-5. Import Stock Prices (CSV)
-6. Update Stock Prices
-7. Update FX Data
-8. Parse Taxonomy
-9. Generate Financial Statements
-10. Generate Ratios
-11. Generate Rolling Metrics
-12. Backtest
-13. Backtest Set (CSV)
+4. Update bonds
+5. Populate Company Info
+6. Import Stock Prices (CSV)
+7. Update Stock Prices
+8. Check TDnet splits
+9. Detect splits
+10. Update FX Data
+11. Parse Taxonomy
+12. Generate Financial Statements
+13. Generate Ratios
+14. Generate Rolling Metrics
+15. Backtest
+16. Backtest Set (CSV)
 
 The stock-price CSV step uses a file picker and accepts files up to 500 MiB. XBRL `all` mode queries eligible filings from `DocumentList`, honors the document-type filter, skips completed downloads, uses at most five concurrent downloads, batches status writes, and reuses HTTP connections. Financial statements can be generated from either the legacy CSV database or the compact numeric facts in `Filings.db`.
 
@@ -121,7 +195,7 @@ The stock-price CSV step uses a file picker and accepts files up to 500 MiB. XBR
 
 | File or variable | Purpose |
 |---|---|
-| `config/database_paths.json` | Base, Standardized, Portfolio, auth, research, job, and filing database locations |
+| `config/database_paths.json` | Relocates any database; defaults split rebuildable market data (Base, Standardized, Filings, Bonds) into `data/databases/` and irreplaceable state (Portfolio, auth, research, jobs, chat) into `config/state/databases/` |
 | `.env` / `EDINET_API_TOKEN`, pipeline `API_KEY` | Outbound EDINET provider credentials for XBRL and legacy document steps |
 | `EDINET_AUTH_MODE` | `disabled` for loopback compatibility or `accounts` for account authentication |
 | `src/orchestrator/generate_ratios/ratios_definitions.json` | Ratio definitions |

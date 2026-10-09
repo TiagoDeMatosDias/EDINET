@@ -22,7 +22,7 @@ from src.orchestrator.common.sqlite import connect_read, connect_write
 from src.portfolio import option_pricing as _op
 from src.portfolio.market_data import is_share_split
 from src.portfolio.schema import create_tables
-from src.utilities.price_provenance import table_columns
+from src.utilities.price_provenance import distinct_split_records, is_squeeze_out, table_columns
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +104,8 @@ def _load_split_factors(
         return []
 
     seen_dates: set[str] = set()
-    splits: list[tuple[str, float]] = []
-    for split_date, ratio_from, ratio_to, _method, _event_id in rows:
+    records: list[tuple[str, float, object]] = []
+    for split_date, ratio_from, ratio_to, method, _event_id in rows:
         date_text = str(split_date)[:10]
         if date_text in seen_dates:
             continue
@@ -114,8 +114,9 @@ def _load_split_factors(
             ratio = float(ratio_to) / float(ratio_from)
         except (TypeError, ValueError, ZeroDivisionError):
             continue
-        if ratio > 0:
-            splits.append((date_text, ratio))
+        if ratio > 0 and not is_squeeze_out(ratio_from, ratio_to):
+            records.append((date_text, ratio, method))
+    splits = [(date_text, ratio) for date_text, ratio, _method in distinct_split_records(records)]
     factors: list[tuple[str, float]] = []
     cumulative: float = 1.0
     for split_date, ratio in reversed(splits):

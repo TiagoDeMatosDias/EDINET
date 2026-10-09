@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.orchestrator.common.corporate_actions import FilingBasis, filing_basis_factors
+from src.orchestrator.common.share_basis import FACTOR_KINDS, SHARE_BASIS_COLUMNS
 from src.orchestrator.common.sqlite import connect_read, transaction
 
 logger = logging.getLogger(__name__)
@@ -182,37 +184,17 @@ _TABLE_ALIAS: dict[str, str] = {
 
 
 # Per-share figures are stored as reported; stored prices are split-adjusted.
-# On the adjusted basis each is multiplied (share counts divided) by its
-# filing's factor from ``corporate_actions.filing_basis_factors``: ``restated``
-# for figures issuers restate for splits before filing, ``fiscal`` for those
-# fixed at the year end. Without this a company that split later looks two to
-# ten times cheaper on P/E or P/B in every earlier screen.
-_SHARE_BASIS_COLUMNS: dict[str, dict[str, tuple[str, str]]] = {
-    "ShareMetrics": {
-        "Basic earnings (loss) per share": ("restated", "*"),
-        "Diluted earnings per share": ("restated", "*"),
-        "Net assets per share": ("restated", "*"),
-        "Dividend paid per share": ("fiscal", "*"),
-        "Interim dividend paid per share": ("fiscal", "*"),
-        "Total number of issued shares": ("fiscal", "/"),
-        "Number of issued shares as of fiscal year end": ("fiscal", "/"),
-        "Number of issued shares as of filing date": ("restated", "/"),
-    },
-    "PerShare_Metrics": {
-        "Sales Per Share": ("fiscal", "*"),
-        "Earnings Per Share": ("fiscal", "*"),
-        "Operating Cashflow Per Share": ("fiscal", "*"),
-        "Free Cashflow Per Share": ("fiscal", "*"),
-        "Net Assets Per Share": ("fiscal", "*"),
-        "NCAV Per Share": ("fiscal", "*"),
-    },
-}
+# On the adjusted basis each split-sensitive column (``share_basis``), rolling
+# averages included, is multiplied (share counts divided) by its filing's
+# factor from ``corporate_actions.filing_basis_factors``. Without this a
+# company that split later looks two to ten times cheaper on P/E or P/B in
+# every earlier screen.
 SHARE_BASIS_TABLE = "temp.share_basis"
 
 
 def _apply_share_basis(sql: str) -> str:
     """Put per-share column references on the split-adjusted basis (idempotent)."""
-    for table, columns in _SHARE_BASIS_COLUMNS.items():
+    for table, columns in SHARE_BASIS_COLUMNS.items():
         alias = _get_table_alias(table)
         for column, (factor, operator) in columns.items():
             target = f"{alias}.[{column}]"
@@ -224,7 +206,7 @@ def _apply_share_basis(sql: str) -> str:
     return sql
 
 
-_SHARE_BASIS_CACHE: dict[tuple[str, float, int], list[tuple[str, float, float]]] = {}
+_SHARE_BASIS_CACHE: dict[tuple[str, float, int], list[FilingBasis]] = {}
 
 
 def install_share_basis(conn: sqlite3.Connection, db_path: str) -> None:
@@ -234,8 +216,6 @@ def install_share_basis(conn: sqlite3.Connection, db_path: str) -> None:
     a TEMP table lives outside the database file, so ``query_only`` is lifted
     only while it is filled. Factors are cached until the database changes.
     """
-    from src.orchestrator.common.corporate_actions import filing_basis_factors
-
     try:
         stat = os.stat(db_path)
         key = (os.path.abspath(db_path), stat.st_mtime, stat.st_size)
@@ -249,8 +229,8 @@ def install_share_basis(conn: sqlite3.Connection, db_path: str) -> None:
     conn.execute("PRAGMA query_only = OFF")
     try:
         conn.execute("DROP TABLE IF EXISTS temp.share_basis")
-        conn.execute("CREATE TEMP TABLE share_basis (docID TEXT PRIMARY KEY, restated REAL, fiscal REAL)")
-        conn.executemany("INSERT OR REPLACE INTO temp.share_basis VALUES (?, ?, ?)", rows)
+        conn.execute(f"CREATE TEMP TABLE share_basis (docID TEXT PRIMARY KEY, {', '.join(f'{kind} REAL' for kind in FACTOR_KINDS)})")
+        conn.executemany(f"INSERT OR REPLACE INTO temp.share_basis VALUES (?, {', '.join('?' for _ in FACTOR_KINDS)})", rows)
     finally:
         conn.execute("PRAGMA query_only = ON")
 
@@ -1360,7 +1340,7 @@ def build_screening_query(
             f"LEFT JOIN [{safe_table}] [{alias}] ON f.docID = [{alias}].docID"
         )
 
-    if use_adjusted_price and needed_tables & set(_SHARE_BASIS_COLUMNS):
+    if use_adjusted_price and needed_tables & set(SHARE_BASIS_COLUMNS):
         join_clauses.append(f"LEFT JOIN {SHARE_BASIS_TABLE} sb ON sb.docID = f.docID")
 
     # --- Build WHERE ---

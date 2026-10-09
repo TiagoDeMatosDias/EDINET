@@ -37,7 +37,6 @@ from src.orchestrator.common.backtesting import (
     get_portfolio_prices,
     resolve_portfolio_allocations,
 )
-from src.orchestrator.common.corporate_actions import share_count_basis_factors
 from src.orchestrator.common.sqlite import connect_read
 
 if TYPE_CHECKING:
@@ -1373,13 +1372,11 @@ def _build_portfolios(
     shares_outstanding_col: str | None = None,
     latest_price_col: str = "LatestPrice",
     ticker_col: str = "Ticker",
-    share_basis_factors: dict[str, float] | None = None,
 ) -> tuple[dict[str, dict[str, dict]], list[str]]:
     """Build portfolio dicts for each weighting mode.
 
-    ``share_basis_factors`` maps a ticker to the split factor its adjusted
-    price carries at the date of the reported share count; market caps are
-    divided by it so a company that split later is not under-weighted.
+    Screens return share counts on the split-adjusted basis of the prices,
+    so price × shares is each company's market cap on the screening date.
 
     Returns:
         A 2-tuple ``(portfolios_by_mode, warnings)`` where
@@ -1463,8 +1460,6 @@ def _build_portfolios(
                 df[latest_price_col].astype(float)
                 * df[shares_col].astype(float)
             )
-            if share_basis_factors:
-                df["_mcap"] = df["_mcap"] / df[resolved_ticker_col].astype(str).map(share_basis_factors).fillna(1.0)
             df = df[df["_mcap"] > 0]
 
             if len(df) < 2:
@@ -1953,27 +1948,12 @@ def run_screening_backtest_rolling(
         shares_col = _resolve_matching_column(
             list(screen_df.columns), SHARES_OUTSTANDING_CANDIDATES,
         )
-        basis_factors: dict[str, float] = {}
-        if "market_cap" in weighting_modes:
-            basis_conn = connect_read(db_path, busy_timeout_ms=10_000)
-            try:
-                basis_factors = share_count_basis_factors(
-                    basis_conn, tickers, screening_date,
-                    per_share_table=ratios_table,
-                    financial_statements_table=financial_statements_table,
-                    company_table=company_table,
-                )
-            except Exception:  # noqa: BLE001 - weights fall back to the unadjusted product
-                logger.warning("Could not read split history for market-cap weights", exc_info=True)
-            finally:
-                basis_conn.close()
         portfolios_by_mode, pf_warnings = _build_portfolios(
             tickers, weighting_modes,
             screen_df=screen_df,
             shares_outstanding_col=shares_col,
             latest_price_col="LatestPrice",
             ticker_col=ticker_col,
-            share_basis_factors=basis_factors,
         )
         period_warnings.extend(pf_warnings)
 

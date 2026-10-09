@@ -45,6 +45,7 @@ export const financialsScope = defineScope({
     { id: 'filter', keys: 'f', label: 'Filter lines', role: 'filter' },
     { id: 'empty', keys: 'e', label: 'Show or hide empty lines' },
     { id: 'chart-type', keys: 'c', label: 'Switch bars and lines' },
+    { id: 'share-basis', keys: 's', label: 'Switch per-share figures between split-adjusted and as filed', description: 'Only for companies that split or consolidated their shares.' },
     { id: 'clear-chart', keys: 'x', label: 'Clear the chart', role: 'delete' },
     { id: 'move', keys: ['ArrowDown', 'ArrowUp'], label: 'In the table: move between lines (also J, K)', role: 'next', fixed: true },
     { id: 'chart-line', keys: 'Space', label: 'In the table: chart or un-chart the focused line', fixed: true },

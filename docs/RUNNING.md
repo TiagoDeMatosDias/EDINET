@@ -298,6 +298,13 @@ ticker, so a failed or empty download restores that ticker's previous rows.
 - `Target_Database` — database containing the company info and financial data tables, and where stock prices will be updated.
 
 ---
+### `update_fx_data`
+Imports ECB historical FX rates and central-bank CPI/inflation series into the `Stock_Prices` table. FX comes from the ECB `eurofxref-hist` archive; inflation covers USD, JPY, GBP, AUD, and CAD (FRED CPI series) plus EUR (ECB HICP via SDMX). All sources are free and need no API keys. Rows are deduplicated on `(Date, Ticker)` and stored as pseudo-tickers (e.g. `Inflation_USD`) so they can be used as benchmark and conversion series.
+
+No configuration fields; it writes to the Standardized database.
+
+---
+
 
 ### `check_tdnet_splits`
 Captures Japanese stock-split and share-consolidation announcements from
@@ -325,6 +332,21 @@ stays with the Yahoo provider events and price heuristics in
 - `keywords` — comma-separated Japanese title keywords identifying split (`株式分割`) or consolidation/reverse-split (`株式併合`) announcements.
 
 ---
+### `detect_splits`
+Detects stock splits and consolidations from price discontinuities and confirms them against annual-report share metrics. Candidates are persisted as pending/confirmed/rejected events in the managed `Stock_Splits` table with per-ticker scan watermarks, so reruns are incremental.
+
+```json
+"detect_splits_config": {
+  "mode": "incremental",
+  "price_drop_threshold": 0.40
+}
+```
+
+- `mode` — `incremental` scans only new price data since the last known split; `full` rescans all history for every ticker; `verify_pending` re-checks entries awaiting ShareMetrics confirmation.
+- `price_drop_threshold` — minimum single-day price drop (0.0–1.0) to flag as a potential split; default `0.40` (40%).
+
+---
+
 
 ### `update_bonds`
 Reads corporate bonds into `Bonds.db` (rebuildable, in `data/databases` by
@@ -447,11 +469,12 @@ Supports `overwrite`.
 - `Database` — single database containing the source financial statement tables and the generated ratio tables.
 - Ratio definitions are always loaded from `src/orchestrator/generate_ratios/ratios_definitions.json`.
 - `batch_size` — accepted for compatibility; ratio generation currently runs set-based SQL against the full filing set.
+- Each ratio input reads one or more columns of its table with an `Aggregation`: `FirstNonNull` (the first column reported, for a line filed under several names), `sum`, or `max` (the largest, for revenue). A column can be `{"column": "...", "when": ["..."]}` to read it only where one of the `when` columns is reported. Revenue is the largest of net sales, operating revenue (a parent-only holding company or a railway), and ordinary revenue where ordinary expenses are reported (a bank or insurer, 経常収益; elsewhere that label can hold ordinary profit); gross margin stays on net sales, which cost of sales goes with. Per-share ratios divide by the year-end issued share count.
 
 ---
 
 ### `generate_rolling_metrics`
-Computes rolling averages and CAGR-style growth rates for configurable metrics across selected statement tables. The columns and tables to process are declared in `src/orchestrator/generate_rolling_metrics/rolling_metrics.json`. Output tables are named `<SourceTable>_Rolling` and contain `_Average_3_Year`, `_Average_5_Year`, `_Average_10_Year`, `_Growth_3_Year`, `_Growth_5_Year`, and `_Growth_10_Year` columns for each configured metric.
+Computes rolling averages and CAGR-style growth rates for configurable metrics across selected statement tables. The columns and tables to process are declared in `src/orchestrator/generate_rolling_metrics/rolling_metrics.json`. Output tables are named `<SourceTable>_Rolling` and contain `_Average_N_Year` and `_Growth_N_Year` columns for N = 2, 3, 5, and 10 for each configured metric. Windows count fiscal years: an N-year figure needs a filing for each of the last N years, and growth compounds over the time between the two year ends. Per-share figures and share counts are put on the split-adjusted basis first, so a split inside the window does not distort them; averages are stored on their own filing's basis (views and screens apply the per-filing split factor) and growth rates need none. A company that also files reports for others (a trust bank's trusts) is measured on its own annual reports. A metric in `rolling_metrics.json` is a column name, or `{"name": "...", "columns": [...], "aggregation": "firstnonnull" | "max"}` for a line filed under several names (operating income, interest expenses) or for revenue; columns take the same `{"column", "when"}` form as ratio inputs.
 
 Supports `overwrite`.
 

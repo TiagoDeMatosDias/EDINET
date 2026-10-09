@@ -32,6 +32,7 @@ flowchart LR
 | `/filings` | Retained EDINET type-1 filing and XBRL explorer |
 | `/compare` | Bounded multi-company comparison |
 | `/research` | Account-owned watchlists, notes, and in-app alerts |
+| `/chat` | Encrypted company channels, direct messages, and profiles |
 | `/account` | Password changes, sessions, and personal API tokens |
 | `/admin` | Users, invitations, credential resets, registration, and password policy |
 | `/security` | Compatibility alias for the React analysis workspace |
@@ -57,7 +58,8 @@ frontend-v2/
 │   │   ├── bonds/           # Analysis Bonds section and the Research bond market
 │   │   ├── backtesting/
 │   │   ├── portfolio/
-│   │   └── pipeline/
+│   │   ├── pipeline/
+│   │   └── chat/            # encrypted channels, DMs, and profiles
 │   ├── hotkeys/             # declared scopes, dispatch, help list, settings editor (see its README.md)
 │   ├── hooks/
 │   ├── test/
@@ -158,6 +160,7 @@ The layout is desktop-first but has a 390 px mobile treatment:
 - Backtesting supports manual portfolios, CSV sets, and point-in-time rolling screens with cadence, durations, weighting, progress, cancellation, saved results, and downloads.
 - Portfolio is organized into Overview, Holdings, Performance, Income, and Activity. Six headline metrics and every section action open an accessible side drawer; holdings and individual transactions have row-level drill-downs, and holdings can hand off to company analysis. The workspace includes allocation and currency concentration, risk and tail-loss statistics, return heatmaps and distributions, contribution leaders, dividend tax/net/yield and payer trends, formatted multi-currency ledgers, filters, and 50-row activity pagination. Chart canvases live in explicit height/width frames so dashboard cards do not overflow at wide desktop resolutions.
 - Pipeline supports recipes, dynamic step discovery, ordering, overwrite flags, generated configuration fields, persisted job history, cooperative cancellation, per-step progress, and safe terminal output.
+- Chat owns company channels, direct messages, and profiles. Direct and group conversations are end-to-end encrypted in the browser (ECDH P-256 identity keys wrapped under a passphrase-derived key; the server never sees the private keys); channel messages are encrypted at rest with server-held keys. Unread counts drive the sidebar badge.
 
 ## API contract checks
 

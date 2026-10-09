@@ -10,9 +10,15 @@ def test_health_and_steps_endpoints_available() -> None:
     assert health.status_code == 200
     payload = health.json()
     assert payload.get("status") == "healthy"
-    assert isinstance(payload["jobs"]["queue_depth"], int)
-    assert isinstance(payload["jobs"]["active"], int)
-    assert isinstance(payload["jobs"]["counts_by_status"], dict)
+    # /health is public, so queue state is only reported to operators.
+    assert "jobs" not in payload
+
+    status = client.get("/api/system/status")
+    assert status.status_code == 200
+    jobs = status.json()["jobs"]
+    assert isinstance(jobs["queue_depth"], int)
+    assert isinstance(jobs["active"], int)
+    assert isinstance(jobs["counts_by_status"], dict)
 
     steps = client.get("/api/steps")
     assert steps.status_code == 200

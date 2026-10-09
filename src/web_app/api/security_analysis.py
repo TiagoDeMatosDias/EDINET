@@ -218,33 +218,16 @@ def _compute_metrics(db: str, code: str, market: dict, company: dict) -> dict:
         fin_ratios = _query_row(conn, tables, "Financial_Ratios", doc_id)
         fin_rolling = _query_row(conn, tables, "Financial_Ratios_Rolling", doc_id)
 
-        period_row = conn.execute(
-            "SELECT periodEnd FROM FinancialStatements WHERE docID = ? LIMIT 1",
-            (doc_id,),
-        ).fetchone()
-        period_end = period_row[0] if period_row else None
+        basis = _security._filing_share_basis(conn, ticker, doc_id)
 
-        eps = _security._split_adjusted_statement_value(
-            conn, ticker, period_end,
-            _col(share, "Basic earnings (loss) per share"),
-        )
-        bvps = _security._split_adjusted_statement_value(
-            conn, ticker, period_end,
-            _col(share, "Net assets per share"),
-        )
-        dps = _security._split_adjusted_statement_value(
-            conn, ticker, period_end,
-            _col(share, "Dividend paid per share"),
-        )
-        shares = _security._split_adjusted_statement_value(
-            conn, ticker, period_end,
-            _col(share, "Number of issued shares as of filing date"),
-            per_share=False,
-        )
-        sps = _security._split_adjusted_statement_value(
-            conn, ticker, period_end,
-            _col(ps_metrics, "Sales Per Share"),
-        )
+        def adjusted(table: str, row: dict, column: str) -> float | None:
+            return _security._on_share_basis(basis, table, column, _col(row, column))
+
+        eps = adjusted("ShareMetrics", share, "Basic earnings (loss) per share")
+        bvps = adjusted("ShareMetrics", share, "Net assets per share")
+        dps = adjusted("ShareMetrics", share, "Dividend paid per share")
+        shares = adjusted("ShareMetrics", share, "Number of issued shares as of filing date")
+        sps = adjusted("PerShare_Metrics", ps_metrics, "Sales Per Share")
         cr = _col(fin_ratios, "Current Ratio")
         roa = _col(fin_rolling, "Return on Assets_Average_3_Year")
         roe = _col(fin_rolling, "Return on Equity_Average_3_Year")
@@ -471,17 +454,24 @@ def get_history(
                 f = row.get("field", row.get("record_field", ""))
                 if not f:
                     continue
-                metrics.append({
+                metric = {
                     "field": f,
                     "display_name": row.get("metric", f),
                     "values": row.get("values", []),
-                })
+                }
+                if "reported_values" in row:
+                    metric["reported_values"] = row["reported_values"]
+                metrics.append(metric)
             if metrics:
                 tables_out[key] = {
                     "display_name": display_names.get(key, key.replace("_", " ").title()),
                     "metrics": metrics,
                 }
-        return {"periods": statements.get("periods", []), "tables": tables_out}
+        return {
+            "periods": statements.get("periods", []),
+            "tables": tables_out,
+            "share_basis": statements.get("share_basis", {"splits": []}),
+        }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 

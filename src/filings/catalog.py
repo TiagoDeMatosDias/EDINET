@@ -310,10 +310,13 @@ class FilingCatalog:
             # reconstructs sections on demand when the viewer requests them.
 
     def replace_quality_issues(self, doc_id: str, issues: list[dict[str, Any]]) -> None:
+        # An issue is identified by filing, code, and fact; a filing that repeats
+        # a fact id raises the same issue twice, which is one issue, not a
+        # reason to fail the whole filing.
         with transaction(self.path, busy_timeout_ms=self.busy_timeout_ms) as conn:
             conn.execute("DELETE FROM quality_issues WHERE doc_id = ?", (doc_id,))
             conn.executemany(
-                """INSERT INTO quality_issues
+                """INSERT OR IGNORE INTO quality_issues
                    (issue_id, doc_id, severity, code, message, fact_id, created_at)
                    VALUES (:issue_id, :doc_id, :severity, :code, :message, :fact_id, :created_at)""",
                 issues,

@@ -1,5 +1,6 @@
 import type { HistoryMetric, SecurityHistory } from '../../api/types'
 import { formatGranularNumber } from './numberFormat'
+import { describeSplit } from './shareBasis'
 
 export interface SnapshotGroup {
   title: string
@@ -64,6 +65,8 @@ export function buildCompanyReport(input: CompanyReportInput): string {
       .filter(entry => entry.rows.length > 0)
     if (tables.length) {
       parts.push('', '## Financial history', '', 'Statement values are unrounded and in the filing currency.')
+      const splits = input.history.share_basis?.splits ?? []
+      if (splits.length) parts.push('', `Per-share figures and share counts are adjusted to today's shares for the ${splits.map(describeSplit).join('; ')}.`)
       for (const { table, rows } of tables) {
         parts.push('', `### ${table.display_name}`, '', markdownTable(['Metric', ...input.history.periods], rows))
       }

@@ -183,8 +183,9 @@ def _enrich_overview(db: str, code: str, overview: dict[str, Any]) -> dict[str, 
         if net_income is not None:
             _set_if_missing(valuation, "NetProfitMargin", net_income / revenue)
         cost_of_sales = statement_metrics.get("CostOfSales")
-        if cost_of_sales is not None:
-            _set_if_missing(quality, "GrossMargin", (revenue - cost_of_sales) / revenue)
+        net_sales = statement_metrics.get("NetSales") or revenue
+        if cost_of_sales is not None and net_sales:
+            _set_if_missing(quality, "GrossMargin", (net_sales - cost_of_sales) / net_sales)
     equity = statement_metrics.get("TotalEquity")
     liabilities = statement_metrics.get("TotalLiabilities")
     if equity is not None and equity != 0 and liabilities is not None:

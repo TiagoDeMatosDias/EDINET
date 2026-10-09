@@ -115,7 +115,9 @@ def _load_ratio_definitions(formulas_path):
                     {
                         "name": input_name,
                         "table": source_table,
-                        "columns": [str(col) for col in source_columns if col],
+                        # A column is a name, or {"column": name, "when": [names]}
+                        # to read it only where one of those columns is reported.
+                        "columns": [col if isinstance(col, dict) else str(col) for col in source_columns if col],
                         "aggregation": aggregation,
                     }
                 )
@@ -172,12 +174,32 @@ def _seed_ratio_docids(helper, conn, source_schema, fs_actual, target_tables, fs
 
 def _build_input_sql_expression(helper, table_alias, actual_columns, aggregation):
     aggregation_key = str(aggregation or "sum").strip().lower()
-    qualified_columns = [f"{table_alias}.{helper._sql_ident(col)}" for col in actual_columns]
+
+    def column_sql(column):
+        name, when = column if isinstance(column, tuple) else (column, ())
+        reference = f"{table_alias}.{helper._sql_ident(name)}"
+        if not when:
+            return reference
+        present = " OR ".join(f"{table_alias}.{helper._sql_ident(other)} IS NOT NULL" for other in when)
+        return f"(CASE WHEN {present} THEN {reference} END)"
+
+    qualified_columns = [column_sql(column) for column in actual_columns]
 
     if aggregation_key == "firstnonnull":
         if len(qualified_columns) == 1:
             return qualified_columns[0]
         return f"COALESCE({', '.join(qualified_columns)})"
+
+    if aggregation_key == "max":
+        # The largest present value: revenue filed as net sales by some and as
+        # a larger operating revenue by others. SQLite's max() is NULL when any
+        # argument is, so each column stands in for the others when missing.
+        if len(qualified_columns) == 1:
+            return qualified_columns[0]
+        return "MAX(" + ", ".join(
+            f"COALESCE({', '.join([column, *(other for other in qualified_columns if other != column)])})"
+            for column in qualified_columns
+        ) + ")"
 
     if aggregation_key == "sum":
         presence_sql = " + ".join(
@@ -290,23 +312,26 @@ def _resolve_ratio_query_plan(helper, conn, source_schema, fs_actual, ratio_entr
                     else:
                         table_alias = table_state["alias"]
 
+                def resolve(column_name, table=actual_table):
+                    return _resolve_column_name_in_schema(helper, conn, source_schema, table, column_name)
+
                 actual_columns = []
                 seen_columns = set()
                 for requested_column in input_spec["columns"]:
-                    actual_column = _resolve_column_name_in_schema(
-                        helper,
-                        conn,
-                        source_schema,
-                        actual_table,
-                        requested_column,
-                    )
+                    conditional = isinstance(requested_column, dict)
+                    actual_column = resolve(requested_column.get("column") if conditional else requested_column)
                     if not actual_column:
                         continue
-                    column_key = actual_column.lower()
+                    when = ()
+                    if conditional:
+                        when = tuple(found for found in (resolve(name) for name in requested_column.get("when") or ()) if found)
+                        if not when:
+                            continue
+                    column_key = (actual_column.lower(), when)
                     if column_key in seen_columns:
                         continue
                     seen_columns.add(column_key)
-                    actual_columns.append(actual_column)
+                    actual_columns.append((actual_column, when) if when else actual_column)
 
                 if not actual_columns:
                     all_columns = helper._get_table_columns_in_schema(conn, source_schema, actual_table)

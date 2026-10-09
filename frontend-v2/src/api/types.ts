@@ -103,7 +103,10 @@ export interface SecurityOverview {
 export interface HistoryMetric {
   field: string
   display_name: string
+  /** Per-share figures and share counts are on today's share basis (split-adjusted). */
   values: Array<number | string | null>
+  /** The figures as filed, present only on lines a share split changed. */
+  reported_values?: Array<number | string | null>
 }
 
 export interface HistoryTable {
@@ -111,9 +114,22 @@ export interface HistoryTable {
   metrics: HistoryMetric[]
 }
 
+/** A share split (or consolidation) the adjusted figures account for. */
+export interface ShareSplit {
+  /** Ex-date of a recorded split; otherwise the date by which the filings show it. */
+  date: string
+  /** For a split found in the filings: the year end before it. */
+  after: string | null
+  /** Shares after per share before: 5 for a 5-for-1 split, 0.1 for a 10-to-1 consolidation. */
+  multiplier: number
+  /** ``split record`` (dated), ``filing`` (between a year end and its report), or ``share counts`` (between two year ends). */
+  source: string
+}
+
 export interface SecurityHistory {
   periods: string[]
   tables: Record<string, HistoryTable>
+  share_basis?: { splits: ShareSplit[] }
 }
 
 export interface ScreeningCriterion {

@@ -15,8 +15,7 @@ from src.orchestrator.common.corporate_actions import (
     adjust_payments_for_splits,
     dividend_payments,
     infer_share_count_splits,
-    share_count_basis_factors,
-    split_factor_at,
+    merge_split_events,
     standard_split_multiplier,
 )
 
@@ -83,8 +82,29 @@ def test_an_exactly_dated_split_divides_only_earlier_payments():
     payments = pd.DataFrame({"Ticker": ["X", "X"], "periodEnd": pd.to_datetime(["2024-03-31", "2024-09-30"]), "PerShare_Dividends": [40.0, 10.0], "fiscal_period_end": pd.to_datetime(["2024-03-31", "2025-03-31"]), "payment": ["final", "interim"]})
     events = {"X": [SplitEvent(T("2024-06-30"), T("2024-07-01"), 4.0, "Stock_Splits")]}
     assert adjust_payments_for_splits(payments, events)["PerShare_Dividends"].tolist() == [10.0, 10.0]
-    assert split_factor_at(events["X"], T("2024-03-31")) == 0.25
-    assert split_factor_at(events["X"], T("2024-12-31")) == 1.0
+
+
+def test_a_split_traded_ex_before_the_year_end_takes_effect_after_it():
+    # Ex-date 30 March, record date 31 March, new shares from 1 April: the
+    # final dividend on record at 31 March was paid on the old shares.
+    split = SplitEvent(T("2026-03-29"), T("2026-03-30"), 4.0, "Stock_Splits")
+    payments = pd.DataFrame({"Ticker": ["X", "X"], "periodEnd": pd.to_datetime(["2026-03-31", "2026-09-30"]), "PerShare_Dividends": [160.0, 45.0]})
+    assert adjust_payments_for_splits(payments, {"X": [split]})["PerShare_Dividends"].tolist() == [40.0, 45.0]
+    # The year-end share count shows it a year later; it is the same split.
+    inferred = infer_share_count_splits([(T("2025-03-31"), 1_000.0), (T("2026-03-31"), 1_000.0), (T("2027-03-31"), 4_000.0)])
+    assert merge_split_events([split], inferred) == [split]
+
+
+def test_recorded_splits_explain_the_share_count_change_they_fall_in():
+    # Two recorded 2-for-1 splits in one year explain a fourfold count.
+    first = SplitEvent(T("2020-09-28"), T("2020-09-29"), 2.0, "Stock_Splits")
+    second = SplitEvent(T("2021-03-29"), T("2021-03-30"), 2.0, "Stock_Splits")
+    fourfold = [SplitEvent(T("2020-06-30"), T("2021-06-30"), 4.0, "annual reports")]
+    assert merge_split_events([first, second], fourfold) == [first, second]
+    # A recorded 5-for-1 split with a count up tenfold also took an issue.
+    split = SplitEvent(T("2025-08-27"), T("2025-08-28"), 5.0, "Stock_Splits")
+    tenfold = [SplitEvent(T("2025-03-31"), T("2026-03-31"), 10.0, "annual reports")]
+    assert merge_split_events([split], tenfold) == [split]
 
 
 @pytest.fixture
@@ -121,17 +141,25 @@ def test_dividends_come_back_on_the_adjusted_share_basis(split_market):
     assert dividends["split_factor"].tolist() == [0.2, 0.2, 0.2, 1.0]
 
 
-def test_market_caps_use_the_share_count_basis(split_market):
+def test_market_caps_from_a_screen_are_on_one_basis(split_market):
+    from src.screening.screening import build_screening_query, install_share_basis
+
+    shares = [{"type": "column", "table": "ShareMetrics", "column": "Number of issued shares as of fiscal year end"}]
+    sql, params = build_screening_query(
+        [], ["CompanyInfo.Company_Ticker"], screening_date="2021-09-01", use_adjusted_price=True,
+        computed_columns=[{"name": "Shares", "formula_type": "expression", "expression_tokens": shares}],
+    )
     conn = sqlite3.connect(split_market)
     try:
-        assert share_count_basis_factors(conn, ["72030"], "2021-09-01") == {"72030": 0.2}
-        assert share_count_basis_factors(conn, ["72030"], "2022-09-01") == {}
+        install_share_basis(conn, split_market)
+        screen = pd.read_sql_query(sql, conn, params=params)
     finally:
         conn.close()
-    screen = pd.DataFrame({"Ticker": ["72030", "BIG"], "LatestPrice": [1000.0, 1000.0], "Shares": [1000.0, 5000.0]})
-    portfolios, _ = _build_portfolios(["72030", "BIG"], ["market_cap"], screen_df=screen, shares_outstanding_col="Shares", ticker_col="Ticker", share_basis_factors={"72030": 0.2})
+    # 1,000 shares before the 5-for-1 split are 5,000 at the adjusted price.
+    assert screen[["Company_Ticker", "Shares", "LatestPrice"]].values.tolist() == [["72030", 5000.0, 1000.0]]
+    big = pd.DataFrame({"Company_Ticker": ["BIG"], "Shares": [5000.0], "LatestPrice": [1000.0]})
+    portfolios, _ = _build_portfolios(["72030", "BIG"], ["market_cap"], screen_df=pd.concat([screen, big]), shares_outstanding_col="Shares", ticker_col="Company_Ticker")
     weights = {ticker: spec["value"] for ticker, spec in portfolios["market_cap"].items()}
-    # 1,000 shares at ¥5,000 as traded is the same size as 5,000 at ¥1,000.
     assert weights == pytest.approx({"72030": 0.5, "BIG": 0.5})
 
 
@@ -184,11 +212,17 @@ def test_per_share_figures_follow_the_filing_basis(split_market):
 
     conn = sqlite3.connect(split_market)
     try:
-        factors = {doc: (restated, fiscal) for doc, restated, fiscal in filing_basis_factors(conn)}
+        factors = {basis.doc_id: tuple(round(value, 6) for value in basis[1:]) for basis in filing_basis_factors(conn)}
     finally:
         conn.close()
-    # Reports before the split are on the old shares; the split year's report is not.
-    assert factors == {"D20": (0.2, 0.2), "D21": (0.2, 0.2)}
+    # Reports before the split are on the old shares (restated, fiscal,
+    # dividend, interim). The split year's report is on the new shares, but
+    # its ¥148 dividend is ¥120 paid before the split and ¥28 after: ¥52.
+    assert factors == {
+        "D20": (0.2, 0.2, 0.2, 0.2),
+        "D21": (0.2, 0.2, 0.2, 0.2),
+        "D22": (1.0, 1.0, round(52 / 148, 6), 0.2),
+    }
 
 
 def test_screens_compare_prices_with_per_share_figures_on_one_basis(split_market):

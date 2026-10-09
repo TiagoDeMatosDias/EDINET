@@ -22,12 +22,14 @@ from src.portfolio.split_schema import ensure_split_tables
 from src.utilities.stock_prices import (
     _create_prices_table,
     _extract_split_events,
+    _parse_yahoo_chart_payload,
     _reconcile_splits,
     _record_provider_splits,
     _replace_ticker_rows,
     _split_restore_factor,
     load_ticker_data,
     reconcile_ticker_price_basis,
+    repair_squeeze_out_prices,
 )
 
 
@@ -532,3 +534,167 @@ class TestReconcileTickerPriceBasis:
             result = reconcile_ticker_price_basis(conn, "Stock_Prices", "X")
 
         assert result["status"] == "no_heuristic_splits"
+
+
+# ---------------------------------------------------------------------------
+# Squeeze-outs: a consolidation of millions to one before a delisting
+# ---------------------------------------------------------------------------
+
+
+def _tokyo_timestamp(day: str) -> int:
+    return int(pd.Timestamp(f"{day} 15:00", tz="Asia/Tokyo").timestamp())
+
+
+def test_a_squeeze_out_is_taken_back_out_of_a_yahoo_series():
+    # Yahoo multiplies every close before a 1,440,960-to-1 consolidation by
+    # 1,440,960 and calls it a split.
+    days = ["2026-09-10", "2026-09-11", "2026-09-16"]
+    payload = {"chart": {"result": [{
+        "meta": {"dataGranularity": "1d", "currency": "JPY"},
+        "timestamp": [_tokyo_timestamp(day) for day in days],
+        "indicators": {"quote": [{"close": [1309.0 * 1440960, 1309.0 * 1440960, 1.0]}]},
+        "events": {"splits": {"1": {"date": _tokyo_timestamp("2026-09-16"), "numerator": 1.0, "denominator": 1440960.0}}},
+    }]}}
+    prices, splits = _parse_yahoo_chart_payload(payload)
+    assert prices["Close"].round(6).tolist() == [1309.0, 1309.0]
+    assert splits == []
+    assert prices.attrs["currency"] == "JPY"
+
+
+def test_stored_closes_inflated_by_a_squeeze_out_are_restored():
+    conn = _make_prices_conn()
+    ensure_split_tables(conn=conn)
+    rows = [(f"2026-0{month}-{day:02d}", 1309.0) for month in (6, 7, 8) for day in (1, 15)]
+    rows += [("2026-09-09", 1309.0), ("2026-09-10", 1309.0 * 1440960), ("2026-09-16", 1309.0 * 1440960)]
+    conn.executemany("INSERT INTO Stock_Prices (Date, Ticker, Currency, Price) VALUES (?, '21800', 'JPY', ?)", rows)
+    conn.execute(
+        "INSERT INTO Stock_Splits (ticker, split_date, ratio_from, ratio_to, confirmation, detection_method) "
+        "VALUES ('21800', '2026-09-16', 1440960, 1, 'confirmed', 'provider')"
+    )
+    assert repair_squeeze_out_prices(conn, "Stock_Prices", "21800") == 2
+    stored = conn.execute("SELECT Date, Price FROM Stock_Prices WHERE Date >= '2026-09-09' ORDER BY Date").fetchall()
+    assert [(row[0], round(row[1], 6)) for row in stored] == [("2026-09-09", 1309.0), ("2026-09-10", 1309.0)]
+    assert repair_squeeze_out_prices(conn, "Stock_Prices", "21800") == 0
+    # The consolidation never adjusts prices as a split would.
+    _invalidate_split_cache()
+    assert _load_split_factors(conn, "21800") == []
+
+
+def test_unknown_basis_closes_take_a_confirmed_split_only_when_they_show_it():
+    from src.utilities.price_provenance import refresh_split_adjusted_prices
+
+    conn = _make_prices_conn()
+    ensure_split_tables(conn=conn)
+    # 17230 was imported as traded: the 4-for-1 split on 30 March is still a drop.
+    shown = [("2026-03-26", 9570.0), ("2026-03-27", 9250.0), ("2026-03-30", 2192.0), ("2026-03-31", 2211.0)]
+    # Another import was already adjusted for its split: no drop.
+    hidden = [("2026-03-26", 2392.5), ("2026-03-27", 2312.5), ("2026-03-30", 2192.0), ("2026-03-31", 2211.0)]
+    for ticker, rows in (("17230", shown), ("99990", hidden)):
+        conn.executemany(
+            "INSERT INTO Stock_Prices (Date, Ticker, Currency, Price, Price_Basis) VALUES (?, ?, 'JPY', ?, 'unknown')",
+            [(day, ticker, price) for day, price in rows],
+        )
+        conn.execute(
+            "INSERT INTO Stock_Splits (ticker, split_date, ratio_from, ratio_to, confirmation, detection_method) "
+            "VALUES (?, '2026-03-30', 1, 4, 'confirmed', 'provider')",
+            (ticker,),
+        )
+    # 31930: the import stops on 10 July at ¥2,789; Yahoo took over on
+    # 15 July with closes already halved for the split on 30 July.
+    conn.executemany(
+        "INSERT INTO Stock_Prices (Date, Ticker, Currency, Price, Price_Basis) VALUES (?, '31930', 'JPY', ?, ?)",
+        [("2026-07-09", 2810.0, "unknown"), ("2026-07-10", 2789.0, "unknown"), ("2026-07-15", 1431.5, "adjusted"),
+         ("2026-07-16", 1440.0, "adjusted"), ("2026-07-29", 1474.5, "adjusted"), ("2026-07-30", 1470.0, "adjusted")],
+    )
+    conn.execute(
+        "INSERT INTO Stock_Splits (ticker, split_date, ratio_from, ratio_to, confirmation, detection_method) "
+        "VALUES ('31930', '2026-07-30', 1, 2, 'confirmed', 'provider')"
+    )
+    refresh_split_adjusted_prices(conn)
+    adjusted = {
+        (row[0], row[1]): row[2]
+        for row in conn.execute("SELECT Ticker, Date, Adjusted_Price FROM Stock_Prices")
+    }
+    assert adjusted[("17230", "2026-03-27")] == pytest.approx(2312.5)
+    assert adjusted[("17230", "2026-03-31")] is None
+    assert adjusted[("99990", "2026-03-27")] is None
+    assert adjusted[("31930", "2026-07-10")] == pytest.approx(1394.5)
+    assert adjusted[("31930", "2026-07-15")] == pytest.approx(1431.5)
+
+
+def test_adjusted_closes_that_still_step_at_a_split_take_it():
+    from src.utilities.price_provenance import refresh_split_adjusted_prices
+
+    conn = _make_prices_conn()
+    ensure_split_tables(conn=conn)
+    # 79110: daily quotes fetched each evening, already adjusted for every
+    # earlier split, then a 2-for-1 split on 29 September. The quotes fetched
+    # before it stay on the old shares; the provider adjusted later fetches.
+    # Its history to 14 July was fetched again afterwards: already halved.
+    conn.executemany(
+        "INSERT INTO Stock_Prices (Date, Ticker, Currency, Price, Price_Basis, Retrieved_At) VALUES (?, '79110', 'JPY', ?, 'adjusted', '2026-10-09T09:00:00+00:00')",
+        [("2026-07-13", 2574.0), ("2026-07-14", 2454.5)],
+    )
+    conn.executemany(
+        "INSERT INTO Stock_Prices (Date, Ticker, Currency, Price, Price_Basis, Retrieved_At) VALUES (?, '79110', 'JPY', ?, 'adjusted', ?)",
+        [("2026-09-22", 4890.0, "2026-09-23T09:00:00+00:00"), ("2026-09-24", 4921.0, "2026-09-25T09:00:00+00:00"),
+         ("2026-09-25", 2459.0, "2026-09-29T09:00:00+00:00"), ("2026-09-28", 2421.5, "2026-09-29T09:00:00+00:00"),
+         ("2026-09-29", 2339.5, "2026-10-03T09:00:00+00:00"), ("2026-09-30", 2362.5, "2026-10-03T09:00:00+00:00"),
+         ("2026-10-01", 2417.5, "2026-10-03T09:00:00+00:00"), ("2026-10-02", 2384.5, "2026-10-07T09:00:00+00:00"),
+         ("2026-10-05", 2469.0, "2026-10-07T09:00:00+00:00"), ("2026-10-06", 2438.0, "2026-10-07T09:00:00+00:00")],
+    )
+    # 99990: the same split, but its whole history was fetched afterwards.
+    conn.executemany(
+        "INSERT INTO Stock_Prices (Date, Ticker, Currency, Price, Price_Basis, Retrieved_At) VALUES (?, '99990', 'JPY', ?, 'adjusted', '2026-10-09T09:00:00+00:00')",
+        [("2026-09-24", 2460.5), ("2026-09-25", 2459.0), ("2026-09-29", 2339.5), ("2026-10-01", 2417.5)],
+    )
+    for ticker in ("79110", "99990"):
+        conn.execute(
+            "INSERT INTO Stock_Splits (ticker, split_date, ratio_from, ratio_to, confirmation, detection_method) "
+            "VALUES (?, '2026-09-29', 1, 2, 'confirmed', 'provider')",
+            (ticker,),
+        )
+    # 82270: a provider listed a 3-for-1 split on 19 February but served its
+    # whole history, fetched months later, still at the price as traded.
+    conn.executemany(
+        "INSERT INTO Stock_Prices (Date, Ticker, Currency, Price, Price_Basis, Retrieved_At) VALUES (?, '82270', 'JPY', ?, 'adjusted', '2026-10-09T09:00:00+00:00')",
+        [("2026-02-13", 11050.0), ("2026-02-16", 11030.0), ("2026-02-17", 11040.0), ("2026-02-18", 3713.3), ("2026-02-19", 3628.0), ("2026-02-20", 3537.0)],
+    )
+    conn.execute(
+        "INSERT INTO Stock_Splits (ticker, split_date, ratio_from, ratio_to, confirmation, detection_method) "
+        "VALUES ('82270', '2026-02-19', 1, 3, 'confirmed', 'provider')"
+    )
+    refresh_split_adjusted_prices(conn)
+    adjusted = {(row[0], row[1]): row[2] for row in conn.execute("SELECT Ticker, Date, Adjusted_Price FROM Stock_Prices")}
+    assert adjusted[("79110", "2026-09-24")] == pytest.approx(2460.5)
+    assert adjusted[("79110", "2026-09-22")] == pytest.approx(2445.0)
+    assert adjusted[("79110", "2026-09-25")] == pytest.approx(2459.0)
+    assert adjusted[("79110", "2026-07-14")] == pytest.approx(2454.5)
+    assert adjusted[("99990", "2026-09-24")] == pytest.approx(2460.5)
+    assert adjusted[("82270", "2026-02-17")] == pytest.approx(3680.0)
+    assert adjusted[("82270", "2026-02-18")] == pytest.approx(3713.3)
+    # Refreshing again changes nothing: the step is read from the stored closes.
+    assert refresh_split_adjusted_prices(conn) == 0
+
+
+def test_one_split_recorded_twice_days_apart_adjusts_once():
+    from src.utilities.price_provenance import refresh_split_adjusted_prices
+
+    conn = _make_prices_conn()
+    ensure_split_tables(conn=conn)
+    # 79460: the price heuristic dated a 5-for-1 split at the step on 2 March,
+    # the provider at 5 March; both were confirmed.
+    conn.executemany(
+        "INSERT INTO Stock_Prices (Date, Ticker, Currency, Price, Price_Basis) VALUES (?, '79460', 'JPY', ?, 'raw')",
+        [("2026-02-26", 3845.0), ("2026-02-27", 3735.0), ("2026-03-02", 746.0), ("2026-03-03", 676.0)],
+    )
+    conn.executemany(
+        "INSERT INTO Stock_Splits (ticker, split_date, ratio_from, ratio_to, confirmation, detection_method) VALUES ('79460', ?, 1, 5, 'confirmed', ?)",
+        [("2026-03-02", "price_heuristic"), ("2026-03-05", "provider")],
+    )
+    refresh_split_adjusted_prices(conn)
+    adjusted = dict(conn.execute("SELECT Date, Adjusted_Price FROM Stock_Prices WHERE Ticker = '79460'").fetchall())
+    assert adjusted["2026-02-27"] == pytest.approx(747.0)
+    assert adjusted["2026-03-02"] == pytest.approx(746.0)
+    _invalidate_split_cache()
+    assert [(day, round(factor, 6)) for day, factor in _load_split_factors(conn, "79460")] == [("2026-03-02", 0.2)]

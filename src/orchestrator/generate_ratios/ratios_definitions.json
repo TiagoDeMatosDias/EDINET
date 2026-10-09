@@ -17,10 +17,10 @@
                             "name": "NetIncome",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Net income (loss)",
-                                "Profit (loss)"
+                                "Profit (loss)",
+                                "Net income (loss)"
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "FirstNonNull"
                         }
                     ],
                     "formula": "NetIncome / Assets",
@@ -43,10 +43,10 @@
                             "name": "NetIncome",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Net income (loss)",
-                                "Profit (loss)"
+                                "Profit (loss)",
+                                "Net income (loss)"
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "FirstNonNull"
                         }
                     ],
                     "formula": "NetIncome / Equity",
@@ -68,9 +68,17 @@
                             "name": "Sales",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Net sales"
+                                "Net sales",
+                                "Operating Revenue - Operating revenue",
+                                {
+                                    "column": "Ordinary Income - Ordinary income",
+                                    "when": [
+                                        "Ordinary Expenses - Operating expenses",
+                                        "Ordinary expenses"
+                                    ]
+                                }
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "max"
                         }
                     ],
                     "formula": "Sales / Assets",
@@ -117,9 +125,10 @@
                             "name": "Intangibleassets",
                             "Table": "BalanceSheet",
                             "Columns": [
+                                "Assets - Intangible assets",
                                 "Intangible assets"
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "FirstNonNull"
                         }
                     ],
                     "formula": "Intangibleassets / Assets",
@@ -159,18 +168,26 @@
                             "name": "Revenue",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Net sales"
+                                "Net sales",
+                                "Operating Revenue - Operating revenue",
+                                {
+                                    "column": "Ordinary Income - Ordinary income",
+                                    "when": [
+                                        "Ordinary Expenses - Operating expenses",
+                                        "Ordinary expenses"
+                                    ]
+                                }
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "max"
                         },
                         {
                             "name": "NetIncome",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Net income (loss)",
-                                "Profit (loss)"
+                                "Profit (loss)",
+                                "Net income (loss)"
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "FirstNonNull"
                         }
                     ],
                     "formula": "NetIncome / Revenue",
@@ -210,18 +227,26 @@
                             "name": "Revenue",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Net sales"
+                                "Net sales",
+                                "Operating Revenue - Operating revenue",
+                                {
+                                    "column": "Ordinary Income - Ordinary income",
+                                    "when": [
+                                        "Ordinary Expenses - Operating expenses",
+                                        "Ordinary expenses"
+                                    ]
+                                }
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "max"
                         },
                         {
                             "name": "PretaxIncome",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Income (loss) before income taxes",
-                                "Profit (loss) before income taxes"
+                                "Profit (loss) before income taxes",
+                                "Income (loss) before income taxes"
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "FirstNonNull"
                         }
                     ],
                     "formula": "PretaxIncome / Revenue",
@@ -236,17 +261,26 @@
                             "name": "Revenue",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Net sales"
+                                "Net sales",
+                                "Operating Revenue - Operating revenue",
+                                {
+                                    "column": "Ordinary Income - Ordinary income",
+                                    "when": [
+                                        "Ordinary Expenses - Operating expenses",
+                                        "Ordinary expenses"
+                                    ]
+                                }
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "max"
                         },
                         {
                             "name": "GAExpenses",
                             "Table": "IncomeStatement",
                             "Columns": [
+                                "Selling, general and administrative expenses",
                                 "General and administrative expenses"
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "FirstNonNull"
                         }
                     ],
                     "formula": "GAExpenses / Revenue",
@@ -261,17 +295,25 @@
                             "name": "Revenue",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Net sales"
+                                "Net sales",
+                                "Operating Revenue - Operating revenue",
+                                {
+                                    "column": "Ordinary Income - Ordinary income",
+                                    "when": [
+                                        "Ordinary Expenses - Operating expenses",
+                                        "Ordinary expenses"
+                                    ]
+                                }
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "max"
                         },
                         {
                             "name": "DepreciationExpenses",
-                            "Table": "IncomeStatement",
+                            "Table": "CashflowStatement",
                             "Columns": [
                                 "Depreciation"
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "FirstNonNull"
                         }
                     ],
                     "formula": "DepreciationExpenses / Revenue",
@@ -286,17 +328,27 @@
                             "name": "Revenue",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Net sales"
+                                "Net sales",
+                                "Operating Revenue - Operating revenue",
+                                {
+                                    "column": "Ordinary Income - Ordinary income",
+                                    "when": [
+                                        "Ordinary Expenses - Operating expenses",
+                                        "Ordinary expenses"
+                                    ]
+                                }
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "max"
                         },
                         {
                             "name": "Interestexpenses",
                             "Table": "IncomeStatement",
                             "Columns": [
+                                "Non-operating expenses - Interest expenses",
+                                "Ordinary expenses - Interest expenses",
                                 "Interest expenses"
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "FirstNonNull"
                         }
                     ],
                     "formula": "Interestexpenses / Revenue",
@@ -311,17 +363,28 @@
                             "name": "Revenue",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Net sales"
+                                "Net sales",
+                                "Operating Revenue - Operating revenue",
+                                {
+                                    "column": "Ordinary Income - Ordinary income",
+                                    "when": [
+                                        "Ordinary Expenses - Operating expenses",
+                                        "Ordinary expenses"
+                                    ]
+                                }
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "max"
                         },
                         {
                             "name": "SalariesExpenses",
                             "Table": "IncomeStatement",
                             "Columns": [
+                                "Selling, general and administrative expenses - Salaries",
+                                "Employees' salaries and allowances",
+                                "Operating expenses - general - Salaries and allowances",
                                 "Salaries"
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "FirstNonNull"
                         }
                     ],
                     "formula": "SalariesExpenses / Revenue",
@@ -337,17 +400,25 @@
                             "name": "Revenue",
                             "Table": "IncomeStatement",
                             "Columns": [
-                                "Net sales"
+                                "Net sales",
+                                "Operating Revenue - Operating revenue",
+                                {
+                                    "column": "Ordinary Income - Ordinary income",
+                                    "when": [
+                                        "Ordinary Expenses - Operating expenses",
+                                        "Ordinary expenses"
+                                    ]
+                                }
                             ],
-                            "Aggregation": "sum"
+                            "Aggregation": "max"
                         },
                         {
                             "name": "SharesOutstanding",
                             "Table": "ShareMetrics",
                             "Columns": [
+                                "Number of issued shares as of fiscal year end",
                                 "Total number of issued shares",
-                                "Number of issued shares as of filing date",
-                                "Number of issued shares as of fiscal year end"
+                                "Number of issued shares as of filing date"
                             ],
                             "Aggregation": "FirstNonNull"
                         }
@@ -372,9 +443,9 @@
                             "name": "SharesOutstanding",
                             "Table": "ShareMetrics",
                             "Columns": [
+                                "Number of issued shares as of fiscal year end",
                                 "Total number of issued shares",
-                                "Number of issued shares as of filing date",
-                                "Number of issued shares as of fiscal year end"
+                                "Number of issued shares as of filing date"
                             ],
                             "Aggregation": "FirstNonNull"
                         }
@@ -398,9 +469,9 @@
                             "name": "SharesOutstanding",
                             "Table": "ShareMetrics",
                             "Columns": [
+                                "Number of issued shares as of fiscal year end",
                                 "Total number of issued shares",
-                                "Number of issued shares as of filing date",
-                                "Number of issued shares as of fiscal year end"
+                                "Number of issued shares as of filing date"
                             ],
                             "Aggregation": "FirstNonNull"
                         }
@@ -432,9 +503,9 @@
                             "name": "SharesOutstanding",
                             "Table": "ShareMetrics",
                             "Columns": [
+                                "Number of issued shares as of fiscal year end",
                                 "Total number of issued shares",
-                                "Number of issued shares as of filing date",
-                                "Number of issued shares as of fiscal year end"
+                                "Number of issued shares as of filing date"
                             ],
                             "Aggregation": "FirstNonNull"
                         }
@@ -458,9 +529,9 @@
                             "name": "SharesOutstanding",
                             "Table": "ShareMetrics",
                             "Columns": [
+                                "Number of issued shares as of fiscal year end",
                                 "Total number of issued shares",
-                                "Number of issued shares as of filing date",
-                                "Number of issued shares as of fiscal year end"
+                                "Number of issued shares as of filing date"
                             ],
                             "Aggregation": "FirstNonNull"
                         }
@@ -492,9 +563,9 @@
                             "name": "SharesOutstanding",
                             "Table": "ShareMetrics",
                             "Columns": [
+                                "Number of issued shares as of fiscal year end",
                                 "Total number of issued shares",
-                                "Number of issued shares as of filing date",
-                                "Number of issued shares as of fiscal year end"
+                                "Number of issued shares as of filing date"
                             ],
                             "Aggregation": "FirstNonNull"
                         }
@@ -504,6 +575,5 @@
                 }
             }
         ]
-
     }
 }

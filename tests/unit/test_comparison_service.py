@@ -7,6 +7,7 @@ from src.comparison.service import (
     extract_latest_table_metrics,
     flatten_overview,
     normalize_companies,
+    statement_series,
 )
 
 
@@ -223,3 +224,41 @@ def test_every_standard_metric_explains_how_it_is_calculated():
 
     missing = [key for key, definition in METRIC_DEFINITIONS.items() if not definition.get("description", "").strip()]
     assert missing == [], "the analysis page shows each description as the metric's tooltip"
+
+
+def test_revenue_is_the_largest_revenue_line_and_gross_margin_stays_on_net_sales():
+    # A parent-only holding company: a small net sales line inside a larger
+    # operating revenue; a railway files operating revenue alone.
+    holding = {
+        "periods": ["2025-03-31", "2026-03-31"],
+        "IncomeStatement": [
+            {"field": "Net sales", "values": [170, 164]},
+            {"field": "Operating Revenue - Operating revenue", "values": [480, 802]},
+            {"field": "Cost of sales", "values": [34, 32]},
+        ],
+    }
+    metrics, _period = extract_latest_statement_metrics(holding)
+    assert metrics["Revenue"] == 802
+    assert metrics["NetSales"] == 164
+    series = statement_series(holding)["series"]
+    assert series["Revenue"] == [480, 802]
+    assert series["GrossMargin"] == [(170 - 34) / 170, (164 - 32) / 164]
+    railway = {"periods": ["2026-03-31"], "IncomeStatement": [{"field": "Operating Revenue - Operating revenue", "values": [900]}]}
+    assert extract_latest_statement_metrics(railway)[0]["Revenue"] == 900
+
+
+def test_a_banks_revenue_is_its_ordinary_revenue():
+    # A bank holding company: consolidated ordinary revenue and expenses beside
+    # the parent's own small operating revenue.
+    bank = {
+        "periods": ["2026-03-31"],
+        "IncomeStatement": [
+            {"field": "Operating Revenue - Operating revenue", "values": [16.6]},
+            {"field": "Ordinary Income - Ordinary income", "values": [260.0]},
+            {"field": "Ordinary Expenses - Operating expenses", "values": [199.0]},
+        ],
+    }
+    assert extract_latest_statement_metrics(bank)[0]["Revenue"] == 260.0
+    # Without ordinary expenses the label holds ordinary profit, not revenue.
+    shop = {"periods": ["2016-05-31"], "IncomeStatement": [{"field": "Ordinary Income - Ordinary income", "values": [1.98]}]}
+    assert extract_latest_statement_metrics(shop)[0]["Revenue"] is None

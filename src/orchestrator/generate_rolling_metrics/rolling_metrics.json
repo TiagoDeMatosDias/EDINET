@@ -5,22 +5,67 @@
         "Net assets",
         "Current assets",
         "Current liabilities",
-        "Intangible assets",
+        {
+            "name": "Intangible assets",
+            "columns": [
+                "Assets - Intangible assets"
+            ]
+        },
         "Property, plant and equipment",
         "Securities",
-        "Accounts receivable"
+        {
+            "name": "Accounts receivable",
+            "columns": [
+                "Current assets - Accounts receivable - trade",
+                "Current assets - Accounts receivable"
+            ]
+        }
     ],
     "IncomeStatement": [
         "Net sales",
+        {
+            "name": "Revenue",
+            "columns": [
+                "Net sales",
+                "Operating Revenue - Operating revenue",
+                {
+                    "column": "Ordinary Income - Ordinary income",
+                    "when": [
+                        "Ordinary Expenses - Operating expenses",
+                        "Ordinary expenses"
+                    ]
+                }
+            ],
+            "aggregation": "max"
+        },
         "Cost of sales",
         "Gross profit (loss)",
         "Income taxes",
-        "Income (loss) before income taxes",
+        {
+            "name": "Income (loss) before income taxes",
+            "columns": [
+                "Profit (loss) before income taxes",
+                "Income (loss) before income taxes"
+            ]
+        },
         "Non-operating expenses",
         "Operating expenses",
-        "Operating income",
-        "Interest expenses",
-        "Depreciation",
+        {
+            "name": "Operating income",
+            "columns": [
+                "Operating Income - Operating profit (loss)",
+                "Operating Income - Operating income",
+                "Operating income"
+            ]
+        },
+        {
+            "name": "Interest expenses",
+            "columns": [
+                "Non-operating expenses - Interest expenses",
+                "Ordinary expenses - Interest expenses",
+                "Interest expenses"
+            ]
+        },
         "Profit (loss)"
     ],
     "CashFlowStatement": [
@@ -38,10 +83,8 @@
         "Purchase of treasury shares",
         "Purchase of property, plant and equipment"
     ],
-    "Financial_Ratios": [
-    ],
-    "PerShare_Metrics": [
-    ],
+    "Financial_Ratios": [],
+    "PerShare_Metrics": [],
     "ShareMetrics": [
         "Dividend paid per share",
         "Total shareholder return",

@@ -171,3 +171,24 @@ describe('revenue base line', () => {
     expect(defaultChartFields('IncomeStatement', rows)).toEqual(['operating revenue', 'operating'])
   })
 })
+
+describe('share basis', () => {
+  // Toyota's 5-for-1 split in the year to March 2022: EPS 582.80 as filed is 116.56 on today's shares.
+  const eps: HistoryMetric = { field: 'Basic earnings (loss) per share', display_name: 'Basic Earnings (loss) Per Share', values: [116.56, 121.98], reported_values: [582.8, 121.98] }
+  const employees = metric('Number of employees', [370_000, 375_000])
+
+  it('reads split-adjusted figures and keeps the figures as filed beside them', () => {
+    const [row, plain] = layoutStatement('ShareMetrics', [eps, employees])
+    expect(row.values).toEqual([116.56, 121.98])
+    expect(row.alternate).toEqual([582.8, 121.98])
+    expect(periodChanges(row)[1]).toBeCloseTo(121.98 / 116.56 - 1)
+    expect(plain.alternate).toBeUndefined()
+  })
+
+  it('shows the figures as filed on request, and leaves lines no split changed alone', () => {
+    const [row, plain] = layoutStatement('ShareMetrics', [eps, employees], false, 'filed')
+    expect(row.values).toEqual([582.8, 121.98])
+    expect(row.alternate).toEqual([116.56, 121.98])
+    expect(plain.values).toEqual([370_000, 375_000])
+  })
+})

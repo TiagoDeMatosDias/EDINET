@@ -22,8 +22,14 @@ from typing import Any
 
 import pandas as pd
 
+from src.orchestrator.common.corporate_actions import (
+    FilingBasis,
+    filing_basis_factors,
+    load_split_events,
+)
+from src.orchestrator.common.share_basis import share_basis_rule, to_adjusted_basis
 from src.orchestrator.common.sqlite import connect_read, connect_write, transaction
-from src.utilities.price_provenance import table_columns
+from src.utilities.price_provenance import is_squeeze_out, table_columns
 
 # ``_create_prices_table`` and ``load_ticker_data`` are re-exported: callers
 # and tests patch these names on this module.
@@ -1445,56 +1451,33 @@ def _split_adjusted_value(
     return value
 
 
-def _split_adjustment_factor(
-    conn: sqlite3.Connection,
-    ticker: str,
-    period_end: Any,
-) -> float:
-    """Return the cumulative per-share factor after *period_end*.
+def _filing_share_basis(conn: sqlite3.Connection, ticker: str, doc_id: Any) -> FilingBasis | None:
+    """The factors that put one filing's per-share figures on the adjusted basis.
 
-    ``Stock_Splits`` stores ratios as shares-before:shares-after.  The price
-    factor for a 2-for-1 split is therefore ``0.5``; historical per-share
-    statement values must be multiplied by that factor when they are compared
-    with a current, post-split quote.  Only confirmed, raw-basis split events
-    are returned by ``_load_split_factors``.  A factor of ``1.0`` means that
-    no reviewed split is known after the statement period.
+    ``None`` when no split since the filing changes them.  The stored filing
+    values are never changed; see ``share_basis`` for which figure takes
+    which factor.
     """
-    date_text = _safe_date_str(period_end)
-    if not ticker or not date_text:
-        return 1.0
-    try:
-        from src.portfolio.portfolio_state import _load_split_factors
-
-        for split_date, cumulative_factor in _load_split_factors(conn, ticker):
-            if str(split_date)[:10] > date_text:
-                return float(cumulative_factor)
-    except (TypeError, ValueError, sqlite3.Error):
-        return 1.0
-    return 1.0
-
-
-def _split_adjusted_statement_value(
-    conn: sqlite3.Connection,
-    ticker: str,
-    period_end: Any,
-    value: Any,
-    *,
-    per_share: bool = True,
-) -> float | None:
-    """Project one report value onto the current share basis.
-
-    The stored filing value is never changed.  Per-share values are multiplied
-    by the post-split price factor; share counts are divided by it.  This
-    keeps market-cap and valuation calculations consistent with the adjusted
-    quote while preserving the report's original value for audit purposes.
-    """
-    numeric = _safe_float(value)
-    if numeric is None:
+    doc = _safe_str(doc_id)
+    if not ticker or not doc:
         return None
-    factor = _split_adjustment_factor(conn, ticker, period_end)
-    if not factor or factor == 1.0:
+    try:
+        events = load_split_events(conn, [ticker]).get(ticker)
+        if not events:
+            return None
+        rows = filing_basis_factors(conn, tickers=[ticker], events={ticker: events})
+    except (sqlite3.Error, TypeError, ValueError):
+        return None
+    return next((row for row in rows if row.doc_id == doc), None)
+
+
+def _on_share_basis(basis: FilingBasis | None, table: str, column: str, value: Any) -> float | None:
+    """One stored figure of *table*.*column* on the split-adjusted basis."""
+    numeric = _safe_float(value)
+    rule = share_basis_rule(table, column)
+    if numeric is None or basis is None or rule is None:
         return numeric
-    return numeric * factor if per_share else numeric / factor
+    return to_adjusted_basis(numeric, getattr(basis, rule[0]), rule[1])
 
 
 def _annotate_statement_snapshot_splits(
@@ -1503,19 +1486,28 @@ def _annotate_statement_snapshot_splits(
     snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     """Add non-destructive current-share projections to a filing snapshot."""
-    period_end = snapshot.get("period_end")
-    factor = _split_adjustment_factor(conn, ticker, period_end)
-    snapshot["statement_split_adjustment_factor"] = factor
-    if not ticker or factor == 1.0:
+    basis = _filing_share_basis(conn, ticker, snapshot.get("docID"))
+    snapshot["statement_split_adjustment_factor"] = basis.restated if basis else 1.0
+    if basis is None:
         return snapshot
 
-    for field in ("EPS", "BookValue", "Dividends", "SalesPerShare", "SharePrice"):
+    # Legacy snapshot fields: EPS and book value are restated before filing,
+    # the dividend is as paid, and sales per share and the share price are
+    # those of the year end.
+    factors = {
+        "EPS": basis.restated,
+        "BookValue": basis.restated,
+        "Dividends": basis.dividend,
+        "SalesPerShare": basis.fiscal,
+        "SharePrice": basis.fiscal,
+    }
+    for field, factor in factors.items():
         value = _safe_float(snapshot.get(field))
         if value is not None:
             snapshot[f"{field}_adjusted"] = value * factor
     shares = _safe_float(snapshot.get("SharesOutstanding"))
     if shares is not None:
-        snapshot["SharesOutstanding_adjusted"] = shares / factor
+        snapshot["SharesOutstanding_adjusted"] = shares / basis.restated
     return snapshot
 
 
@@ -2478,7 +2470,7 @@ def get_security_price_history(
                             ratio = float(split_row[2]) / float(split_row[1])
                         except (TypeError, ValueError, ZeroDivisionError):
                             continue
-                        if ratio > 0:
+                        if ratio > 0 and not is_squeeze_out(split_row[1], split_row[2]):
                             seen_split_dates.add(split_date)
                             splits.append((split_date, ratio))
                     # Build cumulative factors (newest-first multiplication)
@@ -2494,7 +2486,10 @@ def get_security_price_history(
                         p = row["price"]
                         basis = str(row.get("price_basis") or "raw").strip().lower()
                         if basis != "raw":
-                            return p
+                            # An unknown-basis close the read model found on
+                            # the raw basis across a split carries its value.
+                            derived = row.get("adjusted_price")
+                            return derived if basis != "adjusted" and pd.notna(derived) else p
                         trade_date = str(row["trade_date"])[:10]
                         for sd, cf in factors:
                             if sd > trade_date:

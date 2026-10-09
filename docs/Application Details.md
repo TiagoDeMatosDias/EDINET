@@ -1,7 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-10-08
+Last updated: 2026-10-09
 - Central reference for runtime/test Python modules (`src/`), web app modules (`src/web_app/`), React frontend (`frontend-v2/`), and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
@@ -30,7 +30,7 @@ Suggested per-function format:
 ## Current project status
 
 - Default interface: the web workstation (FastAPI + React/TypeScript SPA) launched by `python main.py` is the primary maintained UI.
-- Maintained top-level views: `Overview`, `Pipeline`, `Screening`, `Analysis`, `Backtesting`, and `Portfolio`.
+- Maintained top-level views: `Overview`, `Screen`, `Analyze`, `Backtest`, `Portfolio`, `Data pipeline`, `Filings`, `Compare`, `Research`, and `Chat`, plus `Account` and `Admin` when the role allows.
 - Architecture status: `src.orchestrator` is a thin dispatcher with dynamically discovered step packages; backend modules are decoupled from `Config` and called with explicit parameters.
 - Mature user-facing workflows: ingestion, ETL, ratio generation, backtesting, screening, security analysis, portfolio management, and company tags all have dedicated test coverage.
 - Web workstation: React SPA served at `/`, `/pipeline`, `/screen`, `/analyze`, `/backtest`, and `/portfolio`; `/security` and `/backtesting` remain SPA compatibility aliases.
@@ -56,54 +56,71 @@ Suggested per-function format:
 
 ## Architecture overview
 
-The application has a React/TypeScript web workstation UI backed by a FastAPI server. The orchestrator is the central dispatcher: it discovers step packages and delegates work to backend modules.
+The application is a React/TypeScript web workstation backed by a FastAPI server. Every `/api/*` route is mounted from an explicit composition root (`src/web_app/api/__init__.py`) and backed by a backend service in `src/`. The orchestrator is a thin dispatcher: it discovers step packages and delegates pipeline work to backend modules.
 
 ```mermaid
-flowchart LR
-    subgraph Entry["Entry Point"]
-        MAIN["main.py"]
+flowchart TB
+    subgraph Browser["Browser"]
+        SPA["React SPA<br/>frontend-v2/"]
     end
 
-    subgraph UI["UI Layer"]
-        REACT["React SPA<br/>(frontend-v2/)"]
+    subgraph Server["FastAPI server · HTTPS"]
+        SERVE["Serves SPA + static<br/>/app-assets · /brand-assets"]
+        API["API layer<br/>/api/* · /health"]
     end
 
-    subgraph API["API"]
-        RTR["Pipeline / jobs"]
-        SCR_API["/api/screening/*"]
-        SEC_API["/api/security/*"]
-        PF_API["/api/portfolio/*"]
-        RES_API["Auth, tags, research, reports"]
-        FIL_API["Filings and comparison"]
+    subgraph Services["Backend services · src/"]
+        AUTH["Auth & accounts"]
+        SCREEN["Screening"]
+        SEC["Security analysis"]
+        FIL["Filings & XBRL"]
+        COMP["Comparison"]
+        PORT["Portfolio"]
+        RES["Research & tags"]
+        BONDS["Bonds"]
+        BT["Backtesting"]
+        REP["Reports"]
+        CHAT["Chat"]
     end
 
-    subgraph Core["Core"]
-        ORCH["Orchestrator<br/>(src/orchestrator/)"]
-        SCR["Screening<br/>(src/screening/)"]
-        SA["Security Analysis<br/>(src/security_analysis/)"]
-        PF["Portfolio<br/>(src/portfolio/)"]
-        RES["Auth / Research / Reports"]
-        FIL["Filings / Comparison"]
+    subgraph Pipeline["Orchestrator · src/orchestrator/"]
+        ORCH["16 pipeline steps<br/>ingest · transform · update"]
     end
 
-    MAIN --> REACT
-    REACT -->|"TanStack Query"| RTR
-    REACT -->|"TanStack Query"| SCR_API
-    REACT -->|"TanStack Query"| SEC_API
-    REACT -->|"TanStack Query"| PF_API
-    REACT -->|"TanStack Query"| RES_API
-    REACT -->|"TanStack Query"| FIL_API
-    RTR --> ORCH
-    SCR_API --> SCR
-    SEC_API --> SA
-    PF_API --> PF
-    RES_API --> RES
-    FIL_API --> FIL
-    ORCH --> SCR
-    ORCH --> SA
+    subgraph Data["SQLite databases"]
+        REBUILD["Rebuildable · data/databases/<br/>Base · Standardized · Filings · Bonds"]
+        STATE["State · config/state/databases/<br/>Portfolio · auth · research · jobs · chat"]
+    end
+
+    SPA -->|"HTTPS"| API
+    SPA -.->|"static"| SERVE
+    API --> AUTH
+    API --> SCREEN
+    API --> SEC
+    API --> FIL
+    API --> COMP
+    API --> PORT
+    API --> RES
+    API --> BONDS
+    API --> BT
+    API --> REP
+    API --> CHAT
+    API --> ORCH
+    ORCH --> REBUILD
+    SCREEN --> REBUILD
+    SEC --> REBUILD
+    FIL --> REBUILD
+    BONDS --> REBUILD
+    BT --> REBUILD
+    COMP --> REBUILD
+    AUTH --> STATE
+    RES --> STATE
+    PORT --> STATE
+    CHAT --> STATE
+    ORCH --> STATE
 ```
 
-The FastAPI server mounts pipeline/jobs, authentication, screening, security analysis, portfolio, tags/research, filings, comparison, backtesting, and report routers. The React frontend communicates with all endpoints through the authenticated API client layer in `frontend-v2/src/api/`; it never opens SQLite databases directly.
+The FastAPI server mounts the pipeline/jobs, auth, admin, filings, research, reports, screening, security-analysis, splits, tags, backtesting, bonds, comparison, portfolio, chat, profiles, overview, and settings routers. The React frontend communicates with all endpoints through the authenticated API client layer in `frontend-v2/src/api/`; it never opens SQLite databases directly.
 
 ### [src/orchestrator/__init__.py](../src/orchestrator/__init__.py)
 
@@ -150,14 +167,17 @@ Responsibility: EDINET API wrapper, document listing, download/unzip, CSV ingest
 
 ### [src/orchestrator/common/corporate_actions.py](../src/orchestrator/common/corporate_actions.py)
 
-Responsibility: put reported per-share figures on the split-adjusted share basis of the stored prices. Split events come from confirmed `Stock_Splits` rows (exact dates) and from fiscal-year-end issued share counts in annual reports (standard ratios; near misses confirmed by book value or dividends per share).
+Responsibility: put reported per-share figures on the split-adjusted share basis of the stored prices. Split events come from confirmed `Stock_Splits` rows (dated at the ex-date; holdings change up to five days later, at the record date; squeeze-outs beyond 100-to-1 and duplicate records are skipped), from the year-end and filing-date share counts of one annual report, and from fiscal-year-end issued share counts in consecutive reports (standard ratios; near misses confirmed by book value or dividends per share). A share-count change with a better-dated split inside is that split's; a second split in the same year needs a standard ratio and book value per share to confirm it. The year-end price (stored over P/E × EPS) confirms a split hidden by a share issue and shows when a report already restated a split that took effect after its year end.
 
 - `load_split_events(conn, tickers, ...) -> dict[str, list[SplitEvent]]` — every known split per ticker.
 - `dividend_payments(rows) -> DataFrame` — annual dividends as interim and final payments at their record dates.
 - `adjust_payments_for_splits(payments, events, raw_events=None) -> DataFrame` — divides each payment by the later splits (interim payments inside an inferred window are placed by amount); adds `split_factor` and `reported_per_share`.
-- `raw_basis_events(conn, prices_table, events)` — events across which the price series still jumps (left unadjusted).
-- `share_count_basis_factors(conn, tickers, as_of)` — factors for market caps from a screen's price and reported share count.
-- `filing_basis_factors(conn) -> list[(docID, restated, fiscal)]` — per filing, the factor for figures issuers restate for splits before filing (EPS, BPS) and for figures fixed at the year end (dividends, year-end share counts); screening joins them as `temp.share_basis`.
+- `raw_basis_events(conn, prices_table, events)` — events across which the stored price level still steps by the ratio (left unadjusted).
+- `filing_basis_factors(conn, *, tickers=None, events=None) -> list[FilingBasis]` — per filing, `restated` for figures issuers restate for splits before filing (EPS, BPS, shares at the filing date), `fiscal` for figures fixed at the year end (year-end share counts and per-share ratios from them), `interim` for the interim dividend, and `dividend` for the year's dividend (interim and final either side of a split); screening joins them as `temp.share_basis`.
+
+### [src/orchestrator/common/share_basis.py](../src/orchestrator/common/share_basis.py)
+
+Responsibility: which stored columns move with share splits and how (`SHARE_BASIS_COLUMNS`: `ShareMetrics`, `PerShare_Metrics`, and the averages in their `_Rolling` tables, each with its factor and whether it multiplies or divides), `share_basis_rule(table, column)`, and `to_adjusted_basis(value, factor, operator)`. Stored tables keep figures as filed; screening, the rolling step, statement history (`src/security_analysis/history.py`, which returns `reported_values` and the splits), and the Analysis overview apply the factors. `rolling_columns.py` names the rolling tables and columns, and `own_filings.py` keeps a company's own annual reports apart from those a trust bank files for its trusts.
 
 ### [src/backtesting/detail.py](../src/backtesting/detail.py), [src/backtesting/html_report.py](../src/backtesting/html_report.py)
 
@@ -346,7 +366,7 @@ Responsibility: Shared stock price provider access and persistence helpers used 
 Responsibility: Idempotent Stock_Prices provenance migration and the SQL-friendly split-adjusted read model.
 
 - `def ensure_price_provenance_columns(conn, table_name="Stock_Prices") -> set[str]` - Add provenance columns without replacing existing rows; pre-existing rows are marked `unknown`.
-- `def refresh_split_adjusted_prices(conn, ticker=None, prices_table="Stock_Prices") -> int` - Populate `Split_Adjustment_Factor` and `Adjusted_Price` only for raw rows and confirmed raw-basis split events; source `Price` is never changed.
+- `def refresh_split_adjusted_prices(conn, ticker=None, prices_table="Stock_Prices") -> int` - Populate `Split_Adjustment_Factor` and `Adjusted_Price` for raw rows from confirmed raw-basis split events, and for unknown rows from the confirmed splits their closes still step by at its date (`split_jump_in_closes`); source `Price` is never changed. Squeeze-outs (`is_squeeze_out`: more than a hundred shares into one) never adjust prices.
 - `def source_id(provider, provider_symbol, date) -> str` - Build a stable row-level provenance identifier.
 
 `Stock_Prices` provenance columns: `Price_Basis`, `Provider`, `Source_Id`, `Source_Revision`, `Adjustment_Factor`, `Split_Adjustment_Factor`, `Adjusted_Price`, and `Retrieved_At`.
@@ -549,7 +569,7 @@ Responsibility: Portfolio query orchestration and navigation. Owns the five-sect
 
 Responsibility: Decision-focused portfolio sections for wealth/allocation, searchable weighted positions, return and risk analytics, gross/tax/net income, and a filtered/paginated transaction ledger with real cash effects.
 
-### [PortfolioCharts.tsx](../frontend-v2/src/features/portfolio/PortfolioCharts.tsx), [PortfolioAdvancedAnalytics.tsx](../frontend-v2/src/features/portfolio/PortfolioAdvancedAnalytics.tsx), [PortfolioDrawer.tsx](../frontend-v2/src/features/portfolio/PortfolioDrawer.tsx), [PortfolioDetailContent.tsx](../frontend-v2/src/features/portfolio/PortfolioDetailContent.tsx)
+### [PortfolioCharts.tsx](../frontend-v2/src/features/portfolio/PortfolioCharts.tsx), [PortfolioData.tsx](../frontend-v2/src/features/portfolio/PortfolioData.tsx), [PortfolioDrawer.tsx](../frontend-v2/src/features/portfolio/PortfolioDrawer.tsx), [PortfolioDetailContent.tsx](../frontend-v2/src/features/portfolio/PortfolioDetailContent.tsx)
 
 Responsibility: Bounded Chart.js views, flow-adjusted risk/distribution/concentration analysis, and the accessible modal side drawer used for value, performance, risk, allocation, income, activity, holding, and transaction detail.
 
@@ -704,8 +724,6 @@ Responsibility: bounded comparison snapshots/history/peer endpoints and owner-sc
 ### Authenticated portfolio analytical previews
 
 `POST /api/portfolio/tax-lots` applies FIFO, average-cost, or specific-lot matching to a submitted preview event stream. `POST /api/portfolio/greeks` aggregates Black-Scholes Greeks with explicit quantity/multiplier/volatility assumptions. `POST /api/portfolio/scenarios/evaluate` applies deterministic equity and FX shocks. All three endpoints require an authenticated account and return assumptions; they do not mutate imported portfolio activity.
-
-Last updated: 2026-08-01
 
 Keep this document aligned with code changes in the same PR or commit.
 

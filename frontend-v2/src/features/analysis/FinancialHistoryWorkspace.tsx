@@ -15,6 +15,7 @@ import { usePersistentState } from '../../hooks/usePersistentState'
 import { crosshairPlugin } from './chartPlugins'
 import { downloadTextFile, selectedMetricsCsv } from './downloads'
 import { formatGranularNumber } from './numberFormat'
+import { describeSplit, SHARE_BASES, type ShareBasis } from './shareBasis'
 import {
   chooseFinancialUnit,
   commonSize,
@@ -47,6 +48,10 @@ const VIEW_KEYS = VIEWS.map(view => view.key)
 const CHART_TYPES = ['bar', 'line'] as const
 type ChartType = typeof CHART_TYPES[number]
 const MAX_SERIES = SERIES_COLORS.length
+const BASES: Array<{ key: ShareBasis; label: string; hint: string }> = [
+  { key: 'adjusted', label: 'Split-adjusted', hint: 'Per-share figures and share counts on today’s shares, so years before and after a split compare directly' },
+  { key: 'filed', label: 'As filed', hint: 'Per-share figures and share counts as each year’s filing reported them, before later splits' },
+]
 
 /** Slots hold chart colours: a series keeps its colour while others come and go. */
 type Slots = Array<string | null>
@@ -148,20 +153,31 @@ function cellText(row: StatementRow, index: number, view: StatementView, unit: F
   return { text: formatCell(row.values[index], row.kind, unit), value: row.values[index] }
 }
 
-function rowTooltip(row: StatementRow, periods: string[]) {
+function rowTooltip(row: StatementRow, periods: string[], basis: ShareBasis) {
   return <span className="tip-lines">
     <strong>{row.label}</strong>
     <span>Reported as “{row.fullName}”</span>
     {row.mergedFrom.length > 0 && <span>Combined with earlier names: {row.mergedFrom.join(', ')}</span>}
     <span>{row.coverage} of {periods.length} fiscal years reported</span>
+    {row.alternate && <span>{basis === 'adjusted' ? 'Adjusted for share splits to today’s shares; hover a year for the figure as filed' : 'As filed; a later share split changes it on today’s shares'}</span>}
   </span>
+}
+
+function cellTitle(value: number | null, alternate: number | null | undefined, basis: ShareBasis) {
+  if (!finiteNumber(value)) return undefined
+  const shown = formatGranularNumber(value)
+  if (!finiteNumber(alternate) || alternate === value) return shown
+  return `${shown} · ${basis === 'adjusted' ? 'as filed' : 'split-adjusted'} ${formatGranularNumber(alternate)}`
 }
 
 export function FinancialHistoryWorkspace({ history, isLoading, error, retry, downloadPrefix, currency = null }: { history?: SecurityHistory; isLoading: boolean; error: unknown; retry: () => void; downloadPrefix?: string; currency?: string | null }) {
   const tables = useMemo(() => history?.tables ?? {}, [history?.tables])
   const periods = useMemo(() => history?.periods ?? [], [history?.periods])
+  const splits = useMemo(() => history?.share_basis?.splits ?? [], [history?.share_basis])
+  const [basis, setBasis] = usePersistentState<ShareBasis>('analysis.financials.basis', 'adjusted', SHARE_BASES)
+  const activeBasis: ShareBasis = splits.length ? basis : 'adjusted'
   const tableKeys = useMemo(() => orderTableKeys(Object.keys(tables)), [tables])
-  const layouts = useMemo(() => Object.fromEntries(tableKeys.map(key => [key, layoutStatement(key, tables[key].metrics)])), [tableKeys, tables])
+  const layouts = useMemo(() => Object.fromEntries(tableKeys.map(key => [key, layoutStatement(key, tables[key].metrics, false, activeBasis)])), [tableKeys, tables, activeBasis])
   const populated = tableKeys.filter(key => layouts[key].length > 0)
   const [source, setSource] = useState('')
   const [view, setView] = usePersistentState<StatementView>('analysis.financials.view', 'values', VIEW_KEYS)
@@ -178,7 +194,7 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
   const sourceKey = source && layouts[source]?.length ? source : populated[0] ?? ''
   const table = tables[sourceKey]
   const baseRows = useMemo(() => layouts[sourceKey] ?? [], [layouts, sourceKey])
-  const rows = useMemo(() => showEmpty && table ? layoutStatement(sourceKey, table.metrics, true) : baseRows, [showEmpty, table, sourceKey, baseRows])
+  const rows = useMemo(() => showEmpty && table ? layoutStatement(sourceKey, table.metrics, true, activeBasis) : baseRows, [showEmpty, table, sourceKey, baseRows, activeBasis])
   const emptyCount = useMemo(() => table?.metrics.filter(metric => !metric.values.some(finiteNumber)).length ?? 0, [table])
   const query = filter.trim().toLowerCase()
   const visibleRows = query ? rows.filter(row => `${row.label} ${row.fullName}`.toLowerCase().includes(query)) : rows
@@ -232,6 +248,7 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
     empty: () => setShowEmpty(!showEmpty),
     filter: () => filterInput.current?.focus(),
     'chart-type': () => setChartType(chartType === 'bar' ? 'line' : 'bar'),
+    'share-basis': () => { if (splits.length) setBasis(activeBasis === 'adjusted' ? 'filed' : 'adjusted') },
     'clear-chart': () => { setSlots([]); setNotice('') },
   }, { enabled: populated.length > 0 })
 
@@ -275,6 +292,7 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
     chartGroups.set(axis.key, group)
   }
   const safeFocus = Math.min(focusIndex, Math.max(0, visibleRows.length - 1))
+  const adjustedLines = visibleRows.filter(row => row.alternate).length
   const statementTabs = tableKeys.filter(key => !isRollingTable(key))
   const rollingTabs = tableKeys.filter(key => isRollingTable(key))
   const tab = (key: string) => {
@@ -316,6 +334,12 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
         {showEmpty ? 'Hide empty lines' : `Show ${emptyCount.toLocaleString()} empty lines`} <HotkeyKbd hotkey={financialsScope.byId.empty} />
       </button>}
       <span className="statement-toolbar__spacer" />
+      {splits.length > 0 && <>
+        <div className="segmented segmented--small" role="group" aria-label="Share basis">
+          {BASES.map(item => <button key={item.key} type="button" className={activeBasis === item.key ? 'active' : ''} aria-pressed={activeBasis === item.key} title={item.hint} onClick={() => setBasis(item.key)}>{item.label}</button>)}
+        </div>
+        <span title="Switch share basis"><HotkeyKbd className="toolbar-key" hotkey={financialsScope.byId['share-basis']} /></span>
+      </>}
       <div className="segmented segmented--small" role="group" aria-label="Chart type">
         <button type="button" className={chartType === 'bar' ? 'active' : ''} aria-pressed={chartType === 'bar'} onClick={() => setChartType('bar')} title="Bar chart (C toggles)"><BarChart3 aria-hidden="true" />Bars</button>
         <button type="button" className={chartType === 'line' ? 'active' : ''} aria-pressed={chartType === 'line'} onClick={() => setChartType('line')} title="Line chart (C toggles)"><LineChart aria-hidden="true" />Lines</button>
@@ -369,13 +393,14 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
             >
               <th scope="row" className="col-metric" style={{ paddingLeft: `${8 + row.depth * 14}px` }}>
                 <span className="chart-key" style={color ? { background: color, borderColor: color } : undefined} aria-hidden="true" />
-                <Tip content={rowTooltip(row, periods)} focusable={false}><span className="row-label">{row.label}</span></Tip>
+                <Tip content={rowTooltip(row, periods, activeBasis)} focusable={false}><span className="row-label">{row.label}</span></Tip>
+                {row.alternate && <sup className="basis-mark" aria-label={activeBasis === 'adjusted' ? 'split-adjusted' : 'as filed, before a later split'}>{activeBasis === 'adjusted' ? 'adj' : 'filed'}</sup>}
               </th>
               <td className="col-trend"><Sparkline values={row.values} color={color} /></td>
               {periods.map((period, index) => {
                 const cell = cellText(row, index, activeView, unit, changes, shares)
                 const raw = row.values[index]
-                return <td key={period} title={finiteNumber(raw) ? formatGranularNumber(raw) : undefined} className={[finiteNumber(cell.value) && cell.value < 0 ? 'neg' : '', index === periods.length - 1 ? 'is-latest' : ''].filter(Boolean).join(' ') || undefined}>{cell.text}</td>
+                return <td key={period} title={cellTitle(raw, row.alternate?.[index], activeBasis)} className={[finiteNumber(cell.value) && cell.value < 0 ? 'neg' : '', index === periods.length - 1 ? 'is-latest' : ''].filter(Boolean).join(' ') || undefined}>{cell.text}</td>
               })}
               {activeView === 'values' && <>
                 <td className={`col-stat${finiteNumber(latestChange) && latestChange < 0 ? ' neg' : ''}`}>{formatChange(latestChange, row.kind)}</td>
@@ -388,7 +413,12 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
       {visibleRows.length === 0 && <p className="statement-empty">No lines match “{filter}”.</p>}
     </div>
     <p className="statement-footnote">
-      {visibleRows.length.toLocaleString()} lines · fiscal years ending {periods.length ? `${periodLabel(periods[0])} to ${periodLabel(periods[periods.length - 1])}` : '—'} · values from EDINET XBRL filings
+      <span>
+        {visibleRows.length.toLocaleString()} lines · fiscal years ending {periods.length ? `${periodLabel(periods[0])} to ${periodLabel(periods[periods.length - 1])}` : '—'} · values from EDINET XBRL filings
+        {adjustedLines > 0 && <span className="statement-footnote__basis">
+          {' · '}{adjustedLines.toLocaleString()} {adjustedLines === 1 ? 'line' : 'lines'} {activeBasis === 'adjusted' ? 'adjusted to today’s shares for the' : 'as filed, before the'} {splits.map(describeSplit).join('; ')}
+        </span>}
+      </span>
       <span className="statement-footnote__keys"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Space</kbd> chart · <HotkeyKbd hotkey={globalScope.byId.help} /> all shortcuts</span>
     </p>
   </div>

@@ -360,19 +360,28 @@ def verify_split_with_share_metrics(
     if not share_cols:
         return _verdict("pending", detail="ShareMetrics table not found")
 
-    shares_col = _resolve_column(share_cols, [
-        "Total number of issued shares",
-        "Number of issued shares as of filing date",
-        "Number of issued shares as of fiscal year end",
-    ])
-    if not shares_col:
+    # The year-end count first: some reports leave the summary table's total
+    # empty, or give it in thousands.
+    share_columns = [
+        column for column in (
+            _resolve_column(share_cols, ["Number of issued shares as of fiscal year end"]),
+            _resolve_column(share_cols, ["Total number of issued shares"]),
+            _resolve_column(share_cols, ["Number of issued shares as of filing date"]),
+        ) if column
+    ]
+    if not share_columns:
         return _verdict("pending", detail="No issued-shares column in ShareMetrics")
+    shares_sql = (
+        f'COALESCE({", ".join(f"{chr(34)}{column}{chr(34)}" for column in share_columns)})'
+        if len(share_columns) > 1 else f'"{share_columns[0]}"'
+    )
 
-    # --- Get docIDs with periodEnd straddling the split date ---
+    # --- Get the annual reports with periodEnd straddling the split date ---
+    annual = "AND fs.docTypeCode IN ('030000', '032000') " if "docTypeCode" in fs_cols else ""
     docs = conn.execute(
         f'SELECT fs."{fs_docid_col}", fs."{fs_period_col}" '
         f"FROM FinancialStatements fs "
-        f'WHERE fs."{fs_code_col}" = ? '
+        f'WHERE fs."{fs_code_col}" = ? {annual}'
         f"ORDER BY fs.\"{fs_period_col}\" ASC",
         (company_code,),
     ).fetchall()
@@ -407,11 +416,11 @@ def verify_split_with_share_metrics(
 
     # --- Query share counts ---
     before_val = conn.execute(
-        f'SELECT "{shares_col}" FROM ShareMetrics WHERE "{fs_docid_col}" = ?',
+        f'SELECT {shares_sql} FROM ShareMetrics WHERE "{fs_docid_col}" = ?',
         (before_docid,),
     ).fetchone()
     after_val = conn.execute(
-        f'SELECT "{shares_col}" FROM ShareMetrics WHERE "{fs_docid_col}" = ?',
+        f'SELECT {shares_sql} FROM ShareMetrics WHERE "{fs_docid_col}" = ?',
         (after_docid,),
     ).fetchone()
 
@@ -486,7 +495,7 @@ def verify_split_with_share_metrics(
                    f"{report_price_ratio:.4f} conflicts with candidate "
                    f"{candidate_ratio:.4f}{report_context}",
         )
-    elif ratio_deviation > _SHARE_COUNT_TOLERANCE * _REJECTION_MULTIPLIER:
+    elif ratio_deviation > _SHARE_COUNT_TOLERANCE * _REJECTION_MULTIPLIER and not _another_split_in_year(share_ratio, candidate_ratio):
         return _verdict(
             "rejected",
             share_before=share_before,
@@ -497,6 +506,26 @@ def verify_split_with_share_metrics(
                    f"{report_context}",
         )
     else:
+        # A count that did not move is a lasting price move, not a split,
+        # once it stays put at filing and a year on too: a split with a
+        # record date at the year end shows only in those counts.
+        later = [share_after]
+        filing_col = _resolve_column(share_cols, ["Number of issued shares as of filing date"])
+        following = next((docid for docid, period in docs if (_parse_date(period) or Date.min) > after_period), None)
+        for docid, sql in ((after_docid, f'"{filing_col}"' if filing_col else None), (following, shares_sql)):
+            row = conn.execute(f'SELECT {sql} FROM ShareMetrics WHERE "{fs_docid_col}" = ?', (docid,)).fetchone() if docid and sql else None
+            count = _coerce_number(row[0]) if row else None
+            if count and count > 0:
+                later.append(count)
+        if len(later) > 1 and all(abs(math.log(count / share_before)) < abs(math.log(candidate_ratio)) / 3 for count in later):
+            return _verdict(
+                "rejected",
+                share_before=share_before,
+                share_after=share_after,
+                share_ratio=round(share_ratio, 6),
+                detail=f"Share count did not move ({share_ratio:.4f}, and stayed at filing and a year on) "
+                       f"for candidate {candidate_ratio:.4f}: a price move, not a split{report_context}",
+            )
         return _verdict(
             "pending",
             share_before=share_before,
@@ -506,6 +535,47 @@ def verify_split_with_share_metrics(
                    f"tolerance for candidate {candidate_ratio:.4f} "
                    f"(deviation {ratio_deviation:.2%}){report_context}",
         )
+
+
+def _reject_if_price_returned(conn: sqlite3.Connection, ticker: str, split_date: str, ratio_from, ratio_to, verdict: dict) -> dict:
+    """An unconfirmed candidate whose price did not stay moved by its ratio is not a split.
+
+    The heuristic flags any one-day move of 40 % or more; a split moves the
+    level for good, while a tick in an illiquid stock (¥20 to ¥10 and back)
+    or a rally does not.
+    """
+    if verdict.get("confirmation") != "pending":
+        return verdict
+    from src.utilities.price_provenance import split_shows_in_series
+
+    try:
+        price_factor = float(ratio_from) / float(ratio_to)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return verdict
+    if split_shows_in_series(conn, "Stock_Prices", ticker, str(split_date)[:10], price_factor):
+        return verdict
+    return {
+        **verdict,
+        "confirmation": "rejected",
+        "detail": "The price did not stay moved by the ratio: not a split",
+    }
+
+
+def _another_split_in_year(share_ratio: float, candidate_ratio: float) -> bool:
+    """Does the count move by the candidate times a whole number (two splits in one year)?
+
+    A 2-for-1 and a 6-for-1 split between two reports multiply the count by
+    12: that does not reject the 2-for-1 (it stays pending for review).
+    """
+    if candidate_ratio <= 0 or share_ratio <= 0 or candidate_ratio == 1:
+        return False
+    rest = share_ratio / candidate_ratio
+    # The count moved further than the candidate, in the same direction.
+    if (rest > 1) != (candidate_ratio > 1):
+        return False
+    rest = rest if rest >= 1 else 1.0 / rest
+    whole = round(rest)
+    return whole >= 2 and abs(rest / whole - 1) < 0.02
 
 
 def _verdict(
@@ -695,6 +765,7 @@ def run_split_detection(
                     cand["ratio_to"],
                 )
 
+                verdict = _reject_if_price_returned(conn, ticker, cand["split_date"], cand["ratio_from"], cand["ratio_to"], verdict)
                 _insert_split(conn, cand, verdict)
                 counts[_status_key(verdict["confirmation"])] += 1
 
@@ -807,12 +878,13 @@ def _reverify_entry(
         row["ratio_from"],
         row["ratio_to"],
     )
+    verdict = _reject_if_price_returned(conn, row["ticker"], row["split_date"], row["ratio_from"], row["ratio_to"], verdict)
     conn.execute(
         "UPDATE Stock_Splits SET "
         "confirmation = ?, confirmed_by = ?, "
         "price_basis = CASE WHEN ? = 'confirmed' THEN 'raw' ELSE price_basis END, "
         "share_count_before = ?, share_count_after = ?, "
-        "share_count_ratio = ?, updated_at = datetime('now') "
+        "share_count_ratio = ?, source_detail = COALESCE(?, source_detail), updated_at = datetime('now') "
         "WHERE id = ?",
         (
             verdict["confirmation"],
@@ -821,6 +893,7 @@ def _reverify_entry(
             verdict["share_count_before"],
             verdict["share_count_after"],
             verdict["share_count_ratio"],
+            verdict.get("detail"),
             row["id"],
         ),
     )

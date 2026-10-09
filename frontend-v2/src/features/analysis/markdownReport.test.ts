@@ -57,6 +57,17 @@ describe('buildCompanyReport', () => {
     expect(text).toContain('| Costs |  | n/a |')
   })
 
+  it('says which splits the per-share figures are adjusted for', () => {
+    const history: SecurityHistory = {
+      periods: ['2021-03', '2022-03'],
+      tables: { ShareMetrics: { display_name: 'Share Metrics', metrics: [{ field: 'eps', display_name: 'EPS', values: [116.56, 121.98], reported_values: [582.8, 121.98] }] } },
+      share_basis: { splits: [{ date: '2022-03-31', after: '2021-03-31', multiplier: 5, source: 'share counts' }] },
+    }
+    const text = report({ history })
+    expect(text).toContain("adjusted to today's shares for the 5-for-1 split in the year to 2022-03")
+    expect(text).toContain('| EPS | 116.56 | 121.98 |')
+  })
+
   it('omits the financial history when no table has values', () => {
     const emptyHistory: SecurityHistory = {
       periods: ['2025-03'],

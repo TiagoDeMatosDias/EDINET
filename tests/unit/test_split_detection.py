@@ -310,6 +310,56 @@ class TestShareMetricsVerification:
         )
         assert verdict["confirmation"] == "rejected"
 
+    def test_a_lasting_fall_with_an_unmoved_share_count_is_rejected(self):
+        conn = _make_in_memory_db()
+        _seed_split_prices(conn)
+        _seed_share_metrics(conn)
+        conn.execute("UPDATE ShareMetrics SET \"Number of issued shares as of filing date\" = 5_000_000 WHERE docID = 'DOC-2024'")
+        conn.execute("INSERT INTO FinancialStatements VALUES ('DOC-2025', 'E99999', '2026-03-31')")
+        conn.execute("INSERT INTO ShareMetrics VALUES ('DOC-2025', 7_142_857)")
+        conn.commit()
+        # A 30 % fall the heuristic read as 10-for-7. A split with its record
+        # date at the year end shows only a year later: still pending.
+        verdict = verify_split_with_share_metrics(conn, "SPLITCO", "2024-06-14", 7, 10)
+        assert verdict["confirmation"] == "pending"
+        # The count never moved: a price move, not a split.
+        conn.execute("UPDATE ShareMetrics SET \"Number of issued shares as of filing date\" = 5_000_000 WHERE docID = 'DOC-2025'")
+        conn.commit()
+        verdict = verify_split_with_share_metrics(conn, "SPLITCO", "2024-06-14", 7, 10)
+        assert verdict["confirmation"] == "rejected"
+        assert "did not move" in verdict["detail"]
+
+    def test_two_splits_in_one_year_keep_the_candidate_pending(self):
+        conn = _make_in_memory_db()
+        _seed_split_prices(conn)
+        _seed_share_metrics(conn)
+        # The reports show 2:1, which a 1:2 candidate explains only with a
+        # second split; the first split stays for review instead.
+        verdict = verify_split_with_share_metrics(
+            conn, "SPLITCO", "2024-06-14", 4, 1,
+        )
+        assert verdict["confirmation"] == "rejected"
+        conn.execute('UPDATE ShareMetrics SET "Number of issued shares as of filing date" = 60000000 WHERE docID = \'DOC-2024\'')
+        conn.commit()
+        verdict = verify_split_with_share_metrics(
+            conn, "SPLITCO", "2024-06-14", 1, 2,
+        )
+        assert verdict["confirmation"] == "pending"
+
+    def test_a_price_move_that_does_not_last_is_not_a_split(self):
+        from src.portfolio.split_detection import _reject_if_price_returned
+
+        conn = _make_in_memory_db()
+        _seed_split_prices(conn)
+        # An illiquid ¥20 stock ticks to ¥10 for a day.
+        conn.executemany(
+            "INSERT INTO Stock_Prices VALUES (?, 'TICKCO', 'JPY', ?)",
+            [("2024-06-10", 20.0), ("2024-06-11", 20.0), ("2024-06-12", 10.0), ("2024-06-13", 20.0), ("2024-06-14", 20.0)],
+        )
+        pending = {"confirmation": "pending", "detail": "Could not find ShareMetrics straddling the split date"}
+        assert _reject_if_price_returned(conn, "TICKCO", "2024-06-12", 1, 2, pending)["confirmation"] == "rejected"
+        assert _reject_if_price_returned(conn, "SPLITCO", "2024-06-14", 1, 2, pending)["confirmation"] == "pending"
+
     def test_pending_on_unknown_ticker(self):
         conn = _make_in_memory_db()
         verdict = verify_split_with_share_metrics(

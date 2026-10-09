@@ -1,4 +1,5 @@
 import type { HistoryMetric } from '../../api/types'
+import type { ShareBasis } from './shareBasis'
 
 /** How a row's numbers read: scaled currency, a fraction shown as a percent, or a plain figure. */
 export type RowKind = 'money' | 'percent' | 'number'
@@ -15,6 +16,8 @@ export interface StatementRow {
   mergedFrom: string[]
   depth: number
   values: Array<number | null>
+  /** The same line on the other share basis, when a split changed it (as filed beside split-adjusted). */
+  alternate?: Array<number | null>
   kind: RowKind
   /** Number of periods with a value. */
   coverage: number
@@ -241,11 +244,17 @@ interface LayoutItem {
   under?: RegExp
 }
 
-function prepareItems(family: string, metrics: HistoryMetric[]): LayoutItem[] {
+function numbers(values: Array<number | string | null>) {
+  return values.map(value => finiteNumber(value) ? value : null)
+}
+
+function prepareItems(family: string, metrics: HistoryMetric[], basis: ShareBasis): LayoutItem[] {
   const byName = new Map(metrics.map(metric => [normalise(metric.display_name), metric.field]))
   const nameByField = new Map(metrics.map(metric => [metric.field, metric.display_name]))
   return metrics.map((metric, sourceIndex) => {
-    const values = metric.values.map(value => finiteNumber(value) ? value : null)
+    const filed = metric.reported_values && numbers(metric.reported_values)
+    const values = basis === 'filed' && filed ? filed : numbers(metric.values)
+    const alternate = filed && (basis === 'filed' ? numbers(metric.values) : filed)
     const separator = metric.display_name.indexOf(' - ')
     let label = metric.display_name
     let namedParent: string | undefined
@@ -270,6 +279,7 @@ function prepareItems(family: string, metrics: HistoryMetric[]): LayoutItem[] {
         mergedFrom: [],
         depth: 0,
         values,
+        ...(alternate ? { alternate } : {}),
         kind: rowKind(family, cleaned, values),
         coverage: values.filter(finiteNumber).length,
         total: !namedParent && line.total,
@@ -305,6 +315,10 @@ function mergeRenamedConcepts(items: LayoutItem[]) {
     for (const other of others) {
       if (!compatible(primary.row.values, other.row.values)) continue
       primary.row.values = primary.row.values.map((value, index) => value ?? other.row.values[index] ?? null)
+      if (other.row.alternate) {
+        const own = primary.row.alternate ?? primary.row.values
+        primary.row.alternate = own.map((value, index) => value ?? other.row.alternate?.[index] ?? null)
+      }
       primary.row.mergedFrom.push(other.row.fullName)
       redirect.set(other.row.field, primary.row.field)
     }
@@ -319,12 +333,13 @@ function mergeRenamedConcepts(items: LayoutItem[]) {
 /**
  * Lay out one statement table: clean labels, fold renamed concepts together, nest lines
  * under the subtotal they belong to, order key lines the way a filing presents them, and
- * drop rows with no values unless ``includeEmpty`` is set.
+ * drop rows with no values unless ``includeEmpty`` is set. Lines a share split changed
+ * read on ``basis``: split-adjusted (the default) or as filed.
  */
-export function layoutStatement(sourceKey: string, metrics: HistoryMetric[], includeEmpty = false): StatementRow[] {
+export function layoutStatement(sourceKey: string, metrics: HistoryMetric[], includeEmpty = false, basis: ShareBasis = 'adjusted'): StatementRow[] {
   const family = statementFamily(sourceKey)
   const statementOrder = family in CANONICAL_LINES
-  const merged = mergeRenamedConcepts(prepareItems(family, metrics))
+  const merged = mergeRenamedConcepts(prepareItems(family, metrics, basis))
   const visible = merged.items.filter(item => includeEmpty || item.row.coverage > 0)
   const byField = new Map(visible.map(item => [item.row.field, item]))
   const parentOf = new Map<string, string>()
