@@ -7,11 +7,9 @@
 # The resulting dist/ShadeResearch.exe bundles all Python code, the web frontend,
 # brand assets, ratio definitions, and rolling-metrics config.
 #
-# Files that stay OUTSIDE the exe (placed next to it in the .zip):
-#   config/database_paths.json   – DB path configuration
-#   .env                          – user-provided API key
-#   data/databases/Base.db        – empty raw-data database
-#   data/databases/Standardized.db – empty standardized database
+# The exe is the whole release. On first start it creates data/ beside itself
+# (databases, TLS certificate, logs); settings such as the EDINET API key live
+# in data/app.db and are set on the Admin page or with `ShadeResearch.exe config`.
 # ─────────────────────────────────────────────────────────────────────────
 
 # ── Data files bundled inside the exe ────────────────────────────────────
