@@ -6,7 +6,7 @@ It always serves HTTPS, from `https://127.0.0.1:8000/` on the public homepage an
 
 ## Architecture
 
-One HTTPS process: a React single-page app in the browser talks to a FastAPI server, which serves the app bundle and the `/api/*` routes. Every route is backed by a backend service in `src/`; the orchestrator runs the data pipeline; and all state lives in SQLite databases split into rebuildable market data and irreplaceable operator state.
+One HTTPS process: a React single-page app in the browser talks to a FastAPI server, which serves the app bundle and the `/api/*` routes. Every route is backed by a backend service in `src/`; the orchestrator runs the data pipeline; and everything it writes lives in one `data/` folder: four SQLite databases, the certificate, logs, and generated artifacts.
 
 ```mermaid
 flowchart TB
@@ -37,9 +37,9 @@ flowchart TB
         ORCH["16 pipeline steps<br/>ingest · transform · update"]
     end
 
-    subgraph Data["SQLite databases"]
-        REBUILD["Rebuildable · data/databases/<br/>Base · Standardized · Filings · Bonds"]
-        STATE["State · config/state/databases/<br/>Portfolio · auth · research · jobs · chat"]
+    subgraph Data["SQLite databases · data/"]
+        REBUILD["Rebuildable<br/>market.db · filings.db"]
+        STATE["Irreplaceable<br/>app.db (settings · accounts · research · jobs · portfolio) · chat.db"]
     end
 
     SPA -->|"HTTPS"| API
@@ -84,7 +84,7 @@ The frontend never opens a database directly; it only calls the API. The orchest
 - **Testing ideas** — expression screening, point-in-time rolling backtests, manual and CSV backtests, IBKR FlexQuery portfolio imports, and reproducible report ZIPs.
 - **Data pipeline** — 16 dynamically discovered steps, durable job state, cancellation, progress reporting, safe file uploads, XBRL `explicit`/`backfill`/`all` modes, and financial statements generated from CSV or compact filing facts.
 - **Optional accounts** — registration, login, rotating sessions, personal API tokens, administrator controls, and an administrator-set 5–128-character password minimum.
-- **Zero-setup databases** — missing configured databases and their managed schemas are created automatically at startup.
+- **Zero-setup storage** — the four databases and their schemas are created in `data/` on first start, and every setting, including the EDINET API key, is stored in `app.db` and edited on the Admin page.
 
 ## Screenshots
 
@@ -134,16 +134,15 @@ Set-Location ..
 
 Open `https://127.0.0.1:8000` and accept the self-signed certificate once, or add `data/certs/cert.pem` to the operating system's trusted root store. To serve a real certificate instead, place a key pair in `data/certs/` — supported pairs are `cert.pem`+`key.pem`, `fullchain.pem`+`privkey.pem`, `tls.crt`+`tls.key`, and `server.crt`+`server.key`.
 
-Account mode with open registration is the default; the first registered account becomes the administrator. Set `EDINET_AUTH_MODE=disabled` only for unrestricted loopback use.
+Account mode with open registration is the default; the first registered account becomes the administrator. Enter the EDINET API key under **Admin → Server settings**, or from a terminal:
 
-`EDINET_API_TOKEN` feeds the type-1 XBRL downloader; the legacy Get Documents and Download EDINET Documents steps read `API_KEY` from pipeline configuration. When both workflows share one EDINET credential, set both values. They are outbound provider credentials only and are never accepted as application login tokens.
-
-```dotenv
-EDINET_API_TOKEN=<your-edinet-api-token>
-API_KEY=<your-edinet-api-token>
+```powershell
+.\.venv3\Scripts\python.exe main.py config set edinet.api_key    # prompts for the key
 ```
 
-On first start the server creates any missing configured databases (Base, Standardized, Portfolio, auth, research, pipeline-job, and filing). Populate market and filing data from the Pipeline workspace.
+Every setting lives in `data/app.db`; `main.py config list` shows them all. The API key is an outbound provider credential only and is never accepted as an application login token. Run `main.py config set auth.mode disabled` only for unrestricted loopback use.
+
+On first start the server creates `data/` with its four databases. Populate market and filing data from the Pipeline workspace. An installation that still has the older layout (`config/`, `data/databases/`, `.env`) is moved into `data/` automatically on start; `main.py migrate --dry-run` lists what would move.
 
 For frontend development, keep FastAPI serving HTTPS on port 8000 and run `npm run dev` from `frontend-v2/`; the Vite proxy targets `https://127.0.0.1:8000` without verifying the self-signed certificate. See [Running the Application](docs/RUNNING.md) for account mode, remote binding, storage, pipeline configuration, and recovery commands.
 
@@ -189,19 +188,23 @@ The step library is discovered from `src/orchestrator/` and currently contains:
 15. Backtest
 16. Backtest Set (CSV)
 
-The stock-price CSV step uses a file picker and accepts files up to 500 MiB. XBRL `all` mode queries eligible filings from `DocumentList`, honors the document-type filter, skips completed downloads, uses at most five concurrent downloads, batches status writes, and reuses HTTP connections. Financial statements can be generated from either the legacy CSV database or the compact numeric facts in `Filings.db`.
+The stock-price CSV step uses a file picker and accepts files up to 500 MiB. XBRL `all` mode queries eligible filings from `DocumentList`, honors the document-type filter, skips completed downloads, uses at most five concurrent downloads, batches status writes, and reuses HTTP connections. Financial statements can be generated from either the legacy CSV table or the compact numeric facts in `filings.db`.
 
 ## Configuration and data
 
-| File or variable | Purpose |
-|---|---|
-| `config/database_paths.json` | Relocates any database; defaults split rebuildable market data (Base, Standardized, Filings, Bonds) into `data/databases/` and irreplaceable state (Portfolio, auth, research, jobs, chat) into `config/state/databases/` |
-| `.env` / `EDINET_API_TOKEN`, pipeline `API_KEY` | Outbound EDINET provider credentials for XBRL and legacy document steps |
-| `EDINET_AUTH_MODE` | `disabled` for loopback compatibility or `accounts` for account authentication |
-| `src/orchestrator/generate_ratios/ratios_definitions.json` | Ratio definitions |
-| `src/orchestrator/generate_rolling_metrics/rolling_metrics.json` | Rolling-average and growth definitions |
+Everything the application writes is in `data/` beside `main.py` or `ShadeResearch.exe`:
 
-`Filings.db` stores compressed provider ZIPs, compact numeric facts, catalog metadata, and versioned translation-cache rows. Narrative HTML and text are reconstructed from the retained ZIP only when requested.
+| Path | Holds |
+|---|---|
+| `data/app.db` | Settings and secrets, accounts, research, pipeline jobs, and portfolio. Irreplaceable: back up this file (and `chat.db`). |
+| `data/chat.db` | Chat channels and messages, kept apart because it grows with use; its at-rest key ring is in `app.db`. |
+| `data/market.db` | Rebuildable market data: the EDINET document index, taxonomy, company info, statements, ratios, rolling metrics, prices, splits, and bonds. |
+| `data/filings.db` | Rebuildable filing archive: compressed provider ZIPs, compact numeric facts, catalog metadata, and translation-cache rows. Narrative HTML and text are reconstructed from the retained ZIP only when requested. |
+| `data/certs/`, `data/logs/`, `data/artifacts/` | TLS certificate, rotating server log, and generated backtests, reports, exports, and job uploads. |
+
+Settings are rows in `app.db`, edited under **Admin → Server settings** or with `main.py config list|get|set|unset`. Among them: `edinet.api_key`, `auth.mode`, `server.trusted_hosts`, upload and archive limits, job retention, and `storage.market_db_path` / `storage.filings_db_path` to move the two large databases to another disk. How the server listens is chosen at launch (`--host`, `--port`, `--allow-remote`). `EDINET_DATA_DIR` points the application at another data folder, which tests and scratch runs use.
+
+Ratio and rolling-metric definitions ship with the code in `src/orchestrator/generate_ratios/ratios_definitions.json` and `src/orchestrator/generate_rolling_metrics/rolling_metrics.json`.
 
 ## Documentation
 
@@ -228,7 +231,7 @@ Build the Windows release with:
 .\.venv3\Scripts\python.exe -B scripts\build.py
 ```
 
-The release builder generates fresh configuration and empty databases; it never bundles development databases, credentials, logs, uploads, or portfolio data.
+The release is `ShadeResearch.exe` alone; it creates `data/` on first start and never bundles development databases, credentials, logs, uploads, or portfolio data.
 
 ## Common EDINET document type codes
 

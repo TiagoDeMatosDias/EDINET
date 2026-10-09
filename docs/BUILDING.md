@@ -23,10 +23,9 @@ The script, in order:
 2. runs `npm ci` and the production frontend build with hard timeouts;
 3. removes only the repository's exact `build/` and `dist/` directories;
 4. runs PyInstaller through the active interpreter with a 600-second default cap;
-5. assembles `dist/ShadeResearch-<version>/`;
-6. creates fresh empty Base, Standardized, and Portfolio SQLite databases plus a relative `database_paths.json` and `.env` template; auth, research, pipeline-job, and filings databases are created with their managed schemas on the first server start;
-7. starts the packaged executable on a temporary loopback port and checks `/health`, `/`, and `/api/steps` within 45 seconds;
-8. writes `dist/ShadeResearch-<version>-Release.zip`.
+5. assembles `dist/ShadeResearch-<version>/` with the executable alone;
+6. smoke-tests a copy in an empty temporary folder: it saves `auth.mode=disabled` with `ShadeResearch.exe config set`, starts the executable on a loopback port, checks `/health`, `/`, and that `/api/steps` offers every step package in `src/orchestrator/`, stops it, checks that `data/` beside the copy holds `app.db`, `chat.db`, `market.db`, `filings.db`, and the certificate, then starts it again and checks that the setting survived;
+7. writes `dist/ShadeResearch-<version>-Release.zip`.
 
 Run non-mutating preflight only:
 
@@ -46,20 +45,27 @@ The build script never installs missing dependencies. Install them explicitly so
 
 ```text
 ShadeResearch-<version>/
-├── ShadeResearch.exe
-├── .env
-├── config/
-│   └── database_paths.json
-└── data/
-    └── databases/
-        ├── Base.db
-        ├── Standardized.db
-        └── Portfolio.db
+└── ShadeResearch.exe
 ```
+
+On first start the executable creates everything else beside itself:
+
+```text
+data/
+├── app.db        settings (including the EDINET API key), accounts, research, jobs, portfolio
+├── chat.db
+├── market.db
+├── filings.db
+├── certs/        self-signed certificate, or a dropped-in one
+├── logs/
+└── artifacts/    backtests, reports, exports, job uploads
+```
+
+Enter the EDINET API key under **Admin → Server settings** after registering the first (administrator) account, or with `ShadeResearch.exe config set edinet.api_key`. Upgrading a folder that holds an older release (`.env`, `config/`, `data/databases/`) is a matter of replacing the executable: on its first start it moves the old layout into `data/` (see [Running the Application](RUNNING.md#moving-from-the-older-layout)).
 
 The executable bundles the React production assets, brand assets, ratio definitions, rolling-metric definitions, Python source, and required libraries. Taxonomy archives, the Argos Japanese-to-English model package, logs, job state, saved screens, uploads, exports, tests, docs, and operator data are not bundled. The translation runtime installs the Argos ja→en model on first use when it is not already available.
 
-Never copy development databases or the repository `.env` into a release. The assembly step generates its own files.
+Never copy a development `data/` folder into a release.
 
 ## Hidden imports
 

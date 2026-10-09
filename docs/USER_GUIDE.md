@@ -17,13 +17,14 @@ The public homepage at `/` explains the product and links directly to registrati
 Account authentication is optional for loopback use. In account mode:
 
 - the first successful registration becomes the administrator;
-- subsequent registration follows the registration mode saved in Admin (open, closed, or invite-only), falling back to `EDINET_REGISTRATION_MODE` until one is saved;
+- subsequent registration follows the registration mode saved in Admin → Access (open, closed, or invite-only; open until one is saved);
 - browser access tokens stay in memory and refresh tokens use an HttpOnly cookie;
 - personal API tokens can be created and revoked from Account; a token with the `read` scope cannot change anything;
 - changing or resetting a password signs the account out everywhere and revokes its API tokens;
 - saved backtests are private to the account that ran them;
 - refreshing a price from the provider is available to operators and administrators;
-- an administrator can set the minimum password length from Admin → Security settings. The accepted range is 5–128 characters, and the policy applies to registration, invitations, resets, changes, and administrator-created credentials.
+- an administrator can set the minimum password length from Admin → Access. The accepted range is 5–128 characters, and the policy applies to registration, invitations, resets, changes, and administrator-created credentials;
+- an administrator enters the EDINET API key and every other server setting under Admin → Server settings (key `6`). The key is write-only: the page only shows whether it is set. Settings marked * apply after the server restarts.
 
 ## Workspace overview
 
@@ -118,7 +119,7 @@ Translation never replaces the Japanese source. Sections and report documents ke
 
 Translation runs locally through Argos Translate. It translates complete section bodies and every visible report-HTML text node and user-facing label. If the model is unavailable or Japanese remains after retries, the English pane reports a retryable error rather than displaying source text or a partial translation as a successful result.
 
-Validated translations are cached in the `filing_translations` table inside `Filings.db`. Cache rows are translator-versioned; incomplete rows from an older implementation are ignored.
+Validated translations are cached in the `filing_translations` table inside `filings.db`. Cache rows are translator-versioned; incomplete rows from an older implementation are ignored.
 
 ## Research: your companies, notes, alerts, and pricing
 
@@ -217,8 +218,8 @@ Important current behavior:
 - Import Stock Prices (CSV) uses a local file picker and accepts up to 500 MiB.
 - Multipart uploads are attached only to the step that declares the file field, so mixed recipes can include ordinary steps and one or more upload steps.
 - Download XBRL supports `explicit`, `backfill`, and `all`. `all` reads eligible `DocumentList` rows, honors the document-type filter, skips completed records, uses no more than five concurrent downloads, batches status updates, and reuses HTTP connections.
-- Update bonds reads new bond supplements (it downloads them, so it needs the EDINET API key), the bond schedules in the latest annual reports already in `Filings.db`, the JGB curve, and JSDA reference prices; run it after Get Documents and Download XBRL, daily or weekly.
-- Generate Financial Statements accepts `Source_Mode=csv` for the legacy `financialData_full` input or `Source_Mode=filings` for compact numeric facts in `Filings.db`.
+- Update bonds reads new bond supplements (it downloads them, so it needs the EDINET API key), the bond schedules in the latest annual reports already in `filings.db`, the JGB curve, and JSDA reference prices; run it after Get Documents and Download XBRL, daily or weekly.
+- Generate Financial Statements accepts `Source_Mode=csv` for the legacy `financialData_full` input or `Source_Mode=filings` for compact numeric facts in `filings.db`.
 - Jobs persist across browser reloads. The UI shows current step, progress, cancellation, terminal status, and bounded output.
 
 See [Running the Application](RUNNING.md) for every field and command-line recovery tool.

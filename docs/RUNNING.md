@@ -1,25 +1,63 @@
 # Running the Application
 
-The current workstation includes the public homepage and pricing page, account authentication, shared company search, XBRL Filing Explorer, tags/research, arbitrary-metric company comparison, point-in-time backtesting, portfolio analytics, durable pipelines, and reproducible report ZIPs. The `download_xbrl` pipeline step is the only application path that reads `EDINET_API_TOKEN`, and it uses it solely as an outbound EDINET provider credential. See [USER_GUIDE.md](USER_GUIDE.md) for the user-facing workflow and current screenshots.
+The current workstation includes the public homepage and pricing page, account authentication, shared company search, XBRL Filing Explorer, tags/research, arbitrary-metric company comparison, point-in-time backtesting, portfolio analytics, durable pipelines, and reproducible report ZIPs. The EDINET API key (the `edinet.api_key` setting) is used solely as an outbound EDINET provider credential. See [USER_GUIDE.md](USER_GUIDE.md) for the user-facing workflow and current screenshots.
 
 ## Supported environments
 
 - Python 3.12 or 3.13; `.venv3` is the canonical local environment.
 - Node.js 22 and npm 10.
 - Windows is the packaged target. Linux is supported for source development and CI.
-- Databases are split by whether they can be regenerated. Base, Standardized, and the filing catalog are rebuildable by the pipeline and live in `data/databases/`. Accounts (`auth.db`), research notes (`research.db`), portfolio transactions (`Portfolio.db`), and pipeline job history (`pipeline_jobs.db`) cannot be regenerated and live in `databases/` inside the state directory (`EDINET_STATE_DIR`, default `config/state`), so backing up the state directory covers everything irreplaceable. Any database can be relocated with an entry in `config/database_paths.json`; the defaults are listed in the `DATABASES` registry in `src/orchestrator/common/db_config.py`.
-- The server always reads its configured databases; API requests cannot name a database. `EDINET_ALLOWED_DATA_ROOTS` lists extra directories that pipeline steps may read input files from.
 
-Installations from before this layout keep their state databases in `data/databases/`. The server then refuses to start rather than create empty replacements; stop it and move them with:
+## Storage and settings
+
+Everything the application writes lives in one data folder: `data/` beside `main.py` (or beside `ShadeResearch.exe` in a release). `EDINET_DATA_DIR` points at another folder; tests and scratch runs use it.
+
+| Path | Holds | Rebuildable |
+|---|---|---|
+| `app.db` | Settings and secrets, accounts, research, pipeline jobs, and portfolio | No: back it up |
+| `chat.db` | Chat channels and messages (kept apart because it grows with use) | No: back it up |
+| `market.db` | EDINET document index (`DocumentList`), taxonomy, company info, statements, ratios, rolling metrics, prices, splits, and bonds | Yes, by the pipeline |
+| `filings.db` | Provider ZIPs, XBRL facts, catalog, and translations | Yes, by the pipeline |
+| `certs/` | TLS certificate and key | Generated |
+| `logs/` | Rotating `server.log` | Generated |
+| `artifacts/` | Backtests, reports, screening exports, job uploads, downloaded documents | Generated |
+
+When the web server starts, it creates any missing database with its managed schema. Components that share `app.db` record their migrations per component in `schema_migrations`. The market tables are created by the pipeline; only the bond tables have a fixed schema. The server always reads its own databases; API requests cannot name one.
+
+Settings are rows in the `settings` table of `app.db`, declared with their types, defaults, and validation in `src/settings/registry.py`. Administrators edit them under **Admin → Server settings**; from a terminal:
 
 ```powershell
-.\.venv3\Scripts\python.exe -m src.orchestrator.common.migrate_state_databases --dry-run
-.\.venv3\Scripts\python.exe -m src.orchestrator.common.migrate_state_databases
+.\.venv3\Scripts\python.exe main.py config list                         # every setting and its value
+.\.venv3\Scripts\python.exe main.py config set edinet.api_key           # prompts, so the key stays out of shell history
+.\.venv3\Scripts\python.exe main.py config set server.trusted_hosts research.example,192.0.2.10
+.\.venv3\Scripts\python.exe main.py config unset jobs.retention_hours    # back to the default
 ```
 
-The migration folds each database's write-ahead log into the file, refuses a database that is still open, and never overwrites an existing file.
+| Setting | Default | Purpose |
+|---|---|---|
+| `edinet.api_key` | not set | EDINET API key for every step that downloads documents or filings. Write-only in the UI; read when a step runs, so a new key applies at once. |
+| `auth.mode` | `accounts` | `disabled` lets anyone who reaches the server act as an administrator; only for loopback use. |
+| `server.trusted_hosts` | none | Host names accepted with `--allow-remote`. |
+| `pipeline.allowed_data_roots` | none | Extra folders pipeline steps may read input files from, besides the data folder. |
+| `limits.max_upload_bytes` | 10 MiB | Largest upload other than pipeline inputs. |
+| `limits.max_export_bytes` | 25 MiB | Largest screening or portfolio export. |
+| `limits.max_backtest_artifact_bytes` | 256 MiB | Largest backtest archive. |
+| `limits.max_report_artifact_bytes` | 128 MiB | Largest report archive. |
+| `jobs.retention_hours` | 24 | Finished jobs and their uploads are removed after this long. |
+| `storage.market_db_path`, `storage.filings_db_path` | data folder | Move the two large databases, for example to a bigger disk. Move the file yourself with the server stopped, then set the path. |
 
-When the web server starts, it creates any missing configured database parents and files. Base and Standardized are created as empty pipeline-owned SQLite databases, Portfolio receives its versioned schema, and auth, research, pipeline-jobs, and filings receive their managed schemas and migrations.
+Every setting except the API key takes effect on the next start. How the server listens is not a setting but a launch option (`--host`, `--port`, `--allow-remote`), so a stored value can never expose the server to the network. If an administrator is locked out, `main.py config set auth.mode disabled` and a restart on loopback restore access.
+
+### Moving from the older layout
+
+Earlier versions kept nine databases in `data/databases/` and `config/state/databases/` (relocatable through `config/database_paths.json`), the API key in `.env`, and the chat key ring and generated files under `config/state/`. `main.py` moves such an installation into the data folder before it starts the server, or on request:
+
+```powershell
+.\.venv3\Scripts\python.exe main.py migrate --dry-run
+.\.venv3\Scripts\python.exe main.py migrate
+```
+
+auth, research, pipeline-jobs, and Portfolio are merged into `app.db`; Standardized, Base, and Bonds into `market.db`; chat and Filings are moved. The API key from `.env` and the chat key ring become settings. Nothing is deleted: merged or imported files keep a `.migrated` suffix, and the rest is moved, which is a rename on the same disk. Every step is skipped once its target exists, so an interrupted run resumes. The migration refuses to run while any old database is open (stop the server and the pipeline first). Until it has run, database lookups refuse to create empty databases beside the old ones. The old shared `screening_history.jsonl` is kept but not imported, because its entries have no owner; history is now kept per user. Environment variables earlier versions read are reported on start with the setting that replaced them.
 
 Create the environment and install declared extras:
 
@@ -47,28 +85,27 @@ Open `https://127.0.0.1:8000`.
 
 ### TLS certificates
 
-The workstation always serves HTTPS. On startup it reuses the first certificate/key pair found in `data/certs/` and, when the folder holds no usable pair, generates a self-signed one there so HTTPS works immediately and later startups reuse the same certificate. Supported pair names, in lookup order: `cert.pem`+`key.pem`, `fullchain.pem`+`privkey.pem` (Let's Encrypt layout), `tls.crt`+`tls.key`, and `server.crt`+`server.key`. The directory can be moved with `EDINET_CERT_DIR`; when running the packaged Windows executable it lives in `data/certs/` next to the executable.
+The workstation always serves HTTPS. On startup it reuses the first certificate/key pair found in `data/certs/` and, when the folder holds no usable pair, generates a self-signed one there so HTTPS works immediately and later startups reuse the same certificate. Supported pair names, in lookup order: `cert.pem`+`key.pem`, `fullchain.pem`+`privkey.pem` (Let's Encrypt layout), `tls.crt`+`tls.key`, and `server.crt`+`server.key`. When running the packaged Windows executable it lives in `data/certs/` next to the executable.
 
 The generated certificate is self-signed (ten-year validity, SANs for `localhost`, `127.0.0.1`, `::1`, and the configured bind host), so browsers warn on the first visit. Accept the warning once per machine, or trust `data/certs/cert.pem` in the operating system's root store. A certificate/key pair that exists but is unreadable or mismatched stops startup with a clear error rather than being overwritten; delete or replace those files to recover.
 
 Remote binding requires explicit opt-in, account authentication, and trusted hosts. TLS is served by the application itself; remote clients must trust the certificate in `data/certs/`, so a CA-issued certificate should be placed there for production access:
 
 ```powershell
-$env:EDINET_AUTH_MODE = "accounts"
-$env:EDINET_AUTH_DB = "config/state/auth.db"
-$env:EDINET_TRUSTED_HOSTS = "research.example,192.0.2.10"
+.\.venv3\Scripts\python.exe main.py config set auth.mode accounts
+.\.venv3\Scripts\python.exe main.py config set server.trusted_hosts research.example,192.0.2.10
 .\.venv3\Scripts\python.exe main.py --host 0.0.0.0 --port 8080 --allow-remote --no-reload
 ```
 
-Remote `/api/*` requests require an account-issued `Authorization: Bearer <token>`. Tokens must not be placed in URLs, logs, or browser storage. `/health` remains minimal and unauthenticated. `EDINET_API_TOKEN` is reserved for outbound EDINET downloads and is never used for application authentication.
+Remote `/api/*` requests require an account-issued `Authorization: Bearer <token>`. Tokens must not be placed in URLs, logs, or browser storage. `/health` remains minimal and unauthenticated. The EDINET API key is reserved for outbound EDINET downloads and is never used for application authentication.
 
-Account mode and open registration are the defaults. The first successful registration becomes the local administrator; set `EDINET_REGISTRATION_MODE=closed` (or `invite`) when additional self-service accounts should be disabled. `EDINET_REGISTRATION_MODE` is only the deployment default: once an administrator saves security settings under `/admin`, the saved registration mode, default role, access-token lifetime, and refresh idle/absolute lifetimes take precedence. Browser refresh tokens are held in an HttpOnly cookie, while access tokens remain in memory. Personal automation tokens can be created under `/api/auth/tokens` with scope `*` (full access) or `read` (GET/HEAD/OPTIONS only) and should be revoked when no longer needed; changing or resetting a password revokes all of that account's sessions and API tokens.
+Account mode and open registration are the defaults. The first successful registration becomes the local administrator; close registration (or make it invitation-only) under `/admin` → Access when additional self-service accounts should be disabled. The registration mode, default role, access-token lifetime, and refresh idle/absolute lifetimes saved there are stored in `app.db`. Browser refresh tokens are held in an HttpOnly cookie, while access tokens remain in memory. Personal automation tokens can be created under `/api/auth/tokens` with scope `*` (full access) or `read` (GET/HEAD/OPTIONS only) and should be revoked when no longer needed; changing or resetting a password revokes all of that account's sessions and API tokens.
 
 Refreshing prices from the provider (`/api/security/update-price`, `/api/screening/update-prices`) writes shared market data and requires the operator or admin role. Saved backtests are visible only to the account that ran them; results saved before ownership was recorded are visible to administrators only.
 
 Responses carry `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and a `Content-Security-Policy` for the workspace; remote deployments also send `Strict-Transport-Security`. Request size limits apply to the bytes actually received, including chunked uploads without a `Content-Length` header.
 
-Generated artifacts and mutable state default to folders inside the project and can be relocated: `EDINET_STATE_DIR` (default `config/state`; saved screens, uploads, job workspaces, and the irreplaceable databases), `EDINET_BACKTEST_DIR` (default `data/Backtests`), and `EDINET_REPORT_DIR` (default `data/reports`). `EDINET_JOB_WORKSPACE_ROOT` still overrides the job workspace alone. Missing databases are created when the server starts rather than when its module is imported.
+Generated artifacts live in `data/artifacts/`: `backtests/`, `reports/`, `exports/`, and per-job workspaces in `jobs/`. Missing databases are created when the server starts rather than when its module is imported.
 
 Administrators can change the minimum password length under `/admin` → Security settings. The accepted range is 5–128 characters, and the stored policy applies to registration, invitations, resets, password changes, and administrator-created credentials. The public `/pricing` page currently advertises €10 per month or €100 per year; it is informational and does not enable billing or subscription enforcement.
 
@@ -81,23 +118,23 @@ npm run dev
 
 The primary frontend is a React/TypeScript single-page workspace in `frontend-v2/`. It communicates with the backend through `/api/*` and `/health`.
 
-Database inputs are resolved and authorized server-side. Uploads and generated outputs live beneath per-job workspaces in `config/state/jobs/`.
+Database inputs are resolved and authorized server-side. Uploads and generated outputs live beneath per-job workspaces in `data/artifacts/jobs/`.
 
 ### Runtime size limits
 
-- `EDINET_MAX_UPLOAD_BYTES` defaults to 10 MiB for incoming files.
+- `limits.max_upload_bytes` defaults to 10 MiB for incoming files.
 - Pipeline multipart uploads have a separate 500 MiB default ceiling. The Import Stock Prices (CSV) step also rejects files larger than 500 MiB before parsing.
-- `EDINET_MAX_EXPORT_BYTES` defaults to 25 MiB for ordinary response exports.
-- `EDINET_MAX_BACKTEST_ARTIFACT_BYTES` defaults to 256 MiB for server-generated backtest files. Rolling archives are built directly on disk and partial archives are removed if this limit is reached.
-- `EDINET_MAX_REPORT_ARTIFACT_BYTES` defaults to 128 MiB for reproducible report ZIPs. Reports are written atomically beneath `data/reports/` and partial files are removed on failure.
+- `limits.max_export_bytes` defaults to 25 MiB for ordinary response exports.
+- `limits.max_backtest_artifact_bytes` defaults to 256 MiB for server-generated backtest files. Rolling archives are built directly on disk and partial archives are removed if this limit is reached.
+- `limits.max_report_artifact_bytes` defaults to 128 MiB for reproducible report ZIPs. Reports are written atomically beneath `data/artifacts/reports/` and partial files are removed on failure.
 
-Values are byte counts and are read at application startup. Increase the backtest artifact limit only when the expected archive and available disk space justify it, then restart the application.
+Values are byte counts, stored as settings in `app.db`, and read at application startup. Increase the backtest artifact limit only when the expected archive and available disk space justify it, then restart the application.
 
 ### Filing archive storage
 
-`Filings.db` retains each provider ZIP as a compressed `archive_content` BLOB. Extracted member bytes are not written for new ingests; the Filing Explorer extracts the requested member from the ZIP in memory when it is viewed. New catalogs retain numeric/analytical XBRL facts, contexts, units, and artifact metadata; narrative sections are reconstructed from the archive on demand instead of being materialized in the core database.
+`filings.db` retains each provider ZIP as a compressed `archive_content` BLOB. Extracted member bytes are not written for new ingests; the Filing Explorer extracts the requested member from the ZIP in memory when it is viewed. New catalogs retain numeric/analytical XBRL facts, contexts, units, and artifact metadata; narrative sections are reconstructed from the archive on demand instead of being materialized in the core database.
 
-Complete Japanese-to-English translations are cached in the versioned `filing_translations` table in `Filings.db`. The viewer always preserves the Japanese source and renders English alongside it. Translation covers complete section bodies and visible report HTML; model failures or residual Japanese return a retryable error instead of a partial English result.
+Complete Japanese-to-English translations are cached in the versioned `filing_translations` table in `filings.db`. The viewer always preserves the Japanese source and renders English alongside it. Translation covers complete section bodies and visible report HTML; model failures or residual Japanese return a retryable error instead of a partial English result.
 
 Existing databases created before this storage mode may still contain extracted `artifacts.content` BLOBs. Review the dry-run summary, then compact an existing database only after confirming that every archive is retained:
 
@@ -118,11 +155,11 @@ To reclaim a large WAL left by a bulk cleanup, stop the application and workers 
 To rebuild an existing catalog with the compact numeric-only schema, use a new output path on a volume with sufficient free space. The source database is read-only and is never overwritten:
 
 ```powershell
-\.venv3\Scripts\python.exe scripts/rebuild_filings_db.py --source data/databases/Filings.db --output D:\data\Filings.compact.db
-\.venv3\Scripts\python.exe scripts/rebuild_filings_db.py --source data/databases/Filings.db --output D:\data\Filings.compact.db --apply
+\.venv3\Scripts\python.exe scripts/rebuild_filings_db.py --source data/filings.db --output D:\data\filings.compact.db
+\.venv3\Scripts\python.exe scripts/rebuild_filings_db.py --source data/filings.db --output D:\data\filings.compact.db --apply
 ```
 
-The rebuild omits nonnumeric/nil facts, materialized sections, and the FTS copy of narrative text while retaining the compressed ZIPs. Verify the output before switching `EDINET_FILINGS_DB` to it.
+The rebuild omits nonnumeric/nil facts, materialized sections, and the FTS copy of narrative text while retaining the compressed ZIPs. Verify the output before pointing the `storage.filings_db_path` setting at it.
 
 ## Configuration Format
 
@@ -146,7 +183,7 @@ Submission returns `202` immediately. One managed worker executes jobs, while th
 
 ## Pre-flight Validation
 
-Before enqueueing, the orchestrator checks required keys, field limits, embedded uploads, and allowed paths. Failure stops later steps. Cancellation is cooperative at safe checkpoints and never force-kills a Python thread.
+Before enqueueing, the orchestrator checks required settings (a step that needs the EDINET API key is refused with a message naming `edinet.api_key`), field limits, embedded uploads, and allowed paths. Failure stops later steps. Cancellation is cooperative at safe checkpoints and never force-kills a Python thread.
 
 ## Bounded verification
 
@@ -160,18 +197,17 @@ Use repeated `--stage` options for focused checks, or `--timeout-seconds N` for 
 
 ## Steps
 
+Steps always read and write the application's own databases (`market.db`, and `filings.db` for filing archives); none takes a database path. Steps marked as needing the EDINET API key are refused before they start when the `edinet.api_key` setting is empty.
+
 ### `get_documents`
-Fetches the list of available filings from the EDINET API and stores document metadata in the database.
+Fetches the list of available filings from the EDINET API and stores document metadata in `DocumentList` in `market.db`. Needs the EDINET API key.
 
 ```json
 "get_documents_config": {
   "startDate": "2026-02-15",
-  "endDate":   "2026-02-21",
-  "Target_Database": "C:/path/to/base.db"
+  "endDate":   "2026-02-21"
 }
 ```
-
-- `Target_Database` — database where the EDINET document list table will be written.
 
 ---
 
@@ -183,8 +219,7 @@ Downloads filings for documents already in the document list that match the filt
   "docTypeCode": "120",
   "csvFlag":     "1",
   "secCode":     "",
-  "Downloaded":  "False",
-  "Target_Database": "C:/path/to/base.db"
+  "Downloaded":  "False"
 }
 ```
 
@@ -192,17 +227,15 @@ Downloads filings for documents already in the document list that match the filt
 - `csvFlag` — `"1"` to download the XBRL-to-CSV version.
 - `secCode` — filter by security code; leave blank for all.
 - `Downloaded` — `"False"` to skip already-downloaded documents.
-- `Target_Database` — database containing the document list table and destination financial data table.
 
 ---
 
 ### `download_xbrl`
-Downloads and indexes EDINET type-1 XBRL packages into `Filings.db`.
+Downloads and indexes EDINET type-1 XBRL packages into `filings.db`. Uses the `edinet.api_key` setting.
 
 ```json
 "download_xbrl_config": {
   "mode": "all",
-  "provider_token": "",
   "max_documents": 100,
   "doc_type_code": "120"
 }
@@ -212,7 +245,6 @@ Downloads and indexes EDINET type-1 XBRL packages into `Filings.db`.
 - `document_ids` — comma-separated EDINET document IDs used only in `explicit` mode.
 - `max_documents` — applies only to `backfill`; `all` processes the complete matching queue without a document-count cap.
 - `doc_type_code` — applies to both `backfill` and `all`; `120` is annual, `130` semi-annual, `140` quarterly, and an empty value includes all types.
-- `provider_token` — optional override for `API_KEY` or `EDINET_API_TOKEN`.
 - `all` adds `DocumentList.XbrlDownloaded` when needed and records `True`, `Checked_Unavailable`, or `Checked_Error` per document. It does not modify the legacy CSV `DocumentList.Downloaded` marker, and failed documents remain eligible for a later retry.
 - Acquisition reuses one HTTP session, downloads at most five packages concurrently, and writes `DocumentList` status changes in batches. The document-type filter is applied before work is queued in both `backfill` and `all` modes.
 
@@ -225,12 +257,10 @@ When `csv_file` is blank, the app downloads the official English EDINET code lis
 
 ```json
 "populate_company_info_config": {
-  "csv_file": "",
-  "Target_Database": "C:/path/to/standardized.db"
+  "csv_file": ""
 }
 ```
 
-- `Target_Database` — database where the company info table will be written.
 - `csv_file` — optional local CSV override. Leave blank to download the official English EDINET code list.
 
 ---
@@ -240,7 +270,6 @@ Imports historical stock prices from a user-supplied CSV file into the `stock_pr
 
 ```json
 "import_stock_prices_csv_config": {
-  "Target_Database": "C:/path/to/standardized.db",
   "csv_file": "C:/path/to/prices.csv",
   "default_ticker": "TPX",
   "default_currency": "JPY",
@@ -251,7 +280,6 @@ Imports historical stock prices from a user-supplied CSV file into the `stock_pr
 }
 ```
 
-- `Target_Database` — database where the stock prices table will be written.
 - `csv_file` — absolute path to the CSV file. In the Pipeline workspace, use the step's file picker instead of typing a browser-local path.
 - The selected CSV and the enclosing pipeline multipart request are capped at 500 MiB. Oversized files are rejected before pandas allocates a dataframe.
 - `default_ticker` — fallback ticker assigned when the CSV has no ticker column or the row value is blank.
@@ -291,11 +319,8 @@ ticker, so a failed or empty download restores that ticker's previous rows.
 
 ```json
 "update_stock_prices_config": {
-  "Target_Database": "C:/path/to/standardized.db"
 }
 ```
-
-- `Target_Database` — database containing the company info and financial data tables, and where stock prices will be updated.
 
 ---
 ### `update_fx_data`
@@ -313,7 +338,7 @@ events (verified against 企業内容等の開示に関する内閣府令 — no
 exists), so TDnet is the authoritative regulator-mandated venue. TDnet only
 serves a rolling ~30-day window, so schedule this step daily or weekly; every
 matched disclosure is stored as an event row in `Tdnet_Disclosures`
-(Standardized.db) keyed by a stable disclosure id, making reruns idempotent.
+(`market.db`) keyed by a stable disclosure id, making reruns idempotent.
 
 Titles do not carry the split ratio or effective date, and pure split notices
 have no XBRL attachment, so this step captures the event itself (ticker,
@@ -350,8 +375,7 @@ Detects stock splits and consolidations from price discontinuities and confirms 
 
 
 ### `update_bonds`
-Reads corporate bonds into `Bonds.db` (rebuildable, in `data/databases` by
-default; override with `bonds_db` in `config/database_paths.json`):
+Reads corporate bonds into the bond tables of `market.db`:
 
 1. **Bond supplements** — every shelf-registration supplement
    (発行登録追補書類, document type 100, with XBRL) listed in `DocumentList`
@@ -359,7 +383,7 @@ default; override with `bonds_db` in `config/database_paths.json`):
    `Bond_Documents`; each bond's terms and ratings go to `Bond_Issuances`.
    Supplements EDINET no longer serves are marked unavailable.
 2. **Annual-report bond schedules** — each company's latest annual report in
-   `Filings.db` (form 030000) is read for its bond schedule (社債明細表;
+   `filings.db` (form 030000) is read for its bond schedule (社債明細表;
    the bonds-and-borrowings note for IFRS filers) into `Bond_Schedule_Rows`.
    Run `download_xbrl` first so new reports are in the catalog.
 3. **JGB curve** — the Ministry of Finance par-yield curve (`JGB_Yields`):
@@ -389,7 +413,7 @@ parser, without downloading again.
 }
 ```
 
-- `issuance_documents` — download and read new bond supplements (needs `API_KEY` or `EDINET_API_TOKEN`).
+- `issuance_documents` — download and read new bond supplements (needs the `edinet.api_key` setting).
 - `annual_reports` — read the bond schedules of the latest annual reports.
 - `jgb_curve` — refresh the government curve.
 - `market_prices` / `market_days` — read up to this many of the newest JSDA files not stored yet.
@@ -412,8 +436,7 @@ Syncs EDINET taxonomy releases into normalized taxonomy tables, or imports a loc
   "namespaces": ["jppfs_cor", "jpcrp_cor"],
   "download_dir": "assets/taxonomy",
   "force_download": "False",
-  "force_reparse": "False",
-  "Target_Database": "C:/path/to/standardized.db"
+  "force_reparse": "False"
 }
 ```
 
@@ -423,7 +446,6 @@ Syncs EDINET taxonomy releases into normalized taxonomy tables, or imports a loc
 - `download_dir` stores downloaded taxonomy ZIP archives locally.
 - `force_download` redownloads archives even if they already exist locally.
 - `force_reparse` rebuilds normalized taxonomy tables even if the archive hash is unchanged.
-- `Target_Database` — database where the normalized taxonomy tables will be written.
 - Each release also fills `Taxonomy_Dictionary`: every concept of every taxonomy in the archive (J-GAAP, IFRS, corporate disclosure, document information) with its XBRL item type and standard English and Japanese labels. The Filing Explorer labels statement lines from it, and screening formats percentage columns from the item types. Releases parsed before the dictionary existed are reparsed once from the cached archives in `download_dir` on the next run; no new download is needed.
 
 ---
@@ -440,9 +462,7 @@ Supports `overwrite` — when enabled, the output tables are dropped and fully r
 }
 ```
 
-- `Source_Mode` — `csv` (default) reads the legacy `Base.db`/`financialData_full` table; `filings` reads normalized numeric XBRL facts from `Filings.db`.
-- When `Source_Mode` is `filings`, the database is taken from `EDINET_FILINGS_DB` or `config/database_paths.json` (`filings_db`).
-- `Target_Database` — database where `FinancialStatements` and the wide taxonomy-backed `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, and `ShareMetrics` tables are written.
+- `Source_Mode` — `csv` (default) reads the legacy `financialData_full` table in `market.db`; `filings` reads normalized numeric XBRL facts from `filings.db`.
 - `Granularity_level` — maximum taxonomy level to materialize into the statement tables. `ShareMetrics` concepts are stored at level `0` so they are always included.
 
 Runtime notes:
@@ -483,13 +503,11 @@ Supports `overwrite`.
 
 ```json
 "generate_rolling_metrics_config": {
-  "Source_Database": "C:/path/to/standardized.db",
-  "Target_Database": "C:/path/to/standardized.db"
+  "Source_Database": "C:/path/to/standardized.db"
 }
 ```
 
 - `Source_Database` — database containing the source statement and ratio tables.
-- `Target_Database` — database where the rolling metric tables are written.
 
 ---
 

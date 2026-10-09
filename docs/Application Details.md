@@ -34,7 +34,7 @@ Suggested per-function format:
 - Architecture status: `src.orchestrator` is a thin dispatcher with dynamically discovered step packages; backend modules are decoupled from `Config` and called with explicit parameters.
 - Mature user-facing workflows: ingestion, ETL, ratio generation, backtesting, screening, security analysis, portfolio management, and company tags all have dedicated test coverage.
 - Web workstation: React SPA served at `/`, `/pipeline`, `/screen`, `/analyze`, `/backtest`, and `/portfolio`; `/security` and `/backtesting` remain SPA compatibility aliases.
-- Pipeline execution: `POST /api/pipeline/run` validates and queues work, returning `202`; a single managed worker persists truthful job/step state in `config/state/pipeline_jobs.db`.
+- Pipeline execution: `POST /api/pipeline/run` validates and queues work, returning `202`; a single managed worker persists truthful job/step state in `data/app.db`.
 - Job history accepts bounded `limit`/`offset` pagination, and `/health` exposes only aggregate queue depth and counts by status.
 - Ordinary HTTP exports and generated backtest artifacts use separate limits; rolling ZIPs are size-limited while being written to disk and incomplete archives are removed.
 - Security boundary: loopback is the default. Remote binding requires explicit opt-in, a strong bearer token, and trusted hosts. Database and generated-file access is constrained to configured roots.
@@ -52,7 +52,7 @@ Suggested per-function format:
 - `src/web_app/security.py` owns `AppSettings`, bearer authentication, trusted hosts, request/correlation IDs, safe error envelopes, request-size limits, and `PathPolicy`.
 - `src/orchestrator/common/sqlite.py` exposes `connect_read`, `connect_write`, `transaction`, managed WAL initialization, existence helpers, and identifier quoting.
 - `src/portfolio/models.py` owns Portfolio API contracts; `src/portfolio/schema.py` remains the compatibility facade for those models while owning versioned schema migrations. Materialized portfolio tables use owner-aware composite primary keys so rebuilding one account cannot replace another account's state.
-- `src/screening/formatting.py` and `src/screening/persistence.py` own formatting and atomic saved-screen/history persistence behind the existing `src.screening` facade.
+- `src/screening/formatting.py` and `src/screening/persistence.py` own formatting and atomic saved-screen persistence behind the existing `src.screening` facade; screening run history is kept per user by `ResearchStore`.
 
 ## Architecture overview
 
@@ -87,9 +87,9 @@ flowchart TB
         ORCH["16 pipeline steps<br/>ingest · transform · update"]
     end
 
-    subgraph Data["SQLite databases"]
-        REBUILD["Rebuildable · data/databases/<br/>Base · Standardized · Filings · Bonds"]
-        STATE["State · config/state/databases/<br/>Portfolio · auth · research · jobs · chat"]
+    subgraph Data["SQLite databases · data/"]
+        REBUILD["Rebuildable<br/>market.db · filings.db"]
+        STATE["Irreplaceable<br/>app.db (settings · accounts · research · jobs · portfolio) · chat.db"]
     end
 
     SPA -->|"HTTPS"| API
@@ -131,8 +131,8 @@ Architecture:
 - **`src/orchestrator/common/__init__.py`**: shared `StepDefinition` type plus discovery helpers that scan immediate child step packages under `src/orchestrator`.
 - **`src/orchestrator/common/validation.py`**: pipeline validation and step config normalization.
 - **Discovered step packages**: each step lives in its own package such as `src/orchestrator/generate_financial_statements/` and exports `STEP_DEFINITION` only.
-- `download_xbrl` supports explicit IDs, bounded Base.db backfill, and an `all` mode that queues every eligible XBRL document using the dedicated `DocumentList.XbrlDownloaded` marker while preserving the legacy CSV `Downloaded` marker.
-- `generate_financial_statements` accepts `Source_Mode="csv"` (legacy `Base.db`) or `Source_Mode="filings"` (normalized numeric XBRL facts from `Filings.db`); both modes write the same standardized statement tables to DB2. `ShareMetrics` per-share figures and ratios are the consolidated ones (an IFRS or US GAAP filer's from its own summary concepts, `_SHARE_METRICS_CONSOLIDATED_CONCEPTS`), on one scope per filing; afterwards `slips.correct_decimal_slips` corrects share counts, P/Es, and EPS an issuer tagged a power of ten off, where two of the report's own measures agree, recording each in `ShareMetrics_Corrections`.
+- `download_xbrl` supports explicit IDs, bounded `DocumentList` backfill, and an `all` mode that queues every eligible XBRL document using the dedicated `DocumentList.XbrlDownloaded` marker while preserving the legacy CSV `Downloaded` marker.
+- `generate_financial_statements` accepts `Source_Mode="csv"` (legacy `financialData_full`) or `Source_Mode="filings"` (normalized numeric XBRL facts from `filings.db`); both modes write the same standardized statement tables to `market.db`. `ShareMetrics` per-share figures and ratios are the consolidated ones (an IFRS or US GAAP filer's from its own summary concepts, `_SHARE_METRICS_CONSOLIDATED_CONCEPTS`), on one scope per filing; afterwards `slips.correct_decimal_slips` corrects share counts, P/Es, and EPS an issuer tagged a power of ten off, where two of the report's own measures agree, recording each in `ShareMetrics_Corrections`.
 - **`STEP_HANDLERS`**: generated registry mapping step names and aliases to discovered handlers.
 
 - `def run(config=None, steps=None, on_step_start=None, on_step_done=None, on_step_error=None, cancel_event=None) -> None`
@@ -185,18 +185,18 @@ Responsibility: drill-down views and the shareable report of saved backtests. `b
 
 ### [src/bonds/](../src/bonds/)
 
-Responsibility: corporate bonds from EDINET filings, valued on the JGB curve and JSDA reference prices; stored in the rebuildable `Bonds.db` (`db_config.get_bonds_db()`).
+Responsibility: corporate bonds from EDINET filings, valued on the JGB curve and JSDA reference prices; stored in the bond tables of the rebuildable `market.db` (`db_config.get_market_db()`), beside the `DocumentList` and `CompanyInfo` they read.
 
 - `parsing.py` — `parse_issuance(zip)` reads a shelf-registration supplement's label/value tables (merged cells expanded, multi-row fields joined, notes attached to their bond) into `IssuedBond`s with amount, issue price, coupon and kind, frequency, maturity, first call, collateral, covenants, features, seniority, and ratings; `parse_bond_schedule(zip)` reads the annual report's 社債明細表 (or the IFRS bonds-and-borrowings note) into `ScheduleRow`s with issuer, balances, coupon, maturity, and currency. Helpers normalise era dates, 億/百万円 amounts, percentages, and ratings (`rating_notch`, `notch_label`: AAA = 1).
 - `valuation.py` — clean/dirty price, yield, and modified duration on the browser calculator's conventions; `CurveBook`/`Curve` give the JGB par curve on or before a date, linear between tenors.
 - `market.py` — Ministry of Finance JGB curve CSVs (`parse_jgb_csv`, `fetch_jgb_curve`). `jsda.py` — JSDA reference-price files (`parse_reference_csv`, `fetch_reference_prices` with rate-limit handling) and `match_quotes` by maturity, coupon, series, and issuer name.
 - `build.py` — `build_bonds(conn, db2_path)` merges the latest schedule per company with supplements (by series and maturity, or maturity and coupon), marks redeemed, matured, and likely-private bonds, infers issuer ratings by ranking, and adds spreads at issue and matched JSDA yields and spreads.
-- `update.py` — `update_bonds(...)` runs the step: pending supplements (downloaded four at a time and stored), pending annual reports (read from `Filings.db` one archive at a time, selecting on pre-BLOB columns), the curve, JSDA prices, and the rebuild.
+- `update.py` — `update_bonds(...)` runs the step: pending supplements (downloaded four at a time and stored), pending annual reports (read from `filings.db` one archive at a time, selecting on pre-BLOB columns), the curve, JSDA prices, and the rebuild.
 - `service.py` and `api.py` — `GET /api/bonds/status`, `/company/{edinet_code}` (bonds, totals, ladder, documents), `/market` (every outstanding bond, gzipped; company fields once per company), `/bond/{bond_id}` (terms, valuation, peer fair value, similar bonds, spread curve, price history), and `/documents/{doc_id}` (the stored supplement ZIP; accounts only).
 
 ### [src/orchestrator/update_bonds/update_bonds.py](../src/orchestrator/update_bonds/update_bonds.py)
 
-Responsibility: the `update_bonds` pipeline step; reads the API key from the pipeline config or `EDINET_API_TOKEN` and passes the step's flags to `src.bonds.update.update_bonds`.
+Responsibility: the `update_bonds` pipeline step; reads the `edinet.api_key` setting and passes the step's flags to `src.bonds.update.update_bonds`.
 
 ### [src/orchestrator/common/backtesting.py](../src/orchestrator/common/backtesting.py)
 
@@ -299,17 +299,39 @@ Responsibility: portfolio construction, price/dividend ingestion, return calcula
 
 ---
 
+### [src/paths.py](../src/paths.py)
+
+Responsibility: the application's filesystem roots. `app_dir()` is the folder holding the executable (frozen) or the repository root; `bundle_dir()` holds bundled read-only files (PyInstaller's unpack folder when frozen; never written). `data_dir()` is `app_dir()/data` or `EDINET_DATA_DIR`, and `app_db_path`, `chat_db_path`, `default_market_db_path`, `default_filings_db_path`, `certs_dir`, `logs_dir`, `artifacts_dir`, `backtests_dir`, `reports_dir`, `exports_dir`, `jobs_dir`, `manual_uploads_dir`, and `downloads_dir` are fixed places inside it. Runtime folders are never derived from `__file__`.
+
 ### [src/orchestrator/common/db_config.py](../src/orchestrator/common/db_config.py)
 
-Responsibility: Configuration-driven database path resolution.
+Responsibility: the four database locations.
 
-- `def get_db2() -> str` - Return the default DB2 path from `config/database_paths.json`, falling back to the `DB2_PATH` env var.
+- `def get_app_db() -> str` - `data/app.db`: settings, secrets, accounts, research, pipeline jobs, portfolio.
+- `def get_chat_db() -> str` - `data/chat.db`.
+- `def get_market_db() -> str` - `data/market.db`, or the `storage.market_db_path` setting.
+- `def get_filings_db() -> str` - `data/filings.db`, or the `storage.filings_db_path` setting.
+- `def reload() -> None` - forget the cached storage settings and layout check.
+- Every getter first checks `migrate_layout.pending_databases()` and raises `LegacyLayoutError` while an old-layout database has not been migrated, so no lookup creates an empty database beside a real one.
+
+### [src/orchestrator/common/migrate_layout.py](../src/orchestrator/common/migrate_layout.py)
+
+Responsibility: the one-time move from the old nine-database layout (`data/databases`, `config/state`, `config/database_paths.json`, `.env`) into the data folder. Only runs for the default data folder.
+
+- `def plan(app_dir=None, data_dir=None) -> list[Step]` - every step still needed, each skipped once its target exists.
+- `def migrate_legacy_layout(*, dry_run=False, report=print) -> list[str]` - checks no old database is open, then merges auth/research/pipeline_jobs/Portfolio into `app.db` (built as `app.db.partial`, renamed when complete), imports the chat key ring and the `.env` API key as settings, moves chat and Filings, merges Base and Bonds into Standardized and renames it `market.db`, moves generated folders into `artifacts/`, and keeps every merged or imported file with a `.migrated` suffix.
+- `def pending_databases() -> list[Path]` - old database files whose new home does not exist yet.
+- Copies a database by executing each object's stored DDL and `INSERT … SELECT *`; unscoped `schema_migrations` rows are recorded under the owning component, and `sqlite_sequence` counters are carried over.
 
 ### [src/orchestrator/common/database_bootstrap.py](../src/orchestrator/common/database_bootstrap.py)
 
-Responsibility: Startup creation and schema initialization for all configured application databases.
+Responsibility: Startup creation and schema initialization for the four databases.
 
-- `def ensure_application_databases(settings: Any | None = None, db1_path: str | Path | None = None, db2_path: str | Path | None = None, db3_path: str | Path | None = None, auth_db_path: str | Path | None = None, research_db_path: str | Path | None = None, jobs_db_path: str | Path | None = None, filings_db_path: str | Path | None = None, busy_timeout_ms: int | None = None) -> dict[str, Path]` - Create Base and Standardized as empty pipeline-owned SQLite files, apply the Portfolio schema, and run the idempotent initializers for auth, research, pipeline jobs, and filings. Called from the web server assembly after security settings are installed.
+- `def ensure_application_databases(*, settings=None, app_db_path=None, chat_db_path=None, market_db_path=None, filings_db_path=None, busy_timeout_ms=None) -> dict[str, Path]` - runs the idempotent initializers of the settings, auth, research, pipeline-jobs, and portfolio components on `app.db`, of chat on `chat.db`, the bond tables on `market.db` (its other tables are pipeline-owned), and the filing catalog on `filings.db`. Called from the web server lifespan.
+
+### [src/orchestrator/common/sqlite.py](../src/orchestrator/common/sqlite.py) (migrations)
+
+- `def schema_version(conn, component) -> int` / `def record_schema_version(conn, component, version, applied_at) -> None` - per-component migration bookkeeping in `schema_migrations(component, version, applied_at)`, so several components can share `app.db`. A pre-existing unscoped table is adopted by the first component that opens the file.
 
 ### [src/orchestrator/common/ratios.py](../src/orchestrator/common/ratios.py)
 
@@ -455,9 +477,9 @@ Responsibility: Centralized logging setup.
 
 - `class LogSetup` / `def setup_logging(...)` - configure console/file handlers and rotate/archival behavior.
 `class LogSetup`
-	- Purpose: Configure application logging with file and console handlers, archive old logs.
+	- Purpose: Configure application logging with file and console handlers. The default directory is the data folder's `logs/` (`src.paths.logs_dir`).
 
-	- `def __init__(self, log_dir: str = "logs", archive_dir: str = "logs/archive") -> None`
+	- `def __init__(self, log_dir: str | None = None, log_filename: str = "server.log") -> None`
 		- Purpose: Ensure log and archive directories exist and record paths.
 		- Inputs: `log_dir`, `archive_dir`.
 		- Output: None (initializes instance fields).
@@ -485,18 +507,27 @@ Responsibility: Centralized logging setup.
 
 ## Configuration
 
+### [src/settings/](../src/settings/)
+
+Responsibility: operator settings and server secrets, stored as JSON rows in the `settings` table of `app.db`. Nothing is read from environment variables or files.
+
+- `registry.py` - `SETTINGS`, one `SettingSpec(key, kind, default, label, description, choices, minimum, restart)` per setting (`edinet.api_key`, `auth.mode`, `server.trusted_hosts`, `pipeline.allowed_data_roots`, four `limits.*`, `jobs.retention_hours`, `storage.market_db_path`, `storage.filings_db_path`, and the internal `chat.message_keys`); `validate` and `parse_text` normalize values and raise `SettingError`.
+- `store.py` - `SettingsStore` (get, rows, set, set_if_missing, delete) and `read_stored_value(s)`, which read without creating `app.db`. It opens SQLite itself so importing settings never triggers pipeline-step discovery.
+- `__init__.py` - `get_setting`, `load_settings`, `set_setting`, `unset_setting`, `describe_settings` (secret values never included), and `edinet_api_key()`, read at call time.
+- `api.py` - administrator routes `GET /api/admin/settings`, `PUT /api/admin/settings/{key}` (`{"value": …}`), and `DELETE /api/admin/settings/{key}`; changes are written to the auth audit log.
+
 ### [config.py](../config.py)
 
-Responsibility: Explicit in-memory pipeline configuration with environment fallback.
+Responsibility: Explicit in-memory pipeline configuration.
 
 `class Config`
-	- Purpose: Wrap a request/programmatically supplied settings dictionary. It does not load `run_config.json`.
+	- Purpose: Wrap a request/programmatically supplied settings dictionary. It does not load `run_config.json`, `.env`, or environment variables; operator settings come from `src.settings`.
 
 	- `def get(self, key, default=None)`
-		- Purpose: Get a config value from settings dict or environment variables.
+		- Purpose: Get a value from the settings dict.
 
 	- `@classmethod def from_dict(cls, settings: dict) -> Config`
-		- Purpose: Create a Config instance from an explicit dictionary. Loads `.env` only for secret/environment fallback.
+		- Purpose: Create a Config instance from an explicit dictionary.
 		- Inputs: `settings` dict.
 		- Output: New `Config` instance (not the singleton).
 
@@ -509,11 +540,11 @@ Responsibility: Explicit in-memory pipeline configuration with environment fallb
 
 ### [main.py](../main.py)
 
-Responsibility: Web workstation entry point launcher.
+Responsibility: launcher. `main.py` serves the workstation; `main.py config list|get|set|unset` reads and changes settings (secrets are prompted for when no value is given); `main.py migrate [--dry-run]` moves an old installation. Every command migrates first.
 
 - `def _run_web(host: str = "127.0.0.1", port: int = 8000, reload: bool = True, allow_remote: bool = False) -> None`
-	- Purpose: Validate bind/authentication settings, propagate them to app creation, and launch Uvicorn.
-	- Calls/Dependencies: `setup_logging`, `uvicorn.run`.
+	- Purpose: Migrate an old layout, warn about retired environment variables, load `AppSettings` from the launch options and `app.db`, hand the launch options to the server process through `EDINET_HOST`/`EDINET_PORT`/`EDINET_ALLOW_REMOTE`, provision TLS, and launch Uvicorn.
+	- Calls/Dependencies: `migrate_legacy_layout`, `AppSettings.load`, `setup_logging`, `provision_tls`, `uvicorn.run`.
 
 ---
 
@@ -543,7 +574,7 @@ Responsibility: Security Analysis API routes at `/api/security/*` — search, ov
 
 ### [src/web_app/api/settings.py](../src/web_app/api/settings.py)
 
-Responsibility: per-user workstation preferences. `GET`/`PUT`/`DELETE /api/settings/hotkeys` read, replace, and clear the caller's hotkey overrides (`{hotkey_id: [key spec, …]}`, at most four keys per id and 1,000 ids), stored as JSON in `auth.db.user_settings` through `AuthStore.get_user_setting`/`set_user_setting`/`delete_user_setting`. Works for accounts and for the auth-disabled `local` principal; the frontend owns the hotkey catalogue and defaults.
+Responsibility: per-user workstation preferences. `GET`/`PUT`/`DELETE /api/settings/hotkeys` read, replace, and clear the caller's hotkey overrides (`{hotkey_id: [key spec, …]}`, at most four keys per id and 1,000 ids), stored as JSON in `user_settings` in `app.db` through `AuthStore.get_user_setting`/`set_user_setting`/`delete_user_setting`. Works for accounts and for the auth-disabled `local` principal; the frontend owns the hotkey catalogue and defaults.
 
 ### [src/web_app/api/tags.py](../src/web_app/api/tags.py)
 
@@ -662,13 +693,15 @@ Core implementation in `src/screening/screening.py`:
 Responsibility: Unit and integration tests covering core logic, API endpoints, and UI helpers. Tests generate isolated databases, IBKR XML, and a minimal SPA bundle at runtime; they do not read operator files under `data/` or require a pre-existing frontend build.
 
 - **[factories.py](../tests/factories.py)** - Deterministic market-database and synthetic IBKR FlexQuery factories shared across test layers.
-- **[capture_screenshots.py](../tests/capture_screenshots.py)** - Builds isolated demonstration Base, Standardized, Portfolio, Research, Jobs, Auth, and Filings databases, serves the current SPA, and refreshes documentation screenshots without opening operator data.
+- **[capture_screenshots.py](../tests/capture_screenshots.py)** - Builds an isolated demonstration data folder (`app.db`, `market.db`, `filings.db`) through `EDINET_DATA_DIR`, serves the current SPA, and refreshes documentation screenshots without opening operator data.
 
 ### Unit tests (`tests/unit/`)
 
 - **[test_backtesting.py](../tests/unit/test_backtesting.py)** - tests backtest data retrieval, calculations, report and chart generation, and end-to-end `run_backtest` flows.
 - **[test_backtesting_chart_response.py](../tests/unit/test_backtesting_chart_response.py)** - Chart response format tests.
-- **[test_database_bootstrap.py](../tests/unit/test_database_bootstrap.py)** - Verifies clean-startup creation and schema initialization for all configured databases.
+- **[test_database_bootstrap.py](../tests/unit/test_database_bootstrap.py)** - Verifies clean-startup creation and schema initialization for the four databases.
+- **[test_storage_layout.py](../tests/unit/test_storage_layout.py)** - Data-folder paths, storage settings, the refusal to create databases beside an unmigrated layout, and the old-layout migration (contents, counters, migrations, dry run, resume after interruption, in-use refusal, `EDINET_DATA_DIR` isolation).
+- **[test_settings.py](../tests/unit/test_settings.py)** - Setting defaults and validation, secret masking, `AppSettings.load`, the administrator API, and `main.py config`.
 - **[test_backtesting_web.py](../tests/unit/test_backtesting_web.py)** - Web backtesting interface tests.
 - **[test_edinet_api.py](../tests/unit/test_edinet_api.py)** - tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
 - **[test_frontend_v2_server.py](../tests/unit/test_frontend_v2_server.py)** - Tests for the React SPA serving and API integration.
@@ -703,15 +736,15 @@ Responsibility: Unit and integration tests covering core logic, API endpoints, a
 
 ### [src/auth/](../src/auth/)
 
-Responsibility: dedicated account authentication state. `AuthStore` owns `auth.db`; `AuthService` hashes passwords with Argon2id, issues rotating opaque sessions and personal API tokens, and never reads the EDINET provider token. `src/auth/api.py` exposes registration, login, refresh, logout, identity, and personal-token routes.
+Responsibility: dedicated account authentication state. `AuthStore` owns the account tables in `app.db`; `AuthService` hashes passwords with Argon2id, issues rotating opaque sessions and personal API tokens, and never reads the EDINET provider token. `src/auth/api.py` exposes registration, login, refresh, logout, identity, and personal-token routes.
 
 ### [src/filings/](../src/filings/)
 
-Responsibility: EDINET type-1 acquisition and rebuildable filing indexes. `EdinetDownloadClient` is the only application subsystem that reads `EDINET_API_TOKEN`, solely for outbound EDINET requests. `archive.py` validates ZIPs and extracts requested members on demand, `xbrl.py` uses defused XML plus sanitized narrative parsing, and `FilingCatalog` owns `Filings.db` metadata, compressed archives, compact numeric facts, contexts/units, on-demand narrative reconstruction, and quality issues. `rebuild_filings_db.py` creates a new catalog without materialized narrative text or the wide raw-fact uniqueness index. The Filing Explorer coverage endpoint provides unique filing/company/archive counts for the empty-state dashboard, and the report viewer keeps Japanese and translated HTML panes side by side. `translate.py` uses an application-wide, serialized Argos ja→en model, glossary handling for short EDINET labels, boundary-aware long-text chunks, residual-Japanese repair, and cache version 3. It translates complete section bodies and all visible HTML text/labels; only output validated as complete is cached or returned. Model/runtime failures return HTTP 503 and never masquerade as an English pane.
+Responsibility: EDINET type-1 acquisition and rebuildable filing indexes. `EdinetDownloadClient.from_settings()` reads the `edinet.api_key` setting, solely for outbound EDINET requests. `archive.py` validates ZIPs and extracts requested members on demand, `xbrl.py` uses defused XML plus sanitized narrative parsing, and `FilingCatalog` owns `filings.db` metadata, compressed archives, compact numeric facts, contexts/units, on-demand narrative reconstruction, and quality issues. `rebuild_filings_db.py` creates a new catalog without materialized narrative text or the wide raw-fact uniqueness index. The Filing Explorer coverage endpoint provides unique filing/company/archive counts for the empty-state dashboard, and the report viewer keeps Japanese and translated HTML panes side by side. `translate.py` uses an application-wide, serialized Argos ja→en model, glossary handling for short EDINET labels, boundary-aware long-text chunks, residual-Japanese repair, and cache version 3. It translates complete section bodies and all visible HTML text/labels; only output validated as complete is cached or returned. Model/runtime failures return HTTP 503 and never masquerade as an English pane.
 
 ### [src/research/](../src/research/)
 
-Responsibility: owner-scoped durable watchlists, notes, and in-app alert rules/events in `research.db`. APIs require an account identity and never use rebuildable market-data databases for user-authored state.
+Responsibility: owner-scoped durable watchlists, notes, and in-app alert rules/events, and per-user screening run history in `app.db`. APIs require an account identity and never use rebuildable market-data databases for user-authored state.
 
 ### [src/backtesting/asof.py](../src/backtesting/asof.py), [src/portfolio/tax_lots.py](../src/portfolio/tax_lots.py), [src/portfolio/scenarios.py](../src/portfolio/scenarios.py), [src/reports/manifest.py](../src/reports/manifest.py)
 

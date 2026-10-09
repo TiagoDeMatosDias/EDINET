@@ -26,7 +26,7 @@ Run the same bounded stages used by CI:
 
 For a focused change, repeat `--stage` with one or more of `unit`, `integration`, `frontend-test`, `frontend-lint`, `frontend-build`, `requirements`, `documentation`, `static-ruff`, `static-mypy`, or `package-check`. Every stage has a hard timeout and pytest workspaces are removed after each run; do not replace the verifier with an unbounded wrapper.
 
-Python tests are hermetic by default: `tests/conftest.py` creates temporary application databases and a minimal SPA bundle, while `tests/factories.py` supplies generated market and IBKR data. New tests must use temporary/generated fixtures rather than ignored files under `data/`, machine-specific paths, network services, or an existing frontend build. Assert one exact contract wherever possible; do not condition assertions on a successful status or accept unrelated status-code ranges.
+Python tests are hermetic by default: `tests/conftest.py` points `EDINET_DATA_DIR` at a temporary folder before anything is imported, stores test settings in its `app.db`, and creates a minimal SPA bundle, while `tests/factories.py` supplies generated market and IBKR data. New tests must use temporary/generated fixtures rather than ignored files under `data/`, machine-specific paths, network services, or an existing frontend build. Assert one exact contract wherever possible; do not condition assertions on a successful status or accept unrelated status-code ranges.
 
 Before review:
 
@@ -99,7 +99,7 @@ Refresh the screenshot set with the isolated demonstration runtime:
 .\.venv3\Scripts\python.exe tests\capture_screenshots.py
 ```
 
-The capture script generates temporary companies, financial history, filings, research state, and portfolio activity. Keep it hermetic: it must never fall back to `data/`, `config/database_paths.json`, or another operator-owned database.
+The capture script generates temporary companies, financial history, filings, research state, and portfolio activity. Keep it hermetic: it points `EDINET_DATA_DIR` at a temporary folder and must never fall back to `data/` or another operator-owned database.
 
 ## Pull requests
 

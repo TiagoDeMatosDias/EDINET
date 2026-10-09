@@ -7,13 +7,14 @@ Updated: 2026-10-04
 ## Files and levels
 
 ```text
-logs/
+data/logs/
 ├── server.log            # active log (rotates to server.log.1 … server.log.5)
 └── archive/              # legacy timestamped logs (kept for reference)
 ```
 
-- The server always logs to `<project_root>/logs/server.log`, resolved to an
-  **absolute path anchored at the project root** — so it lands in `logs/` no
+- The server always logs to `server.log` in the data folder's `logs/`
+  (`data/logs/` beside `main.py` or the packaged exe, or inside
+  `EDINET_DATA_DIR`), resolved to an absolute path — so it lands there no
   matter which working directory the server is launched from (`main.py`,
   `scripts/share.sh`, a frozen exe, a test harness, …).
 - The log file has a **stable name** and is managed by a
@@ -44,7 +45,7 @@ Unexpected tracebacks are logged server-side with the correlation ID. Client-fac
 
 ## Pipeline jobs
 
-Pipeline transition messages include the job ID and, when relevant, the step name. Durable status, timing, progress, and bounded results live in `config/state/pipeline_jobs.db`; they are not reconstructed from logs. Retention is controlled by `EDINET_JOB_RETENTION_HOURS` and cleanup removes both expired rows and owned workspaces.
+Pipeline transition messages include the job ID and, when relevant, the step name. Durable status, timing, progress, and bounded results live in `data/app.db`; they are not reconstructed from logs. Retention is controlled by the `jobs.retention_hours` setting and cleanup removes both expired rows and owned workspaces.
 
 Do not log:
 
