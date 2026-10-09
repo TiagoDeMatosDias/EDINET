@@ -31,8 +31,8 @@ disagreement is one.
 | --- | --- | --- |
 | Rolling 5-year EPS growth of Toyota to March 2026 | −14.9 % a year | +17.4 % a year |
 | Annual reports (28,552 with a P/E, 2016–2026) whose P/E × EPS on today's shares is within 5 % of the stored year-end price | 96.7 % since 2023; median 0.907 at 2017 | 99.01 %; median 1.000 in every year |
-| Pairs of consecutive annual reports whose per-share factor disagrees with the stored prices by 1.5x or more | 327 | 75, all from issuers' figures |
-| Rolling 5-year averages and growth rates recomputed from the reports on today's shares (EPS, dividends per share, year-end shares) | spot checks | 51,824 averages and 36,615 growth rates, 8,403 and 5,485 of them with a split in the window: 0 wrong |
+| Pairs of consecutive annual reports whose per-share factor disagrees with the stored prices by 1.5x or more | 327 | 75, all from issuers' own figures (accepted as filed) |
+| Rolling 5-year averages and growth rates recomputed from the reports (per-share figures on today's shares), every rolling table | spot checks | 892,485 averages and 594,233 growth rates, 35,185 and 21,377 of them per-share figures with a split in the window: 0 wrong |
 | Known splits still showing as a step in the stored prices | 187 of 2,257 | 0 of 3,561 |
 | Stored prices of unknown basis (neither split-adjusted nor as traded) | 13.5 million rows | 0 |
 | Filed figures an issuer tagged a power of ten off (share counts in thousands or a digit short, P/E 100 times over) | not checked | 11 corrected at 10 companies, each checked against the report as displayed; filed values kept |
