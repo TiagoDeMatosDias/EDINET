@@ -63,7 +63,7 @@ Never copy development databases or the repository `.env` into a release. The as
 
 ## Hidden imports
 
-Router composition is explicit. `EDINET.spec` still lists API modules for auditability and lists orchestrator step packages because step discovery uses `pkgutil`. When adding a step, update the hidden-import list and let the packaged smoke test prove the result.
+Router composition is explicit. `EDINET.spec` still lists API modules for auditability. Pipeline steps are discovered with `pkgutil` and never imported by name, so the spec collects every `src.orchestrator` module with `collect_submodules`; a new step needs no spec change.
 
 ## CI
 

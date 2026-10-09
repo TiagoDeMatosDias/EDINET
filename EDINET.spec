@@ -31,29 +31,12 @@ datas = [
 ]
 
 # Hidden imports for orchestrator discovery and optional libraries.
-# Web routers are explicit, but remain listed for packaging auditability.
-hiddenimports = [
-    # Dynamically discovered orchestrator step packages
-    'src.orchestrator.get_documents',
-    'src.orchestrator.download_documents',
-    'src.orchestrator.populate_company_info',
-    'src.orchestrator.import_stock_prices_csv',
-    'src.orchestrator.update_stock_prices',
-    'src.orchestrator.parse_taxonomy',
-    'src.orchestrator.generate_financial_statements',
-    'src.orchestrator.generate_ratios',
-    'src.orchestrator.generate_rolling_metrics',
-    'src.orchestrator.backtest',
-    'src.orchestrator.backtest_set',
-    'src.orchestrator.update_fx_data',
-    'src.orchestrator.download_xbrl',
-    'src.orchestrator.download_xbrl.download_xbrl',
+# Pipeline steps are discovered with pkgutil at runtime and never imported by
+# name, so collect every orchestrator module rather than listing steps by hand
+# (a hand-written list silently dropped steps added later).
+from PyInstaller.utils.hooks import collect_submodules
 
-    # Step service modules (loaded by thin step-wrapper modules)
-    'src.orchestrator.generate_financial_statements.service',
-    'src.orchestrator.generate_rolling_metrics.service',
-    'src.orchestrator.parse_taxonomy.taxonomy_processing',
-
+hiddenimports = collect_submodules('src.orchestrator') + [
     # Explicit API composition
     'src.api.router',
     'src.api.pipeline_routes',
@@ -84,7 +67,6 @@ hiddenimports = [
 
     # Common / utilities
     'src.utilities',
-    'src.orchestrator.common',
 
     # Conditionally-imported libraries
     'sklearn',
