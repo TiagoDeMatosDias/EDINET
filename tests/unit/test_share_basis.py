@@ -523,3 +523,23 @@ def test_a_count_down_by_a_sixth_is_a_cancellation_not_a_consolidation():
     assert standard_split_multiplier(14_955_688 / 17_946_826) is None
     assert standard_split_multiplier(0.5) == 0.5
     assert standard_split_multiplier(1.2) == 1.2
+
+
+def test_a_recorded_split_between_the_reports_is_taken_out_of_the_price_evidence():
+    from src.orchestrator.common.corporate_actions import AnnualFacts, SplitEvent, _price_denies
+
+    T = pd.Timestamp
+    # A count up 3.96 times in 2021 read as a 4-for-1 split, with only the
+    # 2017 and 2021 reports priced and a recorded 10-to-1 consolidation in
+    # 2018 between them: the stored price over the price as traded fell by
+    # ten (the consolidation), not by forty.
+    history = [
+        AnnualFacts(T("2017-03-31"), 33_224_411, price_factor=710.0 / 70.74),
+        AnnualFacts(T("2020-03-31"), 3_952_941),
+        AnnualFacts(T("2021-03-31"), 15_671_691, price_factor=497.0 / 456.1),
+    ]
+    event = SplitEvent(T("2020-03-31"), T("2021-03-31"), 4.0, "annual reports")
+    consolidation = SplitEvent(T("2018-09-25"), T("2018-09-26"), 0.1, "Stock_Splits")
+    assert _price_denies(event, history, [consolidation])
+    # An inferred split between them may not be one: no verdict.
+    assert not _price_denies(event, history, [SplitEvent(T("2018-03-31"), T("2019-03-31"), 0.1, "annual reports")])

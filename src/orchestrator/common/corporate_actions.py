@@ -344,8 +344,9 @@ def _bracketed_price_shift(event: SplitEvent, history: list[AnnualFacts], others
     moves the price as traded against the split-adjusted one. The two
     reports compared are the nearest with a price that are surely on either
     basis: issuers quote the P/E of a report restated for a split after its
-    year end on either. Another split between them (*others*) moves the
-    price as well, and then the prices cannot tell.
+    year end on either. A recorded split between them (*others*) moved the
+    price by its known ratio, which is taken out; an inferred one may not be
+    a split, and then the prices cannot tell.
     """
     filing = event.source == "filing date count"
 
@@ -363,13 +364,22 @@ def _bracketed_price_shift(event: SplitEvent, history: list[AnnualFacts], others
     after = next((item for item in priced if new_basis(item)), None)
     if before is None or after is None:
         return None
+    known = 1.0
     for other in others:
         # The same change seen in another count overlaps the event's window.
         if other is event or (other.after < event.until and event.after < other.until):
             continue
         if other.after < after.period_end and before.period_end < other.until:
-            return None
-    return _price_shift(before, after)
+            # A recorded split between the reports moved the price by its
+            # ratio, which is taken out; an inferred one may not be a split,
+            # unless it is the count change a recorded split explains.
+            if other.source != "Stock_Splits":
+                if any(_moved_within(recorded, other) for recorded in others if recorded.source == "Stock_Splits"):
+                    continue
+                return None
+            known *= other.multiplier
+    shift = _price_shift(before, after)
+    return None if shift is None else shift * known
 
 
 def _price_denies(event: SplitEvent, history: list[AnnualFacts], others: list[SplitEvent] = ()) -> bool:
