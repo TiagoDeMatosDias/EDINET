@@ -379,3 +379,38 @@ def test_a_split_already_in_the_first_reports_price_was_restated_in_it(tmp_path)
     finally:
         conn.close()
     assert (basis["F17"].restated, basis["F17"].fiscal) == (1.0, pytest.approx(0.1))
+
+
+def test_a_report_filed_after_a_split_that_kept_the_old_shares_is_not_restated(tmp_path):
+    from src.orchestrator.common.corporate_actions import filing_basis_factors
+
+    # 5-for-1 effective 23 June 2021; the report for March 2021 was filed on
+    # 28 June with the new count at filing, yet its book value per share is
+    # on the 822,200 year-end shares (¥1,932 of ¥1,589m net assets) and its
+    # P/E × EPS (¥2,528) is the price on the old shares: ¥506 on today's.
+    path = str(tmp_path / "late.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(f"""
+        CREATE TABLE CompanyInfo (Company_Code TEXT, Company_Ticker TEXT);
+        CREATE TABLE FinancialStatements (docID TEXT PRIMARY KEY, Company_Code TEXT, docTypeCode TEXT, submitDateTime TEXT, periodEnd TEXT);
+        CREATE TABLE ShareMetrics (docID TEXT PRIMARY KEY, [{YEAR_END_SHARES}] REAL, [{FILING_SHARES}] REAL, [Net assets per share] REAL,
+            [{EPS}] REAL, [Price-earnings ratio] REAL);
+        CREATE TABLE BalanceSheet (docID TEXT PRIMARY KEY, [Net assets] REAL);
+        CREATE TABLE Stock_Prices (Date TEXT, Ticker TEXT, Currency TEXT, Price REAL, Price_Basis TEXT, Provider TEXT);
+        INSERT INTO CompanyInfo VALUES ('E1', '74620');
+        INSERT INTO FinancialStatements VALUES ('F21', 'E1', '030000', '2021-06-28 09:00', '2021-03-31'), ('F22', 'E1', '030000', '2022-06-30 09:00', '2022-03-31');
+        INSERT INTO ShareMetrics VALUES ('F21', 822200, 4111000, 1932.12, 21.03, 120.22), ('F22', 4111000, 4111000, 342.0, 15.67, 21.06);
+        INSERT INTO BalanceSheet VALUES ('F21', 1588609000), ('F22', 1405962000);
+    """)
+    # Stored closes adjusted by the provider: ¥506 at March 2021, ¥330 at March 2022.
+    conn.executemany(
+        "INSERT INTO Stock_Prices VALUES (?, '74620', 'JPY', ?, 'adjusted', 'Yahoo Finance chart')",
+        [("2021-03-31", 505.6), ("2022-03-31", 330.0)],
+    )
+    conn.commit()
+    try:
+        basis = {row.doc_id: row for row in filing_basis_factors(conn)}
+    finally:
+        conn.close()
+    assert basis["F21"].restated == pytest.approx(0.2)
+    assert "F22" not in basis

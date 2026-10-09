@@ -69,6 +69,70 @@ _CONTEXT_PRIORITY_BY_FAMILY_AND_ID = {
 }
 _CONTEXT_PRIORITY_FALLBACK = len(_ALLOWED_CONTEXT_IDS) + 1
 _DOCUMENT_BATCH_SIZE = 1000
+
+
+# IFRS and US GAAP filers give their consolidated per-share figures under
+# their own summary concepts; the Japanese GAAP ones such a filer also gives
+# are the parent company's alone (Toyota's EPS: ¥295.25 consolidated, ¥260.28
+# parent-only). Each consolidated concept fills the Japanese GAAP concept's
+# column. IFRS names equity per share "EquityToAssetRatio"; US GAAP uses that
+# name for the ratio.
+_SHARE_METRICS_CONSOLIDATED_CONCEPTS = {
+    "jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults": (
+        "jpcrp_cor:BasicEarningsLossPerShareIFRSSummaryOfBusinessResults",
+        "jpcrp_cor:BasicEarningsLossPerShareUSGAAPSummaryOfBusinessResults",
+    ),
+    "jpcrp_cor:DilutedEarningsPerShareSummaryOfBusinessResults": (
+        "jpcrp_cor:DilutedEarningsLossPerShareIFRSSummaryOfBusinessResults",
+        "jpcrp_cor:DilutedEarningsLossPerShareUSGAAPSummaryOfBusinessResults",
+    ),
+    "jpcrp_cor:NetAssetsPerShareSummaryOfBusinessResults": (
+        "jpcrp_cor:EquityToAssetRatioIFRSSummaryOfBusinessResults",
+        "jpcrp_cor:EquityAttributableToOwnersOfParentPerShareUSGAAPSummaryOfBusinessResults",
+        "jpcrp_cor:StockholdersEquityPerShareOfCommonStockUSGAAPSummaryOfBusinessResults",
+    ),
+    "jpcrp_cor:EquityToAssetRatioSummaryOfBusinessResults": (
+        "jpcrp_cor:RatioOfOwnersEquityToGrossAssetsIFRSSummaryOfBusinessResults",
+        "jpcrp_cor:EquityToAssetRatioUSGAAPSummaryOfBusinessResults",
+    ),
+    "jpcrp_cor:RateOfReturnOnEquitySummaryOfBusinessResults": (
+        "jpcrp_cor:RateOfReturnOnEquityIFRSSummaryOfBusinessResults",
+        "jpcrp_cor:RateOfReturnOnEquityUSGAAPSummaryOfBusinessResults",
+    ),
+    "jpcrp_cor:PriceEarningsRatioSummaryOfBusinessResults": (
+        "jpcrp_cor:PriceEarningsRatioIFRSSummaryOfBusinessResults",
+        "jpcrp_cor:PriceEarningsRatioUSGAAPSummaryOfBusinessResults",
+    ),
+}
+_SHARE_METRICS_ALTERNATIVE_TO_PRIMARY = {
+    alternative: primary
+    for primary, alternatives in _SHARE_METRICS_CONSOLIDATED_CONCEPTS.items()
+    for alternative in alternatives
+}
+_NON_CONSOLIDATED_SUFFIX = "_NonConsolidatedMember"
+
+
+def _with_consolidated_alternatives(concept_qnames):
+    """The concepts to load: the mapped ones and the consolidated alternatives of those."""
+    concepts = list(dict.fromkeys(concept_qnames))
+    for concept_qname in list(concepts):
+        concepts.extend(_SHARE_METRICS_CONSOLIDATED_CONCEPTS.get(concept_qname, ()))
+    return list(dict.fromkeys(concepts))
+
+
+def _one_scope_per_share(merged):
+    """Keep a filing's per-share figures and ratios on one scope.
+
+    A consolidated filer whose consolidated summary leaves a figure out (no
+    P/E for a year of ¥1m profit) still gives the parent company's; beside
+    consolidated EPS it describes something else, so it is left empty.
+    """
+    scoped = (merged["statement_family"] == "ShareMetrics") & merged["concept_qname"].isin(_SHARE_METRICS_CONSOLIDATED_CONCEPTS)
+    parent = merged["context_id"].astype(str).str.endswith(_NON_CONSOLIDATED_SUFFIX)
+    consolidated_docs = set(merged.loc[scoped & ~parent, "docID"])
+    return merged.loc[~(scoped & parent & merged["docID"].isin(consolidated_docs))]
+
+
 _PROGRESS_LOG_INTERVAL = 100
 
 
@@ -756,6 +820,12 @@ def _build_statement_batch_frames(metadata_batch_df, facts_batch_df, mapping_df)
             how="inner",
         )
         if not fact_release_df.empty:
+            # A consolidated alternative fills the Japanese GAAP concept's column.
+            alternative = fact_release_df["concept_qname"].map(_SHARE_METRICS_ALTERNATIVE_TO_PRIMARY)
+            fact_release_df = fact_release_df.assign(
+                concept_qname=alternative.fillna(fact_release_df["concept_qname"]),
+                is_alternative=alternative.notna(),
+            )
             relevant_concepts = set(mapping_df["concept_qname"].tolist())
             fact_release_df = fact_release_df.loc[
                 fact_release_df["concept_qname"].isin(relevant_concepts)
@@ -780,12 +850,17 @@ def _build_statement_batch_frames(metadata_batch_df, facts_batch_df, mapping_df)
                 ]
                 merged = merged.loc[merged["context_priority"] < _CONTEXT_PRIORITY_FALLBACK]
             if not merged.empty:
+                # The consolidated context first, then the filer's own
+                # standard (IFRS or US GAAP) over Japanese GAAP figures given
+                # in the same context.
                 merged = merged.sort_values(
-                    ["statement_family", "docID", "concept_qname", "context_priority"]
+                    ["statement_family", "docID", "concept_qname", "context_priority", "is_alternative"],
+                    ascending=[True, True, True, True, False],
                 ).drop_duplicates(
                     subset=["statement_family", "docID", "concept_qname"],
                     keep="first",
                 )
+                merged = _one_scope_per_share(merged)
             if not merged.empty:
                 aggregated = (
                     merged.groupby(["statement_family", "docID", "column_name"], as_index=False)["value"]
@@ -972,7 +1047,7 @@ def generate_financial_statements(
             combined_mapping_df = pd.concat(batch_mapping_frames, ignore_index=True) if batch_mapping_frames else pd.DataFrame(
                 columns=["statement_family", "concept_qname", "column_name", "release_id"]
             )
-            combined_concepts = combined_mapping_df["concept_qname"].drop_duplicates().tolist()
+            combined_concepts = _with_consolidated_alternatives(combined_mapping_df["concept_qname"].drop_duplicates().tolist())
 
             if normalized_source_mode == _SOURCE_MODE_FILINGS:
                 facts_batch_df = _load_filings_fact_batch(

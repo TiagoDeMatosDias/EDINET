@@ -329,6 +329,18 @@ class TestShareMetricsVerification:
         assert verdict["confirmation"] == "rejected"
         assert "did not move" in verdict["detail"]
 
+    def test_a_rise_no_whole_consolidation_explains_is_rejected(self):
+        from src.portfolio.split_detection import _reject_if_no_consolidation_explains
+
+        pending = {"confirmation": "pending", "detail": ""}
+        # ¥890 to ¥1,200 to ¥1,700 in two days, read as 17 shares into 12.
+        assert _reject_if_no_consolidation_explains(17, 12, pending)["confirmation"] == "rejected"
+        # Ten shares into one, or a split, stays for the reports to decide.
+        assert _reject_if_no_consolidation_explains(10, 1, pending)["confirmation"] == "pending"
+        assert _reject_if_no_consolidation_explains(1, 2, pending)["confirmation"] == "pending"
+        # A share count that confirmed it wins.
+        assert _reject_if_no_consolidation_explains(17, 12, {"confirmation": "confirmed"})["confirmation"] == "confirmed"
+
     def test_two_splits_in_one_year_keep_the_candidate_pending(self):
         conn = _make_in_memory_db()
         _seed_split_prices(conn)

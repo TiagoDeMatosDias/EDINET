@@ -789,15 +789,18 @@ def _year_end_price_factors(
     return factors
 
 
-def _restated_by(event: SplitEvent, period_end: pd.Timestamp, submitted: pd.Timestamp | None, restated_early: bool) -> bool:
+def _restated_by(event: SplitEvent, period_end: pd.Timestamp, submitted: pd.Timestamp | None, restated_early: bool, kept_old_shares: bool = False) -> bool:
     """Are a filing's per-share figures (EPS, BPS) already on the post-split basis?
 
     Issuers restate per-share data for a split that takes effect before the
     report is filed, even after the year end (a split effective 1 April is
-    already in the June report of the year to March).
+    already in the June report of the year to March); *kept_old_shares* says
+    the report at the window's start did not.
     """
     if event.exact:
         return submitted is not None and submitted > event.until + _RECORD_DATE_LAG
+    if kept_old_shares and period_end <= event.after:
+        return False
     if period_end >= event.until or (submitted is not None and submitted >= event.until):
         return True
     return restated_early and period_end >= event.after
@@ -947,6 +950,28 @@ def filing_basis_factors(
             return None
         return None if _steps_in_prices(conn, prices_table, price_sql, ticker, event) else restated
 
+    def kept_old_shares(ticker: str, event: SplitEvent, ends: list[pd.Timestamp]) -> bool:
+        """Did the report a split took effect after kept its book value on the old shares?
+
+        A report gives its filing-date count once a split has taken effect,
+        yet some issuers leave EPS and book value per share on the year-end
+        shares: book value per share times those shares is still the net
+        assets (the next report must match its own, or the two figures cover
+        different things), and the price as traded (P/E × EPS) steps by the
+        ratio against the stored price to the next report. Book value alone
+        cannot tell such a report from an issue of shares mistaken for a
+        split, which leaves the prices together.
+        """
+        following_end = next((end for end in ends if end > event.after), None)
+        ratio = book_bases.get((ticker, event.after))
+        following = book_bases.get((ticker, following_end)) if following_end else None
+        if not ratio or not following or abs(math.log(following)) > 0.25:
+            return False
+        if abs(math.log(ratio)) >= 0.25 or abs(math.log(ratio * event.multiplier)) <= 0.4:
+            return False
+        start, end = price_factors.get((ticker, event.after)), price_factors.get((ticker, following_end))
+        return bool(start and end) and _near(start / end, 1.0 / event.multiplier, event.multiplier)
+
     out: list[FilingBasis] = []
     for ticker, filings in by_ticker.items():
         ticker_events = events.get(ticker, [])
@@ -971,6 +996,8 @@ def filing_basis_factors(
             restated_early[event] = not explained and bool(
                 _moved_like_split(annual_bps[before[-1]], annual_bps[event.after], event.multiplier)
             )
+        annual_ends = sorted(annual_bps)
+        kept_old = {event for event in ticker_events if event.source == "filing date count" and kept_old_shares(ticker, event, annual_ends)}
         for event in ticker_events:
             if event.exact or event.source != "annual reports":
                 continue
@@ -1000,7 +1027,7 @@ def filing_basis_factors(
             restated = fiscal = interim_factor = 1.0
             interim_record = end - pd.DateOffset(months=6)
             for event in ticker_events:
-                if not _restated_by(event, end, filed, restated_early.get(event, False)):
+                if not _restated_by(event, end, filed, restated_early.get(event, False), event in kept_old):
                     restated /= event.multiplier
                 if _held_before(event, end):
                     fiscal /= event.multiplier

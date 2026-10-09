@@ -561,6 +561,28 @@ def _reject_if_price_returned(conn: sqlite3.Connection, ticker: str, split_date:
     }
 
 
+def _reject_if_no_consolidation_explains(ratio_from, ratio_to, verdict: dict) -> dict:
+    """A rise only a fractional consolidation would explain is not one.
+
+    Consolidations merge a whole number of shares into one (2, 5, or 10
+    into 1); a one-day jump of 42 % read as 17 into 12 is a rally, such as a
+    stock trading limit-up.
+    """
+    if verdict.get("confirmation") != "pending":
+        return verdict
+    try:
+        from_shares, to_shares = float(ratio_from), float(ratio_to)
+    except (TypeError, ValueError):
+        return verdict
+    if not (1 < to_shares < from_shares):
+        return verdict
+    return {
+        **verdict,
+        "confirmation": "rejected",
+        "detail": f"A rise of {from_shares / to_shares:.2f} times: no consolidation merges {from_shares:g} shares into {to_shares:g}",
+    }
+
+
 def _another_split_in_year(share_ratio: float, candidate_ratio: float) -> bool:
     """Does the count move by the candidate times a whole number (two splits in one year)?
 
@@ -766,6 +788,7 @@ def run_split_detection(
                 )
 
                 verdict = _reject_if_price_returned(conn, ticker, cand["split_date"], cand["ratio_from"], cand["ratio_to"], verdict)
+                verdict = _reject_if_no_consolidation_explains(cand["ratio_from"], cand["ratio_to"], verdict)
                 _insert_split(conn, cand, verdict)
                 counts[_status_key(verdict["confirmation"])] += 1
 
@@ -879,6 +902,7 @@ def _reverify_entry(
         row["ratio_to"],
     )
     verdict = _reject_if_price_returned(conn, row["ticker"], row["split_date"], row["ratio_from"], row["ratio_to"], verdict)
+    verdict = _reject_if_no_consolidation_explains(row["ratio_from"], row["ratio_to"], verdict)
     conn.execute(
         "UPDATE Stock_Splits SET "
         "confirmation = ?, confirmed_by = ?, "

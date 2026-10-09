@@ -343,6 +343,7 @@ Detects stock splits and consolidations from price discontinuities and confirms 
 ```
 
 - `mode` — `incremental` scans only new price data since the last known split; `full` rescans all history for every ticker; `verify_pending` re-checks entries awaiting ShareMetrics confirmation.
+  A candidate is rejected when its price did not stay moved by its ratio, when the share count stayed put at the year end, at filing, and a year on, or when it is a rise only a fractional consolidation would explain (consolidations merge a whole number of shares into one; a one-day jump of 42 % read as 17 into 12 is a rally).
 - `price_drop_threshold` — minimum single-day price drop (0.0–1.0) to flag as a potential split; default `0.40` (40%).
 
 ---
@@ -450,6 +451,7 @@ Runtime notes:
 - `IncomeStatement`, `BalanceSheet`, `CashflowStatement`, and `ShareMetrics` contain `docID` plus taxonomy-label columns only.
 - `ShareMetrics` materializes selected share-count, dividend-per-share, and related summary concepts as flat level-`0` columns.
 - The step prefers consolidated family contexts and falls back to matching non-consolidated contexts when a consolidated value is absent, using deterministic context priority before loading each table.
+- `ShareMetrics` per-share figures and ratios (EPS, diluted EPS, book value per share, P/E, ROE, equity ratio) are the consolidated ones: an IFRS or US GAAP filer's come from its own summary concepts (`…IFRSSummaryOfBusinessResults`, `…USGAAPSummaryOfBusinessResults`), since the Japanese GAAP concepts it also files carry the parent company's alone. A filing with any of these consolidated never takes the others from the parent company: a P/E its consolidated summary leaves out stays empty. Dividends and payout are the parent company's, as reported.
 - Pending filings are processed in internal pandas-backed batches of 1000 docIDs, with vectorized release resolution, release-aware concept filtering, and bulk SQLite writes per batch.
 
 ---

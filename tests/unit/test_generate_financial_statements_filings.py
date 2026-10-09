@@ -221,3 +221,59 @@ def test_handler_selects_filings_database_for_filings_mode(monkeypatch, tmp_path
     assert calls["target_database"] == str(tmp_path / "Standardized.db")
     assert calls["source_mode"] == "filings"
     assert calls["granularity_level"] == 2
+
+
+def _share_metrics_frame(facts):
+    import pandas as pd
+
+    from src.orchestrator.generate_financial_statements.service import _build_statement_batch_frames
+
+    columns = {
+        "jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults": "Basic earnings (loss) per share",
+        "jpcrp_cor:NetAssetsPerShareSummaryOfBusinessResults": "Net assets per share",
+        "jpcrp_cor:PriceEarningsRatioSummaryOfBusinessResults": "Price-earnings ratio",
+        "jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults": "Dividend paid per share",
+    }
+    mapping = pd.DataFrame(
+        [("ShareMetrics", concept, column, "r1") for concept, column in columns.items()],
+        columns=["statement_family", "concept_qname", "column_name", "release_id"],
+    )
+    metadata = pd.DataFrame([("D1", "r1")], columns=["docID", "release_id"])
+    facts = pd.DataFrame(facts, columns=["docID", "context_id", "concept_qname", "value"])
+    return _build_statement_batch_frames(metadata, facts, mapping)["ShareMetrics"].iloc[0]
+
+
+def test_an_ifrs_filers_per_share_figures_are_its_consolidated_ones():
+    # Toyota's report for March 2026: the Japanese GAAP summary concepts carry
+    # the parent company's figures, the IFRS ones the group's.
+    row = _share_metrics_frame([
+        ("D1", "CurrentYearDuration", "jpcrp_cor:BasicEarningsLossPerShareIFRSSummaryOfBusinessResults", 295.25),
+        ("D1", "CurrentYearDuration_NonConsolidatedMember", "jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults", 260.28),
+        ("D1", "CurrentYearInstant", "jpcrp_cor:EquityToAssetRatioIFRSSummaryOfBusinessResults", 3062.82),
+        ("D1", "CurrentYearInstant_NonConsolidatedMember", "jpcrp_cor:NetAssetsPerShareSummaryOfBusinessResults", 1815.72),
+        ("D1", "CurrentYearDuration", "jpcrp_cor:PriceEarningsRatioIFRSSummaryOfBusinessResults", 10.7),
+        ("D1", "CurrentYearDuration_NonConsolidatedMember", "jpcrp_cor:PriceEarningsRatioSummaryOfBusinessResults", 12.2),
+        ("D1", "CurrentYearDuration_NonConsolidatedMember", "jpcrp_cor:DividendPaidPerShareSummaryOfBusinessResults", 95.0),
+    ])
+    assert (row["Basic earnings (loss) per share"], row["Net assets per share"], row["Price-earnings ratio"]) == (295.25, 3062.82, 10.7)
+    # Dividends are the parent company's to pay.
+    assert row["Dividend paid per share"] == 95.0
+
+
+def test_a_consolidated_filers_missing_figure_is_not_filled_from_the_parent():
+    import math
+
+    # A year of ¥1m consolidated profit: the consolidated summary gives EPS of
+    # ¥0.02 and no P/E; the parent's P/E of 47.6 describes another company.
+    row = _share_metrics_frame([
+        ("D1", "CurrentYearDuration", "jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults", 0.02),
+        ("D1", "CurrentYearDuration_NonConsolidatedMember", "jpcrp_cor:PriceEarningsRatioSummaryOfBusinessResults", 47.6),
+    ])
+    assert row["Basic earnings (loss) per share"] == 0.02
+    assert "Price-earnings ratio" not in row or math.isnan(row["Price-earnings ratio"])
+    # A filer without subsidiaries reports everything for itself.
+    row = _share_metrics_frame([
+        ("D1", "CurrentYearDuration_NonConsolidatedMember", "jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults", 4.01),
+        ("D1", "CurrentYearDuration_NonConsolidatedMember", "jpcrp_cor:PriceEarningsRatioSummaryOfBusinessResults", 47.6),
+    ])
+    assert (row["Basic earnings (loss) per share"], row["Price-earnings ratio"]) == (4.01, 47.6)
