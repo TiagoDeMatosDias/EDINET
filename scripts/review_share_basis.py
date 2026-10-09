@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check that per-share figures in Standardized.db read on one share basis.
 
-Four independent checks, read-only:
+Five independent checks, read-only:
 
 * **Prices.** A report's P/E times its EPS is the year-end price on the
   shares its EPS is on, so the stored (split-adjusted) price over it should
@@ -15,6 +15,10 @@ Four independent checks, read-only:
   report's profit stays about the same from one report to the next, whatever
   P/E the issuer quoted; a step by a split ratio means a filing's factors
   are wrong. It tells a report's odd P/E from a wrong per-share figure.
+* **Rolling figures.** Every stored 5-year average and growth rate of EPS,
+  dividends per share, and the year-end share count whose window is
+  unambiguous (five reports a year apart, a base report five years back)
+  equals the one recomputed here from the reports on today's shares.
 * **History payload.** For every company with a split, the values the
   history API returns equal the stored figure times its filing's factor,
   and ``reported_values`` equal the figure as filed (the stored one, or the
@@ -98,6 +102,50 @@ def price_and_book_checks(conn: sqlite3.Connection) -> tuple[pd.DataFrame, pd.Da
     )
 
 
+_ROLLING_FIELDS = ("Basic earnings (loss) per share", "Dividend paid per share", "Number of issued shares as of fiscal year end")
+
+
+def rolling_check(conn: sqlite3.Connection) -> collections.Counter:
+    """Recompute 5-year averages and growth from the adjusted reports; count matches by split in the window."""
+    columns = ", ".join(f's."{f}"' for f in _ROLLING_FIELDS) + ", " + ", ".join(f'r."{f}_Average_5_Year", r."{f}_Growth_5_Year"' for f in _ROLLING_FIELDS)
+    rows = pd.read_sql_query(
+        f"SELECT {_KEY} AS company, fs.docID AS doc, fs.periodEnd AS e, {columns} FROM FinancialStatements fs "
+        "JOIN ShareMetrics s ON s.docID = fs.docID JOIN CompanyInfo c ON c.Company_Code = fs.Company_Code "
+        "LEFT JOIN ShareMetrics_Rolling r ON r.docID = fs.docID WHERE fs.docTypeCode = '030000'",
+        conn,
+    )
+    basis = {item.doc_id: item for item in filing_basis_factors(conn)}
+    events = load_split_events(conn, sorted(set(rows.company)))
+    rows["month"] = pd.to_datetime(rows.e).dt.year * 12 + pd.to_datetime(rows.e).dt.month
+    counts: collections.Counter = collections.Counter()
+    for company, group in rows.groupby("company"):
+        group = group.sort_values("month").reset_index(drop=True)
+        if group.month.duplicated().any():
+            continue
+        for field in _ROLLING_FIELDS:
+            kind, operator = share_basis_rule("ShareMetrics", field)
+            average_kind, average_operator = share_basis_rule("ShareMetrics_Rolling", f"{field}_Average_5_Year")
+            factor = group.doc.map(lambda doc, kind=kind: getattr(basis[doc], kind) if doc in basis else 1.0)
+            adjusted = group[field] * factor if operator == "*" else group[field] / factor
+            for index in range(len(group)):
+                window = group[(group.month <= group.month[index]) & (group.month >= group.month[index] - 50)]
+                if len(window) != 5 or (abs(window.month.diff().dropna() - 12) > 2).any() or adjusted[window.index].isna().any():
+                    continue
+                split = any(window.e.iloc[0] < str(event.until.date()) <= window.e.iloc[-1] for event in events.get(company, []))
+                own = getattr(basis[group.doc[index]], average_kind) if group.doc[index] in basis else 1.0
+                stored = group[f"{field}_Average_5_Year"][index]
+                if not pd.isna(stored):
+                    shown = stored * own if average_operator == "*" else stored / own
+                    counts[("averages", split, math.isclose(shown, adjusted[window.index].mean(), rel_tol=1e-6, abs_tol=1e-6))] += 1
+                base = group[(group.month >= group.month[index] - 62) & (group.month <= group.month[index] - 58)]
+                stored = group[f"{field}_Growth_5_Year"][index]
+                if len(base) == 1 and not pd.isna(stored) and adjusted[base.index[0]] > 0 and adjusted[index] >= 0:
+                    years = (group.month[index] - base.month.iloc[0]) / 12
+                    expected = (adjusted[index] / adjusted[base.index[0]]) ** (1 / years) - 1
+                    counts[("growth rates", split, math.isclose(stored, expected, rel_tol=1e-6, abs_tol=1e-9))] += 1
+    return counts
+
+
 def history_check(db_path: str, conn: sqlite3.Connection) -> collections.Counter:
     from src.security_analysis import get_security_statements
 
@@ -157,6 +205,12 @@ def main() -> int:
     print(f"earnings: {len(earnings)} report pairs step by a split's ratio "
           f"({int(earnings.reverts_next_year.sum())} undone the next year); "
           f"{len(both)} of the price disagreements step in earnings too")
+    rolling = rolling_check(conn)
+    for kind in ("averages", "growth rates"):
+        checked = sum(value for key, value in rolling.items() if key[0] == kind)
+        wrong = sum(value for key, value in rolling.items() if key[0] == kind and not key[2])
+        across = sum(value for key, value in rolling.items() if key[0] == kind and key[1])
+        print(f"rolling 5-year {kind}: {checked} recomputed ({across} with a split in the window), {wrong} wrong")
     if not args.skip_history:
         counts = history_check(db_path, conn)
         print(f"history payload: {counts['values']} values checked, {counts['wrong']} wrong")

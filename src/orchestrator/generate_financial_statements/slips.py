@@ -44,16 +44,22 @@ SHARE_COUNTS = (
 )
 # How close to a power of ten a measure must be (15 % either way).
 _DECADE_TOLERANCE = 0.06
+# A P/E against the price it was computed from: within 5 %.
+_EXACT_DECADE = 0.02
+# Two measures of one count agree within 25 %.
+_NEAR = math.log(1.25)
+# The same count given twice in a report, a digit dropped from one: within 2 %.
+_SAME_COUNT = math.log(1.02)
 _MIN_REPORTS = 3
 
 
-def _decade(value: float | None) -> int:
+def _decade(value: float | None, tolerance: float | None = None) -> int:
     """The power of ten *value* is off by, or 0."""
-    if value is None or not math.isfinite(value) or value <= 0:
+    if value is None or pd.isna(value) or not math.isfinite(value) or value <= 0:
         return 0
     exponent = math.log10(value)
     nearest = round(exponent)
-    return int(nearest) if nearest != 0 and abs(exponent - nearest) < _DECADE_TOLERANCE else 0
+    return int(nearest) if nearest != 0 and abs(exponent - nearest) < (tolerance or _DECADE_TOLERANCE) else 0
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -90,7 +96,7 @@ def _annual_reports(conn: sqlite3.Connection) -> pd.DataFrame:
     selected = ", ".join(f's."{name}" AS "{name}"' for name in present)
     key = "CASE WHEN TRIM(COALESCE(c.Company_Ticker, '')) = '' THEN c.Company_Code ELSE c.Company_Ticker END"
     return pd.read_sql_query(
-        f"SELECT {key} AS company, fs.docID AS doc, {selected}, {count_sql} AS shares, {profit_sql} AS profit, "
+        f"SELECT {key} AS company, fs.docID AS doc, fs.periodEnd AS period_end, {selected}, {count_sql} AS shares, {profit_sql} AS profit, "
         f"{net_assets_sql} AS net_assets, {price_sql} AS stored "
         "FROM FinancialStatements fs JOIN ShareMetrics s ON s.docID = fs.docID "
         "JOIN CompanyInfo c ON c.Company_Code = fs.Company_Code "
@@ -100,6 +106,58 @@ def _annual_reports(conn: sqlite3.Connection) -> pd.DataFrame:
     )
 
 
+def _implied_counts(rows: pd.DataFrame) -> pd.Series:
+    """The issued share count a report's own figures imply: profit over EPS and net assets over book value per share, where they agree."""
+    by_earnings = (rows.profit / rows[EPS]).where((rows[EPS] * rows.profit > 0) & (rows[EPS].abs() >= 1))
+    by_book = (rows.net_assets / rows[BPS]).where((rows[BPS] > 0) & (rows.net_assets > 0))
+    agree = (by_earnings / by_book).map(lambda ratio: ratio is not None and pd.notna(ratio) and abs(math.log(ratio)) < _NEAR)
+    return ((by_earnings * by_book) ** 0.5).where(agree)
+
+
+def _near(value: float | None, target: float | None) -> bool:
+    return value is not None and target is not None and pd.notna(value) and pd.notna(target) and value > 0 and target > 0 and abs(math.log(value / target)) < _NEAR
+
+
+def _share_count_slips(rows: pd.DataFrame) -> list[tuple[str, str, float, float, str]]:
+    """Share counts a power of ten off the count the report's own EPS and book value imply.
+
+    Judged without split factors, column by column: a slip is one column off
+    while the report's other counts or the reports either side sit at the
+    implied count; a split moves the count for good, so the next report
+    carries the new count and the one before the old.
+    """
+    slips: list[tuple[str, str, float, float, str]] = []
+    rows = rows.copy()
+    rows["implied"] = _implied_counts(rows)
+    counts = [name for name in SHARE_COUNTS if name in rows.columns]
+    for _company, group in rows.groupby("company", sort=False):
+        group = group.sort_values("period_end").to_dict("records")
+        for index, record in enumerate(group):
+            implied = record["implied"]
+            if pd.isna(implied):
+                continue
+            neighbours = [group[at]["shares"] for at in (index - 1, index + 1) if 0 <= at < len(group)]
+            if any(not _near(value, implied) for value in neighbours):
+                continue
+            for name in counts:
+                value = record.get(name)
+                if value is None or pd.isna(value) or value <= 0:
+                    continue
+                k = _decade(value / implied)
+                others = [record.get(other) for other in counts if other != name]
+                if k and (abs(k) >= 3 or any(_near(other, implied) for other in others)):
+                    factor = 10.0 ** k
+                    # The report usually gives the count right elsewhere (a
+                    # digit dropped, 9,335,103 beside 93,335,103): take it.
+                    exact = [
+                        float(other) for other in others
+                        if other is not None and pd.notna(other) and other > 0 and abs(math.log(other * factor / value)) < _SAME_COUNT
+                    ]
+                    corrected, source = (exact[0], "as the report gives it elsewhere") if exact else (float(value) / factor, "scaled")
+                    slips.append((record["doc"], name, float(value), corrected, f"share count {factor:g} times the count the report's EPS and book value imply; {source}"))
+    return slips
+
+
 def find_decimal_slips(rows: pd.DataFrame, factors: dict[str, tuple[float, float]]) -> list[tuple[str, str, float, float, str]]:
     """``(docID, column, filed, corrected, reason)`` for each slip *rows* show.
 
@@ -107,43 +165,32 @@ def find_decimal_slips(rows: pd.DataFrame, factors: dict[str, tuple[float, float
     """
     if rows.empty:
         return []
+    slips = _share_count_slips(rows) if "period_end" in rows.columns else []
     rows = rows.copy()
     rows["restated"] = rows.doc.map(lambda doc: factors.get(doc, (1.0, 1.0))[0])
     rows["fiscal"] = rows.doc.map(lambda doc: factors.get(doc, (1.0, 1.0))[1])
     eps, shares = rows[EPS], rows.shares
     earned = (eps * rows.profit > 0) & (shares > 0) & (eps.abs() >= 0.01)
     rows["earnings"] = (eps * rows.restated * shares / rows.fiscal / rows.profit).where(earned)
-    booked = (rows[BPS] > 0) & (rows.net_assets > 0) & (shares > 0)
-    rows["book"] = (rows[BPS] * rows.restated * shares / rows.fiscal / rows.net_assets).where(booked)
-    for measure in ("earnings", "book"):
-        # Against the company's other reports: a group's minority interests
-        # or a parent-only profit line set the usual level, not a slip.
-        counts = rows.groupby("company")[measure].transform("count")
-        level = rows.groupby("company")[measure].transform("median")
-        rows[measure] = (rows[measure] / level).where(counts >= _MIN_REPORTS)
+    counts = rows.groupby("company")["earnings"].transform("count")
+    level = rows.groupby("company")["earnings"].transform("median")
+    rows["earnings"] = (rows["earnings"] / level).where(counts >= _MIN_REPORTS)
     traded = (rows[PER] * eps).where((rows[PER] * eps) > 0) if PER in rows.columns else pd.Series(float("nan"), index=rows.index)
     rows["price"] = rows.stored / (traded * rows.restated)
     rows["price_raw"] = rows.stored / traded
-
-    slips: list[tuple[str, str, float, float, str]] = []
     for record in rows.to_dict("records"):
-        earnings, book, price, price_raw = (
-            None if pd.isna(record[name]) else float(record[name]) for name in ("earnings", "book", "price", "price_raw")
-        )
+        earnings, price, price_raw = (None if pd.isna(record[name]) else float(record[name]) for name in ("earnings", "price", "price_raw"))
         doc = record["doc"]
-        k_earn, k_book, k_price = _decade(earnings), _decade(book), _decade(price)
-        if k_earn and k_earn == k_book:
-            factor = 10.0 ** k_earn
-            for name in SHARE_COUNTS:
-                value = record.get(name)
-                if value is not None and not pd.isna(value) and value > 0 and _decade(value / record["shares"]) == 0:
-                    slips.append((doc, name, float(value), float(value) / factor, f"share count {factor:g} times the report's own EPS and book value imply"))
-        elif k_price and price_raw is not None and abs(math.log10(price_raw)) > 0.5 and not k_earn:
+        # A P/E is the year-end price over EPS, so a slip lands within a few
+        # per cent of a power of ten; a P/E off by 8.9 times is another error.
+        k_price = _decade(price, tolerance=_EXACT_DECADE)
+        if k_price and price_raw is not None and abs(math.log10(price_raw)) > 0.5 and not _decade(earnings):
             filed = float(record[PER])
             slips.append((doc, PER, filed, filed * 10.0 ** k_price, f"P/E {10.0 ** -k_price:g} times the year-end price over EPS"))
-        elif k_earn and k_price == -k_earn and record[EPS] > 0:
+        elif _decade(earnings) and k_price == -_decade(earnings) and record[EPS] > 0:
+            k = _decade(earnings)
             filed = float(record[EPS])
-            slips.append((doc, EPS, filed, filed / 10.0 ** k_earn, f"EPS {10.0 ** k_earn:g} times profit per share and the price over the P/E"))
+            slips.append((doc, EPS, filed, filed / 10.0 ** k, f"EPS {10.0 ** k:g} times profit per share and the price over the P/E"))
     return slips
 
 

@@ -288,6 +288,7 @@ def _slip_rows(reports):
     columns = ["company", "doc", slips.EPS, slips.PER, slips.BPS, slips.SHARE_COUNTS[1], "profit", "net_assets", "stored"]
     rows = pd.DataFrame(reports, columns=columns)
     rows["shares"] = rows[slips.SHARE_COUNTS[1]]
+    rows["period_end"] = rows.doc.map(lambda doc: f"20{doc[1:3]}-12-31")
     return rows
 
 
@@ -305,7 +306,7 @@ def test_a_share_count_filed_in_thousands_is_corrected():
         ("A", "D21", 50.00, 40.0, 170.0, 7_700_000, 385_000_000, 1_309_000_000, 2000.0),
     ])
     assert find_decimal_slips(rows, {}) == [
-        ("D18", SHARE_COUNTS[1], 7094.0, 7_094_000.0, "share count 0.001 times the report's own EPS and book value imply"),
+        ("D18", SHARE_COUNTS[1], 7094.0, 7_094_000.0, "share count 0.001 times the count the report's EPS and book value imply; scaled"),
     ]
 
 
@@ -337,3 +338,34 @@ def test_the_as_filed_history_shows_a_corrected_slip_as_filed():
     _show_filed_slips(conn, rows, "ShareMetrics", [{"docID": "D22"}, {"docID": "D23"}])
     assert rows[0]["values"] == [27.9, 51.41]
     assert rows[0]["reported_values"] == [27.9, 5140.7]
+
+
+
+def test_only_the_slipped_count_of_a_report_is_corrected():
+    import pandas as pd
+
+    from src.orchestrator.generate_financial_statements.slips import (
+        SHARE_COUNTS,
+        find_decimal_slips,
+    )
+
+    # The year-end count (15.17 million) is what profit over EPS and net
+    # assets over book value per share imply; the filing-date count of
+    # 1,513,900 dropped a digit, and the report gives the count right
+    # beside it.
+    rows = pd.DataFrame([
+        ("G", "D22", "2022-08-31", -6.09, None, 210.15, 15_171_800, 15_171_800, 15_171_800, -88_400_000, 3_188_000_000, None),
+        ("G", "D23", "2023-08-31", -1.88, None, 210.99, 15_173_900, 15_173_900, 1_513_900, -27_800_000, 3_201_000_000, None),
+        ("G", "D24", "2024-08-31", -21.05, None, 193.37, 15_202_100, 15_202_100, 15_202_100, -320_000_000, 2_939_000_000, None),
+    ], columns=["company", "doc", "period_end", "Basic earnings (loss) per share", "Price-earnings ratio", "Net assets per share", *SHARE_COUNTS, "profit", "net_assets", "stored"])
+    rows["shares"] = rows[SHARE_COUNTS[0]]
+    assert [(doc, column, corrected) for doc, column, _filed, corrected, _reason in find_decimal_slips(rows, {})] == [("D23", SHARE_COUNTS[2], 15_173_900.0)]
+    # A 10-for-1 split restated in the report before it took effect: the
+    # year-end count is the old one, the reports after carry the new count.
+    split = pd.DataFrame([
+        ("S", "D22", "2022-03-31", 100.0, None, 1000.0, 1_000_000, 1_000_000, 1_000_000, 100_000_000, 1_000_000_000, None),
+        ("S", "D23", "2023-03-31", 10.0, None, 100.0, 1_000_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000, None),
+        ("S", "D24", "2024-03-31", 11.0, None, 110.0, 10_000_000, 10_000_000, 10_000_000, 110_000_000, 1_100_000_000, None),
+    ], columns=rows.columns[:-1])
+    split["shares"] = split[SHARE_COUNTS[0]]
+    assert find_decimal_slips(split, {}) == []

@@ -31,10 +31,11 @@ disagreement is one.
 | --- | --- | --- |
 | Rolling 5-year EPS growth of Toyota to March 2026 | −14.9 % a year | +17.4 % a year |
 | Annual reports (28,552 with a P/E, 2016–2026) whose P/E × EPS on today's shares is within 5 % of the stored year-end price | 96.7 % since 2023; median 0.907 at 2017 | 99.01 %; median 1.000 in every year |
-| Pairs of consecutive annual reports whose per-share factor disagrees with the stored prices by 1.5x or more | 327 | 71, all from issuers' figures; none steps by a split's ratio in earnings |
+| Pairs of consecutive annual reports whose per-share factor disagrees with the stored prices by 1.5x or more | 327 | 75, all from issuers' figures |
+| Rolling 5-year averages and growth rates recomputed from the reports on today's shares (EPS, dividends per share, year-end shares) | spot checks | 51,824 averages and 36,615 growth rates, 8,403 and 5,485 of them with a split in the window: 0 wrong |
 | Known splits still showing as a step in the stored prices | 187 of 2,257 | 0 of 3,561 |
 | Stored prices of unknown basis (neither split-adjusted nor as traded) | 13.5 million rows | 0 |
-| Filed figures an issuer tagged a power of ten off (share counts in thousands, P/E 100 times over) | not checked | 11 corrected at 9 companies, filed values kept |
+| Filed figures an issuer tagged a power of ten off (share counts in thousands or a digit short, P/E 100 times over) | not checked | 11 corrected at 10 companies, each checked against the report as displayed; filed values kept |
 | Split histories counting one split twice | 80 companies | 0 |
 | Splits inferred from share counts that the prices contradict (share issues, buybacks, cancelled treasury shares) | 92 | 0 |
 | History payload: adjusted value = stored × factor, as filed = the filing's figure, for every one of the 2,139 companies with a split, through the function the history API serves | not checked | 1,418,465 values, 0 wrong |
@@ -87,23 +88,36 @@ Dividends and payout stay the parent company's, as reported.
 
 ## Figures an issuer tagged a power of ten off
 
-A filing's XBRL occasionally carries a figure a power of ten off: Japan
-Hospice's 2018 report gives 7,094 issued shares (7,094 thousand), Tosho's 2023
-report a P/E of 5,140.7 (51.4), Open Up Group's 2022 report 216.1 (21.6).
-The standardization step now checks each annual report against its own other
-figures (P/E × EPS against the year-end price; EPS × shares against profit
-and book value per share × shares against net assets, each against the
-company's usual level) and corrects a figure only where two measures agree:
-a share count that both EPS and book value per share put a power of ten
-away, a P/E the price puts a power of ten away even before any split factor
-(a price a provider left unadjusted for a split does not count), an EPS that
-profit and the price both put a power of ten away. Eleven figures at nine
-companies were corrected (six share counts at four companies, five P/Es).
-Book value per share is not corrected: its only measure is net assets, which
-large minority interests or an equity that nearly vanished (Leopalace21's
-¥3.25 in 2022) move just as much. Each correction is recorded with the filed
-value and the reason in `ShareMetrics_Corrections`, and the Analysis as-filed
-view shows the filed figure.
+A filing's XBRL occasionally carries a figure a power of ten off. The
+standardization step checks each annual report against its own other
+figures and corrects only where two measures agree:
+
+* a share count a power of ten off the count both profit over EPS and net
+  assets over book value per share imply, while the report's other counts
+  or the reports either side sit at it (a split moves the count for good,
+  so it is not taken for a slip); where the report gives the count right
+  elsewhere, that figure is taken (Laox's 2023 report gives 93,335,103
+  issued shares at the year end and at filing, and 9,335,103 in its summary
+  table);
+* a P/E within 5 % of a power of ten off the year-end price over EPS, even
+  before any split factor (a price a provider left unadjusted for a split
+  matches it there), while EPS is not off;
+* an EPS off by a power of ten in both profit per share and the price.
+
+Eleven figures in ten reports at ten companies were corrected: eight share
+counts (Japan Hospice's 7,094 thousand filed as 7,094, Tokuyama's 72,088,327
+as 72,088, AXA Holdings Japan's and Showa Paxxs's counts tagged in
+thousands, GMO DesignOne's filing-date count a digit short) and three P/Es
+(Tosho's 5,140.7 for 51.4, TENTIAL's 4,623 for 46.2, Kasai Kogyo's −0.03 for
+−30). Each was compared with the report as displayed: the filings print the
+slipped figure or tag it with a wrong scale, and print the right count
+beside it where one is corrected to it. A P/E off by other amounts (8.9 or
+11 times) is the issuer's figure and is not corrected. Book value per share
+is not corrected: its only measure is net assets, which large minority
+interests or an equity that nearly vanished (Leopalace21's ¥3.25 in 2022)
+move just as much. Each correction is recorded with the filed value and the
+reason in `ShareMetrics_Corrections`, and the Analysis as-filed view shows
+the filed figure.
 
 ## The stored prices
 
@@ -207,28 +221,30 @@ year on, is a price move, not a split.
 
 ## Known remaining issues
 
-- **71 report pairs that disagree with the prices, all from the issuers'
+- **75 report pairs that disagree with the prices, all from the issuers'
   figures.** Every report in them holds its filing's XBRL figure on the
   right scope (or a corrected power-of-ten slip). On the earnings check,
-  which does not use the P/E, 64 of the 71 hold steady, 3 have no profit to
-  compare (loss years), and 4 move by amounts no split explains, each a
-  filed figure out of line: J Frontier's 2025 P/E of 187.4 against ¥92 of
-  price over EPS; Metaplanet's 2018 report (two pairs), whose EPS of ¥0.84
-  against ¥1.81 of profit per share and whose P/E both disagree with the
-  reports either side; and Medical Net's 2024 EPS of ¥0.66, where rounding
-  moves the measure. None steps by a split's ratio, so no per-share factor
-  is in question. By kind: 23 are one report out of line with its
-  neighbours and undone the next year; 24 are a first or last report out of
-  line, or several share changes in one year; 12 are a split's exact ratio
-  where the issuer quoted its P/E on the price as traded while restating
-  EPS; 11 cross a year with no annual report; 1 barely traded. Valuations
-  in the views compute P/E from the stored price and EPS. The earnings
-  check on its own flags 224 pairs at a split's ratio across all companies,
-  nearly all where the income statement table's profit is not the owners'
-  (minority interests, or a parent-only line beside consolidated EPS), so
-  it serves to confirm a price disagreement, not on its own.
-- **Book value steps that are not splits.** 365 consecutive-report pairs step
-  by 1.5x or more in book value per share against net assets per share (29
+  which does not use the P/E, 65 of the 75 hold steady and 3 have no profit
+  to compare (loss years); the other 7 move by amounts no split explains,
+  each a filed figure out of line: Kuribayashi Steamship's 2022 report (two
+  pairs), whose printed EPS of ¥7.17 and P/E of 7.2 disagree with each
+  other, its profit, and the price, with the same share count every year;
+  Open Up Group's IFRS P/E of 216.1 in its transition year; J Frontier's
+  2025 P/E of 187.4 against ¥92 of price over EPS; Metaplanet's 2018 report
+  (two pairs); and Medical Net's 2024 EPS of ¥0.66, where rounding moves the
+  measure. No per-share factor is in question. By kind: 25 are one report
+  out of line with its neighbours and undone the next year; 26 are a first
+  or last report out of line, or several share changes in one year; 12 are
+  a split's exact ratio where the issuer quoted its P/E on the price as
+  traded while restating EPS; 11 cross a year with no annual report; 1
+  barely traded. Valuations in the views compute P/E from the stored price
+  and EPS. The earnings check on its own flags 222 pairs at a split's ratio
+  across all companies, nearly all where the income statement table's
+  profit is not the owners' (minority interests, or a parent-only line
+  beside consolidated EPS), so it serves to confirm a price disagreement,
+  not on its own.
+- **Book value steps that are not splits.** 363 consecutive-report pairs step
+  by 1.5x or more in book value per share against net assets per share (28
   undone the next year), now including the companies without a ticker. 139
   are IFRS and US GAAP filers, whose book value per
   share is now consolidated while the balance sheet table holds the parent
@@ -252,7 +268,7 @@ year on, is a price move, not a split.
   close is likely stale, and the true one lies within the day's range,
   about ±3–10 %, mostly in stocks priced under ¥100. No independent daily
   source was reachable to replace them (Stooq does not answer from this
-  machine). A full re-download from Yahoo would also bring back the 159
+  machine, and Yahoo Japan's history refuses the request). A full re-download from Yahoo would also bring back the 159
   frozen stretches replaced above.
 - **Parent-only statements.** IFRS and US GAAP filers (Toyota, Sony, SoftBank
   Group, Makita) have only their parent-only Japanese GAAP statements in the
