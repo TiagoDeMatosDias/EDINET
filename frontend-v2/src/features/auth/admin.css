@@ -54,3 +54,9 @@
 .console-link small { grid-column: 1 / -1; color: var(--muted); }
 .console-link .button svg { width: 12px; height: 12px; }
 @media (max-width: 1100px) { .console-grid { grid-template-columns: minmax(0, 1fr); } .console-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .console-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Server settings: one compact form per setting. */
+.console-settings { display: grid; gap: 8px; }
+.console-setting { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 2px 8px; }
+.console-setting > small { grid-column: 1 / -1; }
+.console-setting__actions { display: flex; align-items: center; gap: 6px; }

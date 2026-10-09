@@ -43,6 +43,20 @@ interface AuthSettings {
   updated_at?: string | null
 }
 
+/** One operator setting stored in app.db; secret values are never sent. */
+interface ServerSetting {
+  key: string
+  label: string
+  description: string
+  kind: 'secret' | 'choice' | 'integer' | 'list' | 'path' | 'text'
+  choices: string[]
+  minimum: number | null
+  restart_required: boolean
+  value: string | number | string[] | null
+  is_set: boolean
+  updated_at: string | null
+}
+
 type SavedSetup = { name: string; steps: Array<{ name: string; overwrite?: boolean }>; config: Record<string, unknown> }
 type PipelineSchedule = { schedule_id: string; name: string; frequency: 'daily' | 'weekly' | 'monthly'; enabled: boolean; steps: Array<{ name: string; overwrite?: boolean }>; config: Record<string, unknown>; last_run_at: string | null }
 type PipelineSchedulerStatus = { checked_at: string; next_check_at: string; active_pipeline: boolean; triggered_job_ids: string[] }
@@ -248,6 +262,7 @@ export default function AdminPage() {
           </form>
           <p className="console-muted"><Link2 aria-hidden="true" /> Invitations open registration for one person even when it is closed or invitation-only. For a forgotten password, use <em>Reset</em> on the user’s row (<kbd>P</kbd>): the link sets a new password once. Links use this page’s address, so make them from the address you share (your tunnel URL).</p>
         </Section>
+        <Section index={6} title="Server settings" meta="stored in app.db"><ServerSettingsSection /></Section>
       </div>
 
       <div className="console-column">
@@ -290,6 +305,69 @@ function AccessForm({ settings }: { settings: AuthSettings }) {
       {draft.registration_mode === 'open' && <small className="console-warn">Open registration lets anyone who reaches this address create an account. Before sharing a public link, consider invitation only.</small>}
       {message && <small role="status">{message}</small>}
     </div>
+  </form>
+}
+
+function settingText(setting: ServerSetting): string {
+  if (setting.kind === 'secret') return ''
+  if (Array.isArray(setting.value)) return setting.value.join(', ')
+  return setting.value === null ? '' : String(setting.value)
+}
+
+function settingValue(setting: ServerSetting, text: string): unknown {
+  if (setting.kind === 'integer') return Number(text)
+  if (setting.kind === 'list') return text.split(',').map(item => item.trim()).filter(Boolean)
+  return text.trim()
+}
+
+function ServerSettingsSection() {
+  const settings = useQuery({ queryKey: ['admin-server-settings'], queryFn: () => apiRequest<{ settings: ServerSetting[] }>('/api/admin/settings') })
+  const [restart, setRestart] = useState(false)
+  if (!settings.data) return <LoadingState label="Loading settings" />
+  return <div className="console-settings">
+    <p className="console-muted">Everything the server needs is configured here, or with <code>main.py config</code>. Settings marked * apply after a restart; how the server listens (host, port, remote access) is chosen when it is started.</p>
+    {restart && <p className="console-warn" role="status">Restart the server to apply the change.</p>}
+    {settings.data.settings.map(setting => <SettingRow key={`${setting.key}:${setting.updated_at ?? 'default'}`} setting={setting} onSaved={saved => { if (saved.restart_required) setRestart(true) }} />)}
+  </div>
+}
+
+function SettingRow({ setting, onSaved }: { setting: ServerSetting; onSaved: (saved: ServerSetting) => void }) {
+  const client = useQueryClient()
+  const [draft, setDraft] = useState(() => settingText(setting))
+  const [message, setMessage] = useState<string | null>(null)
+  const path = `/api/admin/settings/${encodeURIComponent(setting.key)}`
+  const done = (saved: ServerSetting, text: string) => { setMessage(text); onSaved(saved); void client.invalidateQueries({ queryKey: ['admin-server-settings'] }) }
+  const save = useMutation({
+    mutationFn: () => apiRequest<ServerSetting>(path, { method: 'PUT', body: JSON.stringify({ value: settingValue(setting, draft) }) }),
+    onSuccess: saved => done(saved, 'Saved.'),
+    onError: (err: Error) => setMessage(err.message),
+  })
+  const reset = useMutation({
+    mutationFn: () => apiRequest<ServerSetting>(path, { method: 'DELETE' }),
+    onSuccess: saved => done(saved, setting.kind === 'secret' ? 'Cleared.' : 'Back to the default.'),
+    onError: (err: Error) => setMessage(err.message),
+  })
+  const label = `${setting.label}${setting.restart_required ? ' *' : ''}`
+  const input = setting.kind === 'choice'
+    ? <select className="select" value={draft} onChange={event => setDraft(event.target.value)}>{setting.choices.map(choice => <option key={choice}>{choice}</option>)}</select>
+    : <input
+      className="input"
+      type={setting.kind === 'secret' ? 'password' : setting.kind === 'integer' ? 'number' : 'text'}
+      autoComplete="off"
+      min={setting.minimum ?? undefined}
+      placeholder={setting.kind === 'secret' ? (setting.is_set ? 'Set; type a new value to replace it' : 'Not set') : setting.kind === 'path' ? 'In the data folder' : undefined}
+      value={draft}
+      onChange={event => { setDraft(event.target.value); setMessage(null) }}
+    />
+  const unchanged = setting.kind !== 'secret' && draft === settingText(setting)
+  return <form className="console-setting" onSubmit={event => { event.preventDefault(); save.mutate() }}>
+    <label className="console-field console-field--grow"><span>{label}</span>{input}</label>
+    <div className="console-setting__actions">
+      <button type="submit" className="button button--secondary button--small" disabled={save.isPending || unchanged || (setting.kind === 'secret' && !draft)}>Save</button>
+      {setting.is_set && <button type="button" className="text-button" disabled={reset.isPending} onClick={() => reset.mutate()}>{setting.kind === 'secret' ? 'Clear' : 'Default'}</button>}
+    </div>
+    <small className="console-muted">{setting.description}<span className="sr-only"> ({setting.key})</span></small>
+    {message && <small role="status">{message}</small>}
   </form>
 }
 

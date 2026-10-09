@@ -10,6 +10,11 @@ const USERS = [
   { user_id: 'u1', username: 'admin', email: null, role: 'admin', status: 'active', token_version: 1, created_at: '2026-01-01T00:00:00Z', updated_at: '', last_login_at: '2026-10-03T00:00:00Z' },
   { user_id: 'u2', username: 'bob', email: 'bob@example.com', role: 'member', status: 'active', token_version: 1, created_at: '2026-02-01T00:00:00Z', updated_at: '', last_login_at: null },
 ]
+const SERVER_SETTINGS = [
+  { key: 'edinet.api_key', label: 'EDINET API key', description: 'Subscription key for the EDINET API.', kind: 'secret', choices: [], minimum: null, restart_required: false, value: null, is_set: false, updated_at: null },
+  { key: 'auth.mode', label: 'Sign-in', description: 'accounts or disabled.', kind: 'choice', choices: ['accounts', 'disabled'], minimum: null, restart_required: true, value: 'accounts', is_set: false, updated_at: null },
+  { key: 'server.trusted_hosts', label: 'Trusted host names', description: 'Host names for remote access.', kind: 'list', choices: [], minimum: null, restart_required: true, value: [], is_set: false, updated_at: null },
+]
 const calls: Array<{ method: string; path: string; body?: unknown }> = []
 
 beforeEach(() => {
@@ -24,7 +29,9 @@ beforeEach(() => {
           : path.startsWith('/api/admin/auth/credential-resets') ? { reset_token: 'reset-123' }
             : path === '/api/admin/auth/invitations' ? { invitation_token: 'invite-456' }
               : path === '/api/admin/pipeline-schedules' ? []
-                : {}
+                : path === '/api/admin/settings' ? { settings: SERVER_SETTINGS }
+                  : path.startsWith('/api/admin/settings/') ? { ...SERVER_SETTINGS.find(item => path.endsWith(item.key)), is_set: method === 'PUT', updated_at: '2026-10-10T00:00:00Z' }
+                    : {}
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }))
 })
@@ -63,5 +70,21 @@ describe('AdminPage', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Registration' }), { target: { value: 'invite' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save access settings' }))
     await waitFor(() => expect(calls.find(call => call.method === 'PATCH' && call.path === '/api/admin/auth/settings')?.body).toMatchObject({ registration_mode: 'invite', password_min_length: 5 }))
+  })
+
+  it('saves server settings without ever showing the API key', async () => {
+    renderAdmin()
+    const key = await screen.findByLabelText('EDINET API key')
+    expect(key).toHaveAttribute('type', 'password')
+    expect(key).toHaveAttribute('placeholder', 'Not set')
+    fireEvent.change(key, { target: { value: 'provider-secret' } })
+    fireEvent.click(within(key.closest('form') as HTMLElement).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(calls.find(call => call.method === 'PUT' && call.path === '/api/admin/settings/edinet.api_key')?.body).toEqual({ value: 'provider-secret' }))
+
+    const hosts = screen.getByLabelText('Trusted host names *')
+    fireEvent.change(hosts, { target: { value: 'research.example, shade.example' } })
+    fireEvent.click(within(hosts.closest('form') as HTMLElement).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(calls.find(call => call.method === 'PUT' && call.path === '/api/admin/settings/server.trusted_hosts')?.body).toEqual({ value: ['research.example', 'shade.example'] }))
+    expect(await screen.findByText('Restart the server to apply the change.')).toBeInTheDocument()
   })
 })
