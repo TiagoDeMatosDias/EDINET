@@ -10,7 +10,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from src.paths import app_dir
+
+PROJECT_ROOT = app_dir()
 
 
 def _root(env_name: str, default: Path) -> Path:

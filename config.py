@@ -1,19 +1,8 @@
 import os
-import sys
 
 from dotenv import load_dotenv
 
-
-def _base_dir() -> str:
-    """Return the root directory used to resolve config-relative paths.
-
-    - PyInstaller frozen exe: the folder that contains the exe, so the user
-      can place the ``config/`` folder and ``.env`` file next to it.
-    - Plain Python script: the project root (the folder containing this file).
-    """
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+from src.paths import app_dir
 
 
 class Config:
@@ -35,7 +24,7 @@ class Config:
 
         All configuration must be supplied explicitly; no file is read.
         """
-        load_dotenv(os.path.join(_base_dir(), ".env"))
+        load_dotenv(app_dir() / ".env")
         instance = object.__new__(cls)
         instance.settings = dict(settings)
         return instance

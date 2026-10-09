@@ -2,13 +2,14 @@ import logging
 import os
 
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
-from src.orchestrator.common.db_config import _find_project_root, get_db1
+from src.orchestrator.common.db_config import get_db1
 from src.orchestrator.common.edinet import EDINET_BASE_URL, Edinet
+from src.paths import app_dir
 
 logger = logging.getLogger(__name__)
 
 # Hardcoded raw documents path (was in .env)
-_RAW_DOCUMENTS_PATH = os.path.join(_find_project_root(), "data", "raw_documents")
+_RAW_DOCUMENTS_PATH = os.path.join(app_dir(), "data", "raw_documents")
 
 
 def run_download_documents(config, overwrite=False, context=None):

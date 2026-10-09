@@ -24,8 +24,9 @@ limit.
 import logging
 import logging.handlers
 import os
-import sys
 from pathlib import Path
+
+from src.paths import app_dir
 
 # Rotation policy: cap each log file and keep a small number of backups so the
 # logs/ folder stays bounded even for multi-day runs.  10 MiB x 6 files keeps
@@ -39,28 +40,6 @@ _LOG_BACKUP_COUNT = 5
 DEFAULT_LOG_FILENAME = "server.log"
 
 
-def _find_project_root() -> Path:
-    """Return the project root directory.
-
-    - PyInstaller frozen exe: the folder that contains the exe.
-    - Plain Python script: walks up from this module to find the repo root
-      (identified by ``config/`` and ``src/orchestrator/`` directories).
-    """
-    if getattr(sys, "frozen", False):
-        return Path(os.path.dirname(sys.executable))
-
-    current = Path(__file__).resolve().parent
-    for _ in range(5):
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
-        if (current / "config").is_dir() and (current / "src" / "orchestrator").is_dir():
-            return current
-    # Fallback: three levels up from src/utilities/
-    return Path(__file__).resolve().parent.parent.parent
-
-
 def _resolve_log_dir(log_dir: "str | os.PathLike | None") -> Path:
     """Resolve the log directory to an absolute path anchored at the project root.
 
@@ -70,11 +49,11 @@ def _resolve_log_dir(log_dir: "str | os.PathLike | None") -> Path:
     operators who want to redirect logs elsewhere).
     """
     if log_dir is None:
-        return _find_project_root() / "logs"
+        return app_dir() / "logs"
     path = Path(log_dir)
     if path.is_absolute():
         return path
-    return _find_project_root() / path
+    return app_dir() / path
 
 
 class LogSetup:

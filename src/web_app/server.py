@@ -15,14 +15,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.orchestrator.common.database_bootstrap import ensure_application_databases
+from src.paths import bundle_dir
 from src.version import __version__
 from src.web_app.api import router_app
 from src.web_app.security import OperatorGuidanceError, get_settings, install_security
 
-BASE_DIR = Path(__file__).resolve().parent
-BRAND_ASSETS_DIR = BASE_DIR.parent.parent / "assets" / "brand"
+BRAND_ASSETS_DIR = bundle_dir() / "assets" / "brand"
 FRONTEND_V2_DIST = (
-    Path(os.getenv("EDINET_FRONTEND_DIST", BASE_DIR.parent.parent / "frontend-v2" / "dist"))
+    Path(os.getenv("EDINET_FRONTEND_DIST", bundle_dir() / "frontend-v2" / "dist"))
     .expanduser()
     .resolve(strict=False)
 )

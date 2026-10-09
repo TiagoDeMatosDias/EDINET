@@ -13,7 +13,6 @@ import datetime
 import ipaddress
 import logging
 import os
-import sys
 from pathlib import Path
 
 from cryptography import x509
@@ -21,6 +20,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from src.paths import app_dir
 from src.web_app.security import SecurityConfigurationError
 
 logger = logging.getLogger(__name__)
@@ -51,11 +51,7 @@ def default_cert_dir() -> Path:
     override = os.getenv("EDINET_CERT_DIR")
     if override:
         return Path(override).expanduser()
-    if getattr(sys, "frozen", False):
-        base = Path(sys.executable).resolve().parent
-    else:
-        base = Path(__file__).resolve().parents[2]
-    return base / "data" / "certs"
+    return app_dir() / "data" / "certs"
 
 
 def _find_certificate_pair(cert_dir: Path) -> tuple[Path, Path] | None:

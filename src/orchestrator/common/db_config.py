@@ -12,40 +12,15 @@ An entry in ``config/database_paths.json`` overrides a default.
 
 import json
 import os
-import sys
 from dataclasses import dataclass
+
+from src.paths import app_dir
 
 _CONFIG_DIR_NAME = "config"
 _CONFIG_FILE_NAME = "database_paths.json"
 
 
-def _find_project_root() -> str:
-    """Return the project root directory.
-
-    - PyInstaller frozen exe: the folder that contains the exe.
-    - Plain Python script: walks up from this module to find the repo root
-      (identified by ``config/`` and ``src/orchestrator/`` directories).
-    """
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-
-    current = os.path.dirname(os.path.abspath(__file__))
-    for _ in range(5):
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
-        if os.path.isdir(os.path.join(current, _CONFIG_DIR_NAME)) and os.path.isdir(
-            os.path.join(current, "src", "orchestrator")
-        ):
-            return current
-    # Fallback: three levels up from src/orchestrator/common/
-    return os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..")
-    )
-
-
-_PROJECT_ROOT = _find_project_root()
+_PROJECT_ROOT = str(app_dir())
 _CONFIG_PATH = os.path.join(_PROJECT_ROOT, _CONFIG_DIR_NAME, _CONFIG_FILE_NAME)
 
 _cache: dict[str, str] | None = None
