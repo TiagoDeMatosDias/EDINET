@@ -513,3 +513,13 @@ def test_a_company_without_a_ticker_is_put_on_one_share_basis(tmp_path):
     finally:
         conn.close()
     assert (basis["F21"].restated, basis["F21"].fiscal) == (pytest.approx(0.5), pytest.approx(0.5))
+
+
+def test_a_count_down_by_a_sixth_is_a_cancellation_not_a_consolidation():
+    from src.orchestrator.common.corporate_actions import standard_split_multiplier
+
+    # 17.9 million shares down to 14.96 million after a cancellation of
+    # treasury shares: consolidations merge a whole number of shares into one.
+    assert standard_split_multiplier(14_955_688 / 17_946_826) is None
+    assert standard_split_multiplier(0.5) == 0.5
+    assert standard_split_multiplier(1.2) == 1.2

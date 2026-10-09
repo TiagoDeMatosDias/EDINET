@@ -119,7 +119,9 @@ def standard_split_multiplier(ratio: float, *, tolerance_large: float = _LARGE_T
         return None
     for candidates, tolerance in ((_LARGE_RATIOS, tolerance_large), (_SMALL_RATIOS, _SMALL_TOLERANCE)):
         for value in candidates:
-            for nice in (value, 1.0 / value):
+            # A consolidation merges a whole number of shares into one; a
+            # count down by a tenth or a sixth is a cancellation of shares.
+            for nice in (value, 1.0 / value) if value == int(value) else (value,):
                 if abs(math.log(ratio / nice)) <= tolerance:
                     return nice
     # Any other whole-number ratio, held exactly: no issue of shares

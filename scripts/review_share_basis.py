@@ -17,7 +17,8 @@ Four independent checks, read-only:
   are wrong. It tells a report's odd P/E from a wrong per-share figure.
 * **History payload.** For every company with a split, the values the
   history API returns equal the stored figure times its filing's factor,
-  and ``reported_values`` equal the stored figure.
+  and ``reported_values`` equal the figure as filed (the stored one, or the
+  filed value of a power-of-ten slip the standardization step corrected).
 
 Usage: ``python scripts/review_share_basis.py [--db PATH] [--csv DIR]``
 """
@@ -103,6 +104,10 @@ def history_check(db_path: str, conn: sqlite3.Connection) -> collections.Counter
     tickers = [row[0] for row in conn.execute(f"SELECT DISTINCT {_KEY} FROM CompanyInfo c")]
     basis = {item.doc_id: item for item in filing_basis_factors(conn)}
     tables = ["ShareMetrics", "PerShare_Metrics", "ShareMetrics_Rolling", "PerShare_Metrics_Rolling"]
+    try:  # a figure corrected for a power-of-ten slip reads as filed in the as-filed view
+        slips = {(doc, column): value for doc, column, value in conn.execute('SELECT "docID", "column_name", "filed" FROM ShareMetrics_Corrections')}
+    except sqlite3.Error:
+        slips = {}
     counts: collections.Counter = collections.Counter()
     for ticker in load_split_events(conn, tickers):
         for (code,) in conn.execute(f"SELECT Company_Code FROM CompanyInfo c WHERE {_KEY} = ?", (ticker,)):
@@ -128,7 +133,8 @@ def history_check(db_path: str, conn: sqlite3.Connection) -> collections.Counter
                         factor = getattr(basis[doc], rule[0]) if rule and doc in basis else 1.0
                         expected = value * factor if rule and rule[1] == "*" else (value / factor if rule else value)
                         counts["values"] += 1
-                        if abs(filed[index] - value) > 1e-9 * max(1.0, abs(value)) or abs(line["values"][index] - expected) > 1e-6 * max(1.0, abs(expected)):
+                        as_filed = slips.get((doc, line["field"]), value) if table == "ShareMetrics" else value
+                        if abs(filed[index] - as_filed) > 1e-9 * max(1.0, abs(as_filed)) or abs(line["values"][index] - expected) > 1e-6 * max(1.0, abs(expected)):
                             counts["wrong"] += 1
     return counts
 

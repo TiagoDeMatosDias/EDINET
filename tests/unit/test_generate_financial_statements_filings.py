@@ -277,3 +277,63 @@ def test_a_consolidated_filers_missing_figure_is_not_filled_from_the_parent():
         ("D1", "CurrentYearDuration_NonConsolidatedMember", "jpcrp_cor:PriceEarningsRatioSummaryOfBusinessResults", 47.6),
     ])
     assert (row["Basic earnings (loss) per share"], row["Price-earnings ratio"]) == (4.01, 47.6)
+
+
+
+def _slip_rows(reports):
+    import pandas as pd
+
+    from src.orchestrator.generate_financial_statements import slips
+
+    columns = ["company", "doc", slips.EPS, slips.PER, slips.BPS, slips.SHARE_COUNTS[1], "profit", "net_assets", "stored"]
+    rows = pd.DataFrame(reports, columns=columns)
+    rows["shares"] = rows[slips.SHARE_COUNTS[1]]
+    return rows
+
+
+def test_a_share_count_filed_in_thousands_is_corrected():
+    from src.orchestrator.generate_financial_statements.slips import (
+        SHARE_COUNTS,
+        find_decimal_slips,
+    )
+
+    # 7,094 issued shares beside EPS of ¥21 on ¥149m profit: 7,094 thousand.
+    rows = _slip_rows([
+        ("A", "D18", 21.06, None, 50.45, 7094, 149_456_000, 363_701_000, None),
+        ("A", "D19", 40.30, 62.23, 136.9, 7_627_000, 297_894_000, 1_049_199_000, 2508.0),
+        ("A", "D20", 45.00, 50.0, 150.0, 7_700_000, 346_500_000, 1_155_000_000, 2250.0),
+        ("A", "D21", 50.00, 40.0, 170.0, 7_700_000, 385_000_000, 1_309_000_000, 2000.0),
+    ])
+    assert find_decimal_slips(rows, {}) == [
+        ("D18", SHARE_COUNTS[1], 7094.0, 7_094_000.0, "share count 0.001 times the report's own EPS and book value imply"),
+    ]
+
+
+def test_a_pe_tagged_a_hundred_times_over_is_corrected_but_an_unadjusted_price_is_not():
+    from src.orchestrator.generate_financial_statements.slips import PER, find_decimal_slips
+
+    # P/E tagged 5,140.7 for ¥1,151 over EPS of ¥22.39 (51.4).
+    rows = _slip_rows([
+        ("B", "D21", 5.68, 328.7, 950.0, 38_315_000, 217_629_200, 36_399_250_000, 1869.0),
+        ("B", "D22", 63.29, 27.9, 1000.0, 38_315_000, 2_424_956_350, 38_315_000_000, 1767.0),
+        ("B", "D23", 22.39, 5140.7, 980.29, 38_315_000, 857_872_850, 37_560_000_000, 1151.0),
+    ])
+    assert [(doc, column, round(corrected, 2)) for doc, column, _filed, corrected, _reason in find_decimal_slips(rows, {})] == [("D23", PER, 51.41)]
+    # A report's P/E × EPS (¥2,003) matches the stored ¥2,000 before a later
+    # 10-for-1 split's factor: the price series was left unadjusted, the P/E is right.
+    rows = _slip_rows([("C", "D22", 910.57, 2.2, 4385.27, 172_500, 157_073_000, 756_483_000, 2000.0)])
+    assert find_decimal_slips(rows, {"D22": (0.1, 0.1)}) == []
+
+
+def test_the_as_filed_history_shows_a_corrected_slip_as_filed():
+    import sqlite3
+
+    from src.security_analysis.history import _show_filed_slips
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute('CREATE TABLE ShareMetrics_Corrections ("docID" TEXT, "column_name" TEXT, "filed" REAL, "corrected" REAL, "reason" TEXT)')
+    conn.execute("INSERT INTO ShareMetrics_Corrections VALUES ('D23', 'Price-earnings ratio', 5140.7, 51.41, 'P/E')")
+    rows = [{"field": "Price-earnings ratio", "values": [27.9, 51.41]}]
+    _show_filed_slips(conn, rows, "ShareMetrics", [{"docID": "D22"}, {"docID": "D23"}])
+    assert rows[0]["values"] == [27.9, 51.41]
+    assert rows[0]["reported_values"] == [27.9, 5140.7]

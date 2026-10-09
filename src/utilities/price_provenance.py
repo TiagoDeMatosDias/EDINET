@@ -199,7 +199,7 @@ class UnadjustedStep(NamedTuple):
 
 
 def unadjusted_split_step(conn: sqlite3.Connection, prices_table: str, ticker: str, split_date: str, price_factor: float) -> UnadjustedStep | None:
-    """Adjusted closes that still step by a split within a week of it.
+    """Adjusted closes that still step by a split within two weeks of it.
 
     Daily quotes fetched before a split stay on the old shares while the
     provider adjusts the history it serves afterwards, so the step can come
@@ -221,7 +221,9 @@ def unadjusted_split_step(conn: sqlite3.Connection, prices_table: str, ticker: s
         (ticker, (day - timedelta(days=90)).isoformat(), (day + timedelta(days=30)).isoformat()),
     ).fetchall()
     days = [date.fromisoformat(str(row_day)[:10]) for row_day, _price, _retrieved in rows]
-    near = [index for index, row_day in enumerate(days) if abs((row_day - day).days) <= 7]
+    # A provider's split date can trail the step by days (a 10-for-1 split
+    # listed for 30 January whose closes fell on the 21st).
+    near = [index for index, row_day in enumerate(days) if abs((row_day - day).days) <= 14]
     if not near:
         return None
     index = split_jump_index([float(price) for _day, price, _retrieved in rows], price_factor, near[0] - 1, near[-1])

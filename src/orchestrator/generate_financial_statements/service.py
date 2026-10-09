@@ -1111,6 +1111,11 @@ def generate_financial_statements(
                     total_documents - processed_documents,
                 )
 
+        # Figures an issuer tagged a power of ten off, against the report's own others.
+        from .slips import correct_decimal_slips, ensure_corrections_table
+
+        ensure_corrections_table(conn, clear=overwrite)
+        correct_decimal_slips(conn)
         conn.commit()
         # Ensure screening performance index exists
         conn.execute(

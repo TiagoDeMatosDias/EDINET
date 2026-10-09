@@ -25,6 +25,7 @@ from src.orchestrator.common.share_basis import (
     share_basis_rule,
     to_adjusted_basis,
 )
+from src.orchestrator.generate_financial_statements.slips import CORRECTIONS_TABLE
 
 
 def _own_filings_clause(core, conn, schema) -> str:
@@ -109,6 +110,31 @@ def _adjust_share_basis(rows: list[dict[str, Any]], table_name: str, records: li
             row["values"] = adjusted
 
 
+def _show_filed_slips(conn, rows: list[dict[str, Any]], table_name: str, records: list[dict[str, Any]]) -> None:
+    """Show a figure corrected for a power-of-ten slip as filed in the as-filed view."""
+    if table_name != "ShareMetrics":
+        return
+    docs = [record.get("docID") for record in records]
+    try:
+        placeholders = ",".join("?" for _ in docs)
+        found = conn.execute(
+            f'SELECT "docID", "column_name", "filed" FROM "{CORRECTIONS_TABLE}" WHERE "docID" IN ({placeholders})', docs
+        ).fetchall() if docs else []
+    except sqlite3.Error:
+        return
+    filed = {(doc, column): value for doc, column, value in found}
+    for row in rows:
+        field = str(row.get("field") or "")
+        positions = [index for index, doc in enumerate(docs) if (doc, field) in filed]
+        if not positions:
+            continue
+        reported = list(row.get("reported_values") or row.get("values") or [])
+        for index in positions:
+            if index < len(reported):
+                reported[index] = filed[(docs[index], field)]
+        row["reported_values"] = reported
+
+
 _SPLIT_SOURCES = {"Stock_Splits": "split record", "filing date count": "filing", "annual reports": "share counts"}
 
 
@@ -172,6 +198,7 @@ def get_security_statements_by_source(
                 )
                 if basis:
                     _adjust_share_basis(result[source_key], spec.table_name, source_records, basis)
+                _show_filed_slips(conn, result[source_key], spec.table_name, source_records)
             else:
                 result[source_key] = []
         return result

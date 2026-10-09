@@ -25,12 +25,14 @@ filing's factor, it should equal the stored year-end price.
 | Check | Before | After |
 | --- | --- | --- |
 | Rolling 5-year EPS growth of Toyota to March 2026 | −14.9 % a year | +17.4 % a year |
-| Annual reports (28,552 with a P/E, 2016–2026) whose P/E × EPS on today's shares is within 5 % of the stored year-end price | 96.7 % since 2023; median 0.907 at 2017 | 98.98 %; median 1.000 in every year |
-| Pairs of consecutive annual reports whose per-share factor disagrees with the stored prices by 1.5x or more | 327 | 78, every report in them holding exactly its filing's figures; 1 steps in earnings too |
-| Known splits still showing as a step in the stored prices | 187 of 2,257 | 0 of 3,564 |
+| Annual reports (28,552 with a P/E, 2016–2026) whose P/E × EPS on today's shares is within 5 % of the stored year-end price | 96.7 % since 2023; median 0.907 at 2017 | 99.01 %; median 1.000 in every year |
+| Pairs of consecutive annual reports whose per-share factor disagrees with the stored prices by 1.5x or more | 327 | 71, none of which steps by a split's ratio in earnings |
+| Known splits still showing as a step in the stored prices | 187 of 2,257 | 0 of 3,563 |
+| Stored prices of unknown basis (neither split-adjusted nor as traded) | 13.5 million rows | 0 |
+| Filed figures an issuer tagged a power of ten off (share counts in thousands, P/E 100 times over) | not checked | 11 corrected at 9 companies, filed values kept |
 | Split histories counting one split twice | 80 companies | 0 |
 | Splits inferred from share counts that the prices contradict (share issues, buybacks, cancelled treasury shares) | 92 | 0 |
-| History payload: adjusted value = stored × factor, as filed = stored (every company with a split) | not checked | 1,419,981 values, 0 wrong |
+| History payload: adjusted value = stored × factor, as filed = the filing's figure (every company with a split) | not checked | 1,418,465 values, 0 wrong |
 | Companies with annual reports but no ticker (delisted) whose splits were ignored | 222 of 1,140 | 0 |
 | IFRS and US GAAP filers whose EPS, book value, and P/E were the parent company's | 376 companies | 0 |
 | Ratios empty for every filing | 4 of 19 | 0 |
@@ -78,6 +80,26 @@ beside the group's EPS; 562 such P/Es and 14 EPS figures (consolidated
 summaries giving book value but no basic EPS) are now empty instead.
 Dividends and payout stay the parent company's, as reported.
 
+## Figures an issuer tagged a power of ten off
+
+A filing's XBRL occasionally carries a figure a power of ten off: Japan
+Hospice's 2018 report gives 7,094 issued shares (7,094 thousand), Tosho's 2023
+report a P/E of 5,140.7 (51.4), Open Up Group's 2022 report 216.1 (21.6).
+The standardization step now checks each annual report against its own other
+figures (P/E × EPS against the year-end price; EPS × shares against profit
+and book value per share × shares against net assets, each against the
+company's usual level) and corrects a figure only where two measures agree:
+a share count that both EPS and book value per share put a power of ten
+away, a P/E the price puts a power of ten away even before any split factor
+(a price a provider left unadjusted for a split does not count), an EPS that
+profit and the price both put a power of ten away. Eleven figures at nine
+companies were corrected (six share counts at four companies, five P/Es).
+Book value per share is not corrected: its only measure is net assets, which
+large minority interests or an equity that nearly vanished (Leopalace21's
+¥3.25 in 2022) move just as much. Each correction is recorded with the filed
+value and the reason in `ShareMetrics_Corrections`, and the Analysis as-filed
+view shows the filed figure.
+
 ## The stored prices
 
 The older import's daily closes (empty provider, basis `unknown`) turned out
@@ -102,11 +124,26 @@ dividends twice. They were replaced:
   replaced by the older closes scaled to join Yahoo's at both ends (25,617
   frozen rows, 21,173 moving ones, `import-replacing-frozen-yahoo-v1`); the
   nine report prices inside them agree within 5 %.
+- **Delisted companies and other series.** 60 delisted companies whose
+  ticker the company list no longer carries (linked through the securities
+  code on their filings) were scaled to their annual reports' prices like
+  the 25 above; one that paid no dividends since 2016 matches its report as
+  stored. Three US stocks were replaced by Yahoo's closes. Exchange-rate,
+  inflation, and index series (EUR and the euro's predecessor currencies,
+  TOPIX), which cannot split, are marked as traded. No stored price is left
+  of unknown basis.
+- **Before 2001.** Yahoo's history starts in 2001, so the older closes before
+  it are joined to Yahoo's at one day. Over 2001–2003 the ratio of Yahoo's
+  closes to the older ones does not drift (median drift 0; a single join
+  predicts the first half of 2001 from mid-2001 to 2003 with a median error
+  of 0.0 %), so the older import carried no dividend adjustment that early
+  and the joined rows are on the split-only basis.
 - **Splits after a provider's closes were fetched.** JPX's daily quotes
   fetched before a split stay on the old shares, and Yahoo listed some 2026
   splits without adjusting its history (a 3-for-1 on 19 February showed as a
-  67 % fall). The read model now adjusts such closes; 61 of 2026's splits
-  were still steps in the stored prices.
+  67 % fall), sometimes with the step days before the date it lists. The
+  read model now adjusts such closes; 61 of 2026's splits were still steps
+  in the stored prices.
 - **One split recorded twice** (by the price heuristic and by the provider,
   days or weeks apart) adjusted prices twice: one company's history before a
   5-for-1 split stood at 1/25. Such records now count once.
@@ -141,6 +178,11 @@ price-heuristic record is dropped when the provider records a split of the
 same ratio between the same two year ends and the share count moved once (a
 March 2020 crash read as a 2-for-1 split beside the real one in October).
 
+A fall in the share count reads as a consolidation only by a whole number
+of shares into one (2, 5, or 10 into 1): a count down by a sixth after a
+year end was a cancellation of treasury shares, which had put every earlier
+report of one delisted company 1.2 times off.
+
 A filing-date count and the recorded split it shows are one split even when
 the record falls a few days outside the filing window or up to a quarter
 after filing (a report restated for a split decided before it was filed).
@@ -152,25 +194,25 @@ year on, is a price move, not a split.
 
 ## Known remaining issues
 
-- **78 report pairs that disagree with the prices, all as filed.** Every
-  report in them holds exactly its filing's XBRL figure on the right scope
-  (checked against the raw facts). A second, independent check reads EPS
-  times year-end shares over the report's profit, which moves with a wrong
-  share factor but not with an issuer's P/E: only 1 of the 78 steps there
-  too, an EPS of ¥7.17 between ¥53 and ¥144 that the filing's own P/E puts
-  near ¥64 (a decimal slip in the issuer's tagging). The rest: 25 are one
-  report out of line with its neighbours and undone the next year (a P/E or
-  EPS misreported in the filing, such as a P/E tagged as 5140.7 for 51.4);
-  27 are a first or last report out of line, or several share changes in one
-  year; 12 are a split's exact ratio where the issuer quoted its P/E on the
-  price as traded while restating EPS; 12 cross a year with no annual
-  report; 2 are stocks that barely traded before the year end. Valuations in
-  the views compute P/E from the stored price and EPS, not from the filed
-  P/E. The earnings check flags 226 pairs across all companies at a split's
-  ratio, nearly all where the income statement table's profit is not the
-  owners' (minority interests, or a parent-only line beside consolidated
-  EPS), so it serves to confirm a price disagreement, not on its own.
-- **Book value steps that are not splits.** 370 consecutive-report pairs step
+- **71 report pairs that disagree with the prices.** Every report in them
+  holds its filing's XBRL figure on the right scope (or a corrected
+  power-of-ten slip). A second check that does not use the P/E, EPS times
+  year-end shares over profit, moves with a wrong share factor: 64 of the 71
+  hold steady there, 3 have no profit to compare (loss years), and the other
+  4 move by amounts no split explains (two cross several missing years, one
+  a year of several share changes, one an EPS of ¥0.66 that rounding moves).
+  So the per-share figures are consistent and the disagreement is the
+  issuer's P/E or price convention: 22 are one report out of line with its
+  neighbours and undone the next year; 25 are a first or last report out of
+  line, or several share changes in one year; 12 are a split's exact ratio
+  where the issuer quoted its P/E on the price as traded while restating
+  EPS; 11 cross a year with no annual report; 1 barely traded. Valuations in
+  the views compute P/E from the stored price and EPS. The earnings check on
+  its own flags 225 pairs at a split's ratio across all companies, nearly
+  all where the income statement table's profit is not the owners'
+  (minority interests, or a parent-only line beside consolidated EPS), so it
+  serves to confirm a price disagreement, not on its own.
+- **Book value steps that are not splits.** 367 consecutive-report pairs step
   by 1.5x or more in book value per share against net assets per share (30
   undone the next year), now including the companies without a ticker. 139
   are IFRS and US GAAP filers, whose book value per
@@ -186,18 +228,10 @@ year on, is a price move, not a split.
   last 9 (2007–2012: rallies, crashes after the March 2011 earthquake, ¥10/¥20
   ticks) were rejected by review with the reason recorded, none confirmed by
   a report or by Yahoo's split list.
-- **Older rows outside the rebuild.** Before 2001 the older import is joined
-  to Yahoo at one day, so dividends paid within 1999–2000 remain in it (at
-  most a few per cent; history before 2015 matters least here). 82 series
-  outside the company list keep 537,230 rows of unknown basis, none of which
-  a standardized figure reads: 10 exchange-rate series (EUR and the euro's
-  predecessors), inflation indices, TOPIX, three US stocks, and 62 delisted
-  Japanese codes whose prices cannot be linked to their reports (Yahoo no
-  longer serves them); four listed companies Yahoo no longer serves
-  (taken private in 2026) were scaled to their annual reports' prices like
-  the 25 above. 430 stretches of a repeated close where the older import was
-  flat too were kept as illiquid trading. A full re-download from Yahoo would
-  bring its frozen stretches back.
+- **Stretches of a repeated close.** 430 stretches where Yahoo and the older
+  import both repeat one close were kept as illiquid trading. A full
+  re-download from Yahoo would bring back the 159 frozen stretches replaced
+  above.
 - **Parent-only statements.** IFRS and US GAAP filers (Toyota, Sony, SoftBank
   Group, Makita) have only their parent-only Japanese GAAP statements in the
   income statement, balance sheet, and cash flow tables: their margins and
