@@ -42,3 +42,5 @@ edinet_workstation*
 tools/bin/
 */.*
 .*/*
+# Files the storage-layout migration kept beside their old names (may hold secrets)
+*.migrated
