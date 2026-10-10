@@ -332,7 +332,7 @@ def _capture_with_playwright(
 
         page.goto(f"{base_url}/compare", wait_until="networkidle")
         dismiss_local_warning(page)
-        picker = page.get_by_label("Add a company")
+        picker = page.get_by_label("Add a company or a tag")
         picker.fill("Alpha")
         page.get_by_role(
             "option",

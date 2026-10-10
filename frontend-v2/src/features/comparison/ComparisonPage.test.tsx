@@ -68,6 +68,10 @@ function stub() {
       { work_id: 'w-1', kind: 'comparison', title: 'Comparison · Alpha vs Gamma', subtitle: '2 companies · 21 metrics', href: '/compare?companies=E1,E3', occurred_at: '2026-10-02T09:00:00+00:00' },
       { work_id: 'w-2', kind: 'company', title: 'Alpha', href: '/analyze/E1', occurred_at: '2026-10-02T09:00:00+00:00' },
     ] })
+    if (path.startsWith('/api/comparison/tags')) return json({ tags: [
+      { name: 'Closed position', member_count: 2, companies: [] },
+      { name: 'Trading houses', member_count: 3, companies: ['E1', 'E2', 'E3'].map(code => ({ company_code: code, company_name: COMPANIES[code].name, ticker: `${code.slice(1)}0`, industry: 'Transportation Equipments' })) },
+    ] })
     if (path.startsWith('/api/comparison/trends')) return json({ companies: [], metrics: ['Revenue'], metric_definitions: { Revenue: DEFINITIONS.Revenue } })
     if (path.startsWith('/api/security/search')) {
       const query = new URL(path, 'http://x').searchParams.get('q') ?? ''
@@ -211,6 +215,67 @@ describe('ComparisonPage', () => {
     expect(screen.getByTestId('location').textContent).toBe('?companies=E1%2CE2&hide=EnterpriseValueToSales%2CRevenue')
     await waitFor(() => expect(table()).toBeInTheDocument())
     expect(within(table()).queryByText('Revenue')).not.toBeInTheDocument()
+  })
+
+  it('finds a tag in the company finder and compares its companies', async () => {
+    renderPage('?companies=E4')
+    const finder = screen.getByRole('combobox', { name: 'Add a company or a tag' })
+    await screen.findByRole('link', { name: 'Delta Parts' })
+    // With nothing typed the finder lists the tags; one with no company to compare cannot be chosen.
+    fireEvent.focus(finder)
+    expect(await screen.findByRole('option', { name: /Closed position/ })).toBeDisabled()
+    expect(screen.getByRole('option', { name: /Closed position/ })).toHaveTextContent('No company with EDINET filings to compare')
+
+    fireEvent.change(finder, { target: { value: 'trad' } })
+    expect(screen.queryByRole('option', { name: /Closed position/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /Trading houses/ })).toHaveTextContent('3 companies · Alpha Motor, Beta Motor, Gamma Industries')
+    fireEvent.keyDown(finder, { key: 'Enter' })
+    expect(screen.getByTestId('location').textContent).toBe('?companies=E4%2CE1%2CE2%2CE3')
+    await waitFor(() => expect(snapshots.at(-1)?.company_codes).toEqual(['E4', 'E1', 'E2', 'E3']))
+    expect(finder).toHaveValue('')
+    // The tag's companies are named at once, before the comparison answers.
+    expect(screen.getByRole('link', { name: 'Beta Motor Co., Ltd.' })).toBeInTheDocument()
+  })
+
+  it('starts from a tag and keeps its other companies one click away', async () => {
+    renderPage('')
+    const start = await screen.findByRole('button', { name: /Trading houses/ })
+    expect(start).toHaveTextContent('3 companies')
+    expect(screen.queryByRole('button', { name: /Closed position/ })).not.toBeInTheDocument()
+    fireEvent.click(start)
+    expect(screen.getByTestId('location').textContent).toBe('?companies=E1%2CE2%2CE3')
+    await waitFor(() => expect(table()).toBeInTheDocument())
+    expect(screen.queryByRole('group', { name: 'Other companies tagged Trading houses' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Beta Motor Co., Ltd.' }))
+    const rest = screen.getByRole('group', { name: 'Other companies tagged Trading houses' })
+    fireEvent.click(within(rest).getByRole('button', { name: 'Beta Motor' }))
+    expect(screen.getByTestId('location').textContent).toBe('?companies=E1%2CE3%2CE2')
+    expect(screen.queryByRole('group', { name: 'Other companies tagged Trading houses' })).not.toBeInTheDocument()
+  })
+
+  it('adds as many of a tag as fit and offers the rest once there is room', async () => {
+    const others = Array.from({ length: 10 }, (_, index) => `E${index + 5}`)
+    for (const code of others) COMPANIES[code] = { name: `Filler ${code}`, metrics: { PERatio: 10, EnterpriseValueToSales: null, ReturnOnEquity: 0.1, Revenue: 1e12 } }
+    renderPage(`?companies=${others.join(',')}`)
+    await waitFor(() => expect(table()).toBeInTheDocument())
+    const finder = screen.getByRole('combobox', { name: 'Add a company or a tag' })
+    fireEvent.focus(finder)
+    const option = await screen.findByRole('option', { name: /Trading houses/ })
+    expect(option).toHaveTextContent('3 companies · adds the first 2 · Alpha Motor, Beta Motor')
+    fireEvent.click(option)
+    expect(screen.getByTestId('location').textContent).toBe(`?companies=${[...others, 'E1', 'E2'].join('%2C')}`)
+
+    // Twelve companies fill the comparison: the one left out waits under the finder.
+    const rest = screen.getByRole('group', { name: 'Other companies tagged Trading houses' })
+    expect(finder).toBeDisabled()
+    expect(within(rest).getByRole('button', { name: 'Gamma Industries' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Filler E5' }))
+    fireEvent.click(within(rest).getByRole('button', { name: 'Gamma Industries' }))
+    expect(screen.getByTestId('location').textContent).toBe(`?companies=${[...others.slice(1), 'E1', 'E2', 'E3'].join('%2C')}`)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    expect(screen.queryByRole('group', { name: 'Other companies tagged Trading houses' })).not.toBeInTheDocument()
   })
 
   it('lists the page shortcuts on ?', async () => {

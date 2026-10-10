@@ -4,7 +4,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ResearchPage from '../research/ResearchPage'
-import { DEFAULT_FILTERS, displayTicker, filterBonds, formatBp, formatYen, marketCsv, offeringText, ratingGroup, securityText, sortBonds } from './bondFormat'
+import { DEFAULT_FILTERS, displayTicker, filterBonds, formatBp, formatYen, marketCsv, marketTags, matchTag, offeringText, ratingGroup, securityText, sortBonds } from './bondFormat'
 import type { MarketBond } from './bondTypes'
 import { CompanyBondsPanel } from './CompanyBondsPanel'
 
@@ -68,9 +68,18 @@ const PRICING = {
   financial: false,
 }
 
+// Research state as the book sends it: Gamma is tagged but has no bonds.
+const TAGGED = [
+  { company_code: 'E1', company_name: 'Alpha Motor', ticker: '10000', tags: ['Carmakers', 'Open position'], note_count: 0, alert_count: 0, alerts_triggered: 0 },
+  { company_code: 'E2', company_name: 'Beta Bank', ticker: '20000', tags: ['Lenders'], note_count: 0, alert_count: 0, alerts_triggered: 0 },
+  { company_code: 'E3', company_name: 'Gamma Foods', ticker: '30000', tags: ['Lenders', 'Staples'], note_count: 0, alert_count: 0, alerts_triggered: 0 },
+]
+
 let noBondData = false
+let bookCompanies: typeof TAGGED = []
 function stub() {
   noBondData = false
+  bookCompanies = []
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
     const path = String(input)
     if (path.startsWith('/api/bonds/') && noBondData) return json({ detail: 'No bond data yet: run the Update bonds pipeline step.' }, 503)
@@ -78,7 +87,7 @@ function stub() {
     if (path.startsWith('/api/bonds/bond/')) return json(path.endsWith('B1') ? DETAIL : { ...DETAIL, bond: { ...BOND, bond_id: path.split('/').pop() } })
     if (path.startsWith('/api/bonds/company/')) return json(COMPANY)
     if (path.startsWith('/api/research/pricing/')) return json(PRICING)
-    if (path === '/api/research/book') return json({ companies: [], tags: [], alerts: [], metric_definitions: {} })
+    if (path === '/api/research/book') return json({ companies: bookCompanies, tags: [], alerts: [], metric_definitions: {} })
     return json({ notes: [], tags: [] })
   }))
 }
@@ -125,6 +134,33 @@ describe('bond formatting', () => {
     expect(csv[0]).toMatch(/^Company,Ticker,EDINET code/)
     expect(csv[1]).toContain('Alpha Motor,10000,E1,Autos,第5回無担保社債,Senior unsecured,JPY,1.250')
   })
+
+  it('reads the user’s tags against the bonds listed', () => {
+    const { tags, byIssuer } = marketTags(TAGGED, MARKET_BONDS)
+    // Position tags lead; a tag whose companies have no bonds is left out.
+    expect(tags).toEqual([
+      { name: 'Open position', members: 1, issuers: ['E1'] },
+      { name: 'Carmakers', members: 1, issuers: ['E1'] },
+      { name: 'Lenders', members: 2, issuers: ['E2'] },
+    ])
+    expect(byIssuer).toEqual({ E1: ['Carmakers', 'Open position'], E2: ['Lenders'] })
+    expect(matchTag(tags, 'len')?.name).toBe('Lenders')
+    expect(matchTag(tags, 'position')?.name).toBe('Open position')
+    expect(matchTag(tags, ' ')).toBeUndefined()
+    expect(matchTag(tags, 'staples')).toBeUndefined()
+  })
+
+  it('filters bonds to the issuers under any chosen tag, and finds tags by text', () => {
+    const { byIssuer } = marketTags(TAGGED, MARKET_BONDS)
+    const shown = (filters: Partial<typeof DEFAULT_FILTERS>) => filterBonds(MARKET_BONDS, COMPANIES, { ...DEFAULT_FILTERS, includePrivate: true, ...filters }, byIssuer).map(bond => bond.bond_id)
+    expect(shown({ tags: ['Carmakers'] })).toEqual(['B1'])
+    expect(shown({ tags: ['Lenders'] })).toEqual(['B2', 'B3'])
+    expect(shown({ tags: ['Carmakers', 'Lenders'] })).toEqual(['B1', 'B2', 'B3'])
+    expect(shown({ tags: ['Staples'] })).toEqual([])
+    // Other filters still apply within the tag.
+    expect(shown({ tags: ['Lenders'], includePrivate: false })).toEqual(['B2'])
+    expect(shown({ query: 'lend' })).toEqual(['B2', 'B3'])
+  })
 })
 
 describe('Bond market', () => {
@@ -169,6 +205,76 @@ describe('Bond market', () => {
     await waitFor(() => expect(within(screen.getByRole('table', { name: 'Bonds' })).getAllByRole('row')).toHaveLength(2))
     press('c')
     expect(location()).toBe('/research?tab=bonds&company=E1&bond=B1')
+  })
+
+  it('narrows to the bonds of companies under one or more tags', async () => {
+    bookCompanies = TAGGED
+    renderAt('/research?tab=bond-market')
+    await screen.findByRole('table', { name: 'Bonds' })
+    const bondRows = () => within(screen.getByRole('table', { name: 'Bonds' })).getAllByRole('row').slice(1)
+    const tags = await screen.findByRole('group', { name: 'Filter by tag' })
+    // Each chip counts the tag's companies with bonds; Staples has none and is not offered.
+    expect(within(tags).getAllByRole('button').map(chip => chip.textContent)).toEqual(['Open position 1', 'Carmakers 1', 'Lenders 1'])
+    expect(within(tags).getByRole('button', { name: /Lenders/ })).toHaveAttribute('title', '1 of the 2 companies tagged “Lenders” has bonds listed: Beta Bank')
+    expect(bondRows()).toHaveLength(2)
+
+    fireEvent.click(within(tags).getByRole('button', { name: /Carmakers/ }))
+    expect(within(tags).getByRole('button', { name: /Carmakers/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(bondRows()).toHaveLength(1)
+    expect(bondRows()[0]).toHaveTextContent('Alpha Motor')
+    expect(screen.getByText(/1 of 3 bonds/)).toBeInTheDocument()
+
+    fireEvent.click(within(tags).getByRole('button', { name: /Lenders/ }))
+    expect(bondRows().map(row => row.textContent)).toEqual([expect.stringContaining('Beta Bank'), expect.stringContaining('Alpha Motor')])
+
+    fireEvent.click(within(tags).getByRole('button', { name: /Carmakers/ }))
+    expect(bondRows()).toHaveLength(1)
+    expect(bondRows()[0]).toHaveTextContent('Beta Bank')
+  })
+
+  it('finds a tag from the filter box and applies it with Enter', async () => {
+    bookCompanies = TAGGED
+    renderAt('/research?tab=bond-market')
+    await screen.findByRole('table', { name: 'Bonds' })
+    const bondRows = () => within(screen.getByRole('table', { name: 'Bonds' })).getAllByRole('row').slice(1)
+    const tags = await screen.findByRole('group', { name: 'Filter by tag' })
+    const filter = screen.getByRole('textbox', { name: 'Filter bonds' })
+    expect(filter).toHaveAttribute('placeholder', 'Filter by issuer, ticker, bond, or tag')
+
+    // Typing a tag's name already lists its companies' bonds, and marks the chip Enter applies.
+    fireEvent.change(filter, { target: { value: 'car' } })
+    expect(bondRows()).toHaveLength(1)
+    expect(bondRows()[0]).toHaveTextContent('Alpha Motor')
+    expect(within(tags).getByRole('button', { name: /Carmakers/ })).toHaveTextContent('Enter')
+    fireEvent.keyDown(filter, { key: 'Enter' })
+    expect(filter).toHaveValue('')
+    expect(within(tags).getByRole('button', { name: /Carmakers/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(bondRows()).toHaveLength(1)
+
+    // A second tag adds its issuers; naming a chosen tag again turns it off.
+    fireEvent.change(filter, { target: { value: 'lend' } })
+    fireEvent.keyDown(filter, { key: 'Enter' })
+    expect(bondRows()).toHaveLength(2)
+    fireEvent.change(filter, { target: { value: 'carmakers' } })
+    fireEvent.keyDown(filter, { key: 'Enter' })
+    expect(within(tags).getByRole('button', { name: /Carmakers/ })).toHaveAttribute('aria-pressed', 'false')
+    expect(bondRows()).toHaveLength(1)
+    expect(bondRows()[0]).toHaveTextContent('Beta Bank')
+
+    // Text that names no tag is an ordinary filter, and Clear filters drops the tags too.
+    fireEvent.change(filter, { target: { value: 'alpha' } })
+    fireEvent.keyDown(filter, { key: 'Enter' })
+    expect(screen.getByText('No bonds match.', { exact: false })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(bondRows()).toHaveLength(2)
+    expect(within(tags).getByRole('button', { name: /Lenders/ })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('offers no tag filter when no tagged company has bonds', async () => {
+    renderAt('/research?tab=bond-market')
+    await screen.findByRole('table', { name: 'Bonds' })
+    expect(screen.queryByRole('group', { name: 'Filter by tag' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Filter bonds' })).toHaveAttribute('placeholder', 'Filter by issuer, ticker, or bond')
   })
 
   it('explains how to load bond data when there is none', async () => {

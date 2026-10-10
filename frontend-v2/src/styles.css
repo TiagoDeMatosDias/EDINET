@@ -115,6 +115,9 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .company-picker-results button:disabled { opacity: .55; cursor: not-allowed; }
 .company-picker-results small, .company-picker-status { color: var(--muted); font-size: .72rem; }
 .company-picker-status { display: block; padding: 10px 11px; }
+.company-picker-tag strong { display: inline-flex; align-items: center; gap: 6px; }
+.company-picker-tag svg { flex: none; width: 13px; height: 13px; color: var(--indigo); }
+.company-picker-tag small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .health { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: .8rem; white-space: nowrap; }
 .health--error { color: var(--danger); }
 .health svg { width: 14px; height: 14px; color: var(--success); stroke-width: 1.75; }

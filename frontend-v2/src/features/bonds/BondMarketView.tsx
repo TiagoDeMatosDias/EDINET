@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Download, Search, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Briefcase, Download, Search, Tag, X } from 'lucide-react'
 import { useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -8,9 +8,10 @@ import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { useHotkeyText } from '../../hotkeys/useHotkeyText'
 import { usePersistentState } from '../../hooks/usePersistentState'
-import { downloadTextFile } from '../analysis/downloads'
+import { downloadTextFile, safeFileName } from '../analysis/downloads'
 import { bondMarketScope } from '../research/researchHotkeys'
-import { analysisHref, formatDay, formatNumber, formatPercent } from '../research/researchModel'
+import { analysisHref, formatDay, formatNumber, formatPercent, isPositionTag } from '../research/researchModel'
+import type { ResearchBook } from '../research/researchTypes'
 import { moveCursorKey, useListCursor } from '../research/useListCursor'
 import { SpreadScatterChart, type SpreadPoint } from './BondCharts'
 import { BondDetailPanel } from './BondDetailPanel'
@@ -25,6 +26,8 @@ import {
   formatCoupon,
   formatYen,
   marketCsv,
+  marketTags,
+  matchTag,
   RATING_GROUPS,
   ratingText,
   SENIORITY_LABELS,
@@ -32,6 +35,7 @@ import {
   termText,
   type MarketFilters,
   type MarketSortKey,
+  type MarketTag,
   type RatingGroup,
 } from './bondFormat'
 import { useBondMarket } from './bondQueries'
@@ -58,7 +62,8 @@ const TENORS: Array<{ label: string; min: number | null; max: number | null }> =
   { label: 'Over 12y', min: 12, max: null },
 ]
 
-export function BondMarketView({ bondId, issuer, onChange, active }: { bondId: string; issuer: string; onChange: (patch: Record<string, string>) => void; active: boolean }) {
+/** ``book`` supplies the user's tags: bonds can be narrowed to the issuers under one or more of them. */
+export function BondMarketView({ bondId, issuer, book, onChange, active }: { bondId: string; issuer: string; book?: ResearchBook; onChange: (patch: Record<string, string>) => void; active: boolean }) {
   const navigate = useNavigate()
   const [includeGroup, setIncludeGroup] = usePersistentState('research.bondMarket.group', false)
   const market = useBondMarket(includeGroup)
@@ -73,9 +78,10 @@ export function BondMarketView({ bondId, issuer, onChange, active }: { bondId: s
   const filterRef = useRef<HTMLInputElement>(null)
 
   const companies = useMemo(() => market.data?.companies ?? {}, [market.data])
+  const tagged = useMemo(() => marketTags(book?.companies ?? [], market.data?.bonds ?? []), [book, market.data])
   const rows = useMemo(
-    () => sortBonds(filterBonds(market.data?.bonds ?? [], companies, { ...filters, includePrivate, yenOnly, issuer }), companies, sort, descending),
-    [market.data, companies, filters, includePrivate, yenOnly, issuer, sort, descending],
+    () => sortBonds(filterBonds(market.data?.bonds ?? [], companies, { ...filters, includePrivate, yenOnly, issuer }, tagged.byIssuer), companies, sort, descending),
+    [market.data, companies, filters, includePrivate, yenOnly, issuer, tagged, sort, descending],
   )
   const selected = bondId || rows[0]?.bond_id || ''
   const cursor = rows.findIndex(row => row.bond_id === selected)
@@ -102,7 +108,7 @@ export function BondMarketView({ bondId, issuer, onChange, active }: { bondId: s
     setFilters({ ...filters, ratings: next ? [next] : [] })
   }
   const toggleIssuer = () => onChange({ issuer: issuer ? '' : current?.edinet_code ?? '' })
-  const download = () => downloadTextFile(`bonds${issuer ? `-${issuer}` : ''}.csv`, marketCsv(rows, companies), 'text/csv;charset=utf-8')
+  const download = () => downloadTextFile(`${safeFileName(['bonds', issuer, ...filters.tags].filter(Boolean).join('-'))}.csv`, marketCsv(rows, companies), 'text/csv;charset=utf-8')
   const focus = (element: HTMLElement | null) => { element?.focus(); element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }) }
 
   useHotkeyScope(bondMarketScope, {
@@ -137,13 +143,34 @@ export function BondMarketView({ bondId, issuer, onChange, active }: { bondId: s
   }
   const issuerName = issuer ? companies[issuer]?.company_name ?? issuer : ''
   const curveDate = market.data.curve?.date
+  // A chosen tag stays in the row, so it can be turned off, even when none of its companies has a bond listed any more.
+  const tagChips: MarketTag[] = [...tagged.tags, ...filters.tags.filter(name => !tagged.tags.some(tag => tag.name === name)).map(name => ({ name, members: 0, issuers: [] }))]
+  // Typing a tag's name points at its chip; Enter then turns that tag on or off.
+  const typedTag = matchTag(tagChips, filters.query)
+  const toggleTag = (name: string) => { setFilters({ ...filters, query: name === typedTag?.name ? '' : filters.query, tags: toggleIn(filters.tags, name) }); setLimit(PAGE) }
+  const tagTitle = (tag: MarketTag) => tag.issuers.length
+    ? `${tag.issuers.length} of the ${tag.members} ${tag.members === 1 ? 'company' : 'companies'} tagged “${tag.name}” ${tag.issuers.length === 1 ? 'has' : 'have'} bonds listed: ${tag.issuers.map(code => companies[code]?.company_name ?? code).join(', ')}`
+    : `No company tagged “${tag.name}” has bonds listed`
 
   return <div className="rs-book bd-market">
     <div className="rs-book__list panel">
       <div className="rs-toolbar">
         <label className="rs-search">
           <Search aria-hidden="true" />
-          <input ref={filterRef} className="input" value={filters.query} placeholder="Filter by issuer, ticker, or bond" aria-label="Filter bonds" onChange={event => { setFilters({ ...filters, query: event.target.value }); setLimit(PAGE) }} onKeyDown={event => { if (event.key === 'Escape') { setFilters({ ...filters, query: '' }); event.currentTarget.blur() } if (event.key === 'ArrowDown') { event.preventDefault(); setFocusRequest(value => value + 1) } }} />
+          <input
+            ref={filterRef}
+            className="input"
+            value={filters.query}
+            placeholder={tagChips.length ? 'Filter by issuer, ticker, bond, or tag' : 'Filter by issuer, ticker, or bond'}
+            title={tagChips.length ? 'Type a tag’s name and press Enter to show only its companies’ bonds' : undefined}
+            aria-label="Filter bonds"
+            onChange={event => { setFilters({ ...filters, query: event.target.value }); setLimit(PAGE) }}
+            onKeyDown={event => {
+              if (event.key === 'Escape') { setFilters({ ...filters, query: '' }); event.currentTarget.blur() }
+              if (event.key === 'ArrowDown') { event.preventDefault(); setFocusRequest(value => value + 1) }
+              if (event.key === 'Enter' && typedTag) { event.preventDefault(); toggleTag(typedTag.name) }
+            }}
+          />
           <span aria-hidden="true"><HotkeyKbd hotkey={bondMarketScope.byId.filter} /></span>
         </label>
         {issuer && <button type="button" className="rs-chip" aria-pressed="true" onClick={() => onChange({ issuer: '' })} title="Show every issuer (I)">{issuerName}<X aria-hidden="true" /></button>}
@@ -156,6 +183,17 @@ export function BondMarketView({ bondId, issuer, onChange, active }: { bondId: s
         <button type="button" className="button button--ghost button--small" disabled={!rows.length} onClick={download} title="Download the bonds listed as CSV (D)"><Download aria-hidden="true" />CSV</button>
       </div>
       <div className="rs-filters">
+        {tagChips.length > 0 && <div className="rs-chips" role="group" aria-label="Filter by tag">
+          <span className="bd-chips-label"><Tag aria-hidden="true" />Tags</span>
+          {tagChips.map(tag => <button
+            key={tag.name}
+            type="button"
+            className={['rs-chip', isPositionTag(tag.name) && 'rs-chip--position', tag === typedTag && 'bd-chip--typed'].filter(Boolean).join(' ')}
+            aria-pressed={filters.tags.includes(tag.name)}
+            title={tagTitle(tag)}
+            onClick={() => toggleTag(tag.name)}
+          >{isPositionTag(tag.name) && <Briefcase aria-hidden="true" />}{tag.name} <small>{tag.issuers.length}</small>{tag === typedTag && <kbd aria-hidden="true">Enter</kbd>}</button>)}
+        </div>}
         <div className="rs-chips" role="group" aria-label="Filter by rating">
           <button type="button" className="rs-chip" aria-pressed={!filters.ratings.length} onClick={() => setFilters({ ...filters, ratings: [] })}>All ratings</button>
           {RATING_GROUPS.map(group => <button key={group} type="button" className="rs-chip" aria-pressed={filters.ratings.includes(group)} onClick={() => setFilters({ ...filters, ratings: toggleIn(filters.ratings, group) })}>{group}</button>)}

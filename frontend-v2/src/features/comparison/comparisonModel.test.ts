@@ -5,6 +5,7 @@ import {
   comparisonCsv,
   currencyNote,
   describeColumnMetric,
+  describeTag,
   emptyMetrics,
   fiscalYearNote,
   heatColor,
@@ -17,7 +18,7 @@ import {
   sizeRatio,
   sortCompanies,
 } from './comparisonModel'
-import type { ComparisonCompany } from './comparisonTypes'
+import type { ComparisonCompany, TagSet } from './comparisonTypes'
 
 function company(code: string, metrics: Record<string, number | null>, extra: Partial<ComparisonCompany> = {}): ComparisonCompany {
   return { company_code: code, company: { company_name: `${code} Co., Ltd.`, ticker: code.slice(1) }, metrics, percentiles: {}, ...extra }
@@ -113,5 +114,29 @@ describe('comparison helpers', () => {
     expect(sizeRatio(1.333)).toBe('1.3×')
     expect(sizeRatio(0.4219)).toBe('0.42×')
     expect(sizeRatio(null)).toBe('')
+  })
+
+  it('says what a tag adds to the comparison', () => {
+    const tag = (size: number, members = size): TagSet => ({ name: 'Tag', member_count: members, companies: Array.from({ length: size }, (_, index) => ({ company_code: `E${index + 1}`, company_name: `Company ${index + 1} Co., Ltd.` })) })
+    const codes = (result: ReturnType<typeof describeTag>) => result.adds.map(company => company.company_code)
+
+    expect(describeTag(tag(3), [])).toMatchObject({ summary: '3 companies', names: 'Company 1, Company 2, Company 3', disabled: false })
+    expect(describeTag(tag(1), []).summary).toBe('1 company')
+    // Companies already compared are not added again.
+    const partly = describeTag(tag(3), ['E2', 'X1'])
+    expect(partly.summary).toBe('3 companies · adds 2')
+    expect(codes(partly)).toEqual(['E1', 'E3'])
+    // Twelve is the most a comparison holds: the first that fit are added.
+    const large = describeTag(tag(15, 24), ['X1', 'X2'])
+    expect(large.summary).toBe('15 of 24 have EDINET filings · adds the first 10')
+    expect(codes(large)).toEqual(['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8', 'E9', 'E10'])
+  })
+
+  it('does not offer a tag that would add nothing', () => {
+    const one = { company_code: 'E1', company_name: 'One' }
+    expect(describeTag({ name: 'Empty', member_count: 0, companies: [] }, [])).toMatchObject({ summary: 'No companies tagged yet', disabled: true })
+    expect(describeTag({ name: 'Funds', member_count: 2, companies: [] }, [])).toMatchObject({ summary: 'No company with EDINET filings to compare', disabled: true })
+    expect(describeTag({ name: 'One', member_count: 1, companies: [one] }, ['E1'])).toMatchObject({ summary: 'Already in the comparison', disabled: true })
+    expect(describeTag({ name: 'Two', member_count: 2, companies: [one, { company_code: 'E2' }] }, ['E2', 'E1'])).toMatchObject({ summary: 'All 2 are in the comparison', disabled: true })
   })
 })

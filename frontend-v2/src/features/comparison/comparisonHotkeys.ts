@@ -8,7 +8,7 @@ export const comparisonScope = defineScope({
   screen: 'Compare',
   hotkeys: [
     ...COMPARISON_SECTIONS.map((section, index) => ({ id: `section-${index + 1}`, keys: String(index + 1), label: `Jump to ${section}`, group: 'Sections', role: 'tab' as const })),
-    { id: 'add-company', keys: 'a', label: 'Add a company', group: 'Companies', role: 'add' },
+    { id: 'add-company', keys: 'a', label: 'Add a company or a tag', group: 'Companies', role: 'add' },
     { id: 'peers', keys: 'p', label: 'Go to the suggested peers (↑/↓, then Enter adds)', group: 'Companies' },
     { id: 'add-closest-peer', keys: 'Shift+P', label: 'Add the closest peer', group: 'Companies', role: 'add' },
     { id: 'move-company-earlier', keys: '[', label: 'Move the company earlier', group: 'Companies', role: 'previous' },

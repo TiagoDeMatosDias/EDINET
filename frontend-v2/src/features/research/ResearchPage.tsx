@@ -115,7 +115,7 @@ export default function ResearchPage() {
       {tab === 'alerts' && <AlertsView book={book.data} active={active} today={today} onOpenCompany={code => navigate(`/research?company=${encodeURIComponent(code)}`)} />}
       {tab === 'options' && <OptionsView companyCode={company} onCompany={code => update({ company: code })} active={active} />}
       {tab === 'bonds' && <BondsView companyCode={company} bondId={params.get('bond') ?? ''} onCompany={code => update({ company: code, bond: '' })} active={active} />}
-      {tab === 'bond-market' && <BondMarketView bondId={params.get('bond') ?? ''} issuer={params.get('issuer') ?? ''} onChange={update} active={active} />}
+      {tab === 'bond-market' && <BondMarketView bondId={params.get('bond') ?? ''} issuer={params.get('issuer') ?? ''} book={book.data} onChange={update} active={active} />}
     </div>
   </div>
 }

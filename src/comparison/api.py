@@ -19,6 +19,7 @@ from src.comparison.service import (
     normalize_companies,
     statement_series,
 )
+from src.comparison.tags import find_tag_sets
 from src.orchestrator.common.sqlite import connect_read, quote_identifier
 from src.security_analysis import get_security_overview, get_security_statements
 
@@ -295,6 +296,17 @@ def peers(company_code: str, limit: int = Query(default=10, ge=1, le=50)) -> dic
         raise HTTPException(status_code=400, detail="company_code is required")
     result = find_peers(_resolve_db(), [company_code.strip()], limit=limit)
     return {"company_code": company_code.strip(), "peers": result["peers"]}
+
+
+@router.get("/tags")
+def tags(request: Request) -> dict[str, Any]:
+    """The user's tags, each with the member companies a comparison can load."""
+    user = getattr(request.state, "user", None)
+    if user is None or not hasattr(user, "user_id"):
+        return {"tags": []}
+    from src.research.runtime import store as research_store
+
+    return {"tags": find_tag_sets(_resolve_db(), research_store, user.user_id)}
 
 
 @router.post("/snapshot")

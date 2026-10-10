@@ -38,6 +38,13 @@
 .cmp-companies__add .company-picker { flex: 1; min-width: 0; }
 .cmp-companies__add .company-picker > .field-label { display: none; }
 .cmp-companies__add .input { min-height: 30px; padding: 3px 8px; font-size: .82rem; }
+.cmp-companies__tagged { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 6px 6px 10px; }
+.cmp-companies__tagged-label { display: inline-flex; align-items: center; gap: 5px; margin-right: 2px; color: var(--muted); font-size: .72rem; }
+.cmp-companies__tagged-label svg { width: 12px; height: 12px; }
+.cmp-companies__tagged .cmp-pill { gap: 3px; }
+.cmp-companies__tagged .cmp-pill svg { width: 11px; height: 11px; }
+.cmp-companies__tagged .cmp-pill:disabled { opacity: .55; cursor: not-allowed; }
+.cmp-companies__tagged .icon-button { margin-left: auto; }
 .cmp-companies__list { margin: 0; padding: 0; list-style: none; }
 .cmp-companies__list li { display: grid; grid-template-columns: 9px minmax(0, 1.7fr) 48px minmax(0, 1fr) 82px auto; align-items: center; gap: 8px; min-height: 28px; padding: 1px 6px 1px 10px; border-top: 1px solid var(--border); font-size: .8rem; }
 .cmp-companies__list li.is-cursor { background: var(--primary-soft); box-shadow: inset 2px 0 var(--ink); }

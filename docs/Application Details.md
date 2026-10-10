@@ -756,7 +756,7 @@ Responsibility: deterministic point-in-time observation selection, execution cos
 
 ### [src/comparison/api.py](../src/comparison/api.py), [src/reports/api.py](../src/reports/api.py)
 
-Responsibility: bounded comparison snapshots/history/peer endpoints and owner-scoped report ZIP generation, manifest retrieval, download, and deletion. Comparison exposes a validated table/column catalog and accepts `Table.Column` metric references for arbitrary statement-column comparisons. Report artifacts are atomically written beneath `data/reports/` and are never addressed by client-supplied filesystem paths.
+Responsibility: bounded comparison snapshots/history/peer endpoints and owner-scoped report ZIP generation, manifest retrieval, download, and deletion. Comparison exposes a validated table/column catalog and accepts `Table.Column` metric references for arbitrary statement-column comparisons. `GET /api/comparison/tags` ([src/comparison/tags.py](../src/comparison/tags.py)) returns the signed-in user's tags as sets to compare: each tag's member count and, in the order they were tagged, the members found in the market database with their name, ticker, and industry. Report artifacts are atomically written beneath `data/reports/` and are never addressed by client-supplied filesystem paths.
 
 ### Authenticated portfolio analytical previews
 

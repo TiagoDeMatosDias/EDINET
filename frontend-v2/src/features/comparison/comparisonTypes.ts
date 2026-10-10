@@ -70,6 +70,14 @@ export interface CompanyInfo {
   industry?: string
 }
 
+/** A tag as a set to compare: ``companies`` are its members with financial data, in the order they were tagged. */
+export interface TagSet {
+  name: string
+  /** Every member, including holdings without EDINET filings that a comparison cannot load. */
+  member_count: number
+  companies: CompanyInfo[]
+}
+
 export interface SavedComparison {
   template_id: string
   name: string

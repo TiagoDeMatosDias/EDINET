@@ -1,3 +1,4 @@
+import { isPositionTag } from '../research/researchModel'
 import type { Bond, CouponKind, MarketBond, Seniority } from './bondTypes'
 
 export const SENIORITY_LABELS: Record<Seniority, string> = {
@@ -141,6 +142,47 @@ export interface MarketFilters {
   includePrivate: boolean
   yenOnly: boolean
   issuer: string
+  /** Show only bonds whose issuer carries any of these tags. */
+  tags: string[]
+}
+
+/** A tag as a bond filter: of the companies under it, those with bonds in the market. */
+export interface MarketTag {
+  name: string
+  members: number
+  issuers: string[]
+}
+
+/**
+ * The user's tags against the bonds listed: each tag with its companies that
+ * issued any of them (position tags first, then by name), and each issuer's
+ * tags. A tag none of whose companies has a bond listed is left out.
+ */
+export function marketTags(tagged: Array<{ company_code: string; tags: string[] }>, bonds: MarketBond[]) {
+  const issuers = new Set(bonds.map(bond => bond.edinet_code))
+  const byName = new Map<string, MarketTag>()
+  const byIssuer: Record<string, string[]> = {}
+  for (const company of tagged) {
+    const issues = issuers.has(company.company_code)
+    if (issues && company.tags.length) byIssuer[company.company_code] = company.tags
+    for (const name of company.tags) {
+      const tag = byName.get(name) ?? { name, members: 0, issuers: [] }
+      tag.members += 1
+      if (issues) tag.issuers.push(company.company_code)
+      byName.set(name, tag)
+    }
+  }
+  const tags = [...byName.values()]
+    .filter(tag => tag.issuers.length > 0)
+    .sort((a, b) => Number(isPositionTag(b.name)) - Number(isPositionTag(a.name)) || a.name.localeCompare(b.name))
+  return { tags, byIssuer }
+}
+
+/** The tag the typed text names: one starting with it, otherwise one containing it. */
+export function matchTag<T extends { name: string }>(tags: T[], query: string) {
+  const text = query.trim().toLowerCase()
+  if (!text) return undefined
+  return tags.find(tag => tag.name.toLowerCase().startsWith(text)) ?? tags.find(tag => tag.name.toLowerCase().includes(text))
 }
 
 export const DEFAULT_FILTERS: MarketFilters = {
@@ -153,13 +195,17 @@ export const DEFAULT_FILTERS: MarketFilters = {
   includePrivate: false,
   yenOnly: true,
   issuer: '',
+  tags: [],
 }
 
-export function filterBonds(bonds: MarketBond[], companies: Record<string, { company_name: string; company_name_en?: string; ticker?: string; industry?: string }>, filters: MarketFilters) {
+/** ``issuerTags`` gives each issuer's tags: the tag filter reads them, and the text filter matches their names too. */
+export function filterBonds(bonds: MarketBond[], companies: Record<string, { company_name: string; company_name_en?: string; ticker?: string; industry?: string }>, filters: MarketFilters, issuerTags: Record<string, string[]> = {}) {
   const query = filters.query.trim().toLowerCase()
   return bonds.filter(bond => {
     const company = companies[bond.edinet_code]
+    const tags = issuerTags[bond.edinet_code] ?? []
     if (filters.issuer && bond.edinet_code !== filters.issuer) return false
+    if (filters.tags.length && !filters.tags.some(tag => tags.includes(tag))) return false
     if (!filters.includePrivate && bond.private) return false
     if (filters.yenOnly && (bond.currency ?? 'JPY') !== 'JPY') return false
     if (filters.ratings.length && !filters.ratings.includes(ratingGroup(bond.rating_notch))) return false
@@ -169,7 +215,7 @@ export function filterBonds(bonds: MarketBond[], companies: Record<string, { com
     if (filters.minYears != null && (years == null || years < filters.minYears)) return false
     if (filters.maxYears != null && (years == null || years > filters.maxYears)) return false
     if (query) {
-      const text = [bond.label, company?.company_name, company?.company_name_en, company?.ticker, bond.edinet_code].filter(Boolean).join(' ').toLowerCase()
+      const text = [bond.label, company?.company_name, company?.company_name_en, company?.ticker, bond.edinet_code, ...tags].filter(Boolean).join(' ').toLowerCase()
       if (!text.includes(query)) return false
     }
     return true

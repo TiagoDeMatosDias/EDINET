@@ -16,7 +16,7 @@ import { downloadTextFile, safeFileName } from '../analysis/downloads'
 import { RankingChart, ScatterChart, TrendChart } from './ComparisonCharts'
 import { ComparisonMatrix } from './ComparisonMatrix'
 import { companyName, comparisonCsv, currencyNote, describeColumnMetric, emptyMetrics, fiscalYearNote, formatPeriod, MAX_COMPANIES, orderMetrics, parseCodes, shortName, sortCompanies } from './comparisonModel'
-import type { CompanyInfo, ComparisonResponse, MetricCatalogResponse, Peer, PeersResponse, TrendsResponse } from './comparisonTypes'
+import type { CompanyInfo, ComparisonResponse, MetricCatalogResponse, Peer, PeersResponse, TagSet, TrendsResponse } from './comparisonTypes'
 import { CompanyPanel } from './CompanyPanel'
 import { ComparisonStart } from './ComparisonStart'
 import { MetricBar } from './MetricBar'
@@ -28,6 +28,7 @@ import './comparison.css'
 const DEFAULT_SCATTER = { x: 'PriceToBook', y: 'ReturnOnEquity' }
 // Up to this many companies, the charts sit beside the table on wide screens.
 const SIDE_BY_SIDE = 4
+const NO_TAGS: TagSet[] = []
 
 function sameList(a: string[], b: string[]) {
   return a.length === b.length && a.every((item, index) => item === b[index])
@@ -74,6 +75,14 @@ export default function ComparisonPage() {
     placeholderData: keepPreviousData,
     staleTime: 5 * 60_000,
   })
+  // Read again on every visit, so a tag edited in Research is current here.
+  const tagSets = useQuery({
+    queryKey: ['comparison-tags'],
+    queryFn: () => apiRequest<{ tags: TagSet[] }>('/api/comparison/tags'),
+    retry: false,
+    staleTime: 0,
+  })
+  const tags = tagSets.data?.tags ?? NO_TAGS
 
   const [known, setKnown] = useState<Record<string, CompanyInfo>>({})
   const remember = useCallback((items: CompanyInfo[]) => setKnown(previous => {
@@ -135,6 +144,8 @@ export default function ComparisonPage() {
   const [trendPick, setTrendPick] = useState<{ metric: string; atCursor: string | null } | null>(null)
   const [saved, setSaved] = useState<{ open: boolean; saving: boolean }>({ open: false, saving: false })
   const [copied, setCopied] = useState(false)
+  // The tag companies were last added from: its other companies stay on offer.
+  const [addedTag, setAddedTag] = useState<string | null>(null)
 
   const byCode = useMemo(() => new Map((result?.companies ?? []).map(company => [company.company_code, company])), [result])
   const ordered = codes.map(code => byCode.get(code)).filter((company): company is NonNullable<typeof company> => Boolean(company))
@@ -171,6 +182,14 @@ export default function ComparisonPage() {
     update({ codes: [...codes, ...fresh.map(item => item.company_code)] })
   }
   const addPeers = (items: Peer[]) => addCompanies(items.map(peer => ({ company_code: peer.company_code, company_name: peer.company_name, ticker: peer.ticker, industry: peer.industry })))
+  const addTag = (name: string) => {
+    const tag = tags.find(item => item.name === name)
+    if (!tag) return
+    setAddedTag(name)
+    addCompanies(tag.companies)
+  }
+  const addedTagSet = tags.find(tag => tag.name === addedTag)
+  const tagRest = addedTagSet ? { tag: addedTagSet.name, companies: addedTagSet.companies.filter(company => !codes.includes(company.company_code)) } : null
   const removeCompany = (code: string | null) => {
     if (!code) return
     const index = viewCodes.indexOf(code)
@@ -239,6 +258,7 @@ export default function ComparisonPage() {
   }
   const loadSaved = (savedCodes: string[], metrics: string[]) => {
     setSortMetric(null)
+    setAddedTag(null)
     setCursor({ metric: null, code: null })
     update({ codes: parseCodes(savedCodes.join(',')), metrics: metrics.length ? metrics : standard })
   }
@@ -299,8 +319,12 @@ export default function ComparisonPage() {
           periods={Object.fromEntries(ordered.map(company => [company.company_code, company.period_end]))}
           cursorCode={ordered.length ? cursorCode : null}
           inputRef={addInput}
-          actions={codes.length > 0 && <button type="button" className="button button--ghost button--small" onClick={() => { setSortMetric(null); update({ codes: [] }) }}>Clear</button>}
-          onAdd={company => company.company_code && addCompanies([{ company_code: company.company_code, company_name: company.company_name, ticker: company.ticker, industry: company.industry }])}
+          actions={codes.length > 0 && <button type="button" className="button button--ghost button--small" onClick={() => { setSortMetric(null); setAddedTag(null); update({ codes: [] }) }}>Clear</button>}
+          tags={tags}
+          tagRest={tagRest}
+          onAdd={addCompanies}
+          onAddTag={addTag}
+          onDismissTag={() => setAddedTag(null)}
           onRemove={removeCompany}
           onMove={moveCompany}
           onCursor={code => setCursor(current => ({ ...current, code }))}
@@ -312,7 +336,7 @@ export default function ComparisonPage() {
       <MetricBar standard={standard} definitions={definitions} selected={selectedMetrics} catalog={catalog.data?.tables ?? {}} searchRef={metricInput} onChange={setMetrics} onFocusMetric={focusMetric} />
       {catalog.error && <p className="form-error">Could not load the metric catalog; the comparison uses the standard metrics.</p>}
     </div>
-    {codes.length === 0 && <ComparisonStart onLoad={loadSaved} />}
+    {codes.length === 0 && <ComparisonStart tags={tags} onLoad={loadSaved} onAddTag={addTag} />}
     {codes.length === 1 && <p className="cmp-start">Add one more company to see the table, rankings, a scatter plot, and trends.</p>}
     {loadingFirst && <LoadingState label="Comparing companies" />}
     {snapshot.error && !result && <ErrorState error={snapshot.error} retry={() => void snapshot.refetch()} />}

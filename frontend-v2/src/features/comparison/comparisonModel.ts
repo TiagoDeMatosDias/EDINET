@@ -3,7 +3,7 @@ import { metricDefinition, type MetricDefinition } from '../../metrics'
 import { csvCell } from '../analysis/downloads'
 import { columnLabel, tableInfo } from '../screening/metricCatalog'
 import type { MetricDirection } from './bestValue'
-import type { ComparisonCompany, TrendCompany } from './comparisonTypes'
+import type { ComparisonCompany, TagSet, TrendCompany } from './comparisonTypes'
 
 export const MAX_COMPANIES = 12
 
@@ -33,6 +33,29 @@ export function parseList(text: string) {
 /** Company codes from a ``companies=`` parameter: trimmed, unique, at most twelve. */
 export function parseCodes(value: string | null | undefined) {
   return [...new Set((value ?? '').split(',').map(code => code.trim()).filter(Boolean))].slice(0, MAX_COMPANIES)
+}
+
+const countCompanies = (count: number) => `${count} ${count === 1 ? 'company' : 'companies'}`
+
+/**
+ * What choosing a tag does to a comparison of ``codes``: the members it adds
+ * (those not yet compared, as far as there is room), a line saying how many,
+ * and their names. A tag that would add nothing cannot be chosen.
+ */
+export function describeTag(tag: TagSet, codes: string[]) {
+  const fresh = tag.companies.filter(company => !codes.includes(company.company_code))
+  const adds = fresh.slice(0, Math.max(0, MAX_COMPANIES - codes.length))
+  const size = tag.companies.length
+  if (!adds.length) {
+    const summary = !tag.member_count ? 'No companies tagged yet'
+      : !size ? 'No company with EDINET filings to compare'
+        : fresh.length ? 'The comparison is full'
+          : size === 1 ? 'Already in the comparison' : `All ${size} are in the comparison`
+    return { adds, summary, names: '', disabled: true }
+  }
+  const members = size < tag.member_count ? `${size} of ${tag.member_count} have EDINET filings` : countCompanies(size)
+  const change = adds.length < fresh.length ? `adds the first ${adds.length}` : adds.length < size ? `adds ${adds.length}` : ''
+  return { adds, summary: [members, change].filter(Boolean).join(' · '), names: adds.map(company => shortName(company.company_name || company.company_code)).join(', '), disabled: false }
 }
 
 export interface Rank { rank: number; of: number; score: number }

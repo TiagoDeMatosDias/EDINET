@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Search, X } from 'lucide-react'
+import { Search, Tag, X } from 'lucide-react'
 import { useDeferredValue, useState, type Ref } from 'react'
 
 import { apiRequest, queryString } from '../api/client'
@@ -23,6 +23,24 @@ export function useCompanySearch(query: string, limit = 8) {
   })
 }
 
+/** A tag listed beside the companies: choosing it stands for its members. */
+export interface PickerTag {
+  name: string
+  /** Shown under the name, such as how many companies the tag holds. */
+  detail?: string
+  disabled?: boolean
+}
+
+/**
+ * The tags whose name contains the typed text (every tag while nothing is
+ * typed): those starting with it first, and those that cannot be chosen last.
+ */
+function matchTags(tags: PickerTag[], query: string) {
+  const text = query.trim().toLowerCase()
+  const rank = (tag: PickerTag) => (tag.disabled ? 2 : 0) + (tag.name.toLowerCase().startsWith(text) ? 0 : 1)
+  return tags.filter(tag => tag.name.toLowerCase().includes(text)).sort((a, b) => rank(a) - rank(b))
+}
+
 function companyMeta(company: SecuritySearchResult) {
   return [company.ticker, company.company_code, company.industry, company.market]
     .filter(Boolean)
@@ -39,7 +57,12 @@ interface CompanyPickerProps {
   disabled?: boolean
   /** Lets a page focus the finder from a keyboard shortcut. */
   inputRef?: Ref<HTMLInputElement>
+  /** Tags to find by name as well; they are listed before the companies, and as soon as the finder has focus. */
+  tags?: PickerTag[]
+  onSelectTag?: (name: string) => void
 }
+
+const NO_TAGS: PickerTag[] = []
 
 export function CompanyPicker({
   selected,
@@ -50,6 +73,8 @@ export function CompanyPicker({
   requireCompanyCode = true,
   disabled = false,
   inputRef,
+  tags = NO_TAGS,
+  onSelectTag,
 }: CompanyPickerProps) {
   const [typedQuery, setTypedQuery] = useState('')
   const [open, setOpen] = useState(false)
@@ -66,32 +91,48 @@ export function CompanyPicker({
     else setTypedQuery(company.company_name || company.ticker || company.company_code || '')
   }
 
+  const chooseTag = (tag: PickerTag) => {
+    if (tag.disabled) return
+    onSelectTag?.(tag.name)
+    setOpen(false)
+    setTypedQuery('')
+  }
+
   const clear = () => {
     onSelect(null)
     setTypedQuery('')
     setOpen(false)
   }
 
-  const results = search.data?.results ?? []
+  const searching = query.trim().length >= 2
+  const results = searching ? search.data?.results ?? [] : []
+  const tagMatches = matchTags(tags, query)
+  const showing = open && (searching || tagMatches.length > 0)
+  // One cursor runs through the tags, then the companies.
+  const choosableTags = tagMatches.filter(tag => !tag.disabled)
   const choosable = results.filter(company => !requireCompanyCode || company.company_code)
-  const activeIndex = Math.min(active, Math.max(0, choosable.length - 1))
+  const count = choosableTags.length + choosable.length
+  const activeIndex = Math.min(active, Math.max(0, count - 1))
+  const activeTag = choosableTags[activeIndex]
+  const activeCompany = choosable[activeIndex - choosableTags.length]
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Escape') {
-      if (open) setOpen(false)
+      if (showing) setOpen(false)
       else event.currentTarget.blur()
       return
     }
     if (event.key === 'Enter') {
-      if (open && choosable[activeIndex]) {
+      if (showing && (activeTag || activeCompany)) {
         event.preventDefault()
-        choose(choosable[activeIndex])
+        if (activeTag) chooseTag(activeTag)
+        else choose(activeCompany)
       }
       return
     }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
     event.preventDefault()
     setOpen(true)
-    if (choosable.length) setActive((activeIndex + (event.key === 'ArrowDown' ? 1 : -1) + choosable.length) % choosable.length)
+    if (count) setActive((activeIndex + (event.key === 'ArrowDown' ? 1 : -1) + count) % count)
   }
   return (
     <div
@@ -109,7 +150,7 @@ export function CompanyPicker({
           className="input"
           role="combobox"
           aria-label={label}
-          aria-expanded={open && query.trim().length >= 2}
+          aria-expanded={showing}
           aria-autocomplete="list"
           value={query}
           disabled={disabled}
@@ -121,23 +162,41 @@ export function CompanyPicker({
             setOpen(true)
             setActive(0)
           }}
+          onClick={() => setOpen(true)}
           onKeyDown={onKeyDown}
         />
         {selected && <button type="button" className="icon-button" aria-label={`Clear ${label}`} onClick={clear}><X /></button>}
       </div>
-      {open && query.trim().length >= 2 && (
+      {showing && (
         <div className="company-picker-results" role="listbox">
-          {search.isLoading && <span className="company-picker-status">Searching…</span>}
-          {!search.isLoading && results.length === 0 && <span className="company-picker-status">No companies found</span>}
+          {tagMatches.map(tag => (
+            <button
+              type="button"
+              role="option"
+              key={`tag-${tag.name}`}
+              aria-selected={activeTag === tag}
+              className={activeTag === tag ? 'company-picker-tag active' : 'company-picker-tag'}
+              tabIndex={-1}
+              onMouseEnter={() => { const index = choosableTags.indexOf(tag); if (index !== -1) setActive(index) }}
+              disabled={tag.disabled}
+              onMouseDown={event => event.preventDefault()}
+              onClick={() => chooseTag(tag)}
+            >
+              <strong><Tag aria-hidden="true" />{tag.name}</strong>
+              {tag.detail && <small>{tag.detail}</small>}
+            </button>
+          ))}
+          {searching && search.isLoading && <span className="company-picker-status">Searching…</span>}
+          {searching && !search.isLoading && results.length === 0 && tagMatches.length === 0 && <span className="company-picker-status">No companies found</span>}
           {results.map(company => (
             <button
               type="button"
               role="option"
               key={`${company.company_code ?? 'ticker'}-${company.ticker}-${company.company_name}`}
-              aria-selected={choosable[activeIndex] === company}
-              className={choosable[activeIndex] === company ? 'active' : undefined}
+              aria-selected={activeCompany === company}
+              className={activeCompany === company ? 'active' : undefined}
               tabIndex={-1}
-              onMouseEnter={() => { const index = choosable.indexOf(company); if (index !== -1) setActive(index) }}
+              onMouseEnter={() => { const index = choosable.indexOf(company); if (index !== -1) setActive(choosableTags.length + index) }}
               disabled={requireCompanyCode && !company.company_code}
               onMouseDown={event => event.preventDefault()}
               onClick={() => choose(company)}
