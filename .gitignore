@@ -10,6 +10,7 @@ tests/.pytest-tmp-*/
 .venv/
 .venv2/
 .venv3/
+.venv-build/
 .claude/
 .env
 docs/Feature Development/*

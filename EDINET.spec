@@ -113,7 +113,9 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX-compressed torch DLLs fail to load on Windows (WinError 998 on c10.dll),
+    # which takes the translator down with them.
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,

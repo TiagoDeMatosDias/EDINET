@@ -210,7 +210,7 @@ Ratio and rolling-metric definitions ship with the code in `src/orchestrator/gen
 
 - [User Guide](docs/USER_GUIDE.md) — user-facing workflows and complete screenshot gallery
 - [Running the Application](docs/RUNNING.md) — setup, security, database storage, and every pipeline step
-- [Building the Windows Release](docs/BUILDING.md) — packaged executable and ZIP workflow
+- [Building the Release](docs/BUILDING.md) — one-step launchers and the packaged Windows and Linux executables
 - [Frontend Architecture](docs/Frontend%20Architecture.md) — routes, state, components, and extension guide
 - [Python Source File Reference](docs/Application%20Details.md) — backend module responsibilities and contracts
 - [Contributing](docs/Contributing.md) — development and bounded verification workflow
@@ -225,13 +225,13 @@ Run all bounded backend, integration, frontend, static, contract, dependency, an
 .\.venv3\Scripts\python.exe -B scripts\verify.py
 ```
 
-Build the Windows release with:
+Build the release by double-clicking `build.sh` on Linux or `build.bat` on Windows; each fills its own folder, `release/linux/` or `release/windows/`. The launchers set up their own build environment and then run:
 
 ```powershell
-.\.venv3\Scripts\python.exe -B scripts\build.py
+.\.venv-build\windows\Scripts\python.exe -B scripts\build.py
 ```
 
-The release is `ShadeResearch.exe` alone; it creates `data/` on first start and never bundles development databases, credentials, logs, uploads, or portfolio data.
+The release is the executable alone (`ShadeResearch.exe` or `ShadeResearch`); it creates `data/` on first start and never bundles development databases, credentials, logs, uploads, or portfolio data.
 
 ## Common EDINET document type codes
 

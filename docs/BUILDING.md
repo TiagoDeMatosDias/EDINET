@@ -2,7 +2,17 @@
 
 Updated: 2026-07-30
 
-Windows and Linux are the packaged targets. PyInstaller cannot cross-compile, so each is built on its own platform (the `release` workflow builds both). Use Python 3.12 or 3.13, Node.js 22/npm 10, and the declared `build` dependency group.
+Windows and Linux are the packaged targets. PyInstaller cannot cross-compile, so each is built on its own platform (the `release` workflow builds both).
+
+## One step
+
+Double-click `build.sh` on Linux or `build.bat` on Windows, in the project folder. It needs Python 3.12 or 3.13 and Node.js 22/npm 10 installed, and fills `release/linux/` or `release/windows/`.
+
+The first run creates a build environment in `.venv-build/` (the CPU build of torch, then the `build` dependency group), which takes a few minutes; it is reinstalled only when `pyproject.toml` or `constraints.txt` changes. The launcher then runs `scripts/build.py`, described below, and keeps its window open until Enter is pressed. On Linux the file manager must be set to run executable files rather than open them; the launcher opens a terminal window itself. Arguments are passed on: `./build.sh --check` runs the preflight only.
+
+## By hand
+
+Use Python 3.12 or 3.13, Node.js 22/npm 10, and the declared `build` dependency group.
 
 ```powershell
 py -3.13 -m venv .venv3
@@ -77,7 +87,7 @@ Never copy a development `data/` folder into a release.
 
 ## Size
 
-The Linux executable is about 465 MB and the Windows one about 255 MB. The Windows libraries are smaller before compression (0.9 GB against 1.4 GB; torch alone is 376 MB against 668 MB), and the Windows build is also packed with UPX. Before compression the Linux bundle holds:
+The Linux executable is about 465 MB and the Windows one about 330 MB; the Windows libraries are smaller before compression (0.9 GB against 1.4 GB; torch alone is 376 MB against 668 MB). UPX is switched off in `EDINET.spec`: it saved about 65 MB on Windows, but torch DLLs compressed with it fail to load (`WinError 998` on `c10.dll`), which breaks the translator. Before compression the Linux bundle holds:
 
 | Part | Size |
 | --- | --- |
@@ -90,7 +100,7 @@ A CUDA build of torch turns that 1.4 GB into 5 GB (a 2.8 GB executable): 2.5 GB 
 
 ## Building the Windows executable from Linux
 
-With no Windows machine, `release/windows/ShadeResearch.exe` was built inside Wine 11 (the `tobix/pywine:3.13` container, upgraded with `winehq-devel`; Wine 10 lacks a C runtime function numpy needs). Two Wine-only workarounds: PyInstaller's binary-dependency scan imports every `torch.*` submodule and Wine crashes on some, so that loop skips them (`torch` itself is still imported), and the spec enumerates `src.orchestrator` from the source tree instead of importing it. The result was smoke-tested under Wine (`config set`, `/health`, `/api/steps`, `data/` created). Prefer the `release` workflow on a real Windows runner for published releases.
+With no Windows machine, `release/windows/ShadeResearch.exe` was built inside Wine 11 (the `tobix/pywine:3.13` container, upgraded with `winehq-devel`; Wine 10 lacks a C runtime function numpy needs). Three Wine-only steps: PyInstaller's binary-dependency scan imports every `torch.*` submodule and Wine crashes on some, so that loop skips them (`torch` itself is still imported); the spec enumerates `src.orchestrator` from the source tree instead of importing it; and `pip install msvc-runtime` puts Microsoft's C++ runtime DLLs beside `python.exe`, because PyInstaller leaves out Wine's own copies and torch would then need the Visual C++ Redistributable on the target PC. The result was smoke-tested under Wine (`--help`, `config set`, `/health`, `/api/steps`, `data/` created, one translation). Prefer the `release` workflow on a real Windows runner for published releases.
 
 ## Hidden imports
 

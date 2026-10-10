@@ -288,7 +288,7 @@ def _hold_window_open() -> None:
 if __name__ == '__main__':
     try:
         code = main()
-    except BaseException:
+    except Exception:
         import traceback
 
         traceback.print_exc()

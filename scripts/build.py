@@ -117,6 +117,8 @@ def preflight() -> None:
             "--index-url https://download.pytorch.org/whl/cpu"
         )
     npm = "npm.cmd" if os.name == "nt" else "npm"
+    if shutil.which(npm) is None:
+        raise RuntimeError("npm is missing; install Node.js 22, which includes it")
     run([npm, "--version"], cwd=FRONTEND_ROOT, timeout=15)
     print(f"Build preflight passed for Shade Research {__version__}")
 
