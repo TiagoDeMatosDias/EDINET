@@ -12,7 +12,7 @@ import { bondsPanelScope } from '../analysis/analysisHotkeys'
 import { filingHref } from '../filings/filingFormat'
 import { formatDay, formatNumber, formatPercent } from '../research/researchModel'
 import { CurveChart, MaturityLadderChart } from './BondCharts'
-import { bondMarketHref, calculatorHref, COUPON_KIND_LABELS, FEATURE_LABELS, featureTags, formatBp, formatCoupon, formatYears, formatYen, ratingText, SENIORITY_LABELS } from './bondFormat'
+import { bondMarketHref, calculatorHref, COUPON_KIND_LABELS, FEATURE_LABELS, featureTags, filedTitle, formatBp, formatCoupon, formatYears, formatYen, maturityText, ratingText, SENIORITY_LABELS } from './bondFormat'
 import { useCompanyBonds } from './bondQueries'
 import type { Bond, CompanyBonds } from './bondTypes'
 import '../research/research.css'
@@ -117,11 +117,11 @@ function BondRow({ bond, hasGroup, companyCode, onOpen }: { bond: Bond; hasGroup
         </small>
       </span>
     </th>
-    {hasGroup && <td className="bd-issuer">{bond.is_parent ? <span className="rs-dim">Company</span> : bond.issuer}</td>}
+    {hasGroup && <td className="bd-issuer" title={bond.is_parent ? undefined : filedTitle(bond.issuer, bond.issuer_ja)}>{bond.is_parent ? <span className="rs-dim">Company</span> : bond.issuer}</td>}
     <td>{SENIORITY_LABELS[bond.seniority] ?? bond.seniority}</td>
     <td className="num">{formatCoupon(bond)}</td>
     <td>{bond.issue_date ? formatDay(bond.issue_date) : <span className="rs-dim">—</span>}</td>
-    <td>{bond.maturity ? formatDay(bond.maturity) : bond.perpetual ? 'Perpetual' : <span className="rs-dim" title={bond.maturity_text ?? undefined}>{bond.maturity_text || '—'}</span>}{bond.call_date && <small className="bd-sub">call {formatDay(bond.call_date)}</small>}</td>
+    <td>{bond.maturity ? formatDay(bond.maturity) : bond.perpetual ? 'Perpetual' : <span className="rs-dim" title={bond.maturity_text ? `Filed as ${bond.maturity_text}` : undefined}>{maturityText(bond.maturity_text) || '—'}</span>}{bond.call_date && <small className="bd-sub">call {formatDay(bond.call_date)}</small>}</td>
     <td className="num">{formatYears(bond.years_to_maturity)}</td>
     <td className="num" title={bond.outstanding_as_of ? `As of ${formatDay(bond.outstanding_as_of)}` : bond.outstanding == null ? 'Reported in a group of bonds in the annual report' : undefined}>{bond.outstanding == null ? <span className="rs-dim">in group</span> : bond.currency === 'JPY' ? formatYen(bond.outstanding) : <>{formatYen(bond.outstanding)}<small className="bd-sub">yen value</small></>}</td>
     <td>{ratingText(bond)}</td>
@@ -155,6 +155,6 @@ function Sources({ data, companyCode }: { data: CompanyBonds; companyCode: strin
       </li>)}
     </ul>
     {error && <p className="form-error" role="alert">{error}</p>}
-    <p className="rs-hint">Terms come from the shelf-registration supplements (発行登録追補書類) filed when each bond was priced; balances from the bond schedule (社債明細表) in the annual report. EDINET shows supplements while their shelf registration is open; the ZIP is the copy kept here.</p>
+    <p className="rs-hint">Terms come from the shelf-registration supplements filed when each bond was priced; balances from the bond schedule in the annual report. EDINET shows supplements while their shelf registration is open; the ZIP is the copy kept here.</p>
   </details>
 }

@@ -19,7 +19,7 @@ import statistics
 from datetime import date, timedelta
 from typing import Any
 
-from .parsing import compact
+from .names import CompanyDirectory
 from .store import decode
 from .valuation import Curve, CurveBook, clean_price, modified_duration, year_fraction
 
@@ -155,8 +155,16 @@ def _documents(conn: sqlite3.Connection, edinet_code: str, catalogued: set[str])
     ]
 
 
-def _with_links(bond: dict[str, Any]) -> dict[str, Any]:
-    bond["label"] = short_label(bond.get("name"), bond.get("company_name"))
+def _subsidiary_labels(conn: sqlite3.Connection, directory: CompanyDirectory, edinet_code: str) -> dict[str, str]:
+    """Labels for the issuers in this group's bonds that have a name only in Japanese."""
+    rows = conn.execute("SELECT company_name, company_name_en, issuer FROM Bonds WHERE edinet_code = ? AND is_parent = 0", (edinet_code,)).fetchall()
+    if not rows:
+        return {}
+    return directory.subsidiary_labels(edinet_code, rows[0]["company_name"] or "", rows[0]["company_name_en"], [row["issuer"] or "" for row in rows])
+
+
+def _with_links(bond: dict[str, Any], directory: CompanyDirectory, subsidiaries: dict[str, str] | None = None) -> dict[str, Any]:
+    directory.present(bond, subsidiaries)
     bond["issuance_url"] = edinet_link(bond.get("issuance_doc_id"))
     bond["schedule_url"] = edinet_link(bond.get("schedule_doc_id"))
     return bond
@@ -170,9 +178,11 @@ def company_bonds(path: str, edinet_code: str, *, today: str | None = None, cata
         bonds = [decode(row) for row in conn.execute("SELECT * FROM Bonds WHERE edinet_code = ? ORDER BY maturity IS NULL, maturity, name", (edinet_code,))]
         curves = _curves(conn)
         curve = curves.latest()
+        directory = CompanyDirectory.load(conn)
+        subsidiaries = _subsidiary_labels(conn, directory, edinet_code)
         for bond in bonds:
             bond.update(value_bond(bond, curve, today))
-            _with_links(bond)
+            _with_links(bond, directory, subsidiaries)
         documents = _documents(conn, edinet_code, catalogued or set())
         peers = _peer_spreads(conn, today)
     finally:
@@ -203,7 +213,7 @@ def company_bonds(path: str, edinet_code: str, *, today: str | None = None, cata
     first = bonds[0] if bonds else {}
     return {
         "edinet_code": edinet_code,
-        "company_name": first.get("company_name"),
+        "company_name": first.get("company_name") or directory.by_code.get(edinet_code, {}).get("name"),
         "today": today,
         "curve": curve_payload(curves),
         "summary": {
@@ -240,22 +250,7 @@ def _peer_spreads(conn: sqlite3.Connection, today: str) -> list[tuple[float, flo
     return [(row[0], row[1]) for row in rows]
 
 
-_COMPANY_FIELDS = ("company_name", "company_name_en", "ticker", "industry", "listed")
-_BOILERPLATE = ("(特定社債間限定同順位特約付)", "(社債間限定同順位特約付)", "(社債間限定同順位特約付き)")
-
-
-def short_label(name: str | None, company_name: str | None) -> str:
-    """A supplement names the issuer first ("ダイキン工業株式会社第36回…"); the company is shown beside it already."""
-    label = compact(name or "")
-    company = compact(company_name or "")
-    if company and label.startswith(company) and len(label) > len(company):
-        label = label[len(company):]
-    # Nearly every senior bond ranks pari passu with the issuer's other bonds; saying so adds nothing.
-    for boilerplate in _BOILERPLATE:
-        label = label.replace(boilerplate, "")
-    return label or compact(name or "")
-
-
+_COMPANY_FIELDS = ("company_name", "company_name_ja", "ticker", "industry", "listed")
 _FLAGS = {"perpetual", "private", "rating_inferred"}
 _DETAIL_ONLY = {"outstanding_as_of", "issue_tenor", "issue_yield"}
 
@@ -285,6 +280,7 @@ def universe(path: str, *, today: str | None = None, include_group: bool = False
         bonds = [decode(row) for row in conn.execute(f"SELECT {', '.join(UNIVERSE_FIELDS)} FROM Bonds WHERE {where} ORDER BY maturity")]
         curves = _curves(conn)
         updates = _updates(conn)
+        directory = CompanyDirectory.load(conn)
     finally:
         conn.close()
     curve = curves.latest()
@@ -292,7 +288,7 @@ def universe(path: str, *, today: str | None = None, include_group: bool = False
     rows = []
     for bond in bonds:
         bond.update(value_bond(bond, curve, today))
-        bond["label"] = short_label(bond.get("name"), bond.get("company_name"))
+        directory.present(bond)
         bond.pop("name", None)
         companies.setdefault(bond["edinet_code"], {key: bond.get(key) for key in _COMPANY_FIELDS})
         rows.append(_compact_bond(bond))
@@ -368,7 +364,9 @@ def bond_detail(path: str, bond_id: str, *, today: str | None = None) -> dict[st
         row = conn.execute("SELECT * FROM Bonds WHERE bond_id = ?", (bond_id,)).fetchone()
         if row is None:
             return None
-        bond = _with_links(decode(row))
+        directory = CompanyDirectory.load(conn)
+        bond = decode(row)
+        _with_links(bond, directory, None if bond.get("is_parent") else _subsidiary_labels(conn, directory, bond["edinet_code"]))
         curves = _curves(conn)
         curve = curves.latest()
         bond.update(value_bond(bond, curve, today))
@@ -395,11 +393,11 @@ def bond_detail(path: str, bond_id: str, *, today: str | None = None) -> dict[st
         conn.close()
     for other in others:
         other.update(value_bond(other, curve, today))
-        other["label"] = short_label(other.get("name"), other.get("company_name"))
+        directory.present(other)
     issuer_bonds = [other for other in others if other["edinet_code"] == bond["edinet_code"] and other["bond_id"] != bond_id]
     peers = [other for other in others if other["edinet_code"] != bond["edinet_code"]]
     ranked = sorted(peers, key=lambda other: _distance(bond, other, today))
-    similar = []
+    similar: list[dict[str, Any]] = []
     for other in ranked:
         if len(similar) >= SIMILAR_LIMIT:
             break

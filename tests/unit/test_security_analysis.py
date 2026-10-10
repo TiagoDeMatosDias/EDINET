@@ -384,6 +384,27 @@ def test_search_securities_uses_submitter_name_fallback(security_db):
     assert results[0]["company_name"] == "Delta Seeds KK"
 
 
+def test_search_finds_a_company_by_its_japanese_filer_name_when_it_is_shown_in_english(tmp_path):
+    db_path = str(tmp_path / "bilingual.db")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute('CREATE TABLE CompanyInfo (Company_Code TEXT, Company_Name TEXT, "Submitter Name" TEXT, Company_Ticker TEXT)')
+        conn.executemany("INSERT INTO CompanyInfo VALUES (?, ?, ?, ?)", [
+            ("E90001", "Nippon Yusen Kabushiki Kaisha", "日本郵船株式会社", "91010"),
+            ("E90002", "TKP Corporation", "株式会社ＴＫＰ", "34790"),
+            ("E90003", "", "無名商事株式会社", "99990"),
+        ])
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert [item["company_name"] for item in search_securities(db_path, "日本郵船")] == ["Nippon Yusen Kabushiki Kaisha"]
+    assert [item["company_code"] for item in search_securities(db_path, "nippon yusen")] == ["E90001"]
+    # Filers write Latin letters full-width; the query is typed half-width.
+    assert [item["company_code"] for item in search_securities(db_path, "株式会社tkp")] == ["E90002"]
+    assert [item["company_name"] for item in search_securities(db_path, "無名商事")] == ["無名商事株式会社"]
+
+
 def test_search_securities_works_with_company_info_only(tmp_path):
     db_path = str(tmp_path / "company_only.db")
     conn = sqlite3.connect(db_path)

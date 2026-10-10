@@ -36,11 +36,15 @@ export interface MarketQuote {
   market_reporters?: number | null
 }
 
-/** One bond as the market view sends it; company fields are in ``companies``. */
+/**
+ * One bond as the market view sends it; company fields are in ``companies``.
+ * ``label`` is the bond's title in English, ``label_ja`` the title as filed where that differs.
+ */
 export interface MarketBond extends BondValuation, MarketQuote {
   bond_id: string
   edinet_code: string
   label: string
+  label_ja?: string | null
   series?: number
   currency?: string
   seniority: Seniority
@@ -62,9 +66,10 @@ export interface MarketBond extends BondValuation, MarketQuote {
   issue_spread?: number
 }
 
+/** A company as Company Analysis names it; ``company_name_ja`` is the filer's Japanese name where that differs. */
 export interface BondCompany {
   company_name: string
-  company_name_en?: string
+  company_name_ja?: string | null
   ticker?: string
   industry?: string
   listed?: number
@@ -83,13 +88,17 @@ export interface Bond extends BondValuation, MarketQuote {
   bond_id: string
   edinet_code: string
   company_name: string
-  company_name_en?: string
+  company_name_ja?: string | null
   ticker?: string
   industry?: string
+  /** The issuer in English: the company, or a subsidiary as its annual report names it unless it files with EDINET itself. */
   issuer: string
+  issuer_ja?: string | null
   is_parent: number
+  /** The bond's full title as filed. */
   name: string
   label: string
+  label_ja?: string | null
   series: number | null
   currency: string
   seniority: Seniority

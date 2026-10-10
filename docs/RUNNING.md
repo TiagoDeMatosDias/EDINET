@@ -263,6 +263,15 @@ When `csv_file` is blank, the app downloads the official English EDINET code lis
 
 - `csv_file` — optional local CSV override. Leave blank to download the official English EDINET code list.
 
+The code list has no English name for most filers, well-known listed companies
+among them. After the import, each such company's latest annual report in
+`filings.db` is read for the English name it states about itself
+(`FilerNameInEnglishDEI`) and `Company_Name` is filled where the list left it
+blank; a name the list supplies is never replaced. `Company_English_Names`
+keeps each name with the filing it came from, so a later import puts the names
+back without opening the filings again. `update_bonds` runs the same fill for
+annual reports stored since.
+
 ---
 
 ### `import_stock_prices_csv`
@@ -386,14 +395,19 @@ Reads corporate bonds into the bond tables of `market.db`:
    `filings.db` (form 030000) is read for its bond schedule (社債明細表;
    the bonds-and-borrowings note for IFRS filers) into `Bond_Schedule_Rows`.
    Run `download_xbrl` first so new reports are in the catalog.
-3. **JGB curve** — the Ministry of Finance par-yield curve (`JGB_Yields`):
+3. **English company names** — fills `CompanyInfo.Company_Name`, where the
+   EDINET code list left it blank, from the English name stated in each
+   company's latest annual report (see `populate_company_info`), so the bonds
+   rebuilt below name their issuers in English like the rest of the
+   workstation.
+4. **JGB curve** — the Ministry of Finance par-yield curve (`JGB_Yields`):
    the full history on the first run or after a missed month, then the
    current month.
-4. **JSDA reference prices** — the newest daily OTC reference-price files
+5. **JSDA reference prices** — the newest daily OTC reference-price files
    (公社債店頭売買参考統計値) not stored yet, into `Bond_Market_Prices`. The
    site limits request rates: files are read ten seconds apart and a refusal
    (HTTP 429) ends this part of the run; the rest are read next time.
-5. **Merge** — rebuilds `Bonds`: one row per bond from the latest schedule
+6. **Merge** — rebuilds `Bonds`: one row per bond from the latest schedule
    plus bonds issued since, with ratings, private-placement flags, spreads at
    issue, and the matched JSDA price, yield, and spread.
 

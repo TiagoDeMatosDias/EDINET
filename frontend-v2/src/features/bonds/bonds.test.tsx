@@ -4,7 +4,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ResearchPage from '../research/ResearchPage'
-import { DEFAULT_FILTERS, displayTicker, filterBonds, formatBp, formatYen, marketCsv, marketTags, matchTag, offeringText, ratingGroup, securityText, sortBonds } from './bondFormat'
+import { DEFAULT_FILTERS, displayTicker, filedTitle, filterBonds, formatBp, formatYen, marketCsv, marketTags, matchTag, maturityText, offeringText, ratingGroup, securityText, sortBonds } from './bondFormat'
 import type { MarketBond } from './bondTypes'
 import { CompanyBondsPanel } from './CompanyBondsPanel'
 
@@ -17,18 +17,18 @@ function json(value: unknown, status = 200) {
 
 const CURVE = { date: '2026-10-07', points: [{ tenor: 1, yield: 0.016 }, { tenor: 10, yield: 0.03 }], year_ago: null }
 const COMPANIES = {
-  E1: { company_name: 'Alpha Motor', ticker: '10000', industry: 'Autos', listed: 1 },
-  E2: { company_name: 'Beta Bank', ticker: '20000', industry: 'Banks', listed: 1 },
+  E1: { company_name: 'Alpha Motor', company_name_ja: 'アルファ自動車株式会社', ticker: '10000', industry: 'Autos', listed: 1 },
+  E2: { company_name: 'Beta Bank', company_name_ja: 'ベータ銀行株式会社', ticker: '20000', industry: 'Banks', listed: 1 },
 }
 const MARKET_BONDS: MarketBond[] = [
-  { bond_id: 'B1', edinet_code: 'E1', label: '第5回無担保社債', series: 5, currency: 'JPY', seniority: 'senior', coupon: 0.0125, coupon_kind: 'fixed', frequency: 2, issue_date: '2025-09-20', maturity: '2030-09-19', outstanding: 10e9, rating: 'A+', rating_agency: 'R&I', rating_notch: 5, issue_spread: 0.0042, years_to_maturity: 3.95, horizon: 3.95, horizon_to: 'maturity', jgb_now: 0.02, model_yield: 0.0242, model_price: 95.5, market_date: '2026-10-07', market_price: 95.4, market_yield: 0.0244, market_spread: 0.0044, market_reporters: 5, spread: 0.0044, spread_basis: 'market' },
-  { bond_id: 'B2', edinet_code: 'E2', label: '第1回期限前償還条項付無担保社債(劣後特約付)', series: 1, currency: 'JPY', seniority: 'subordinated', features: ['callable', 'subordinated'], coupon: 0.021, coupon_kind: 'fixed-to-floating', frequency: 2, issue_date: '2026-01-20', maturity: '2036-01-20', call_date: '2031-01-20', outstanding: 50e9, rating: 'A', rating_agency: 'JCR', rating_notch: 6, issue_spread: 0.0098, years_to_maturity: 9.3, horizon: 4.3, horizon_to: 'call', jgb_now: 0.021, model_yield: 0.031, model_price: 95.9, spread: 0.0098, spread_basis: 'issue' },
-  { bond_id: 'B3', edinet_code: 'E2', label: '第2回無担保社債(銀行保証付)', currency: 'JPY', seniority: 'senior', features: ['guaranteed'], coupon: 0.004, coupon_kind: 'fixed', maturity: '2028-03-31', outstanding: 300e6, private: 1, years_to_maturity: 1.5, horizon: 1.5, horizon_to: 'maturity' },
+  { bond_id: 'B1', edinet_code: 'E1', label: 'Bond No. 5', label_ja: '第5回無担保社債', series: 5, currency: 'JPY', seniority: 'senior', coupon: 0.0125, coupon_kind: 'fixed', frequency: 2, issue_date: '2025-09-20', maturity: '2030-09-19', outstanding: 10e9, rating: 'A+', rating_agency: 'R&I', rating_notch: 5, issue_spread: 0.0042, years_to_maturity: 3.95, horizon: 3.95, horizon_to: 'maturity', jgb_now: 0.02, model_yield: 0.0242, model_price: 95.5, market_date: '2026-10-07', market_price: 95.4, market_yield: 0.0244, market_spread: 0.0044, market_reporters: 5, spread: 0.0044, spread_basis: 'market' },
+  { bond_id: 'B2', edinet_code: 'E2', label: 'Subordinated bond No. 1', label_ja: '第1回期限前償還条項付無担保社債(劣後特約付)', series: 1, currency: 'JPY', seniority: 'subordinated', features: ['callable', 'subordinated'], coupon: 0.021, coupon_kind: 'fixed-to-floating', frequency: 2, issue_date: '2026-01-20', maturity: '2036-01-20', call_date: '2031-01-20', outstanding: 50e9, rating: 'A', rating_agency: 'JCR', rating_notch: 6, issue_spread: 0.0098, years_to_maturity: 9.3, horizon: 4.3, horizon_to: 'call', jgb_now: 0.021, model_yield: 0.031, model_price: 95.9, spread: 0.0098, spread_basis: 'issue' },
+  { bond_id: 'B3', edinet_code: 'E2', label: 'Bond No. 2', label_ja: '第2回無担保社債(銀行保証付)', series: 2, currency: 'JPY', seniority: 'senior', features: ['guaranteed'], coupon: 0.004, coupon_kind: 'fixed', maturity: '2028-03-31', outstanding: 300e6, private: 1, years_to_maturity: 1.5, horizon: 1.5, horizon_to: 'maturity' },
 ]
 const BOND = {
   ...MARKET_BONDS[0],
   ...COMPANIES.E1,
-  issuer: 'Alpha Motor', is_parent: 1, name: 'Alpha Motor第5回無担保社債', features: [], perpetual: 0, call_date: null, maturity_text: '2030年9月19日',
+  issuer: 'Alpha Motor', issuer_ja: 'アルファ自動車株式会社', is_parent: 1, name: 'アルファ自動車株式会社第5回無担保社債(社債間限定同順位特約付)', features: [], perpetual: 0, call_date: null, maturity_text: '2030年9月19日',
   amount_issued: 10e9, issue_price: 100, outstanding_as_of: '2025-09-20', current_portion: null, status: 'outstanding', collateral: '本社債には担保及び保証は付されておらず、また本社債のために特に留保されている資産はない。',
   offering: '一般募集', private: 0, ratings: [{ agency: 'R&I', rating: 'A+' }], rating_inferred: 0, issue_yield: 0.0125, issue_tenor: 5, jgb_at_issue: 0.0083,
   issuance_doc_id: 'S100ISS1', issuance_submitted_at: '2025-09-14', schedule_doc_id: 'S100ANN1', schedule_period_end: '2026-03-31',
@@ -53,7 +53,7 @@ const COMPANY = {
   curve: CURVE,
   summary: { outstanding_count: 1, total_outstanding: 10e9, foreign_currency_count: 0, not_separately_reported: 0, average_coupon: 0.0125, average_years: 3.95, next_maturity: '2030-09-19', due_within_year: null, as_of: '2026-03-31', ratings: BOND.ratings, rating: 'A+', rated_on: '2025-09-20', median_spread: 0.0042, rating_peer_spread: 0.0035 },
   ladder: [{ year: 2030, parent: 10e9, group: 0 }],
-  bonds: [BOND, { ...BOND, bond_id: 'B0', label: '第4回無担保社債', series: 4, maturity: '2025-09-19', status: 'matured', issuance_doc_id: null, issuance_url: null }],
+  bonds: [BOND, { ...BOND, bond_id: 'B0', label: 'Bond No. 4', label_ja: '第4回無担保社債', series: 4, maturity: '2025-09-19', status: 'matured', issuance_doc_id: null, issuance_url: null }],
   documents: [
     { doc_id: 'S100ANN1', kind: 'annual', submitted_at: '2026-06-25', period_end: '2026-03-31', bond_count: 2, description: '有価証券報告書', edinet_url: 'https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?S100ANN1,,,', stored: false, in_catalog: true },
     { doc_id: 'S100ISS1', kind: 'issuance', submitted_at: '2025-09-14', period_end: null, bond_count: 1, description: '発行登録追補書類', edinet_url: 'https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?S100ISS1,,,', stored: true, in_catalog: false },
@@ -123,6 +123,50 @@ describe('bond formatting', () => {
     expect(offeringText('一般募集')).toBe('Public offering')
   })
 
+  it('puts what a schedule says about security and maturity in English', () => {
+    for (const filed of ['無', '無担保 社債', 'なし (注)2', '―', '', '本社債には担保ならびに保証は付さず、また本社債のために特に留保される資産はない。']) expect(securityText({ collateral: filed })).toBe('Unsecured')
+    expect(securityText({ collateral: 'なし(銀行保証)' })).toBe('Bank guarantee')
+    expect(securityText({ collateral: '保証付' })).toBe('Guaranteed')
+    expect(securityText({ collateral: '担保付社債' })).toBe('Secured')
+    // A bare footnote mark says where to look, not what the security is.
+    expect(securityText({ collateral: '(注)4' })).toBe('See the filing’s notes')
+    // Wording with no English here is not shown raw; the hover text quotes the filing.
+    expect(securityText({ collateral: '工場財団' })).toBe('See the filing')
+    expect(securityText({ collateral: 'Pledged shares' })).toBe('Pledged shares')
+    expect(offeringText('第三者割当')).toBe('See the filing')
+
+    expect(maturityText('2029年')).toBe('2029')
+    expect(maturityText('2028年3月')).toBe('Mar 2028')
+    expect(maturityText('2026年9月~ 2031年3月')).toBe('Sep 2026 – Mar 2031')
+    expect(maturityText('2028年１月22日～2031年１月22日')).toBe('22 Jan 2028 – 22 Jan 2031')
+    expect(maturityText('2029.10.9~ 2040.10.9')).toBe('9 Oct 2029 – 9 Oct 2040')
+    expect(maturityText('令和年月日8.9.30')).toBe('30 Sep 2026')
+    expect(maturityText('2026年7月~')).toBe('From Jul 2026')
+    expect(maturityText('期間の定めなし')).toBe('No fixed maturity')
+    expect(maturityText('―')).toBe('')
+    expect(maturityText(null)).toBe('')
+    // What is not a date is not shown raw either.
+    expect(maturityText('2月26日')).toBe('See the filing')
+    expect(maturityText('4年超5年以内')).toBe('See the filing')
+    expect(maturityText('2026年満期')).toBe('See the filing')
+    expect(maturityText('8.9.30')).toBe('8.9.30')
+  })
+
+  it('names companies and bonds in English and keeps the filed names within reach', () => {
+    expect(filedTitle('Bond No. 5', '第5回無担保社債')).toBe('Bond No. 5 · filed as 第5回無担保社債')
+    expect(filedTitle('Alpha Motor', null)).toBe('Alpha Motor')
+    expect(filedTitle('Alpha Motor', 'Alpha Motor')).toBe('Alpha Motor')
+    // A bond is found by its English or its filed name, and by either name of its issuer.
+    const found = (query: string) => filterBonds(MARKET_BONDS, COMPANIES, { ...DEFAULT_FILTERS, includePrivate: true, query }).map(bond => bond.bond_id)
+    expect(found('bond no. 5')).toEqual(['B1'])
+    expect(found('subordinated bond')).toEqual(['B2'])
+    expect(found('銀行保証')).toEqual(['B3'])
+    expect(found('ベータ銀行')).toEqual(['B2', 'B3'])
+    const csv = marketCsv(MARKET_BONDS.slice(0, 1), COMPANIES).split('\n')
+    expect(csv[0]).toMatch(/,Company as filed,Bond as filed$/)
+    expect(csv[1]).toMatch(/^Alpha Motor,10000,E1,Autos,Bond No\. 5,Senior unsecured,.*,アルファ自動車株式会社,第5回無担保社債$/)
+  })
+
   it('filters and sorts bonds, keeping missing values last', () => {
     const shown = filterBonds(MARKET_BONDS, COMPANIES, DEFAULT_FILTERS)
     expect(shown.map(bond => bond.bond_id)).toEqual(['B1', 'B2'])
@@ -132,7 +176,7 @@ describe('bond formatting', () => {
     expect(sortBonds(MARKET_BONDS, COMPANIES, 'spread', false).map(bond => bond.bond_id)).toEqual(['B1', 'B2', 'B3'])
     const csv = marketCsv(shown, COMPANIES).split('\n')
     expect(csv[0]).toMatch(/^Company,Ticker,EDINET code/)
-    expect(csv[1]).toContain('Alpha Motor,10000,E1,Autos,第5回無担保社債,Senior unsecured,JPY,1.250')
+    expect(csv[1]).toContain('Alpha Motor,10000,E1,Autos,Bond No. 5,Senior unsecured,JPY,1.250')
   })
 
   it('reads the user’s tags against the bonds listed', () => {
@@ -171,6 +215,11 @@ describe('Bond market', () => {
     expect(rows).toHaveLength(2)
     expect(rows[0]).toHaveTextContent('Beta Bank')
     expect(rows[0]).toHaveTextContent('4.3y to call')
+    // The issuer and the bond are named in English; hovering shows them as filed.
+    expect(rows[0]).toHaveTextContent('Subordinated bond No. 1')
+    expect(rows[0]).not.toHaveTextContent('社債')
+    expect(within(rows[0]).getByText('Beta Bank')).toHaveAttribute('title', 'Beta Bank · filed as ベータ銀行株式会社')
+    expect(within(rows[1]).getByText('Bond No. 5').closest('small')).toHaveAttribute('title', 'Bond No. 5 · filed as 第5回無担保社債')
     // Without a quote the spread is the one at issue, marked i, and the yield an estimate, marked *.
     expect(rows[0]).toHaveTextContent('98 bpi')
     expect(rows[1]).toHaveTextContent('44 bp')

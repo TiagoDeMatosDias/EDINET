@@ -18,13 +18,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 import sqlite3
 from collections import defaultdict
 from datetime import date
 from typing import Any
 
 from .jsda import latest_quotes, match_quotes
+from .names import company_key, is_parent_issuer
 from .parsing import compact, is_floating, notch_label, rating_notch
 from .store import decode, now
 from .valuation import CurveBook, year_fraction, yield_from_price
@@ -32,23 +32,6 @@ from .valuation import CurveBook, year_fraction, yield_from_price
 logger = logging.getLogger(__name__)
 
 _AGENCY_PRIORITY = ("R&I", "JCR", "S&P", "Moody's", "Fitch")
-_COMPANY_WORDS = re.compile(r"株式会社|\(株\)|㈱|有限会社|合同会社|holdings|ホールディングス|グループ|[\s・.,]", re.IGNORECASE)
-_PARENT_WORDS = {"当社", "提出会社", "親会社", "当行", "当金庫"}
-
-
-def _short_name(name: str | None) -> str:
-    return _COMPANY_WORDS.sub("", compact(name or "")).casefold()
-
-
-def is_parent_issuer(issuer: str, company_names: tuple[str, ...]) -> bool:
-    key = compact(issuer)
-    if not key or key in _PARENT_WORDS:
-        return True
-    short = _short_name(issuer)
-    if not short:
-        return True
-    return any(name and (short == name or (len(short) >= 2 and (short in name or name in short))) for name in map(_short_name, company_names))
-
 
 def bond_id(edinet_code: str, issuer_key: str, series: int | None, name: str, maturity: str | None, maturity_text: str) -> str:
     identity = "|".join([edinet_code, issuer_key, str(series) if series is not None else compact(name), maturity or compact(maturity_text)])
@@ -274,7 +257,7 @@ def build_bonds(conn: sqlite3.Connection, *, today: str | None = None) -> list[d
     for bond in bonds:
         bond["private"] = int(likely_private(bond))
         bond["status"] = _status(bond, today)
-        issuer_key = "" if bond["is_parent"] else _short_name(bond.get("issuer"))
+        issuer_key = "" if bond["is_parent"] else company_key(bond.get("issuer"))
         bond["bond_id"] = bond_id(bond["edinet_code"], issuer_key, bond.get("series"), bond.get("name", ""), bond.get("maturity"), bond.get("maturity_text", ""))
         add_issue_spread(bond, curves)
     # Two rows can describe the same bond (a schedule that lists it twice); keep the first.

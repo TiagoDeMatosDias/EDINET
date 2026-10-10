@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 import src.bonds.api as bonds_api
 from src.bonds import build, jsda, parsing, service, update, valuation
+from src.bonds.names import CompanyDirectory, bond_label, filed_label, is_japanese, is_parent_issuer
 from src.bonds.store import BOND_COLUMNS, ensure_bond_tables
 from src.filings.acquisition import EdinetAcquisitionError
 from src.orchestrator.common.sqlite import connect_write
@@ -389,7 +390,20 @@ def test_company_view_totals_ladder_and_documents(updated):
     issuance = next(document for document in data["documents"] if document["kind"] == "issuance")
     assert issuance["stored"] and issuance["edinet_url"].endswith("S100ISS1,,,")
     senior = next(bond for bond in data["bonds"] if bond["series"] == 5)
-    assert senior["label"] == "第5回無担保社債" and senior["model_price"] is not None and senior["horizon_to"] == "maturity"
+    assert senior["model_price"] is not None and senior["horizon_to"] == "maturity"
+    # Names are in English: the company as Company Analysis names it, the bond from its parsed terms.
+    assert data["company_name"] == "TEST INDUSTRIES"
+    assert (senior["company_name"], senior["company_name_ja"]) == ("TEST INDUSTRIES", "テスト工業株式会社")
+    assert (senior["label"], senior["label_ja"]) == ("Bond No. 5", "第5回無担保社債")
+    assert senior["name"] == "テスト工業株式会社第5回無担保社債(社債間限定同順位特約付)"
+    assert (senior["issuer"], senior["issuer_ja"]) == ("TEST INDUSTRIES", "テスト工業株式会社")
+    assert "company_name_en" not in senior
+    labels = {bond["label"] for bond in data["bonds"]}
+    assert {"Hybrid bond No. 1", "USD bond due 2028", "Bond No. 3"} <= labels
+    # A subsidiary that files nothing with EDINET has no English name: it is labelled, with its filed name beside it.
+    subsidiary = next(bond for bond in data["bonds"] if not bond["is_parent"])
+    assert (subsidiary["issuer"], subsidiary["issuer_ja"], subsidiary["company_name"]) == ("Subsidiary", "テスト物流(株)", "TEST INDUSTRIES")
+    assert service.bond_detail(paths["bonds"], subsidiary["bond_id"], today=TODAY)["bond"]["issuer"] == "Subsidiary"
 
 
 def test_market_view_and_bond_detail_compare_with_other_issuers(updated):
@@ -397,17 +411,164 @@ def test_market_view_and_bond_detail_compare_with_other_issuers(updated):
     _peers(paths["bonds"])
     market = service.universe(paths["bonds"], today=TODAY)
     assert set(market["companies"]) == {"E99001", "E99002"}
-    assert all("company_name" not in bond for bond in market["bonds"])
+    assert market["companies"]["E99002"] == {"company_name": "PEER ELECTRIC", "company_name_ja": "比較電機株式会社", "ticker": "99980", "industry": "Electric Appliances", "listed": 1}
+    assert all("company_name" not in bond and "name" not in bond for bond in market["bonds"])
     assert not any(bond.get("edinet_code") == "E99001" and bond.get("private") for bond in market["bonds"])
     target = next(bond for bond in market["bonds"] if bond["edinet_code"] == "E99001" and bond.get("series") == 5)
     detail = service.bond_detail(paths["bonds"], target["bond_id"], today=TODAY)
     assert detail["bond"]["bond_id"] == target["bond_id"] and detail["issuance"]["negative_pledge"] == 1
     assert [item["edinet_code"] for item in detail["similar"]] == ["E99002"]
+    assert (target["label"], target["label_ja"]) == ("Bond No. 5", "第5回無担保社債")
+    assert (detail["similar"][0]["company_name"], detail["similar"][0]["company_name_ja"]) == ("PEER ELECTRIC", "比較電機株式会社")
+    assert detail["similar"][0]["label"].startswith("Bond No. ")
+    assert {peer["company_name"] for peer in detail["spread_curve"]["peers"]} == {"PEER ELECTRIC"}
+    assert detail["bond"]["company_name"] == "TEST INDUSTRIES" and detail["bond"]["label"] == "Bond No. 5"
     peer = detail["valuation"]
     assert peer["peer_count"] == 5 and peer["peer_spread"] == pytest.approx(0.004) and peer["quoted_peers"] == 0
     assert detail["bond"]["spread_basis"] == "issue"
     assert peer["relative_spread"] == pytest.approx(detail["bond"]["issue_spread"] - 0.004)
     assert service.bond_detail(paths["bonds"], "E99001-missing", today=TODAY) is None
+
+
+def _directory(rows: list[tuple[str, str, str | None]]) -> CompanyDirectory:
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute('CREATE TABLE CompanyInfo (Company_Code TEXT, "Submitter Name" TEXT, Company_Name TEXT, Company_Ticker TEXT, Company_Industry TEXT, Listed TEXT)')
+        conn.executemany("INSERT INTO CompanyInfo VALUES (?, ?, ?, '10000', 'Machinery', 'Listed company')", rows)
+        return CompanyDirectory.load(conn)
+    finally:
+        conn.close()
+
+
+def test_companies_are_named_as_company_analysis_names_them():
+    directory = _directory([
+        ("E1", "アルファ自動車株式会社", "ALPHA MOTOR CORPORATION"),
+        ("E2", "ベータ銀行株式会社", "  "),
+        ("E3", "アルファ　ファイナンス株式会社", "Alpha Finance Co., Ltd."),
+        ("E4", "同名商事株式会社", "SAME NAME TRADING (EAST)"),
+        ("E5", "同名商事株式会社", "SAME NAME TRADING (WEST)"),
+    ])
+    stored = {"edinet_code": "E1", "company_name": "アルファ自動車株式会社", "company_name_en": "OLD NAME", "ticker": "1", "industry": "Old", "listed": 0}
+
+    # The company table wins over what was stored with the bond when it was built.
+    bond = directory.present({**stored, "name": "アルファ自動車株式会社第3回無担保社債", "seniority": "senior", "issuer": "アルファ自動車株式会社", "is_parent": 1})
+    assert (bond["company_name"], bond["company_name_ja"]) == ("ALPHA MOTOR CORPORATION", "アルファ自動車株式会社")
+    assert (bond["ticker"], bond["industry"], bond["listed"]) == ("10000", "Machinery", 1)
+    assert (bond["issuer"], bond["issuer_ja"]) == ("ALPHA MOTOR CORPORATION", "アルファ自動車株式会社")
+    assert "company_name_en" not in bond
+
+    # Without an English name the filer's own is shown, as in Company Analysis.
+    bank = directory.present({"edinet_code": "E2", "company_name": "ベータ銀行株式会社", "company_name_en": ""})
+    assert (bank["company_name"], bank["company_name_ja"]) == ("ベータ銀行株式会社", None)
+
+    # A subsidiary is named in English when it files with EDINET itself, however the report writes its name.
+    for filed in ("アルファ ファイナンス㈱", "アルファファイナンス(株) (注)2", "アルファファイナンス株式会社"):
+        subsidiary = directory.present({**stored, "issuer": filed, "is_parent": 0})
+        assert (subsidiary["issuer"], subsidiary["issuer_ja"]) == ("Alpha Finance Co., Ltd.", filed)
+    assert directory.present({**stored, "issuer": "*1", "is_parent": 0})["issuer"] == "*1"
+    # One that files nothing has no English name anywhere; it is numbered within its group, in name order.
+    filed_issuers = ["ガンマ物流(株)", "同名商事株式会社", "ガンマ 物流㈱", "アルファファイナンス(株)", "当社", "(注)1", "ALPHA U.S., Inc."]
+    labels = directory.subsidiary_labels("E1", "アルファ自動車株式会社", "", filed_issuers)
+    assert labels == {"ガンマ物流株式会社": "Subsidiary 1", "同名商事株式会社": "Subsidiary 2"}
+    for filed, issuer in (("ガンマ物流(株)", "Subsidiary 1"), ("ガンマ 物流㈱", "Subsidiary 1"), ("同名商事株式会社", "Subsidiary 2")):
+        shown = directory.present({**stored, "issuer": filed, "is_parent": 0}, labels)
+        assert (shown["issuer"], shown["issuer_ja"]) == (issuer, filed)
+    assert directory.subsidiary_labels("E1", "アルファ自動車株式会社", "", ["ガンマ物流(株)", "当社"]) == {"ガンマ物流株式会社": "Subsidiary"}
+    assert directory.present({**stored, "issuer": "ガンマ物流(株)", "is_parent": 0})["issuer"] == "Subsidiary"
+    # What a schedule writes instead of a name is put in English too.
+    for filed, issuer in (
+        ("その他の 連結子会社 (注9)", "Other consolidated subsidiaries"), ("連結財務諸表提出会社", "ALPHA MOTOR CORPORATION"), ("当社 (注)2", "ALPHA MOTOR CORPORATION"),
+        ("(注)1", "See note 1"), ("注2.3", "See note 2"), ("(注)", "See the notes"), ("〃 (注)1", "As above in the report"),
+        ("ALPHA FINANCE U.S., Inc. (注3)", "ALPHA FINANCE U.S., Inc."), ("Alphacom Inc. (注)2、3", "Alphacom Inc."),
+        ("TAKASUGI(株)", "TAKASUGI K.K."), ("Nexus Card 株式会社 (注)1", "Nexus Card K.K."), ("合同会社SAFFAIRE SKY ENERGY", "SAFFAIRE SKY ENERGY G.K."),
+    ):
+        assert directory.present({**stored, "issuer": filed, "is_parent": 0})["issuer"] == issuer
+
+    # A company missing from the table keeps the names stored with its bonds.
+    unknown = directory.present({"edinet_code": "E9", "company_name": "不明株式会社", "company_name_en": "UNKNOWN KK", "ticker": "9", "industry": "Services", "listed": 1})
+    assert (unknown["company_name"], unknown["company_name_ja"], unknown["industry"]) == ("UNKNOWN KK", "不明株式会社", "Services")
+    conn = sqlite3.connect(":memory:")
+    assert CompanyDirectory.load(conn).present({"edinet_code": "E9", "company_name": "不明株式会社", "company_name_en": ""})["company_name"] == "不明株式会社"
+    conn.close()
+
+
+def test_the_filer_is_recognised_as_issuer_however_its_schedule_names_it():
+    names = ("大阪瓦斯株式会社", "OSAKA GAS CO.,LTD.")
+    # Gas utilities register 瓦斯 and write ガス.
+    for issuer in ("", "当社", "当社 (注)1", "連結財務諸表提出会社", "大阪ガス(株)", "大阪瓦斯㈱", "Osaka Gas Co., Ltd."):
+        assert is_parent_issuer(issuer, names), issuer
+    for issuer in ("東邦ガス(株)", "(注)1", "*1", "その他の連結子会社"):
+        assert not is_parent_issuer(issuer, names), issuer
+    # A bond stored before that was recognised is shown under the company's name all the same.
+    directory = _directory([("E1", "大阪瓦斯株式会社", "OSAKA GAS CO.,LTD.")])
+    bond = directory.present({"edinet_code": "E1", "company_name": "大阪瓦斯株式会社", "issuer": "大阪ガス(株)", "is_parent": 0})
+    assert (bond["issuer"], bond["issuer_ja"]) == ("OSAKA GAS CO.,LTD.", "大阪ガス(株)")
+
+
+HEADER_HTML = """<html><body><div style="display:none"><ix:header><ix:hidden>
+<ix:nonNumeric name="jpdei_cor:EDINETCodeDEI" contextRef="FilingDateInstant">E99003</ix:nonNumeric>
+<ix:nonNumeric name="jpdei_cor:FilerNameInJapaneseDEI" contextRef="FilingDateInstant">無名海運株式会社</ix:nonNumeric>
+<ix:nonNumeric name="jpdei_cor:FilerNameInEnglishDEI" contextRef="FilingDateInstant">Mumei  Kaiun
+ Kabushiki&#160;Kaisha &amp; Co.</ix:nonNumeric>
+</ix:hidden></ix:header></div></body></html>"""
+
+
+def _report(header: str | None, body: str = "<html><body><p>本文</p></body></html>") -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr("XBRL/PublicDoc/0101010_honbun_jpcrp030000-asr-001_E99003-000_ixbrl.htm", body)
+        if header is not None:
+            bundle.writestr("XBRL/PublicDoc/0000000_header_jpcrp030000-asr-001_E99003-000_ixbrl.htm", header)
+    return buffer.getvalue()
+
+
+def test_update_names_an_issuer_in_english_from_its_annual_report_when_edinet_lists_none(tmp_path):
+    paths = _sources(tmp_path)
+    _curve(paths["bonds"])
+    with _db(paths["bonds"]) as conn:
+        conn.execute("INSERT INTO CompanyInfo VALUES ('E99003', '無名海運株式会社', '', '99970', 'Marine Transportation', 'Listed company')")
+    with _db(paths["filings"]) as conn:
+        conn.execute("INSERT INTO filings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (
+            "S100SHIP1", "E99003", "無名海運株式会社", "2025-04-01", "2026-03-31", "2026-06-25T10:00:00", "030000", "1",
+            _report(HEADER_HTML, ANNUAL_HTML.replace("テスト物流㈱", "無名海運㈱")),
+        ))
+
+    result = update.update_bonds(market_db=paths["bonds"], filings_db_path=paths["filings"], client=FakeClient({}), curve=False, market_prices=False, today=TODAY)
+
+    # The company table is completed first, so the bonds, like Company Analysis, name the company in English.
+    assert result["company_names"] == {"read": 1, "named": 1, "filled": 1}
+    with _db(paths["bonds"]) as conn:
+        assert conn.execute("SELECT Company_Name FROM CompanyInfo WHERE Company_Code = 'E99003'").fetchone()[0] == "Mumei Kaiun Kabushiki Kaisha & Co."
+        assert {row[0] for row in conn.execute("SELECT company_name_en FROM Bonds WHERE edinet_code = 'E99003'")} == {"Mumei Kaiun Kabushiki Kaisha & Co."}
+    data = service.company_bonds(paths["bonds"], "E99003", today=TODAY)
+    assert data["company_name"] == "Mumei Kaiun Kabushiki Kaisha & Co."
+    assert {bond["company_name_ja"] for bond in data["bonds"]} == {"無名海運株式会社"}
+    # Its schedule names it 無名海運㈱ in one row: that is the company itself, not a subsidiary.
+    assert all(bond["is_parent"] for bond in data["bonds"])
+    market = service.universe(paths["bonds"], today=TODAY)
+    assert market["companies"]["E99003"]["company_name"] == "Mumei Kaiun Kabushiki Kaisha & Co."
+
+
+@pytest.mark.parametrize(("bond", "label"), [
+    ({"name": "アルファ自動車株式会社第70回無担保社債(社債間限定同順位特約付)", "series": 70, "seniority": "senior"}, "Bond No. 70"),
+    ({"name": "第505回 〃", "series": 505, "seniority": "secured", "features": ["general-mortgage"]}, "General-mortgage bond No. 505"),
+    ({"name": "第4回利払繰延条項・期限前償還条項付無担保社債(劣後特約付)", "series": 4, "seniority": "hybrid", "features": ["subordinated", "deferrable", "callable"]}, "Hybrid bond No. 4"),
+    ({"name": "第3回期限前償還条項付無担保社債(実質破綻時免除特約及び劣後特約付)", "series": None, "seniority": "subordinated"}, "Subordinated bond No. 3"),
+    ({"name": "2030年満期ユーロ円建取得条項付転換社債型新株予約権付社債", "seniority": "convertible", "maturity": "2030-03-29"}, "Convertible bond due 2030"),
+    ({"name": "米ドル建普通社債(注)2", "seniority": "senior", "currency": "USD", "maturity": "2031-06-15"}, "USD bond due 2031"),
+    ({"name": "第2回無担保投資法人債(特定投資法人債間限定同順位特約付)", "series": 2, "seniority": "senior"}, "Investment corporation bond No. 2"),
+    ({"name": "政府保証第12回社債", "series": 12, "seniority": "senior"}, "Government-guaranteed bond No. 12"),
+    ({"name": "短期社債 (注)2", "seniority": "senior"}, "Short-term bond"),
+    ({"name": "任意償還条項付無担保永久社債(劣後特約付)", "seniority": "subordinated", "perpetual": 1}, "Perpetual subordinated bond"),
+    ({"name": "第3回任意償還条項付無担保永久社債(債務免除特約及び劣後特約付)", "series": 3, "seniority": "subordinated", "perpetual": 1, "maturity": None}, "Perpetual subordinated bond No. 3"),
+    ({"name": "社債", "seniority": "senior"}, "Bond"),
+    # A title that is not Japanese is already readable, and keeps its spaces.
+    ({"name": "AEON CREDIT SENIOR SUKUK  (SERIES 2 TRANCHE 1)", "seniority": "senior", "currency": "MYR"}, "AEON CREDIT SENIOR SUKUK (SERIES 2 TRANCHE 1)"),
+])
+def test_bond_titles_are_rewritten_in_english_from_their_terms(bond, label):
+    filed = filed_label(bond["name"], "アルファ自動車株式会社")
+    assert bond_label(bond, filed) == label
+    assert is_japanese(filed) == (filed != label)
 
 
 # --- API ------------------------------------------------------------------------------

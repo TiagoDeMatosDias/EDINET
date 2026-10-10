@@ -7,7 +7,7 @@ import { Tip } from '../../components/Tooltip'
 import { filingHref } from '../filings/filingFormat'
 import { analysisHref, formatDay, formatNumber, formatPercent } from '../research/researchModel'
 import { MarketHistoryChart, PeerSpreadChart } from './BondCharts'
-import { calculatorHref, COUPON_KIND_LABELS, displayTicker, FEATURE_LABELS, formatBp, formatCoupon, formatYears, formatYen, offeringText, ratingText, securityText, SENIORITY_LABELS } from './bondFormat'
+import { calculatorHref, COUPON_KIND_LABELS, displayTicker, FEATURE_LABELS, filedTitle, formatBp, formatCoupon, formatYears, formatYen, maturityText, offeringText, ratingText, securityText, SENIORITY_LABELS } from './bondFormat'
 import { useBondDetail } from './bondQueries'
 import type { BondDetail, PeerBond } from './bondTypes'
 
@@ -34,7 +34,7 @@ function BondDetailContent({ data, onSelect, keys }: { data: BondDetail; onSelec
     <header className="rs-detail__header">
       <div>
         <h2><Link to={analysisHref(bond.edinet_code)} title={`Open in Analysis${keys?.open ? ` (${keys.open})` : ''}`}>{bond.company_name}</Link></h2>
-        <p className="rs-detail__meta">{bond.label}</p>
+        <p className="rs-detail__meta" title={bond.name && bond.name !== bond.label ? `Filed as ${bond.name}` : undefined}>{bond.label}</p>
         <p className="bd-tags">
           <span className="bd-tag">{SENIORITY_LABELS[bond.seniority]}</span>
           {bond.features.filter(feature => feature !== bond.seniority).map(feature => <span key={feature} className="bd-tag">{FEATURE_LABELS[feature] ?? feature}</span>)}
@@ -53,16 +53,16 @@ function BondDetailContent({ data, onSelect, keys }: { data: BondDetail; onSelec
       <dl className="rs-summary rs-summary--grid bd-terms">
         <Term label="Coupon">{formatCoupon(bond)}{bond.frequency ? ` ${FREQUENCY[bond.frequency] ?? ''}` : ''}{bond.coupon_kind !== 'fixed' && <small> · {COUPON_KIND_LABELS[bond.coupon_kind]}</small>}</Term>
         <Term label="Issued">{bond.issue_date ? formatDay(bond.issue_date) : '—'}{bond.issue_price != null && bond.issue_price !== 100 && <small> at {formatNumber(bond.issue_price, 3)}</small>}</Term>
-        <Term label="Maturity">{bond.maturity ? formatDay(bond.maturity) : bond.perpetual ? 'Perpetual' : bond.maturity_text || '—'}</Term>
+        <Term label="Maturity">{bond.maturity ? formatDay(bond.maturity) : bond.perpetual ? 'Perpetual' : maturityText(bond.maturity_text) || '—'}</Term>
         {bond.call_date && <Term label="First call" tip="The first date the issuer may repay early; the coupon resets after it. Yields and prices here run to this date.">{formatDay(bond.call_date)}</Term>}
         <Term label="Years left">{bond.years_to_maturity != null ? formatYears(bond.years_to_maturity) : bond.perpetual ? 'Perpetual' : '—'}{callable && <small> · {formatYears(bond.horizon)} to call</small>}</Term>
         <Term label="Amount issued">{formatYen(bond.amount_issued)}</Term>
         <Term label="Outstanding">{bond.outstanding == null ? 'In a group' : formatYen(bond.outstanding)}{bond.outstanding_as_of && <small> · {formatDay(bond.outstanding_as_of)}</small>}</Term>
         <Term label="Rating">{bond.ratings.length ? bond.ratings.map(item => `${item.agency} ${item.rating}`).join(' · ') : 'Not rated'}{bond.rating_inferred ? <small> · the issuer’s latest</small> : null}</Term>
-        <Term label="Security">{bond.collateral && securityText(bond) !== bond.collateral ? <Tip content={bond.collateral}>{securityText(bond)}</Tip> : securityText(bond)}</Term>
-        {issuance && <Term label="Negative pledge" tip="財務上の特約（担保提供制限）: the issuer will not secure other bonds without securing this one equally.">{issuance.negative_pledge ? 'Yes' : 'No'}</Term>}
-        {issuance?.offering && <Term label="Offering">{offeringText(issuance.offering) !== issuance.offering ? <Tip content={issuance.offering}>{offeringText(issuance.offering)}</Tip> : issuance.offering}</Term>}
-        {bond.issuer !== bond.company_name && <Term label="Issued by">{bond.issuer}</Term>}
+        <Term label="Security">{bond.collateral && securityText(bond) !== bond.collateral ? <Tip content={`Filed as: ${bond.collateral}`}>{securityText(bond)}</Tip> : securityText(bond)}</Term>
+        {issuance && <Term label="Negative pledge" tip="A covenant in the bond supplement that limits giving collateral: the issuer will not secure other bonds without securing this one equally.">{issuance.negative_pledge ? 'Yes' : 'No'}</Term>}
+        {issuance?.offering && <Term label="Offering">{offeringText(issuance.offering) !== issuance.offering ? <Tip content={`Filed as: ${issuance.offering}`}>{offeringText(issuance.offering)}</Tip> : issuance.offering}</Term>}
+        {bond.issuer !== bond.company_name && <Term label="Issued by"><span title={filedTitle(bond.issuer, bond.issuer_ja)}>{bond.issuer}</span></Term>}
       </dl>
     </section>
 
@@ -70,7 +70,7 @@ function BondDetailContent({ data, onSelect, keys }: { data: BondDetail; onSelec
       <h3>Valuation</h3>
       <dl className="rs-summary rs-summary--grid">
         {bond.market_price != null && <>
-          <Term label="Reference price" tip={`JSDA OTC reference price (公社債店頭売買参考統計値): the average of ${bond.market_reporters ?? 'several'} dealers' quotes${bond.jsda_name ? ` for ${bond.jsda_name}` : ''}.`}>{formatNumber(bond.market_price, 2)}{bond.market_date && <small> · {formatDay(bond.market_date)}</small>}</Term>
+          <Term label="Reference price" tip={`JSDA OTC reference price: the average of ${bond.market_reporters ?? 'several'} dealers' quotes${bond.jsda_code ? ` for JSDA issue ${bond.jsda_code}` : ''}.`}>{formatNumber(bond.market_price, 2)}{bond.market_date && <small> · {formatDay(bond.market_date)}</small>}</Term>
           <Term label={callable ? 'Yield to call' : 'Yield'} tip="Computed from the reference price on the same conventions as the spread at issue.">{formatPercent(bond.market_yield, 3)}</Term>
           <Term label="Spread now" tip="That yield less the JGB yield of the same tenor on the price date.">{formatBp(bond.market_spread)}{bond.issue_spread != null && bond.market_spread != null && <small> · {formatBp(bond.market_spread - bond.issue_spread, true)} since issue</small>}</Term>
         </>}
@@ -131,8 +131,8 @@ function PeerTable({ bonds, onSelect, hideCompany = false }: { bonds: PeerBond[]
         <th scope="col" className="num">Price*</th>
       </tr></thead>
       <tbody>{bonds.map(item => <tr key={item.bond_id} tabIndex={0} onClick={() => onSelect(item.bond_id)} onKeyDown={event => { if (event.key === 'Enter') onSelect(item.bond_id) }}>
-        {!hideCompany && <th scope="row"><span className="bd-bond-cell"><strong>{item.company_name}</strong><small>{[displayTicker(item.ticker), item.industry].filter(Boolean).join(' · ')}</small></span></th>}
-        <td className="bd-label" title={item.label}>{item.label}</td>
+        {!hideCompany && <th scope="row"><span className="bd-bond-cell"><strong title={filedTitle(item.company_name, item.company_name_ja)}>{item.company_name}</strong><small>{[displayTicker(item.ticker), item.industry].filter(Boolean).join(' · ')}</small></span></th>}
+        <td className="bd-label" title={filedTitle(item.label, item.label_ja)}>{item.label}</td>
         <td>{ratingText(item)}</td>
         <td className="num">{formatCoupon(item)}</td>
         <td className="num">{formatYears(item.horizon)}</td>

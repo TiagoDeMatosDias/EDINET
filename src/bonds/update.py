@@ -18,6 +18,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date, timedelta
 from typing import Any
 
+from src.orchestrator.common import company_names
 from src.orchestrator.common.sqlite import connect_read, connect_write
 
 from . import build, jsda, market, store
@@ -264,6 +265,10 @@ def update_bonds(
                 documents = documents[:max_documents]
             result["annual_reports"] = read_annual_reports(conn, documents, filings_db_path or "", progress)
             store.mark_update(conn, "annual_reports", result["annual_reports"])
+        # Bonds name their issuer from CompanyInfo, which the code list leaves without an English name for many
+        # companies: fill those from the annual reports now in the catalog before the bonds are rebuilt.
+        result["company_names"] = company_names.fill(conn, filings_db_path, progress)
+        store.mark_update(conn, "company_names", result["company_names"])
         if curve:
             try:
                 result["curve"] = update_curve(conn)

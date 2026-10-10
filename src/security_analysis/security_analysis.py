@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import threading
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from datetime import timedelta
@@ -789,6 +790,8 @@ def _score_security_match(record: dict[str, Any], tokens: list[str]) -> int | No
         "company_name": _safe_str(record.get("company_name")).lower(),
         "industry": _safe_str(record.get("industry")).lower(),
         "market": _safe_str(record.get("market")).lower(),
+        # Filers write Latin letters and spaces full-width ("ＴＫＰ"); a query is typed half-width.
+        "filer_name": unicodedata.normalize("NFKC", _safe_str(record.get("filer_name"))).lower(),
     }
     score = 0
     for token in tokens:
@@ -811,6 +814,10 @@ def _score_security_match(record: dict[str, Any], tokens: list[str]) -> int | No
             token_score = max(token_score, 35)
         if token in searchable["company_name"]:
             token_score = max(token_score, 30)
+        if searchable["filer_name"].startswith(token):
+            token_score = max(token_score, 78)
+        elif token in searchable["filer_name"]:
+            token_score = max(token_score, 28)
         if token in searchable["industry"]:
             token_score = max(token_score, 20)
         if token in searchable["market"]:
@@ -1265,7 +1272,7 @@ def _load_company_frame(conn: sqlite3.Connection, schema: SecuritySchema) -> pd.
 def _empty_search_company_frame() -> pd.DataFrame:
     """Return an empty company frame with the search result columns."""
     return pd.DataFrame(
-        columns=["company_code", "ticker", "company_name", "industry", "market"]
+        columns=["company_code", "ticker", "company_name", "industry", "market", "filer_name"]
     )
 
 
@@ -1293,12 +1300,19 @@ def _load_search_company_frame(
         name_expression = f"COALESCE({', '.join(name_parts)})"
     else:
         name_expression = name_parts[0] if name_parts else "NULL"
+    # The filer's own (Japanese) name stays searchable when the company is shown by its English name.
+    has_filer_name = bool(
+        schema.company_name_col
+        and schema.company_name_fallback_col
+        and schema.company_name_fallback_col.lower() != schema.company_name_col.lower()
+    )
     select_parts = [
         column_or_null(schema.company_code_col, "company_code"),
         column_or_null(schema.company_ticker_col, "ticker"),
         f"{name_expression} AS {_quote_ident('company_name')}",
         column_or_null(schema.company_industry_col, "industry"),
         column_or_null(schema.company_market_col, "market"),
+        column_or_null(schema.company_name_fallback_col if has_filer_name else None, "filer_name"),
     ]
     sql = (
         f"SELECT {', '.join(select_parts)} "

@@ -21,6 +21,7 @@ import {
   displayTicker,
   featureTags,
   FEATURE_LABELS,
+  filedTitle,
   filterBonds,
   formatBp,
   formatCoupon,
@@ -229,7 +230,7 @@ export function BondMarketView({ bondId, issuer, book, onChange, active }: { bon
               </th>)}
             </tr></thead>
             <tbody ref={body} onKeyDown={onBodyKeyDown}>
-              {rows.slice(0, limit).map((row, index) => <MarketRow key={row.bond_id} bond={row} company={companies[row.edinet_code]?.company_name ?? row.edinet_code} ticker={companies[row.edinet_code]?.ticker} isCursor={index === cursor} onSelect={() => select(row.bond_id)} />)}
+              {rows.slice(0, limit).map((row, index) => <MarketRow key={row.bond_id} bond={row} company={companies[row.edinet_code]?.company_name ?? row.edinet_code} companyFiled={companies[row.edinet_code]?.company_name_ja} ticker={companies[row.edinet_code]?.ticker} isCursor={index === cursor} onSelect={() => select(row.bond_id)} />)}
             </tbody>
           </table>
           {rows.length > limit && <button type="button" className="text-button rs-more" onClick={() => setLimit(limit + PAGE)}>Show {Math.min(PAGE, rows.length - limit)} more of {rows.length - limit}</button>}
@@ -242,15 +243,16 @@ export function BondMarketView({ bondId, issuer, book, onChange, active }: { bon
   </div>
 }
 
-function MarketRow({ bond, company, ticker, isCursor, onSelect }: { bond: MarketBond; company: string; ticker?: string; isCursor: boolean; onSelect: () => void }) {
+/** Names are in English; hovering one shows it as the filing writes it. */
+function MarketRow({ bond, company, companyFiled, ticker, isCursor, onSelect }: { bond: MarketBond; company: string; companyFiled?: string | null; ticker?: string; isCursor: boolean; onSelect: () => void }) {
   const tags = featureTags(bond)
   const code = displayTicker(ticker)
   const badges = [SENIORITY_LABELS[bond.seniority], bond.currency && bond.currency !== 'JPY' ? bond.currency : '', ...tags.map(tag => FEATURE_LABELS[tag]?.split(' (')[0] ?? tag)].filter(Boolean)
   return <tr data-cursor={isCursor} className={isCursor ? 'is-cursor' : undefined} tabIndex={isCursor ? 0 : -1} aria-selected={isCursor} onClick={onSelect} onFocus={() => { if (!isCursor) onSelect() }}>
     <th scope="row">
       <span className="bd-bond-cell">
-        <strong title={company}>{company}{code && <span className="bd-ticker">{code}</span>}</strong>
-        <small title={bond.label}><span className="bd-label">{bond.label}</span>{badges.map(text => <span key={text} className="bd-tag">{text}</span>)}</small>
+        <strong title={filedTitle(company, companyFiled)}>{company}{code && <span className="bd-ticker">{code}</span>}</strong>
+        <small title={filedTitle(bond.label, bond.label_ja)}><span className="bd-label">{bond.label}</span>{badges.map(text => <span key={text} className="bd-tag">{text}</span>)}</small>
       </span>
     </th>
     <td className="num">{formatCoupon(bond)}</td>
