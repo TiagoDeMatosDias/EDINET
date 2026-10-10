@@ -2,15 +2,17 @@
 
 # ── EDINET PyInstaller spec ──────────────────────────────────────────────
 # Build the distributable EXE with:
-#   pyinstaller EDINET.spec
+#   pyinstaller EDINET.spec   (or scripts/build.py, which fills release/<platform>/)
 #
-# The resulting dist/ShadeResearch.exe bundles all Python code, the web frontend,
+# The resulting dist/ShadeResearch(.exe) bundles all Python code, the web frontend,
 # brand assets, ratio definitions, and rolling-metrics config.
 #
 # The exe is the whole release. On first start it creates data/ beside itself
 # (databases, TLS certificate, logs); settings such as the EDINET API key live
 # in data/app.db and are set on the Admin page or with `ShadeResearch.exe config`.
 # ─────────────────────────────────────────────────────────────────────────
+
+import sys
 
 # ── Data files bundled inside the exe ────────────────────────────────────
 # Each tuple is (source_on_disk, destination_in_bundle).
@@ -32,9 +34,17 @@ datas = [
 # Pipeline steps are discovered with pkgutil at runtime and never imported by
 # name, so collect every orchestrator module rather than listing steps by hand
 # (a hand-written list silently dropped steps added later).
-from PyInstaller.utils.hooks import collect_submodules
+# Walk the source tree instead of importing it, so the list does not depend on
+# every optional library loading in the build environment.
+from pathlib import Path
 
-hiddenimports = collect_submodules('src.orchestrator') + [
+_orchestrator_root = Path(SPECPATH) / 'src' / 'orchestrator'
+orchestrator_modules = sorted(
+    '.'.join(path.relative_to(SPECPATH).with_suffix('').parts).removesuffix('.__init__')
+    for path in _orchestrator_root.rglob('*.py')
+)
+
+hiddenimports = orchestrator_modules + [
     # Explicit API composition
     'src.api.router',
     'src.api.pipeline_routes',
@@ -85,7 +95,9 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # triton is torch's GPU kernel compiler (0.7 GB). torch imports it only when
+    # present, and it lingers in an environment that once held a CUDA torch.
+    excludes=['triton'],
     noarchive=False,
     optimize=0,
 )
@@ -108,7 +120,7 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
-    icon='assets/brand/shade-icon.ico',
+    icon='assets/brand/shade-icon.ico' if sys.platform == 'win32' else None,
     codesign_identity=None,
     entitlements_file=None,
 )

@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Build, assemble, and smoke-test the versioned Windows release archive.
+"""Build, assemble, and smoke-test the release for the platform running this script.
+
+PyInstaller cannot cross-compile, so run this once on Windows and once on
+Linux (``.github/workflows/release.yml`` does both). Each run fills its own
+folder under ``release/``: ``release/windows/ShadeResearch.exe`` or
+``release/linux/ShadeResearch``; the other platform's folder is left alone.
 
 The release is the executable alone. On first start it creates ``data/``
 beside itself with every database, the TLS certificate, and logs; settings
 such as the EDINET API key are entered on the Admin page or with
 ``ShadeResearch.exe config set``.
+
+A successful run leaves nothing else behind: PyInstaller's ``build/`` and
+``dist/`` are removed once the release has passed its smoke test.
 """
 
 from __future__ import annotations
@@ -21,7 +29,6 @@ import sys
 import tempfile
 import time
 import urllib.request
-import zipfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -32,9 +39,11 @@ from src.version import __version__  # noqa: E402
 DIST_DIR = PROJECT_ROOT / "dist"
 BUILD_DIR = PROJECT_ROOT / "build"
 PRODUCT_SLUG = "ShadeResearch"
-STAGING_DIR = DIST_DIR / f"{PRODUCT_SLUG}-{__version__}"
-EXE_SOURCE = DIST_DIR / f"{PRODUCT_SLUG}.exe"
-ZIP_DESTINATION = DIST_DIR / f"{PRODUCT_SLUG}-{__version__}-Release.zip"
+PLATFORM = "windows" if os.name == "nt" else "linux"
+EXE_NAME = f"{PRODUCT_SLUG}.exe" if os.name == "nt" else PRODUCT_SLUG
+EXE_SOURCE = DIST_DIR / EXE_NAME
+RELEASE_DIR = PROJECT_ROOT / "release"
+PLATFORM_DIR = RELEASE_DIR / PLATFORM
 SPEC_FILE = PROJECT_ROOT / "EDINET.spec"
 FRONTEND_ROOT = PROJECT_ROOT / "frontend-v2"
 ORCHESTRATOR_ROOT = PROJECT_ROOT / "src" / "orchestrator"
@@ -98,6 +107,15 @@ def preflight() -> None:
             "PyInstaller is missing; install the build extra with "
             "python -m pip install -e .[build]"
         ) from exc
+    import torch  # reached through argostranslate -> stanza
+
+    if torch.version.cuda:
+        raise RuntimeError(
+            f"torch {torch.__version__} is a CUDA build; packaging it adds several "
+            "gigabytes of GPU libraries that the CPU-only translator never loads. "
+            "Install the CPU build with python -m pip install torch "
+            "--index-url https://download.pytorch.org/whl/cpu"
+        )
     npm = "npm.cmd" if os.name == "nt" else "npm"
     run([npm, "--version"], cwd=FRONTEND_ROOT, timeout=15)
     print(f"Build preflight passed for Shade Research {__version__}")
@@ -136,9 +154,18 @@ def build_executable(command_timeout: int) -> None:
 
 
 def assemble_distribution() -> None:
-    """Stage the release: the executable and nothing else."""
-    STAGING_DIR.mkdir(parents=True, exist_ok=False)
-    shutil.copy2(EXE_SOURCE, STAGING_DIR / f"{PRODUCT_SLUG}.exe")
+    """Fill the release folder: the executable and nothing else.
+
+    ``release/<platform>/`` is replaced wholesale, so a stale executable from
+    an earlier build never ships; the other platform's folder is untouched.
+    """
+    RELEASE_DIR.mkdir(exist_ok=True)
+    if PLATFORM_DIR.exists():
+        shutil.rmtree(PLATFORM_DIR)
+    PLATFORM_DIR.mkdir()
+    shutil.copy2(EXE_SOURCE, PLATFORM_DIR / EXE_NAME)
+    (PLATFORM_DIR / EXE_NAME).chmod(0o755)
+    print(f"Created {PLATFORM_DIR / EXE_NAME}")
 
 
 def _free_loopback_port() -> int:
@@ -173,7 +200,7 @@ def _cli(executable: Path, *arguments: str) -> str:
 def _serve_once(executable: Path, timeout: int) -> None:
     """Start the packaged app, check health, the SPA, and every step, then stop it."""
     port = _free_loopback_port()
-    kwargs: dict = {"cwd": str(executable.parent)}
+    kwargs: dict = {"cwd": str(executable.parent), "env": {**os.environ, "EDINET_NO_BROWSER": "1"}}
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -223,8 +250,8 @@ def smoke_test(timeout: int) -> None:
     exit. Every database and the certificate must be there too.
     """
     with tempfile.TemporaryDirectory(prefix="shade-smoke-", ignore_cleanup_errors=True) as folder:
-        executable = Path(folder) / f"{PRODUCT_SLUG}.exe"
-        shutil.copy2(STAGING_DIR / executable.name, executable)
+        executable = Path(folder) / EXE_NAME
+        shutil.copy2(PLATFORM_DIR / EXE_NAME, executable)
         _cli(executable, "config", "set", "auth.mode", "disabled")
         _serve_once(executable, timeout)
         missing = [name for name in DATA_FILES if not (executable.parent / "data" / name).is_file()]
@@ -235,18 +262,16 @@ def smoke_test(timeout: int) -> None:
             raise RuntimeError("A saved setting did not survive restarting the packaged app")
 
 
-def create_archive() -> None:
-    with zipfile.ZipFile(ZIP_DESTINATION, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file_path in sorted(STAGING_DIR.rglob("*")):
-            if file_path.is_file():
-                archive.write(file_path, file_path.relative_to(STAGING_DIR))
-    print(f"Created {ZIP_DESTINATION}")
+def remove_intermediates() -> None:
+    """Drop PyInstaller's work and output folders; the release holds the result."""
+    _safe_remove(BUILD_DIR)
+    _safe_remove(DIST_DIR)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Run preflight only")
-    parser.add_argument("--command-timeout", type=int, default=180)
+    parser.add_argument("--command-timeout", type=int, default=600)
     parser.add_argument("--smoke-timeout", type=int, default=45)
     args = parser.parse_args()
     if args.command_timeout < 1 or args.smoke_timeout < 1:
@@ -257,7 +282,7 @@ def main() -> int:
     build_executable(args.command_timeout)
     assemble_distribution()
     smoke_test(args.smoke_timeout)
-    create_archive()
+    remove_intermediates()
     return 0
 
 

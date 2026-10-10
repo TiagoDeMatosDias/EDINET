@@ -1,0 +1,53 @@
+name: release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # CPU torch first: the default Linux wheel is the CUDA build, which adds
+      # gigabytes of GPU libraries the translator never loads.
+      - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -e ".[build]" -c constraints.txt
+      - run: python -B scripts/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShadeResearch-${{ matrix.platform }}
+          path: release/${{ matrix.platform }}/
+
+  combine:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: ShadeResearch-*
+      - run: |
+          cd release
+          for d in ShadeResearch-*; do mv "$d" "${d#ShadeResearch-}"; done
+          chmod +x linux/ShadeResearch
+          ls -R .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release/

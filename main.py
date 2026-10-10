@@ -56,6 +56,35 @@ def _migrate(dry_run: bool = False) -> None:
     migrate_legacy_layout(dry_run=dry_run)
 
 
+def _open_browser_when_ready(host: str, port: int) -> None:
+    """Open the workstation in the default browser once the server accepts connections.
+
+    A packaged build is started by double-clicking, with no terminal command
+    to read the address from.
+    """
+    import socket
+    import threading
+    import time
+    import webbrowser
+
+    def wait_then_open() -> None:
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection((host, port), timeout=1):
+                    break
+            except OSError:
+                time.sleep(0.5)
+        else:
+            return
+        try:
+            webbrowser.open(f"https://{host}:{port}/")
+        except Exception:  # noqa: BLE001 - no browser available; the log still shows the address
+            pass
+
+    threading.Thread(target=wait_then_open, daemon=True).start()
+
+
 def _run_web(
     host: str = "127.0.0.1",
     port: int = 8000,
@@ -99,6 +128,9 @@ def _run_web(
         reload = False
 
     cert_path, key_path = provision_tls(host=settings.host)
+
+    if getattr(sys, "frozen", False) and not os.getenv("EDINET_NO_BROWSER"):
+        _open_browser_when_ready("127.0.0.1" if settings.host in ("0.0.0.0", "::") else settings.host, settings.port)
 
     logger.info(
         "Starting web workstation on https://%s:%s",
@@ -247,5 +279,21 @@ def main(argv: list[str] | None = None) -> int:
         raise
 
 
+def _hold_window_open() -> None:
+    """Keep a double-clicked console window readable after a failure."""
+    if getattr(sys, "frozen", False) and os.name == "nt" and sys.stdin and sys.stdin.isatty():
+        input("Press Enter to close this window...")
+
+
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:
+        code = main()
+    except BaseException:
+        import traceback
+
+        traceback.print_exc()
+        _hold_window_open()
+        raise SystemExit(1)
+    if code:
+        _hold_window_open()
+    raise SystemExit(code)
