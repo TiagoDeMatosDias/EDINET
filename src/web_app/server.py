@@ -19,6 +19,7 @@ from src.paths import bundle_dir
 from src.version import __version__
 from src.web_app.api import router_app
 from src.web_app.security import OperatorGuidanceError, get_settings, install_security
+from src.web_app.tunnel import TunnelManager
 
 BRAND_ASSETS_DIR = bundle_dir() / "assets" / "brand"
 FRONTEND_V2_DIST = (
@@ -36,6 +37,25 @@ app.description = "Value in context: source-linked company research and analysis
 app.version = __version__
 SETTINGS = get_settings()
 install_security(app, SETTINGS)
+
+
+
+def _tunnel_blocked() -> str | None:
+    """Why a Cloudflare tunnel must stay closed, if it must."""
+    if not SETTINGS.authentication_required:
+        return "Sign-in is disabled (the auth.mode setting), so the tunnel stays closed."
+    if app.state.auth_service.bootstrap_required:
+        return "No account exists yet. Create the administrator account on this machine first."
+    return None
+
+
+def _local_origin() -> str:
+    """The address cloudflared reaches this server at."""
+    host = "127.0.0.1" if SETTINGS.host in ("0.0.0.0", "::") else SETTINGS.host
+    return f"https://{f'[{host}]' if ':' in host else host}:{SETTINGS.port}"
+
+
+app.state.tunnel = TunnelManager(_local_origin(), blocked=_tunnel_blocked)
 
 _api_lifespan = app.router.lifespan_context
 
@@ -59,7 +79,11 @@ async def _lifespan(lifespan_app: FastAPI):
     setup_logging()
     ensure_application_databases(settings=SETTINGS)
     async with _api_lifespan(lifespan_app):
-        yield
+        lifespan_app.state.tunnel.apply()
+        try:
+            yield
+        finally:
+            lifespan_app.state.tunnel.stop()
 
 
 app.router.lifespan_context = _lifespan
@@ -130,6 +154,7 @@ def main() -> None:
     import uvicorn
 
     from src.utilities.logger import setup_logging
+    from src.web_app.shutdown import GRACEFUL_SHUTDOWN_SECONDS
     from src.web_app.tls import provision_tls
 
     # Ensure the server logs to <project_root>/logs/ even when launched directly
@@ -146,6 +171,7 @@ def main() -> None:
         reload=False,
         ssl_certfile=cert_path,
         ssl_keyfile=key_path,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
     )
 
 

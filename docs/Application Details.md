@@ -120,7 +120,7 @@ flowchart TB
     ORCH --> STATE
 ```
 
-The FastAPI server mounts the pipeline/jobs, auth, admin, filings, research, reports, screening, security-analysis, splits, tags, backtesting, bonds, comparison, portfolio, chat, profiles, overview, and settings routers. The React frontend communicates with all endpoints through the authenticated API client layer in `frontend-v2/src/api/`; it never opens SQLite databases directly.
+The FastAPI server mounts the pipeline/jobs, auth, admin, filings, research, reports, screening, security-analysis, splits, tags, backtesting, bonds, comparison, portfolio, chat, profiles, overview, settings, and server-control routers, and starts the Cloudflare tunnel when the `tunnel.enabled` setting is on. The React frontend communicates with all endpoints through the authenticated API client layer in `frontend-v2/src/api/`; it never opens SQLite databases directly.
 
 ### [src/orchestrator/__init__.py](../src/orchestrator/__init__.py)
 
@@ -306,7 +306,7 @@ Responsibility: portfolio construction, price/dividend ingestion, return calcula
 
 ### [src/paths.py](../src/paths.py)
 
-Responsibility: the application's filesystem roots. `app_dir()` is the folder holding the executable (frozen) or the repository root; `bundle_dir()` holds bundled read-only files (PyInstaller's unpack folder when frozen; never written). `data_dir()` is `app_dir()/data` or `EDINET_DATA_DIR`, and `app_db_path`, `chat_db_path`, `default_market_db_path`, `default_filings_db_path`, `certs_dir`, `logs_dir`, `artifacts_dir`, `backtests_dir`, `reports_dir`, `exports_dir`, `jobs_dir`, `manual_uploads_dir`, and `downloads_dir` are fixed places inside it. Runtime folders are never derived from `__file__`.
+Responsibility: the application's filesystem roots. `app_dir()` is the folder holding the executable (frozen) or the repository root; `bundle_dir()` holds bundled read-only files (PyInstaller's unpack folder when frozen; never written). `data_dir()` is `app_dir()/data` or `EDINET_DATA_DIR`, and `app_db_path`, `chat_db_path`, `default_market_db_path`, `default_filings_db_path`, `certs_dir`, `logs_dir`, `artifacts_dir`, `tools_dir`, `backtests_dir`, `reports_dir`, `exports_dir`, `jobs_dir`, `manual_uploads_dir`, and `downloads_dir` are fixed places inside it. Runtime folders are never derived from `__file__`.
 
 ### [src/orchestrator/common/db_config.py](../src/orchestrator/common/db_config.py)
 
@@ -520,10 +520,10 @@ Responsibility: Centralized logging setup.
 
 Responsibility: operator settings and server secrets, stored as JSON rows in the `settings` table of `app.db`. Nothing is read from environment variables or files.
 
-- `registry.py` - `SETTINGS`, one `SettingSpec(key, kind, default, label, description, choices, minimum, restart)` per setting (`edinet.api_key`, `auth.mode`, `server.trusted_hosts`, `pipeline.allowed_data_roots`, four `limits.*`, `jobs.retention_hours`, `storage.market_db_path`, `storage.filings_db_path`, and the internal `chat.message_keys`); `validate` and `parse_text` normalize values and raise `SettingError`.
+- `registry.py` - `SETTINGS`, one `SettingSpec(key, kind, default, label, description, choices, minimum, restart)` per setting (`edinet.api_key`, `auth.mode`, `server.trusted_hosts`, `pipeline.allowed_data_roots`, four `limits.*`, `jobs.retention_hours`, `tunnel.enabled`, `tunnel.token`, `storage.market_db_path`, `storage.filings_db_path`, and the internal `chat.message_keys`); `validate` and `parse_text` normalize values and raise `SettingError`.
 - `store.py` - `SettingsStore` (get, rows, set, set_if_missing, delete) and `read_stored_value(s)`, which read without creating `app.db`. It opens SQLite itself so importing settings never triggers pipeline-step discovery.
 - `__init__.py` - `get_setting`, `load_settings`, `set_setting`, `unset_setting`, `describe_settings` (secret values never included), and `edinet_api_key()`, read at call time.
-- `api.py` - administrator routes `GET /api/admin/settings`, `PUT /api/admin/settings/{key}` (`{"value": …}`), and `DELETE /api/admin/settings/{key}`; changes are written to the auth audit log.
+- `api.py` - administrator routes `GET /api/admin/settings`, `PUT /api/admin/settings/{key}` (`{"value": …}`), and `DELETE /api/admin/settings/{key}`; changes are written to the auth audit log, and a change to a `tunnel.*` setting is applied to the running tunnel at once.
 
 ### [config.py](../config.py)
 
@@ -580,6 +580,18 @@ Responsibility: Screening API routes at `/api/screening/*` — metrics, periods,
 ### [src/web_app/api/security_analysis.py](../src/web_app/api/security_analysis.py)
 
 Responsibility: Security Analysis API routes at `/api/security/*` — search, overview, statements, price-history, peers, update-price, optimize, db-path, available-columns, chart-data.
+
+### [src/web_app/api/server_control.py](../src/web_app/api/server_control.py)
+
+Responsibility: administrator control of the running server. `GET /api/admin/server/tunnel` reports the Cloudflare tunnel (`enabled`, `kind` quick or named, `state` off, blocked, downloading, starting, running, or failed, `url`, `message`, the local `origin`, `blocked_reason`, and which `cloudflared` is at hand: bundled, installed, downloaded, or missing), and `POST /api/admin/server/tunnel/restart` starts it again. `POST /api/admin/server/shutdown` (`{"confirm": true}`; the JSON body keeps another site from sending it to a server that runs without sign-in) writes `server_shutdown` to the auth audit log and calls `stop_server`.
+
+### [src/web_app/shutdown.py](../src/web_app/shutdown.py)
+
+Responsibility: stopping the server process. `stop_server` raises `SIGINT` in the serving process shortly after the response, so uvicorn stops as it does on Ctrl+C, and first stops uvicorn's reloader when the server was started with auto-reload; if the process is still alive after `FORCED_EXIT_SECONDS` (a pipeline step keeps the interpreter running) it is ended. `GRACEFUL_SHUTDOWN_SECONDS` is the time both launchers give open connections (`timeout_graceful_shutdown`).
+
+### [src/web_app/tunnel.py](../src/web_app/tunnel.py)
+
+Responsibility: the Cloudflare tunnel that publishes the workstation. `TunnelManager` (one per server, at `app.state.tunnel`) runs `cloudflared` as a child process while `tunnel.enabled` is on: `apply` starts it again or stops it to match the settings (server start, a saved `tunnel.*` setting, a restart request), `stop` ends it with the server, and `status` reports what the Admin page shows. A quick tunnel is `cloudflared tunnel --url <origin> --no-tls-verify`; with `tunnel.token` it is `cloudflared tunnel run`, the token passed in `TUNNEL_TOKEN`. The public address is read from cloudflared's JSON log (the `trycloudflare.com` address, or the public hostname in the configuration Cloudflare sends an account's tunnel). The `blocked` callable given by `server.py` keeps it closed while sign-in is disabled or no account exists; a start that fails is retried with a growing delay. `find_cloudflared` returns the copy a release carries (`bundled_cloudflared()`: `tools/bin/` inside the bundle, where `EDINET.spec` puts the current release on every build, and the same folder of a source checkout), else the program on `PATH`, else `data/tools/cloudflared`; `ensure_cloudflared` downloads the official GitHub release there when none is found.
 
 ### [src/web_app/api/settings.py](../src/web_app/api/settings.py)
 
@@ -710,6 +722,7 @@ Responsibility: Unit and integration tests covering core logic, API endpoints, a
 - **[test_backtesting_chart_response.py](../tests/unit/test_backtesting_chart_response.py)** - Chart response format tests.
 - **[test_database_bootstrap.py](../tests/unit/test_database_bootstrap.py)** - Verifies clean-startup creation and schema initialization for the four databases.
 - **[test_storage_layout.py](../tests/unit/test_storage_layout.py)** - Data-folder paths, storage settings, the refusal to create databases beside an unmigrated layout, and the old-layout migration (contents, counters, migrations, dry run, resume after interruption, in-use refusal, `EDINET_DATA_DIR` isolation).
+- **[test_server_control.py](../tests/unit/test_server_control.py)** - Shutting the server down: administrators only, the JSON confirmation, the audit event, and the stop sequence.
 - **[test_settings.py](../tests/unit/test_settings.py)** - Setting defaults and validation, secret masking, `AppSettings.load`, the administrator API, and `main.py config`.
 - **[test_backtesting_web.py](../tests/unit/test_backtesting_web.py)** - Web backtesting interface tests.
 - **[test_edinet_api.py](../tests/unit/test_edinet_api.py)** - tests `Edinet` wrapper methods including download, unzip, CSV ingestion and DB interactions.
@@ -732,6 +745,7 @@ Responsibility: Unit and integration tests covering core logic, API endpoints, a
 - **[test_security_history_scaling.py](../tests/unit/test_security_history_scaling.py)** - History scaling tests.
 - **[test_stockprice_api.py](../tests/unit/test_stockprice_api.py)** - tests CSV import and stock price ingestion logic.
 - **[test_taxonomy_processing.py](../tests/unit/test_taxonomy_processing.py)** - Taxonomy parsing and processing tests.
+- **[test_tunnel.py](../tests/unit/test_tunnel.py)** - The Cloudflare tunnel with a stand-in `cloudflared`: opening and closing with the setting, the token, the sign-in and first-account guards, retry after a failed start, where cloudflared is looked for and its download, and the admin API.
 - **[test_update_fx_data.py](../tests/unit/test_update_fx_data.py)** - tests ECB FX data download, transform, and database ingestion with dedup.
 - **[test_utils.py](../tests/unit/test_utils.py)** - small helper tests for URL generation and CSV export.
 - **[test_web_app_server.py](../tests/unit/test_web_app_server.py)** - Tests for the FastAPI web application server.

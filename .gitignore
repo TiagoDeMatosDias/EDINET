@@ -49,3 +49,4 @@ release/
 !.github/
 !.github/workflows/
 !.github/workflows/*.yml
+ShadeResearch

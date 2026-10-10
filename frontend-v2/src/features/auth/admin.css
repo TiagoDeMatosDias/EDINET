@@ -60,3 +60,23 @@
 .console-setting { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 2px 8px; }
 .console-setting > small { grid-column: 1 / -1; }
 .console-setting__actions { display: flex; align-items: center; gap: 6px; }
+
+/* Remote access: the tunnel's status line above its token. */
+.console-tunnel { display: flex; flex-direction: column; gap: 6px; }
+.console-tunnel > small { font-size: .72rem; }
+.console-tunnel__status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: .78rem; }
+.console-tunnel__status a { overflow-wrap: anywhere; color: var(--text); font-family: var(--font-mono); font-size: .74rem; }
+.console-tunnel__status .text-button { font-size: .72rem; }
+.console-tunnel__status .text-button svg { width: 11px; height: 11px; }
+.console-tunnel__actions { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+
+/* Shutting the server down: the button in the section header and its confirmation. */
+.console-section__actions .button { min-height: 28px; padding: 3px 9px; font-size: .76rem; }
+.console-dialog { width: min(480px, 100%); display: flex; flex-direction: column; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-pop); }
+.console-dialog > header { padding: 14px 18px 10px; border-bottom: 1px solid var(--border); }
+.console-dialog h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 1.05rem; }
+.console-dialog h2 svg { width: 18px; color: var(--danger); }
+.console-dialog__body { display: flex; flex-direction: column; gap: 8px; padding: 12px 18px; font-size: .8rem; line-height: 1.5; }
+.console-dialog__body p { margin: 0; }
+.console-dialog__body svg { width: 13px; height: 13px; vertical-align: -2px; }
+.console-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 18px 14px; border-top: 1px solid var(--border); }

@@ -56,6 +56,7 @@ def test_launcher_propagates_validated_remote_settings(monkeypatch, tmp_path):
         "reload": False,
         "ssl_certfile": tmp_path / "certs" / "cert.pem",
         "ssl_keyfile": tmp_path / "certs" / "key.pem",
+        "timeout_graceful_shutdown": 3,
     }
     assert (tmp_path / "certs" / "cert.pem").is_file()
     assert (tmp_path / "certs" / "key.pem").is_file()

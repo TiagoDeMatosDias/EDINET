@@ -35,9 +35,9 @@ The script, in order:
 1. verifies supported Python, Node/npm, `EDINET.spec`, the frontend lockfile, PyInstaller, and that torch is a CPU build;
 2. runs `npm ci` and the production frontend build with hard timeouts;
 3. removes the repository's `build/` and `dist/` directories left by a failed earlier run;
-4. runs PyInstaller through the active interpreter with a 600-second default cap;
+4. runs PyInstaller through the active interpreter with a 600-second default cap. `EDINET.spec` first downloads Cloudflare's current `cloudflared` release for this platform (about 40 MB, from `github.com/cloudflare/cloudflared`) into `tools/bin/` and bundles it; when the download fails it bundles the copy already there, with a warning, and fails only when there is none;
 5. replaces `release/<platform>/` (`windows` or `linux`, whichever this host is) with the executable alone; the other platform's folder is left untouched;
-6. smoke-tests a copy in an empty temporary folder: it saves `auth.mode=disabled` with `ShadeResearch.exe config set`, starts the executable on a loopback port, checks `/health`, `/`, and that `/api/steps` offers every step package in `src/orchestrator/`, stops it, checks that `data/` beside the copy holds `app.db`, `chat.db`, `market.db`, `filings.db`, and the certificate, then starts it again and checks that the setting survived;
+6. smoke-tests a copy in an empty temporary folder: it saves `auth.mode=disabled` with `ShadeResearch.exe config set`, starts the executable on a loopback port, checks `/health`, `/`, that `/api/steps` offers every step package in `src/orchestrator/`, and that the application finds the `cloudflared` it carries (`/api/admin/server/tunnel`), stops it, checks that `data/` beside the copy holds `app.db`, `chat.db`, `market.db`, `filings.db`, and the certificate, then starts it again and checks that the setting survived;
 7. removes `build/` and `dist/`, PyInstaller's work and output folders, so `release/` is all a successful build leaves. A failed build keeps them: `build/EDINET/warn-EDINET.txt` and `xref-EDINET.html` show what PyInstaller did and did not find.
 
 Run non-mutating preflight only:
@@ -52,7 +52,7 @@ Override bounded stages when the build host is unusually slow:
 .\.venv3\Scripts\python.exe -B scripts\build.py --command-timeout 180 --smoke-timeout 45
 ```
 
-The build script never installs missing dependencies. Install them explicitly so network access and environment mutation are visible.
+The build script never installs missing dependencies. Install them explicitly so network access and environment mutation are visible. Its own network use is `npm ci` and the `cloudflared` download.
 
 ## Release contents
 
@@ -81,13 +81,13 @@ data/
 
 Enter the EDINET API key under **Admin → Server settings** after registering the first (administrator) account, or with `ShadeResearch.exe config set edinet.api_key`. Upgrading a folder that holds an older release (`.env`, `config/`, `data/databases/`) is a matter of replacing the executable: on its first start it moves the old layout into `data/` (see [Running the Application](RUNNING.md#moving-from-the-older-layout)).
 
-The executable bundles the React production assets, brand assets, ratio definitions, rolling-metric definitions, Python source, and required libraries. Taxonomy archives, the Argos Japanese-to-English model package, logs, job state, saved screens, uploads, exports, tests, docs, and operator data are not bundled. The translation runtime installs the Argos ja→en model on first use when it is not already available.
+The executable bundles the React production assets, brand assets, ratio definitions, rolling-metric definitions, Python source, required libraries, and `cloudflared` (Cloudflare's tunnel client, Apache-2.0 licensed), which **Admin → Remote access** runs from inside the bundle. Taxonomy archives, the Argos Japanese-to-English model package, logs, job state, saved screens, uploads, exports, tests, docs, and operator data are not bundled. The translation runtime installs the Argos ja→en model on first use when it is not already available.
 
 Never copy a development `data/` folder into a release.
 
 ## Size
 
-The Linux executable is about 465 MB and the Windows one about 330 MB; the Windows libraries are smaller before compression (0.9 GB against 1.4 GB; torch alone is 376 MB against 668 MB). UPX is switched off in `EDINET.spec`: it saved about 65 MB on Windows, but torch DLLs compressed with it fail to load (`WinError 998` on `c10.dll`), which breaks the translator. Before compression the Linux bundle holds:
+The Linux executable is about 485 MB and the Windows one about 345 MB; the Windows libraries are smaller before compression (0.9 GB against 1.4 GB; torch alone is 376 MB against 668 MB). UPX is switched off in `EDINET.spec`: it saved about 65 MB on Windows, but torch DLLs compressed with it fail to load (`WinError 998` on `c10.dll`), which breaks the translator. Before compression the Linux bundle holds:
 
 | Part | Size |
 | --- | --- |
@@ -95,12 +95,13 @@ The Linux executable is about 465 MB and the Windows one about 330 MB; the Windo
 | numpy, scipy, pandas, scikit-learn, matplotlib | 205 MB |
 | Python, the application, FastAPI, cryptography and other libraries | 130 MB |
 | Web frontend | 33 MB |
+| `cloudflared` (53 MB on Windows) | 38 MB |
 
 A CUDA build of torch turns that 1.4 GB into 5 GB (a 2.8 GB executable): 2.5 GB of NVIDIA libraries, 0.4 GB of CUDA code inside torch, and 0.7 GB of `triton`. `scripts/build.py` therefore refuses to package a CUDA torch, and `EDINET.spec` excludes `triton`, which stays installed after swapping the torch build in an existing environment.
 
 ## Building the Windows executable from Linux
 
-With no Windows machine, `release/windows/ShadeResearch.exe` was built inside Wine 11 (the `tobix/pywine:3.13` container, upgraded with `winehq-devel`; Wine 10 lacks a C runtime function numpy needs). Three Wine-only steps: PyInstaller's binary-dependency scan imports every `torch.*` submodule and Wine crashes on some, so that loop skips them (`torch` itself is still imported); the spec enumerates `src.orchestrator` from the source tree instead of importing it; and `pip install msvc-runtime` puts Microsoft's C++ runtime DLLs beside `python.exe`, because PyInstaller leaves out Wine's own copies and torch would then need the Visual C++ Redistributable on the target PC. The result was smoke-tested under Wine (`--help`, `config set`, `/health`, `/api/steps`, `data/` created, one translation). Prefer the `release` workflow on a real Windows runner for published releases.
+With no Windows machine, `release/windows/ShadeResearch.exe` was built inside Wine 11 (the `tobix/pywine:3.13` container, upgraded with `winehq-devel`; Wine 10 lacks a C runtime function numpy needs). Three Wine-only steps: PyInstaller's binary-dependency scan imports every `torch.*` submodule and Wine crashes on some, so that loop skips them (`torch` itself is still imported); the spec enumerates `src.orchestrator` from the source tree instead of importing it; and `pip install msvc-runtime` puts Microsoft's C++ runtime DLLs beside `python.exe`, because PyInstaller leaves out Wine's own copies and torch would then need the Visual C++ Redistributable on the target PC. The spec's `cloudflared.exe` download works there unchanged. The result was smoke-tested under Wine (`--help`, `config set`, `/health`, `/api/steps`, the bundled `cloudflared`, `data/` created, one translation). Prefer the `release` workflow on a real Windows runner for published releases.
 
 ## Hidden imports
 

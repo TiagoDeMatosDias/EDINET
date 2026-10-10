@@ -30,6 +30,13 @@ def _audit(request: Request, user: AuthenticatedUser, event: str, key: str) -> N
         service.store.audit(event, user.user_id, detail=key)
 
 
+def _apply(request: Request, key: str) -> None:
+    """Act on a setting the running server follows without a restart."""
+    tunnel = getattr(request.app.state, "tunnel", None)
+    if key.startswith("tunnel.") and tunnel is not None:
+        tunnel.apply()
+
+
 def _described(key: str) -> dict[str, Any]:
     return next(item for item in describe_settings() if item["key"] == key)
 
@@ -57,6 +64,7 @@ def update_setting(key: str, payload: SettingUpdate, request: Request, user: Adm
     except SettingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     _audit(request, user, "setting_updated", key)
+    _apply(request, key)
     return _described(key)
 
 
@@ -69,4 +77,5 @@ def reset_setting(key: str, request: Request, user: Admin) -> dict[str, Any]:
     except SettingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     _audit(request, user, "setting_reset", key)
+    _apply(request, key)
     return _described(key)

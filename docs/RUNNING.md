@@ -20,6 +20,7 @@ Everything the application writes lives in one data folder: `data/` beside `main
 | `filings.db` | Provider ZIPs, XBRL facts, catalog, and translations | Yes, by the pipeline |
 | `certs/` | TLS certificate and key | Generated |
 | `logs/` | Rotating `server.log` | Generated |
+| `tools/` | `cloudflared`, downloaded when a tunnel is opened from a source checkout that has none (a release carries its own) | Generated |
 | `artifacts/` | Backtests, reports, screening exports, job uploads, downloaded documents | Generated |
 
 When the web server starts, it creates any missing database with its managed schema. Components that share `app.db` record their migrations per component in `schema_migrations`. The market tables are created by the pipeline; only the bond tables have a fixed schema. The server always reads its own databases; API requests cannot name one.
@@ -44,9 +45,11 @@ Settings are rows in the `settings` table of `app.db`, declared with their types
 | `limits.max_backtest_artifact_bytes` | 256 MiB | Largest backtest archive. |
 | `limits.max_report_artifact_bytes` | 128 MiB | Largest report archive. |
 | `jobs.retention_hours` | 24 | Finished jobs and their uploads are removed after this long. |
+| `tunnel.enabled` | `off` | `on` publishes the workstation through a Cloudflare tunnel; see [Cloudflare tunnel](#cloudflare-tunnel). |
+| `tunnel.token` | not set | Token of a tunnel in a Cloudflare account, for an address that stays the same. Write-only in the UI. |
 | `storage.market_db_path`, `storage.filings_db_path` | data folder | Move the two large databases, for example to a bigger disk. Move the file yourself with the server stopped, then set the path. |
 
-Every setting except the API key takes effect on the next start. How the server listens is not a setting but a launch option (`--host`, `--port`, `--allow-remote`), so a stored value can never expose the server to the network. If an administrator is locked out, `main.py config set auth.mode disabled` and a restart on loopback restore access.
+The API key applies at once, and so do the tunnel settings when they are changed on the Admin page; every other setting takes effect on the next start. How the server listens is not a setting but a launch option (`--host`, `--port`, `--allow-remote`), so a stored value can never make the server listen on the network. The one setting that publishes it, `tunnel.enabled`, goes out through Cloudflare and only while sign-in is on. If an administrator is locked out, `main.py config set auth.mode disabled` and a restart on loopback restore access.
 
 ### Moving from the older layout
 
@@ -83,6 +86,8 @@ Launch the local workstation:
 
 Open `https://127.0.0.1:8000`.
 
+Stop the server with `Ctrl+C`, or with **Shut down server** under **Admin → Server settings** when there is no terminal to press it in (a packaged build started by double-click). Either way it stops listening at once and gives open connections three seconds. After **Shut down server** the process always ends: a pipeline step still running is cut off after ten seconds, and its job is marked interrupted on the next start.
+
 ### TLS certificates
 
 The workstation always serves HTTPS. On startup it reuses the first certificate/key pair found in `data/certs/` and, when the folder holds no usable pair, generates a self-signed one there so HTTPS works immediately and later startups reuse the same certificate. Supported pair names, in lookup order: `cert.pem`+`key.pem`, `fullchain.pem`+`privkey.pem` (Let's Encrypt layout), `tls.crt`+`tls.key`, and `server.crt`+`server.key`. When running the packaged Windows executable it lives in `data/certs/` next to the executable.
@@ -96,6 +101,24 @@ Remote binding requires explicit opt-in, account authentication, and trusted hos
 .\.venv3\Scripts\python.exe main.py config set server.trusted_hosts research.example,192.0.2.10
 .\.venv3\Scripts\python.exe main.py --host 0.0.0.0 --port 8080 --allow-remote --no-reload
 ```
+
+### Cloudflare tunnel
+
+A Cloudflare tunnel publishes the workstation without a remote bind, a port forward, or a CA certificate: the server keeps listening on `127.0.0.1`, and `cloudflared`, started by the server, connects out to Cloudflare and relays visitors to it. Turn it on under **Admin → Remote access**, or from a terminal (applied on the next start):
+
+```powershell
+.\.venv3\Scripts\python.exe main.py config set tunnel.enabled on
+.\.venv3\Scripts\python.exe main.py config set tunnel.token      # optional; prompts
+```
+
+- Without a token Cloudflare opens a quick tunnel at a temporary `https://<words>.trycloudflare.com` address, shown on the Admin page and in the server log. It needs no Cloudflare account, changes whenever the tunnel or the server starts again (with auto-reload, on every code change), has no uptime guarantee, allows 200 requests in flight, and does not pass Server-Sent Events.
+- With a token the server runs that account's tunnel, whose address is set in Cloudflare and stays the same. Create the tunnel in Cloudflare Zero Trust (Networks → Tunnels), give it a public hostname whose service is `https://127.0.0.1:8000` (the port the server uses) with **No TLS Verify** turned on, because the server's own certificate is self-signed, and paste the token; a whole pasted `cloudflared … <token>` command is accepted.
+- The release executable carries `cloudflared` and uses that copy. From source, the server uses the copy a build left in `tools/bin/`, else the one on `PATH`, else it downloads the official release once into `data/tools/` (Linux and Windows; on other systems install it yourself).
+- The tunnel never opens while `auth.mode` is `disabled` or before the first (administrator) account exists, and it closes with the server. Registration is open by default, so anyone with the address could create an account: make it invitation-only under **Admin → Access** before sharing the address. Invitation and password-reset links made on the Admin page carry the tunnel's address while it is open.
+- A start that fails (no internet, an invalid token) is shown with its reason on the Admin page and tried again, at first after five seconds and then less often, up to every five minutes.
+- A server started with `--allow-remote` checks host names, so add the tunnel's host name (`*.trycloudflare.com` for a temporary address) to `server.trusted_hosts`.
+
+`scripts/share.sh` opens a quick tunnel from a terminal instead, for a server it starts itself.
 
 Remote `/api/*` requests require an account-issued `Authorization: Bearer <token>`. Tokens must not be placed in URLs, logs, or browser storage. `/health` remains minimal and unauthenticated. The EDINET API key is reserved for outbound EDINET downloads and is never used for application authentication.
 

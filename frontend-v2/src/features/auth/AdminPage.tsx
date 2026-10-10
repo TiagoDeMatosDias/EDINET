@@ -10,6 +10,7 @@ import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { useAuth } from './authContext'
 import { ADMIN_SECTIONS, adminScope } from './adminHotkeys'
+import { ShutdownServer } from './ShutdownServer'
 import './admin.css'
 
 interface AdminUser {
@@ -57,6 +58,20 @@ interface ServerSetting {
   updated_at: string | null
 }
 
+/** What the server reports about its Cloudflare tunnel. */
+interface TunnelStatus {
+  enabled: boolean
+  kind: 'quick' | 'named'
+  state: 'off' | 'blocked' | 'downloading' | 'starting' | 'running' | 'failed'
+  url: string | null
+  message: string | null
+  origin: string
+  blocked_reason: string | null
+}
+
+const TUNNEL_KEY = ['admin-tunnel']
+const fetchTunnel = () => apiRequest<TunnelStatus>('/api/admin/server/tunnel')
+
 type SavedSetup = { name: string; steps: Array<{ name: string; overwrite?: boolean }>; config: Record<string, unknown> }
 type PipelineSchedule = { schedule_id: string; name: string; frequency: 'daily' | 'weekly' | 'monthly'; enabled: boolean; steps: Array<{ name: string; overwrite?: boolean }>; config: Record<string, unknown>; last_run_at: string | null }
 type PipelineSchedulerStatus = { checked_at: string; next_check_at: string; active_pipeline: boolean; triggered_job_ids: string[] }
@@ -67,6 +82,7 @@ const EVENT_LABELS: Record<string, string> = {
   refresh_succeeded: 'Token refresh', refresh_reuse_detected: 'Refresh reuse', password_changed: 'Password changed',
   password_change_failed: 'Failed password change', profile_updated: 'Profile updated', session_revoked: 'Session revoked',
   all_sessions_revoked: 'All sessions revoked', api_token_created: 'API token created', user_disabled: 'User disabled', role_changed: 'Role changed',
+  server_shutdown: 'Server shut down', tunnel_restarted: 'Tunnel restarted', setting_updated: 'Setting changed', setting_reset: 'Setting reset',
 }
 const ALARMING = new Set(['login_failed', 'refresh_reuse_detected', 'password_change_failed', 'user_disabled'])
 
@@ -169,14 +185,25 @@ export default function AdminPage() {
     onSuccess: () => { setError(null); void client.invalidateQueries({ queryKey: ['admin-users'] }) },
     onError: fail,
   })
+  // One-time links are opened by other people, so they carry the public
+  // address while a tunnel is open. It is asked for each link, because a
+  // temporary address changes whenever the tunnel starts again.
+  const linkOrigin = () => client.fetchQuery({ queryKey: TUNNEL_KEY, queryFn: fetchTunnel })
+    .then(tunnel => (tunnel.state === 'running' && tunnel.url ? tunnel.url : window.location.origin), () => window.location.origin)
   const resetLink = useMutation({
-    mutationFn: (user: AdminUser) => apiRequest<{ reset_token: string }>(`/api/admin/auth/credential-resets?target_user_id=${encodeURIComponent(user.user_id)}`, { method: 'POST' }).then(result => ({ user, token: result.reset_token })),
-    onSuccess: ({ user, token }) => setLink({ label: `Password-reset link for ${user.username}`, url: `${window.location.origin}/login?reset=${encodeURIComponent(token)}` }),
+    mutationFn: async (user: AdminUser) => {
+      const result = await apiRequest<{ reset_token: string }>(`/api/admin/auth/credential-resets?target_user_id=${encodeURIComponent(user.user_id)}`, { method: 'POST' })
+      return { user, token: result.reset_token, origin: await linkOrigin() }
+    },
+    onSuccess: ({ user, token, origin }) => setLink({ label: `Password-reset link for ${user.username}`, url: `${origin}/login?reset=${encodeURIComponent(token)}` }),
     onError: fail,
   })
   const invite = useMutation({
-    mutationFn: () => apiRequest<{ invitation_token: string }>('/api/admin/auth/invitations', { method: 'POST', body: JSON.stringify({ role: inviteRole, email: inviteEmail.trim() || undefined }) }),
-    onSuccess: result => { setInviteEmail(''); setLink({ label: `Invitation link (${inviteRole})`, url: `${window.location.origin}/register?invite=${encodeURIComponent(result.invitation_token)}` }) },
+    mutationFn: async () => {
+      const result = await apiRequest<{ invitation_token: string }>('/api/admin/auth/invitations', { method: 'POST', body: JSON.stringify({ role: inviteRole, email: inviteEmail.trim() || undefined }) })
+      return { token: result.invitation_token, origin: await linkOrigin() }
+    },
+    onSuccess: ({ token, origin }) => { setInviteEmail(''); setLink({ label: `Invitation link (${inviteRole})`, url: `${origin}/register?invite=${encodeURIComponent(token)}` }) },
     onError: fail,
   })
 
@@ -260,15 +287,16 @@ export default function AdminPage() {
             <label className="console-field console-field--grow"><span>Email (optional, to restrict it)</span><input className="input" type="email" value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} /></label>
             <button ref={inviteButton} type="submit" className="button button--primary button--small" disabled={invite.isPending}><UserPlus aria-hidden="true" />Create invitation <HotkeyKbd hotkey={adminScope.byId.invite} /></button>
           </form>
-          <p className="console-muted"><Link2 aria-hidden="true" /> Invitations open registration for one person even when it is closed or invitation-only. For a forgotten password, use <em>Reset</em> on the user’s row (<kbd>P</kbd>): the link sets a new password once. Links use this page’s address, so make them from the address you share (your tunnel URL).</p>
+          <p className="console-muted"><Link2 aria-hidden="true" /> Invitations open registration for one person even when it is closed or invitation-only. For a forgotten password, use <em>Reset</em> on the user’s row (<kbd>P</kbd>): the link sets a new password once. Links carry the tunnel’s address while one is open under Remote access, and this page’s address otherwise.</p>
         </Section>
-        <Section index={6} title="Server settings" meta="stored in app.db"><ServerSettingsSection /></Section>
+        <Section index={6} title="Server settings" meta="stored in app.db" actions={<ShutdownServer />}><ServerSettingsSection /></Section>
       </div>
 
       <div className="console-column">
         <Section index={3} title="Access" meta={settings.data?.updated_at ? `changed ${when(settings.data.updated_at)}` : 'deployment defaults'}>
           {settings.data ? <AccessForm key={settings.data.updated_at ?? 'defaults'} settings={settings.data} /> : <LoadingState label="Loading settings" />}
         </Section>
+        <Section index={7} title="Remote access" meta="Cloudflare tunnel"><RemoteAccessSection registrationOpen={settings.data?.registration_mode === 'open'} /></Section>
         <Section index={4} title="Pipeline schedules"><SchedulesSection /></Section>
         <Section index={5} title="Audit log" meta={audit.data ? `${audit.data.length} latest events` : undefined}>
           <AuditTable events={audit.data ?? []} users={usersById} loading={audit.isLoading} />
@@ -320,14 +348,77 @@ function settingValue(setting: ServerSetting, text: string): unknown {
   return text.trim()
 }
 
+function useServerSettings() {
+  return useQuery({ queryKey: ['admin-server-settings'], queryFn: () => apiRequest<{ settings: ServerSetting[] }>('/api/admin/settings') })
+}
+
+/** The tunnel's settings are edited under Remote access, next to its status. */
+const isTunnelSetting = (setting: ServerSetting) => setting.key.startsWith('tunnel.')
+
 function ServerSettingsSection() {
-  const settings = useQuery({ queryKey: ['admin-server-settings'], queryFn: () => apiRequest<{ settings: ServerSetting[] }>('/api/admin/settings') })
+  const settings = useServerSettings()
   const [restart, setRestart] = useState(false)
   if (!settings.data) return <LoadingState label="Loading settings" />
   return <div className="console-settings">
     <p className="console-muted">Everything the server needs is configured here, or with <code>main.py config</code>. Settings marked * apply after a restart; how the server listens (host, port, remote access) is chosen when it is started.</p>
     {restart && <p className="console-warn" role="status">Restart the server to apply the change.</p>}
-    {settings.data.settings.map(setting => <SettingRow key={`${setting.key}:${setting.updated_at ?? 'default'}`} setting={setting} onSaved={saved => { if (saved.restart_required) setRestart(true) }} />)}
+    {settings.data.settings.filter(setting => !isTunnelSetting(setting)).map(setting => <SettingRow key={`${setting.key}:${setting.updated_at ?? 'default'}`} setting={setting} onSaved={saved => { if (saved.restart_required) setRestart(true) }} />)}
+  </div>
+}
+
+const TUNNEL_STATE_LABELS: Record<TunnelStatus['state'], string> = { off: 'Off', blocked: 'Blocked', downloading: 'Starting', starting: 'Starting', running: 'Public', failed: 'Failed' }
+
+/**
+ * Publishing the workstation through a Cloudflare tunnel. Turning it on or
+ * off saves the `tunnel.enabled` setting, which the server follows at once.
+ */
+function RemoteAccessSection({ registrationOpen }: { registrationOpen: boolean }) {
+  const client = useQueryClient()
+  const tunnel = useQuery({
+    queryKey: TUNNEL_KEY,
+    queryFn: fetchTunnel,
+    // Follow the tunnel closely while it is coming up or retrying.
+    refetchInterval: query => (['off', 'running'].includes(query.state.data?.state ?? 'off') ? 30_000 : 1500),
+  })
+  const settings = useServerSettings()
+  const [copied, setCopied] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const refresh = () => { setError(null); setCopied(false); void client.invalidateQueries({ queryKey: TUNNEL_KEY }) }
+  const failed = (err: Error) => setError(err.message)
+  const turn = useMutation({
+    mutationFn: (on: boolean) => apiRequest<ServerSetting>('/api/admin/settings/tunnel.enabled', { method: 'PUT', body: JSON.stringify({ value: on ? 'on' : 'off' }) }),
+    onSuccess: () => { refresh(); void client.invalidateQueries({ queryKey: ['admin-server-settings'] }) },
+    onError: failed,
+  })
+  const restart = useMutation({ mutationFn: () => apiRequest<TunnelStatus>('/api/admin/server/tunnel/restart', { method: 'POST' }), onSuccess: refresh, onError: failed })
+  if (!tunnel.data) return tunnel.isError ? <p className="form-error" role="alert">{tunnel.error.message}</p> : <LoadingState label="Loading tunnel" />
+  const { enabled, kind, state, url, message, origin, blocked_reason: blocked } = tunnel.data
+  const token = settings.data?.settings.find(setting => setting.key === 'tunnel.token')
+  const busy = turn.isPending || restart.isPending
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(url ?? ''); setCopied(true) } catch { setCopied(false) }
+  }
+  return <div className="console-tunnel">
+    <p className="console-muted">Publishes this workstation on the internet through Cloudflare, without opening a port on this machine. Visitors sign in as usual.</p>
+    <div className="console-tunnel__status" role="status">
+      <span className={state === 'off' ? 'console-muted' : state === 'blocked' || state === 'failed' ? 'console-pill console-pill--off' : 'console-pill'}>{TUNNEL_STATE_LABELS[state]}</span>
+      {state === 'running' && url && <><a href={url} target="_blank" rel="noreferrer">{url}</a><button type="button" className="text-button" onClick={() => void copy()}><Copy aria-hidden="true" />{copied ? 'Copied' : 'Copy'}</button></>}
+      {state === 'running' && !url && <span>Connected. Its address is the public hostname set for this tunnel in Cloudflare.</span>}
+      {state === 'starting' && <span>Connecting to Cloudflare…</span>}
+      {state === 'downloading' && <span>Downloading cloudflared (about 40 MB, once)…</span>}
+      {state === 'failed' && <span>{message} It is tried again automatically.</span>}
+      {(state === 'blocked' || (state === 'off' && blocked)) && <span>{message ?? blocked}</span>}
+      <span className="console-tunnel__actions">
+        {state === 'failed' && <button type="button" className="text-button" disabled={busy} onClick={() => restart.mutate()}>Try again</button>}
+        {state === 'running' && kind === 'quick' && <button type="button" className="text-button" disabled={busy} onClick={() => restart.mutate()} title="Close this address and open a new one">New address</button>}
+        <button type="button" className="button button--secondary button--small" disabled={busy || (!enabled && Boolean(blocked))} onClick={() => turn.mutate(!enabled)}>{enabled ? 'Turn off' : 'Turn on'}</button>
+      </span>
+    </div>
+    {state === 'running' && kind === 'quick' && <small className="console-muted">A temporary address: it changes whenever the tunnel or the server starts again, and a new one can take a minute to start working. Add a token below for an address that stays.</small>}
+    {registrationOpen && <small className="console-warn">Registration is open: anyone with the address can create an account. Under Access, set Registration to Invitation only.</small>}
+    {error && <small className="form-error" role="alert">{error}</small>}
+    {token && <SettingRow key={`${token.key}:${token.updated_at ?? 'default'}`} setting={token} onSaved={refresh} />}
+    <small className="console-muted">For a token, create a tunnel in Cloudflare Zero Trust and give it a public hostname with the service <code>{origin}</code> and <em>No TLS Verify</em> turned on.</small>
   </div>
 }
 

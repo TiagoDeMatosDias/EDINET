@@ -24,7 +24,9 @@ Account authentication is optional for loopback use. In account mode:
 - saved backtests are private to the account that ran them;
 - refreshing a price from the provider is available to operators and administrators;
 - an administrator can set the minimum password length from Admin → Access. The accepted range is 5–128 characters, and the policy applies to registration, invitations, resets, changes, and administrator-created credentials;
-- an administrator enters the EDINET API key and every other server setting under Admin → Server settings (key `6`). The key is write-only: the page only shows whether it is set. Settings marked * apply after the server restarts.
+- an administrator enters the EDINET API key and every other server setting under Admin → Server settings (key `6`). The key is write-only: the page only shows whether it is set. Settings marked * apply after the server restarts;
+- an administrator can stop the server with **Shut down server** in the same section. It asks first and says when a pipeline job is active, because that job is interrupted. The workstation then stops for everyone and can only be started again on the machine it runs on; once it is back, **Reload page** in the same dialog reopens the page;
+- an administrator can publish the workstation on the internet under Admin → Remote access (key `7`). **Turn on** opens a Cloudflare tunnel and shows the public address to share; **Turn off** closes it. Visitors sign in with their own accounts, so set Registration to Invitation only under Access first (the section says so while registration is open). Invitation and password-reset links made while the tunnel is open carry its address, so they work for the person you send them to even when you made them at `127.0.0.1`. Without a token the address is temporary: it changes whenever the tunnel or the server starts again, and a new one can take a minute to start working. For an address that stays, paste a tunnel token from Cloudflare Zero Trust. The tunnel stays on across restarts until it is turned off.
 
 ## Workspace overview
 

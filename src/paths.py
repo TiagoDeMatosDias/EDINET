@@ -20,6 +20,7 @@ second instance). Its layout::
     certs/       TLS certificate and key
     logs/        rotating server log
     artifacts/   backtests, reports, exports, job workspaces, downloads
+    tools/       cloudflared, downloaded when a tunnel is opened and none is bundled or installed
 """
 
 from __future__ import annotations
@@ -78,6 +79,11 @@ def logs_dir() -> Path:
 
 def artifacts_dir() -> Path:
     return data_dir() / "artifacts"
+
+
+def tools_dir() -> Path:
+    """Helper programs the application downloads for itself."""
+    return data_dir() / "tools"
 
 
 def backtests_dir() -> Path:

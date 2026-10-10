@@ -5,7 +5,7 @@
 #   pyinstaller EDINET.spec   (or scripts/build.py, which fills release/<platform>/)
 #
 # The resulting dist/ShadeResearch(.exe) bundles all Python code, the web frontend,
-# brand assets, ratio definitions, and rolling-metrics config.
+# brand assets, ratio definitions, rolling-metrics config, and cloudflared.
 #
 # The exe is the whole release. On first start it creates data/ beside itself
 # (databases, TLS certificate, logs); settings such as the EDINET API key live
@@ -29,6 +29,26 @@ datas = [
     ('src/orchestrator/generate_rolling_metrics/rolling_metrics.json',
      'src/orchestrator/generate_rolling_metrics'),
 ]
+
+# ── cloudflared (the Cloudflare tunnel under Admin → Remote access) ──
+# Bundled so that a release opens a tunnel without downloading anything. Every
+# build fetches the current release from Cloudflare's GitHub page into
+# tools/bin/, and bundles the copy already there when that fails. The
+# application looks for it at the same path inside the bundle
+# (src.web_app.tunnel.bundled_cloudflared).
+sys.path.insert(0, SPECPATH)
+from src.paths import bundle_dir
+from src.web_app.tunnel import TunnelError, bundled_cloudflared, download_cloudflared
+
+_cloudflared = bundled_cloudflared()
+try:
+    download_cloudflared(_cloudflared)
+except TunnelError as exc:
+    if not _cloudflared.is_file():
+        raise
+    print(f'WARNING: {exc} Bundling the older {_cloudflared}.', flush=True)
+print(f'Bundling {_cloudflared} ({_cloudflared.stat().st_size / 2**20:.0f} MB)', flush=True)
+datas.append((str(_cloudflared), str(_cloudflared.parent.relative_to(bundle_dir()))))
 
 # Hidden imports for orchestrator discovery and optional libraries.
 # Pipeline steps are discovered with pkgutil at runtime and never imported by

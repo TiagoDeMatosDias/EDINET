@@ -200,7 +200,7 @@ def _cli(executable: Path, *arguments: str) -> str:
 
 
 def _serve_once(executable: Path, timeout: int) -> None:
-    """Start the packaged app, check health, the SPA, and every step, then stop it."""
+    """Start the packaged app, check health, the SPA, every step, and cloudflared, then stop it."""
     port = _free_loopback_port()
     kwargs: dict = {"cwd": str(executable.parent), "env": {**os.environ, "EDINET_NO_BROWSER": "1"}}
     if os.name == "nt":
@@ -238,6 +238,10 @@ def _serve_once(executable: Path, timeout: int) -> None:
         missing = _expected_steps() - {step["name"] for step in steps}
         if missing:
             raise RuntimeError(f"The packaged app is missing pipeline steps: {', '.join(sorted(missing))}")
+        with urllib.request.urlopen(f"https://127.0.0.1:{port}/api/admin/server/tunnel", timeout=5, context=context) as response:
+            cloudflared = json.load(response).get("cloudflared")
+        if cloudflared != "bundled":
+            raise RuntimeError(f"The packaged app does not carry cloudflared for its tunnel (found: {cloudflared})")
     finally:
         _terminate_tree(process)
 

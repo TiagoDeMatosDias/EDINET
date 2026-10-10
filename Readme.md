@@ -84,6 +84,7 @@ The frontend never opens a database directly; it only calls the API. The orchest
 - **Testing ideas** — expression screening, point-in-time rolling backtests, manual and CSV backtests, IBKR FlexQuery portfolio imports, and reproducible report ZIPs.
 - **Data pipeline** — 16 dynamically discovered steps, durable job state, cancellation, progress reporting, safe file uploads, XBRL `explicit`/`backfill`/`all` modes, and financial statements generated from CSV or compact filing facts.
 - **Optional accounts** — registration, login, rotating sessions, personal API tokens, administrator controls, and an administrator-set 5–128-character password minimum.
+- **Remote access without opening a port** — an administrator can publish the workstation through a Cloudflare tunnel from the Admin page, at a temporary address or one of their own; visitors sign in as usual.
 - **Zero-setup storage** — the four databases and their schemas are created in `data/` on first start, and every setting, including the EDINET API key, is stored in `app.db` and edited on the Admin page.
 
 ## Screenshots
@@ -200,9 +201,10 @@ Everything the application writes is in `data/` beside `main.py` or `ShadeResear
 | `data/chat.db` | Chat channels and messages, kept apart because it grows with use; its at-rest key ring is in `app.db`. |
 | `data/market.db` | Rebuildable market data: the EDINET document index, taxonomy, company info, statements, ratios, rolling metrics, prices, splits, and bonds. |
 | `data/filings.db` | Rebuildable filing archive: compressed provider ZIPs, compact numeric facts, catalog metadata, and translation-cache rows. Narrative HTML and text are reconstructed from the retained ZIP only when requested. |
+| `data/tools/` | `cloudflared`, downloaded when a tunnel is opened from a source checkout that has none. The release executable carries its own. |
 | `data/certs/`, `data/logs/`, `data/artifacts/` | TLS certificate, rotating server log, and generated backtests, reports, exports, and job uploads. |
 
-Settings are rows in `app.db`, edited under **Admin → Server settings** or with `main.py config list|get|set|unset`. Among them: `edinet.api_key`, `auth.mode`, `server.trusted_hosts`, upload and archive limits, job retention, and `storage.market_db_path` / `storage.filings_db_path` to move the two large databases to another disk. How the server listens is chosen at launch (`--host`, `--port`, `--allow-remote`). `EDINET_DATA_DIR` points the application at another data folder, which tests and scratch runs use.
+Settings are rows in `app.db`, edited under **Admin → Server settings** or with `main.py config list|get|set|unset`. Among them: `edinet.api_key`, `auth.mode`, `server.trusted_hosts`, `tunnel.enabled` to publish the workstation through a Cloudflare tunnel, upload and archive limits, job retention, and `storage.market_db_path` / `storage.filings_db_path` to move the two large databases to another disk. How the server listens is chosen at launch (`--host`, `--port`, `--allow-remote`). `EDINET_DATA_DIR` points the application at another data folder, which tests and scratch runs use.
 
 Ratio and rolling-metric definitions ship with the code in `src/orchestrator/generate_ratios/ratios_definitions.json` and `src/orchestrator/generate_rolling_metrics/rolling_metrics.json`.
 

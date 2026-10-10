@@ -21,6 +21,7 @@ from src.settings.api import router as _admin_settings_router
 from src.web_app.api.overview import router as _overview_router
 from src.web_app.api.screening import router as _screening_router
 from src.web_app.api.security_analysis import router as _security_router
+from src.web_app.api.server_control import router as _server_control_router
 from src.web_app.api.settings import router as _settings_router
 from src.web_app.api.splits import router as _splits_router
 from src.web_app.api.tags import router as _tags_router
@@ -33,6 +34,7 @@ _ROUTERS = (
     _auth_router,
     _admin_router,
     _admin_settings_router,
+    _server_control_router,
     _filings_router,
     _research_router,
     _reports_router,

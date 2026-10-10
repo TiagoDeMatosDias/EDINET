@@ -4,7 +4,9 @@ Settings are rows in ``app.db`` (see ``store``). They are edited on the Admin
 page or with ``python main.py config set KEY VALUE``; nothing is read from
 environment variables or configuration files. How the server listens (host,
 port, remote access) is a launch option instead, so a stored value can never
-expose the server to the network.
+make it listen on the network. The one setting that publishes the server,
+``tunnel.enabled``, goes out through Cloudflare and only while sign-in is on
+(see ``src.web_app.tunnel``).
 """
 
 from __future__ import annotations
@@ -64,6 +66,23 @@ SETTINGS: tuple[SettingSpec, ...] = (
         "Trusted host names",
         "Host names browsers may use to reach the server when it is started with --allow-remote.",
         restart=True,
+    ),
+    SettingSpec(
+        "tunnel.enabled",
+        "choice",
+        "off",
+        "Cloudflare tunnel",
+        "on: the workstation is published on the internet through a Cloudflare tunnel, without "
+        "opening a port; visitors sign in as usual. It stays closed while sign-in is disabled.",
+        choices=("off", "on"),
+    ),
+    SettingSpec(
+        "tunnel.token",
+        "secret",
+        "",
+        "Cloudflare tunnel token",
+        "Token of a tunnel created in Cloudflare Zero Trust, for an address of your own that stays "
+        "the same. Without one, Cloudflare assigns a temporary trycloudflare.com address.",
     ),
     SettingSpec(
         "pipeline.allowed_data_roots",

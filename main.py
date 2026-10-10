@@ -107,6 +107,7 @@ def _run_web(
 
     from src.utilities.logger import setup_logging
     from src.web_app.security import AppSettings
+    from src.web_app.shutdown import GRACEFUL_SHUTDOWN_SECONDS
     from src.web_app.tls import provision_tls
 
     settings = AppSettings.load(
@@ -145,6 +146,7 @@ def _run_web(
         reload=reload,
         ssl_certfile=cert_path,
         ssl_keyfile=key_path,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
     )
 
 
