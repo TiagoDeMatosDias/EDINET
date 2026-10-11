@@ -1,0 +1,110 @@
+/* Ownership: the Analysis sections (shareholders, people) and Research's People & holders. Builds on research.css (rs-*). */
+.ow-company { display: flex; flex-direction: column; gap: 8px; }
+.ow-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: .78rem; }
+.ow-actions .button svg { width: 13px; height: 13px; }
+.ow-none { margin: 0; color: var(--muted); font-size: .8rem; }
+.ow-hint { padding: 0; }
+.ow-also { margin: 0; font-size: .78rem; }
+.ow-also a { color: var(--text); }
+.ow-hint a { display: inline-flex; align-items: center; gap: 2px; margin-left: 6px; color: var(--text); }
+.ow-hint svg, .ow-links svg, .ow-career__bar svg { width: 11px; height: 11px; }
+
+.ow-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.ow-kpi { display: flex; flex-direction: column; gap: 1px; min-width: 0; margin: 0 -1px -1px 0; padding: 7px 10px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.ow-kpi > span { color: var(--muted); font-size: .68rem; }
+.ow-kpi strong { font-family: var(--font-mono); font-size: 1rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.ow-kpi small { overflow: hidden; color: var(--muted); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Ownership by kind of holder: one stacked bar, segments parted by the surface, values in the legend. */
+.ow-distribution { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.ow-distribution__bar { display: flex; gap: 2px; height: 14px; }
+.ow-distribution__bar .ow-slice { min-width: 2px; }
+.ow-distribution__bar .ow-slice:first-child { border-radius: 4px 0 0 4px; }
+.ow-distribution__bar .ow-slice:last-child { border-radius: 0 4px 4px 0; }
+.ow-distribution figcaption { display: flex; flex-wrap: wrap; gap: 3px 16px; color: var(--muted); font-size: .72rem; }
+.ow-distribution figcaption span { display: inline-flex; align-items: baseline; gap: 5px; }
+.ow-distribution figcaption i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
+.ow-distribution figcaption strong { color: var(--text); font-family: var(--font-mono); font-weight: 500; }
+.ow-distribution figcaption small { font-family: var(--font-mono); font-size: .66rem; }
+.ow-slice--financial_institutions { background: #3460a8; }
+.ow-slice--foreign { background: #c4462c; }
+.ow-slice--other_corporations { background: #13917a; }
+.ow-slice--individuals { background: #be8410; }
+.ow-slice--securities_firms { background: #a9568f; }
+.ow-slice--government { background: #55891f; }
+
+.ow-table-wrap { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.ow-table td, .ow-table th { vertical-align: top; }
+.ow-table tbody tr[tabindex] { cursor: pointer; }
+.ow-table tbody tr:hover { background: var(--surface-subtle); }
+.ow-table tbody tr:focus-visible { outline: 1px solid var(--ink); outline-offset: -1px; }
+.ow-table tr.is-inactive { color: var(--muted); }
+.ow-table--compact th, .ow-table--compact td { padding-right: 6px; padding-left: 6px; }
+.ow-name { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+.ow-name__text { display: flex; flex-direction: column; gap: 1px; min-width: 0; max-width: 380px; }
+.ow-name__text > strong, .ow-name__link { overflow: hidden; font-weight: 500; text-overflow: ellipsis; }
+.ow-name__link, .ow-name a { color: var(--text); text-decoration: none; }
+.ow-name__link:hover, .ow-name a:hover { text-decoration: underline; }
+.ow-name__text small { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 6px; overflow: hidden; text-overflow: ellipsis; }
+.ow-table--compact .ow-name__text { max-width: 260px; }
+.ow-detail .ow-name__text small { white-space: normal; }
+.ow-code { color: var(--muted); font-family: var(--font-mono); font-size: .68rem; }
+.ow-tag { display: inline-block; max-width: 260px; overflow: hidden; padding: 0 5px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: var(--surface-subtle); font-size: .64rem; line-height: 1.5; text-overflow: ellipsis; }
+.ow-tag--new { border-color: var(--indigo); color: var(--indigo); background: var(--success-soft); font-family: var(--font-sans); }
+.ow-kind { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 16px; height: 16px; margin-top: 1px; color: var(--muted); }
+.ow-kind svg { width: 13px; height: 13px; }
+.ow-kind--person, .ow-kind--company { color: var(--indigo); }
+.ow-stake { min-width: 96px; }
+.ow-stake > span:first-child { display: block; }
+.ow-bar { display: block; height: 3px; margin-top: 3px; border-radius: 2px; background: var(--border); }
+.ow-bar > span { display: block; height: 100%; border-radius: 2px; background: var(--indigo); }
+.ow-sub { display: block; color: var(--muted); font-size: .66rem; }
+.ow-title { max-width: 360px; white-space: normal !important; }
+.ow-table--compact .ow-title { max-width: 220px; }
+.ow-account { max-width: 180px; overflow: hidden; color: var(--muted); text-overflow: ellipsis; }
+.ow-links a { display: inline-flex; align-items: center; gap: 2px; color: var(--text); font-size: .72rem; }
+.ow-history th[scope='col'].num, .ow-history td.num { min-width: 62px; font-size: .72rem; }
+.ow-more { font-size: .76rem; }
+.ow-more summary { color: var(--muted); cursor: pointer; }
+.ow-more .rs-table-scroll { margin-top: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.ow-departed { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; font-size: .78rem; list-style: none; }
+.ow-departed li { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.ow-departed a, .ow-same a { color: var(--text); font-weight: 500; }
+
+/* Research: the directory and the panel beside it */
+.ow-directory { grid-template-columns: minmax(0, .85fr) minmax(520px, 1.15fr); }
+.ow-directory .rs-search { flex: 1 1 280px; }
+.ow-list { table-layout: fixed; }
+.ow-list th:nth-child(1) { width: 46%; }
+.ow-list th:nth-child(3), .ow-list th:nth-child(4) { width: 76px; }
+.ow-list .ow-name__text { max-width: none; }
+.ow-list .ow-name__text > strong, .ow-list .ow-name__text small { display: block; white-space: nowrap; }
+.ow-headline { overflow: hidden; color: var(--muted); text-overflow: ellipsis; }
+.ow-detail h2 { margin: 0; font-size: 1.1rem; }
+.ow-detail .rs-detail__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; }
+.ow-detail .rs-detail__links a { display: inline-flex; align-items: center; gap: 3px; }
+.ow-detail .rs-detail__links svg { width: 12px; height: 12px; }
+.ow-kind-label { display: inline-flex; align-items: center; gap: 3px; color: var(--text); }
+.ow-facts dd { font-size: .9rem; }
+.ow-section { border-bottom: 1px solid var(--border); }
+.ow-section > h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0; padding: 8px 10px 4px; font-size: .8rem; font-weight: 500; }
+.ow-section > h3 small { color: var(--muted); font-size: .7rem; font-weight: 400; }
+.ow-section > .rs-hint { padding-top: 4px; }
+.ow-spark { display: block; margin: 2px 0 0 auto; color: var(--muted); }
+.ow-same { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0 10px 8px; font-size: .78rem; list-style: none; }
+.ow-same li { display: flex; flex-wrap: wrap; gap: 2px 10px; }
+.ow-career__bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 0 10px 4px; font-size: .74rem; }
+.ow-career__bar a, .ow-career__bar .text-button { display: inline-flex; align-items: center; gap: 3px; color: var(--text); }
+.ow-career__bar .select { max-width: 260px; min-height: 24px; padding: 1px 20px 1px 5px; font-size: .74rem; }
+.ow-career { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin: 0; padding: 0 10px 8px; font-size: .78rem; line-height: 1.45; list-style: none; }
+.ow-career li { display: contents; }
+.ow-career time { color: var(--muted); font-family: var(--font-mono); font-size: .72rem; white-space: nowrap; }
+
+@media (max-width: 1100px) {
+  .ow-directory { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 760px) {
+  .ow-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ow-name__text { max-width: 220px; }
+}

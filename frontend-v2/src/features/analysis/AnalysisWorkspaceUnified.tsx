@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BarChart3, Download, ExternalLink, GitCompare, RefreshCw } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import { ApiError, apiPost, apiRequest, queryString } from '../../api/client'
 import type { SecurityHistory, SecurityOverview } from '../../api/types'
@@ -17,6 +17,8 @@ import { formatMetricValue, groupMetrics, type MetricDefinition } from '../../me
 import { useAuth } from '../auth/authContext'
 import { CompanyBondsPanel } from '../bonds/CompanyBondsPanel'
 import { CompanyChannelPanel } from '../chat/CompanyChannelPanel'
+import { PeoplePanel } from '../ownership/PeoplePanel'
+import { ShareholdersPanel } from '../ownership/ShareholdersPanel'
 import { PortfolioTrailNav } from '../portfolio/PortfolioTrailNav'
 import { CompanyResearchPanel } from '../research/CompanyResearchPanel'
 import { ResearchBadge } from '../research/ResearchBadge'
@@ -157,11 +159,25 @@ function useActiveSection(ready: boolean) {
   return active
 }
 
-function jumpTo(id: SectionId) {
+function jumpTo(id: SectionId, behavior: ScrollBehavior = 'smooth') {
   const section = document.getElementById(id)
   if (!section) return
-  section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  section.scrollIntoView({ behavior, block: 'start' })
   section.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true })
+}
+
+/**
+ * Opens the page at the section its address names (``/analyze/E02144#shareholders``).
+ * Sections above it load later and push it down, so the jump is repeated when they settle.
+ */
+function useSectionFromAddress(ready: boolean, settled: number) {
+  const { hash, key } = useLocation()
+  const target = SECTIONS.find(section => `#${section.id}` === hash)?.id
+  useEffect(() => {
+    if (!ready || !target) return
+    const frame = window.requestAnimationFrame(() => jumpTo(target, 'auto'))
+    return () => window.cancelAnimationFrame(frame)
+  }, [ready, target, key, settled])
 }
 
 function Profile({ description, provenance, facts, links }: { description: string; provenance: string; facts: Array<[string, ReactNode, string?]>; links: Array<{ label: string; href: string; external?: boolean; hint: string }> }) {
@@ -250,6 +266,7 @@ export default function AnalysisWorkspaceUnified() {
     observer.observe(element)
     return () => observer.disconnect()
   }, [ready])
+  useSectionFromAddress(ready, Number(history.isFetched) + Number(prices.isFetched))
   const compareKey = useHotkeyText(analysisScope.byId.compare)
   const tagKey = useHotkeyText(analysisScope.byId.tag)
   const noteKey = useHotkeyText(analysisScope.byId.note)
@@ -257,6 +274,8 @@ export default function AnalysisWorkspaceUnified() {
   useHotkeyScope(analysisScope, {
     'section-overview': () => jumpTo('overview'),
     'section-financials': () => jumpTo('financials'),
+    'section-shareholders': () => jumpTo('shareholders'),
+    'section-people': () => jumpTo('people'),
     'section-filings': () => jumpTo('filings'),
     'section-bonds': () => jumpTo('bonds'),
     'section-discussion': () => jumpTo('discussion'),
@@ -396,6 +415,14 @@ export default function AnalysisWorkspaceUnified() {
     <Section id="financials" title="Financial statements" aside={<span className="analysis-section__note">Annual figures from XBRL filings. Click lines to chart them.</span>}>
       <FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} downloadPrefix={canonicalCode || ticker} currency={currencies.reporting} />
     </Section>
+
+    {canonicalCode && <Section id="shareholders" title="Major shareholders" aside={<span className="analysis-section__note">The largest shareholders in the latest annual report, each stake at today’s market value. Click one for everything else it holds.</span>}>
+      <ShareholdersPanel companyCode={canonicalCode} marketCap={metrics.MarketCap ?? null} />
+    </Section>}
+
+    {canonicalCode && <Section id="people" title="Related people" aside={<span className="analysis-section__note">Directors, auditors, and executive officers, with the shares each holds. Click one for their career and other boards.</span>}>
+      <PeoplePanel companyCode={canonicalCode} marketCap={metrics.MarketCap ?? null} />
+    </Section>}
 
     {canonicalCode && <Section id="filings" title="Filings" aside={<span className="analysis-section__note">Retained EDINET annual reports with their XBRL data.</span>}>
       <FilingsPanel companyCode={canonicalCode} />

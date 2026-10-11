@@ -7,6 +7,7 @@ export const RESEARCH_TABS = [
   { key: 'options', label: 'Options' },
   { key: 'bonds', label: 'Bonds & credit' },
   { key: 'bond-market', label: 'Bond market' },
+  { key: 'people', label: 'People & holders' },
 ] as const
 
 export const researchScope = defineScope({
@@ -124,5 +125,21 @@ export const bondMarketScope = defineScope({
     { id: 'previous-rating', keys: '[', label: 'Previous rating group', role: 'previous' },
     { id: 'next-rating', keys: ']', label: 'Next rating group', role: 'next' },
     { id: 'download', keys: 'd', label: 'Download the bonds listed as CSV', role: 'download' },
+  ],
+})
+
+export const peopleScope = defineScope({
+  id: 'research.people',
+  label: 'People & holders',
+  screen: 'Research',
+  parent: 'research',
+  hotkeys: [
+    { id: 'next', keys: 'j', label: 'Next person or holder (↓ in the list)', role: 'next' },
+    { id: 'previous', keys: 'k', label: 'Previous person or holder (↑ in the list)', role: 'previous' },
+    { id: 'open', keys: 'o', label: 'Open their company in Analysis (Enter in the list)', role: 'open' },
+    { id: 'filter', keys: 'f', label: 'Find a person or holder', role: 'filter' },
+    { id: 'previous-kind', keys: '[', label: 'Previous kind of holder', role: 'previous' },
+    { id: 'next-kind', keys: ']', label: 'Next kind of holder', role: 'next' },
+    { id: 'download', keys: 'd', label: 'Download the selected holder’s shareholdings as CSV', role: 'download' },
   ],
 })

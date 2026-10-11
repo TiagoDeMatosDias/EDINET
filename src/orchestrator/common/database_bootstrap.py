@@ -38,8 +38,8 @@ def ensure_application_databases(
     """Create any missing database and every managed schema.
 
     The market database's statement, price, and ratio tables are created by
-    the pipeline according to the imported data; only its bond tables have a
-    fixed schema. The file itself is still created here so a clean install has
+    the pipeline according to the imported data; only its bond and ownership
+    tables have a fixed schema. The file itself is still created here so a clean install has
     the complete layout before the first pipeline run.
     """
     timeout = int(
@@ -61,6 +61,7 @@ def ensure_application_databases(
     from src.bonds.store import ensure_bond_tables
     from src.chat.storage import ChatStore
     from src.filings.catalog import FilingCatalog
+    from src.ownership.store import ensure_ownership_tables
     from src.pipeline_jobs.store import JobStore
     from src.portfolio.schema import create_tables as create_portfolio_tables
     from src.research.storage import ResearchStore
@@ -84,6 +85,7 @@ def ensure_application_databases(
     finally:
         conn.close()
     ensure_bond_tables(paths["market"])
+    ensure_ownership_tables(paths["market"])
 
     FilingCatalog(paths["filings"], busy_timeout_ms=timeout)
 

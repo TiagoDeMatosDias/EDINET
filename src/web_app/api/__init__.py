@@ -14,6 +14,7 @@ from src.chat.api import router as _chat_router
 from src.chat.profiles_api import router as _profiles_router
 from src.comparison.api import router as _comparison_router
 from src.filings.api import router as _filings_router
+from src.ownership.api import router as _ownership_router
 from src.portfolio.api import router as _portfolio_router
 from src.reports.api import router as _reports_router
 from src.research.api import router as _research_router
@@ -44,6 +45,7 @@ _ROUTERS = (
     _tags_router,
     _backtesting_router,
     _bonds_router,
+    _ownership_router,
     _comparison_router,
     _portfolio_router,
     _chat_router,

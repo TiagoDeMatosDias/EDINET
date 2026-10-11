@@ -8,6 +8,7 @@ import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
 import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { BondMarketView } from '../bonds/BondMarketView'
+import { EntitiesView } from '../ownership/EntitiesView'
 import { AlertsView } from './AlertsView'
 import { BookView } from './BookView'
 import { NotesView } from './NotesView'
@@ -57,6 +58,7 @@ export default function ResearchPage() {
     options: '',
     bonds: '',
     'bond-market': '',
+    people: '',
   }
   const description = [
     `${companies.length} ${companies.length === 1 ? 'company' : 'companies'}`,
@@ -80,7 +82,7 @@ export default function ResearchPage() {
     <PageHeader
       eyebrow="Research"
       title="Research"
-      description={book.data ? `Your private research: ${description}.` : 'Your private notes, tags, theses, alerts, and pricing tools.'}
+      description={book.data ? `Your private research: ${description}.` : 'Your private notes, tags, theses, alerts, pricing tools, and the people behind each company.'}
       actions={<HotkeyHelpButton />}
     />
     <div className="rs-tabs" role="tablist" aria-label="Research" onKeyDown={onTabKeyDown}>
@@ -116,6 +118,7 @@ export default function ResearchPage() {
       {tab === 'options' && <OptionsView companyCode={company} onCompany={code => update({ company: code })} active={active} />}
       {tab === 'bonds' && <BondsView companyCode={company} bondId={params.get('bond') ?? ''} onCompany={code => update({ company: code, bond: '' })} active={active} />}
       {tab === 'bond-market' && <BondMarketView bondId={params.get('bond') ?? ''} issuer={params.get('issuer') ?? ''} book={book.data} onChange={update} active={active} />}
+      {tab === 'people' && <EntitiesView entityId={params.get('entity') ?? ''} query={params.get('q') ?? ''} kind={params.get('kind') ?? ''} onChange={update} active={active} />}
     </div>
   </div>
 }

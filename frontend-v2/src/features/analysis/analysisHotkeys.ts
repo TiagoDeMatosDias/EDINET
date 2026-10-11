@@ -3,6 +3,8 @@ import { defineScope } from '../../hotkeys/registry'
 export const ANALYSIS_SECTIONS = [
   { id: 'overview', label: 'Overview' },
   { id: 'financials', label: 'Financials' },
+  { id: 'shareholders', label: 'Shareholders' },
+  { id: 'people', label: 'People' },
   { id: 'filings', label: 'Filings' },
   { id: 'bonds', label: 'Bonds' },
   { id: 'discussion', label: 'Discussion' },
@@ -49,6 +51,27 @@ export const financialsScope = defineScope({
     { id: 'clear-chart', keys: 'x', label: 'Clear the chart', role: 'delete' },
     { id: 'move', keys: ['ArrowDown', 'ArrowUp'], label: 'In the table: move between lines (also J, K)', role: 'next', fixed: true },
     { id: 'chart-line', keys: 'Space', label: 'In the table: chart or un-chart the focused line', fixed: true },
+  ],
+})
+
+export const shareholdersPanelScope = defineScope({
+  id: 'analysis.shareholders',
+  label: 'Major shareholders',
+  screen: 'Analysis',
+  parent: 'analysis',
+  hotkeys: [
+    { id: 'history', keys: 'y', label: 'Show or hide each holder’s stake in earlier years' },
+    { id: 'directory', keys: 'w', label: 'Look up people and holders in Research' },
+  ],
+})
+
+export const peoplePanelScope = defineScope({
+  id: 'analysis.people',
+  label: 'Related people',
+  screen: 'Analysis',
+  parent: 'analysis',
+  hotkeys: [
+    { id: 'departed', keys: 'l', label: 'Show or hide officers who have left' },
   ],
 })
 
