@@ -1067,6 +1067,24 @@ def _join_list(value: Any) -> str:
     return str(value) if value else ""
 
 
+def _fmt_expression_tokens(tokens: list) -> str:
+    """Render expression tokens (value/column/op/paren) as a display string."""
+    parts: list[str] = []
+    for t in tokens:
+        if not isinstance(t, dict):
+            continue
+        ttype = t.get("type", "")
+        if ttype == "column":
+            table = t.get("table", "")
+            column = t.get("column", "")
+            parts.append(f"{table}.{column}" if table else (column or "?"))
+        elif ttype == "op":
+            parts.append(str(t.get("op", "?")))
+        else:  # value, tag, paren
+            parts.append(str(t.get("value", "?")))
+    return " ".join(parts)
+
+
 def _fmt_criterion(c: dict) -> str:
     """Format a single screening criterion for display in the summary.
 
@@ -1091,20 +1109,14 @@ def _fmt_criterion(c: dict) -> str:
         left = c.get("left_expression") or c.get("left_side")
         if left:
             if isinstance(left, list):
-                left = " ".join(
-                    t.get("value", t.get("column", "?"))
-                    for t in left if isinstance(t, dict)
-                )
+                left = _fmt_expression_tokens(left)
             return f"{left}"
         return f"expression: {qualified}"
 
     if mode == "expression":
         right = c.get("right_side")
         if right and isinstance(right, list):
-            right_str = " ".join(
-                t.get("value", t.get("column", "?"))
-                for t in right if isinstance(t, dict)
-            )
+            right_str = _fmt_expression_tokens(right)
             return f"{qualified} {op} ({right_str})"
         return f"{qualified} {op} {val}"
 
