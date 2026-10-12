@@ -4,8 +4,12 @@
 server, so the server keeps listening on this machine only and no port,
 router, or firewall changes. The ``tunnel.enabled`` setting turns it on. With
 a ``tunnel.token`` it runs that Cloudflare account's tunnel, whose address is
-set in Cloudflare and stays the same; without one Cloudflare assigns a
-temporary ``trycloudflare.com`` address that changes on every start.
+set in Cloudflare and stays the same. With a ``tunnel.api_token`` and a
+``tunnel.hostname`` it creates its own tunnel on first use, stores the token
+in ``app.db``, and reuses it on every start so the address stays the same; a
+reset in the admin panel clears it and starts a fresh one. Without either,
+Cloudflare assigns a temporary ``trycloudflare.com`` address that changes on
+every start.
 
 The tunnel never opens while sign-in is disabled or before the first
 (administrator) account exists: the caller passes those checks as ``blocked``.
@@ -28,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -36,6 +41,8 @@ import requests  # type: ignore[import-untyped]
 
 from src.paths import bundle_dir, tools_dir
 from src.settings import get_setting
+from src.settings.store import SettingsStore
+from src.web_app.tunnel_api import TunnelApiError, create_tunnel, delete_tunnel
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +157,28 @@ def _token() -> str:
     return words[-1] if words else ""
 
 
+def _app_db() -> Path:
+    # Imported late: src.orchestrator discovers the pipeline steps on import,
+    # and the steps import src.settings.
+    from src.orchestrator.common.db_config import get_app_db
+
+    return Path(get_app_db())
+
+
+def _stored_credentials() -> dict[str, Any] | None:
+    """The tunnel the server created for itself, read from app.db."""
+    value = get_setting("tunnel.credentials")
+    return value if isinstance(value, dict) else None
+
+
+def _store_credentials(credentials: dict[str, Any]) -> None:
+    SettingsStore(_app_db()).set("tunnel.credentials", credentials)
+
+
+def _clear_credentials() -> None:
+    SettingsStore(_app_db()).delete("tunnel.credentials")
+
+
 def _public_url(config: object, origin: str) -> str | None:
     """The address of an account's tunnel, from the configuration Cloudflare sends it."""
     try:
@@ -208,7 +237,7 @@ class TunnelManager:
             state, url, message = self._state, self._url, self._message
         return {
             "enabled": get_setting("tunnel.enabled") == "on",
-            "kind": "named" if _token() else "quick",
+            "kind": "named" if (_token() or (_stored_credentials() or {}).get("token")) else "quick",
             "state": state,
             "url": url,
             "message": message,
@@ -217,6 +246,33 @@ class TunnelManager:
             # bundled, installed, downloaded, or missing (downloaded on first use)
             "cloudflared": (find_cloudflared() or ("missing",))[0],
         }
+
+    def _token_for_run(self) -> str:
+        """The token to run: a pasted one, the stored one, or a freshly created one."""
+        token = _token()
+        if token:
+            return token
+        stored = _stored_credentials()
+        if stored and stored.get("token"):
+            return str(stored["token"])
+        api_token = str(get_setting("tunnel.api_token") or "")
+        hostname = str(get_setting("tunnel.hostname") or "")
+        if api_token and hostname:
+            name = "edinet-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            try:
+                token, tunnel_id = create_tunnel(api_token, name, hostname, self.origin)
+            except TunnelApiError as exc:
+                raise TunnelError(str(exc)) from exc
+            _store_credentials({
+                "token": token,
+                "tunnel_id": tunnel_id,
+                "name": name,
+                "hostname": hostname,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+            logger.info("Created a new Cloudflare tunnel %s at %s", name, hostname)
+            return token
+        return ""
 
     def apply(self) -> None:
         """Bring the tunnel in line with the settings: start it again when on, stop it when off."""
@@ -235,6 +291,21 @@ class TunnelManager:
     def stop(self) -> None:
         with self._control:
             self._halt()
+
+    def reset(self) -> None:
+        """Discard the tunnel the server created and start a fresh one.
+
+        The old tunnel is deleted from Cloudflare (best effort) and its stored
+        credentials are cleared, so the next start creates a new tunnel. A
+        pasted ``tunnel.token`` is left alone: it is not one the server made.
+        """
+        stored = _stored_credentials()
+        api_token = str(get_setting("tunnel.api_token") or "")
+        if stored and api_token:
+            delete_tunnel(api_token, str(stored.get("tunnel_id") or ""))
+        if stored:
+            _clear_credentials()
+        self.apply()
 
     def _halt(self) -> None:
         stop, thread = self._stop, self._thread
@@ -285,7 +356,7 @@ class TunnelManager:
 
     def _serve(self, stop: threading.Event) -> tuple[bool, str]:
         """Run cloudflared until it exits; return whether it connected and why it ended."""
-        token = _token()
+        token = self._token_for_run()
         command = [*self._locate(lambda: self._set(stop, "downloading")), "tunnel", "--no-autoupdate", "--output", "json"]
         environment = dict(os.environ)
         if token:

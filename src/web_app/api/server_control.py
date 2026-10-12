@@ -63,6 +63,20 @@ def restart_tunnel(request: Request, user: Admin) -> dict[str, Any]:
     return tunnel.status()
 
 
+@router.post("/tunnel/reset")
+def reset_tunnel(request: Request, user: Admin) -> dict[str, Any]:
+    """Discard the tunnel the server created and start a fresh one.
+
+    The old tunnel is deleted from Cloudflare and its stored credentials are
+    cleared, so a new tunnel (and a new address) is created. A pasted
+    ``tunnel.token`` is not one the server made, so it is left in place.
+    """
+    tunnel = _tunnel(request)
+    tunnel.reset()
+    _audit(request, user, "tunnel_reset")
+    return tunnel.status()
+
+
 @router.post("/shutdown", status_code=status.HTTP_202_ACCEPTED)
 def shut_down_server(_payload: ShutdownRequest, request: Request, user: Admin) -> dict[str, str]:
     """Stop the server. It can only be started again on the machine it runs on."""

@@ -313,3 +313,85 @@ def test_the_server_keeps_the_tunnel_closed_without_sign_in_or_an_administrator(
     assert "Sign-in is disabled" in (server._tunnel_blocked() or "")
     assert isinstance(server.app.state.tunnel, tunnel.TunnelManager)
     assert server.app.state.tunnel.origin.startswith("https://127.0.0.1:")
+
+
+def test_the_server_creates_a_tunnel_and_keeps_it_across_restarts(cloudflared, monkeypatch):
+    manager, starts = cloudflared
+    created: list[tuple[str, str, str]] = []
+
+    def create(api_token: str, name: str, hostname: str, origin: str) -> tuple[str, str]:
+        created.append((name, hostname, origin))
+        return "stored-token", "tunnel-123"
+
+    monkeypatch.setattr(tunnel, "create_tunnel", create)
+    set_setting("tunnel.api_token", "api-token")
+    set_setting("tunnel.hostname", "edinet.example.com")
+    set_setting("tunnel.enabled", "on")
+    tunnel_manager = manager()
+
+    tunnel_manager.apply()
+    status = _wait(lambda: tunnel_manager.status()["state"] == "running" and tunnel_manager.status())
+
+    assert status["kind"] == "named"
+    (started,) = starts()
+    assert started["token"] == "stored-token"
+    assert created and created[0][1:] == ("edinet.example.com", ORIGIN)
+    # The token is stored in app.db so a restart reuses it.
+    stored = tunnel._stored_credentials()
+    assert stored["token"] == "stored-token" and stored["tunnel_id"] == "tunnel-123"
+
+    # A restart reuses the stored tunnel: no new tunnel is created.
+    tunnel_manager.stop()
+    tunnel_manager.apply()
+    _wait(lambda: tunnel_manager.status()["state"] == "running")
+    assert len(created) == 1, "the stored tunnel is reused, not recreated"
+    assert len(starts()) == 2
+    assert starts()[1]["token"] == "stored-token"
+
+
+def test_reset_discards_the_stored_tunnel_and_creates_a_new_one(cloudflared, monkeypatch):
+    manager, starts = cloudflared
+    created: list[str] = []
+    deleted: list[str] = []
+
+    def create(api_token: str, name: str, hostname: str, origin: str) -> tuple[str, str]:
+        created.append(name)
+        return f"token-{len(created)}", f"tunnel-{len(created)}"
+
+    monkeypatch.setattr(tunnel, "create_tunnel", create)
+    monkeypatch.setattr(tunnel, "delete_tunnel", lambda api_token, tunnel_id: deleted.append(tunnel_id))
+    set_setting("tunnel.api_token", "api-token")
+    set_setting("tunnel.hostname", "edinet.example.com")
+    set_setting("tunnel.enabled", "on")
+    tunnel_manager = manager()
+
+    tunnel_manager.apply()
+    _wait(lambda: tunnel_manager.status()["state"] == "running")
+    assert len(created) == 1
+    first_id = tunnel._stored_credentials()["tunnel_id"]
+
+    tunnel_manager.reset()
+    _wait(lambda: tunnel_manager.status()["state"] == "running")
+    assert len(created) == 2, "a new tunnel is created"
+    assert deleted == [first_id], "the old tunnel is deleted from Cloudflare"
+    assert tunnel._stored_credentials()["tunnel_id"] != first_id
+    assert starts()[1]["token"] == "token-2"
+
+
+def test_reset_leaves_a_pasted_token_alone(cloudflared, monkeypatch):
+    manager, starts = cloudflared
+    deleted: list[str] = []
+    monkeypatch.setattr(tunnel, "delete_tunnel", lambda api_token, tunnel_id: deleted.append(tunnel_id))
+    set_setting("tunnel.token", "pasted-token")
+    set_setting("tunnel.enabled", "on")
+    tunnel_manager = manager()
+
+    tunnel_manager.apply()
+    _wait(lambda: tunnel_manager.status()["state"] == "running")
+
+    tunnel_manager.reset()
+    _wait(lambda: tunnel_manager.status()["state"] == "running")
+    assert deleted == [], "a pasted token is not one the server made, so nothing is deleted"
+    assert tunnel._stored_credentials() is None
+    assert [s for s in starts() if s["token"] == "pasted-token"], "the pasted token is still used"
+    assert starts()[-1]["token"] == "pasted-token"

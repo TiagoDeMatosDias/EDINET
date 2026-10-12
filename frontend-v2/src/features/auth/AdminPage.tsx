@@ -391,10 +391,11 @@ function RemoteAccessSection({ registrationOpen }: { registrationOpen: boolean }
     onError: failed,
   })
   const restart = useMutation({ mutationFn: () => apiRequest<TunnelStatus>('/api/admin/server/tunnel/restart', { method: 'POST' }), onSuccess: refresh, onError: failed })
+  const reset = useMutation({ mutationFn: () => apiRequest<TunnelStatus>('/api/admin/server/tunnel/reset', { method: 'POST' }), onSuccess: refresh, onError: failed })
   if (!tunnel.data) return tunnel.isError ? <p className="form-error" role="alert">{tunnel.error.message}</p> : <LoadingState label="Loading tunnel" />
   const { enabled, kind, state, url, message, origin, blocked_reason: blocked } = tunnel.data
-  const token = settings.data?.settings.find(setting => setting.key === 'tunnel.token')
-  const busy = turn.isPending || restart.isPending
+  const tunnelSettings = (settings.data?.settings ?? []).filter(setting => setting.key.startsWith('tunnel.') && setting.key !== 'tunnel.enabled')
+  const busy = turn.isPending || restart.isPending || reset.isPending
   const copy = async () => {
     try { await navigator.clipboard.writeText(url ?? ''); setCopied(true) } catch { setCopied(false) }
   }
@@ -411,14 +412,15 @@ function RemoteAccessSection({ registrationOpen }: { registrationOpen: boolean }
       <span className="console-tunnel__actions">
         {state === 'failed' && <button type="button" className="text-button" disabled={busy} onClick={() => restart.mutate()}>Try again</button>}
         {state === 'running' && kind === 'quick' && <button type="button" className="text-button" disabled={busy} onClick={() => restart.mutate()} title="Close this address and open a new one">New address</button>}
+        {kind === 'named' && <button type="button" className="text-button" disabled={busy} onClick={() => reset.mutate()} title="Discard this tunnel and create a new one with a fresh address">Reset tunnel</button>}
         <button type="button" className="button button--secondary button--small" disabled={busy || (!enabled && Boolean(blocked))} onClick={() => turn.mutate(!enabled)}>{enabled ? 'Turn off' : 'Turn on'}</button>
       </span>
     </div>
     {state === 'running' && kind === 'quick' && <small className="console-muted">A temporary address: it changes whenever the tunnel or the server starts again, and a new one can take a minute to start working. Add a token below for an address that stays.</small>}
     {registrationOpen && <small className="console-warn">Registration is open: anyone with the address can create an account. Under Access, set Registration to Invitation only.</small>}
     {error && <small className="form-error" role="alert">{error}</small>}
-    {token && <SettingRow key={`${token.key}:${token.updated_at ?? 'default'}`} setting={token} onSaved={refresh} />}
-    <small className="console-muted">For a token, create a tunnel in Cloudflare Zero Trust and give it a public hostname with the service <code>{origin}</code> and <em>No TLS Verify</em> turned on.</small>
+    {tunnelSettings.map(setting => <SettingRow key={`${setting.key}:${setting.updated_at ?? 'default'}`} setting={setting} onSaved={refresh} />)}
+    <small className="console-muted">For an address that stays, set the Cloudflare API token and hostname above: the server creates its own tunnel on first use and keeps it across restarts. Or paste a token from a tunnel you created in Cloudflare Zero Trust (public hostname with the service <code>{origin}</code> and <em>No TLS Verify</em> on).</small>
   </div>
 }
 

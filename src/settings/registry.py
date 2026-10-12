@@ -85,6 +85,33 @@ SETTINGS: tuple[SettingSpec, ...] = (
         "the same. Without one, Cloudflare assigns a temporary trycloudflare.com address.",
     ),
     SettingSpec(
+        "tunnel.api_token",
+        "secret",
+        "",
+        "Cloudflare API token",
+        "API token that lets the server create and manage its own tunnel. It needs the "
+        "Cloudflare Tunnel (Edit) and DNS (Edit) account permissions. With this and a "
+        "hostname below, the server creates a tunnel on first use and keeps the same "
+        "address across restarts; without it, a token must be pasted above.",
+    ),
+    SettingSpec(
+        "tunnel.hostname",
+        "text",
+        "",
+        "Tunnel hostname",
+        "Public name the tunnel publishes under, for example edinet.example.com. It must be "
+        "a domain already on Cloudflare. The server points it at this server and keeps it "
+        "the same until the tunnel is reset.",
+    ),
+    SettingSpec(
+        "tunnel.credentials",
+        "internal",
+        None,
+        "Tunnel credentials",
+        "The tunnel the server created for itself: its token and identity. Created on first "
+        "use and reused on every start; cleared when the tunnel is reset.",
+    ),
+    SettingSpec(
         "pipeline.allowed_data_roots",
         "list",
         [],
