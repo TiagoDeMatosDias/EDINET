@@ -12,6 +12,7 @@ from . import runtime
 from .job_routes import router as job_router
 from .pipeline_routes import router as pipeline_router
 from .schedule_routes import router as schedule_router
+from .setup_routes import router as setup_router
 from .system_routes import router as system_router
 
 
@@ -38,7 +39,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-for api_router in (system_router, pipeline_router, schedule_router, job_router):
+for api_router in (system_router, pipeline_router, schedule_router, setup_router, job_router):
     app.include_router(api_router)
 
 

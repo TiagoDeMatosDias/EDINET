@@ -142,7 +142,7 @@ The layout is desktop-first but has a 390 px mobile treatment:
 - TanStack Query owns server state, loading/error states, caching, and invalidation.
 - Local component state owns transient form input.
 - Screening drafts use `shade.screening.draft` in `localStorage` so they can flow into rolling backtests.
-- Pipeline recipes use `shade.pipeline.setups` in `localStorage`.
+- Pipeline setups are server-owned and shared by all administrators: the Data pipeline page saves them to the database (`/api/admin/pipeline-setups`) and schedules reference a saved setup by name, so a later edit to the setup is what the next scheduled run executes.
 - Pipeline execution state is server-owned. Submission returns `202` plus a job ID; TanStack Query polls `/api/jobs/{job_id}`, stops at a terminal state, and retrieves bounded output separately. Reloading restores persisted jobs from the API rather than assuming a held request is still alive.
 - The API clients in `src/api/` are the only shared network layer. `apiStream` parses the existing SSE format for rolling-backtest progress and cancellation. `AuthProvider` gates account mode; access tokens are kept in memory and refresh cookies are never exposed to JavaScript or persisted in browser storage.
 - Existing Python services and API contracts remain authoritative; the frontend does not access databases directly.

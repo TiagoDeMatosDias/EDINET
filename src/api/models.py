@@ -34,6 +34,23 @@ class PipelineConfig(BaseModel):
 ScheduleFrequency = Literal["daily", "weekly", "monthly"]
 
 
+class PipelineSetupPayload(BaseModel):
+    """Steps and settings saved under a setup name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    steps: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class PipelineSetupResponse(PipelineSetupPayload):
+    """Saved pipeline setup shared by all administrators."""
+
+    name: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class PipelineScheduleRequest(BaseModel):
     """Validated persisted pipeline schedule configuration."""
 
@@ -42,8 +59,7 @@ class PipelineScheduleRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     frequency: ScheduleFrequency
     enabled: bool = True
-    steps: list[dict[str, Any]] = Field(min_length=1, max_length=100)
-    config: dict[str, Any] = Field(default_factory=dict)
+    setup_name: str = Field(min_length=1, max_length=120)
 
 
 class PipelineSchedulePatch(BaseModel):
@@ -54,8 +70,7 @@ class PipelineSchedulePatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     frequency: ScheduleFrequency | None = None
     enabled: bool | None = None
-    steps: list[dict[str, Any]] | None = Field(default=None, min_length=1, max_length=100)
-    config: dict[str, Any] | None = None
+    setup_name: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class PipelineScheduleResponse(PipelineScheduleRequest):

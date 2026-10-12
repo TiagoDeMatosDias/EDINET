@@ -10,7 +10,7 @@ import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { ConfigField } from './ConfigField'
 import { RunOutput, StepStateTable } from './JobDetails'
-import { configKey, DAILY_RECIPE, formatMs, isTerminalJob, jobDuration, readSetups, runPayload, SETUPS_KEY, stepLabel, stripFileUploads, type SavedSetup, type SelectedStep } from './pipelineModel'
+import { configKey, DAILY_RECIPE, formatMs, isTerminalJob, jobDuration, runPayload, stepLabel, stripFileUploads, type SavedSetup, type SelectedStep } from './pipelineModel'
 import { pipelineScope } from './pipelineHotkeys'
 import './pipeline.css'
 
@@ -50,7 +50,7 @@ export default function PipelinePage() {
   const [config, setConfig] = useState<Record<string, unknown>>({})
   const [search, setSearch] = useState('')
   const [setupName, setSetupName] = useState('Daily data refresh')
-  const [setups, setSetups] = useState<SavedSetup[]>(readSetups)
+  const setups = useQuery({ queryKey: ['pipeline-setups'], queryFn: () => apiRequest<SavedSetup[]>('/api/admin/pipeline-setups') })
   const [activeJobId, setActiveJobId] = useState<string>()
   const [focusedStep, setFocusedStep] = useState<string | null>(null)
   const [showAllConfig, setShowAllConfig] = useState(false)
@@ -136,14 +136,16 @@ export default function PipelinePage() {
   }
   const remove = (index: number) => setSelected(items => items.filter((_, position) => position !== index))
   const toggleOverwrite = (index: number) => setSelected(items => items.map((item, position) => position === index ? { ...item, overwrite: !item.overwrite } : item))
-  const saveSetup = () => {
-    const next = [...setups.filter(setup => setup.name !== setupName), { name: setupName, steps: selected, config: stripFileUploads(config) }]
-    setSetups(next)
-    localStorage.setItem(SETUPS_KEY, JSON.stringify(next))
-    setNotice(`Saved “${setupName}”`)
-  }
+  const saveSetup = useMutation({
+    mutationFn: () => apiRequest<SavedSetup>(`/api/admin/pipeline-setups/${encodeURIComponent(setupName)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ steps: selected, config: stripFileUploads(config) }),
+    }),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['pipeline-setups'] }); setNotice(`Saved “${setupName}”`) },
+    onError: (error: Error) => setNotice(error.message),
+  })
   const loadSetup = (name: string) => {
-    const setup = setups.find(item => item.name === name)
+    const setup = setups.data?.find(item => item.name === name)
     if (!setup) return
     setSetupName(setup.name)
     setSelected(setup.steps)
@@ -168,7 +170,7 @@ export default function PipelinePage() {
     ...Object.fromEntries([1, 2, 3, 4, 5].map(index => [`region-${index}`, () => focusRegion(index)])),
     filter: () => filterInput.current?.focus(),
     daily: useDaily,
-    save: saveSetup,
+    save: () => saveSetup.mutate(),
     load: () => setupSelect.current?.focus(),
     run: startRun,
     cancel: cancelRun,
@@ -184,9 +186,9 @@ export default function PipelinePage() {
       <div><span className="eyebrow">Data operations</span><h1>Data pipeline</h1></div>
       <span className={statusClass(running ? 'running' : job?.status)}>{running ? `running · ${progress}%` : job ? `last run ${job.status}` : 'idle'}</span>
       <div className="pl-head__setups">
-        <select ref={setupSelect} className="select" aria-label="Load saved setup" value="" onChange={event => loadSetup(event.target.value)}><option value="">Load setup… (L)</option>{setups.map(setup => <option key={setup.name}>{setup.name}</option>)}</select>
-        <input className="input" aria-label="Setup name" value={setupName} onChange={event => setSetupName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') saveSetup() }} />
-        <button type="button" className="button button--secondary button--small" onClick={saveSetup} title="Save the sequence (S)"><Save aria-hidden="true" />Save</button>
+        <select ref={setupSelect} className="select" aria-label="Load saved setup" value="" onChange={event => loadSetup(event.target.value)}><option value="">Load setup… (L)</option>{(setups.data ?? []).map(setup => <option key={setup.name}>{setup.name}</option>)}</select>
+        <input className="input" aria-label="Setup name" value={setupName} onChange={event => setSetupName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') saveSetup.mutate() }} />
+        <button type="button" className="button button--secondary button--small" disabled={!setupName.trim() || !selected.length || saveSetup.isPending} onClick={() => saveSetup.mutate()} title="Save the sequence (S)"><Save aria-hidden="true" />Save</button>
         <button type="button" className="button button--secondary button--small" onClick={useDaily} title="Daily refresh recipe (D)"><Zap aria-hidden="true" />Daily recipe</button>
       </div>
       <div className="pl-head__run">

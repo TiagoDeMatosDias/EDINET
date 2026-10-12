@@ -73,10 +73,9 @@ const TUNNEL_KEY = ['admin-tunnel']
 const fetchTunnel = () => apiRequest<TunnelStatus>('/api/admin/server/tunnel')
 
 type SavedSetup = { name: string; steps: Array<{ name: string; overwrite?: boolean }>; config: Record<string, unknown> }
-type PipelineSchedule = { schedule_id: string; name: string; frequency: 'daily' | 'weekly' | 'monthly'; enabled: boolean; steps: Array<{ name: string; overwrite?: boolean }>; config: Record<string, unknown>; last_run_at: string | null }
+type PipelineSchedule = { schedule_id: string; name: string; frequency: 'daily' | 'weekly' | 'monthly'; enabled: boolean; setup_name: string; last_run_at: string | null }
 type PipelineSchedulerStatus = { checked_at: string; next_check_at: string; active_pipeline: boolean; triggered_job_ids: string[] }
 
-const SETUPS_KEY = 'shade.pipeline.setups'
 const EVENT_LABELS: Record<string, string> = {
   account_created: 'Account created', login_succeeded: 'Login', login_failed: 'Failed login', logout: 'Logout',
   refresh_succeeded: 'Token refresh', refresh_reuse_detected: 'Refresh reuse', password_changed: 'Password changed',
@@ -90,33 +89,6 @@ const SECTIONS = ADMIN_SECTIONS
 
 const stamp = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })
 const when = (value: string | null | undefined) => (value ? stamp.format(new Date(value)) : '—')
-
-function readSavedSetups(): SavedSetup[] {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(SETUPS_KEY) ?? '[]')
-    if (!Array.isArray(parsed)) return []
-    return parsed.flatMap(value => {
-      if (!value || typeof value !== 'object' || typeof value.name !== 'string' || !Array.isArray(value.steps)) return []
-      const steps = value.steps.filter((step: unknown) => step && typeof step === 'object' && typeof (step as { name?: unknown }).name === 'string')
-      const config = value.config && typeof value.config === 'object' && !Array.isArray(value.config) ? value.config : {}
-      return [{ name: value.name, steps, config }]
-    })
-  } catch {
-    return []
-  }
-}
-
-function pipelineConfig(setup: SavedSetup): Record<string, unknown> {
-  const nested: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(setup.config)) {
-    const dot = key.indexOf('.')
-    if (dot < 0) { nested[key] = value; continue }
-    const stepKey = key.slice(0, dot)
-    const current = nested[stepKey]
-    nested[stepKey] = { ...(current && typeof current === 'object' && !Array.isArray(current) ? current : {}), [key.slice(dot + 1)]: value }
-  }
-  return nested
-}
 
 function parseFrequency(value: string): PipelineSchedule['frequency'] {
   return value === 'weekly' || value === 'monthly' ? value : 'daily'
@@ -490,9 +462,9 @@ function AuditTable({ events, users, loading }: { events: AuditEvent[]; users: M
 
 function SchedulesSection() {
   const client = useQueryClient()
-  const setups = readSavedSetups()
-  const [setupName, setSetupName] = useState(setups[0]?.name ?? '')
-  const [scheduleName, setScheduleName] = useState(setups[0]?.name ?? '')
+  const setups = useQuery({ queryKey: ['pipeline-setups'], queryFn: () => apiRequest<SavedSetup[]>('/api/admin/pipeline-setups') })
+  const [setupName, setSetupName] = useState('')
+  const [scheduleName, setScheduleName] = useState('')
   const [frequency, setFrequency] = useState<PipelineSchedule['frequency']>('daily')
   const [message, setMessage] = useState<string | null>(null)
   const schedules = useQuery({ queryKey: ['admin-pipeline-schedules'], queryFn: () => apiRequest<PipelineSchedule[]>('/api/admin/pipeline-schedules'), refetchInterval: 60_000 })
@@ -504,11 +476,11 @@ function SchedulesSection() {
     onSuccess: result => { client.setQueryData(['admin-pipeline-scheduler-status'], result); done(result.triggered_job_ids.length ? `Started ${result.triggered_job_ids.length} scheduled run.` : 'Checked: nothing was due.') },
     onError: failed,
   })
+  const selectedSetup = setupName || setups.data?.[0]?.name || ''
   const create = useMutation({
     mutationFn: () => {
-      const setup = setups.find(item => item.name === setupName)
-      if (!setup) throw new Error('Save a pipeline sequence on the Data pipeline page first.')
-      return apiRequest<PipelineSchedule>('/api/admin/pipeline-schedules', { method: 'POST', body: JSON.stringify({ name: scheduleName.trim() || setup.name, frequency, enabled: true, steps: setup.steps.map(step => ({ name: step.name, overwrite: Boolean(step.overwrite) })), config: pipelineConfig(setup) }) })
+      if (!selectedSetup) throw new Error('Save a pipeline sequence on the Data pipeline page first.')
+      return apiRequest<PipelineSchedule>('/api/admin/pipeline-schedules', { method: 'POST', body: JSON.stringify({ name: scheduleName.trim() || selectedSetup, frequency, enabled: true, setup_name: selectedSetup }) })
     },
     onSuccess: () => done('Schedule saved.'),
     onError: failed,
@@ -522,16 +494,17 @@ function SchedulesSection() {
   const reset = useMutation({ mutationFn: (id: string) => apiRequest(`/api/admin/pipeline-schedules/${encodeURIComponent(id)}/reset-last-run`, { method: 'POST' }), onSuccess: () => done('Due on the next check.'), onError: failed })
   return <div className="console-form console-form--schedules">
     <p className="console-muted">Checked every five minutes; never while another run is active. Next check {status.data?.next_check_at ? when(status.data.next_check_at) : '…'}{status.data?.active_pipeline ? ' · a run is active, so checks wait' : ''}. <button type="button" className="text-button" disabled={checkNow.isPending} onClick={() => checkNow.mutate()}>Check now</button></p>
-    {setups.length ? <div className="console-inline">
-      <label className="console-field"><span>Saved sequence</span><select className="select" value={setupName} onChange={event => setSetupName(event.target.value)}>{setups.map(setup => <option key={setup.name}>{setup.name}</option>)}</select></label>
+    {(setups.data ?? []).length ? <div className="console-inline">
+      <label className="console-field"><span>Saved sequence</span><select className="select" value={selectedSetup} onChange={event => setSetupName(event.target.value)}>{(setups.data ?? []).map(setup => <option key={setup.name}>{setup.name}</option>)}</select></label>
       <label className="console-field console-field--grow"><span>Name</span><input className="input" value={scheduleName} onChange={event => setScheduleName(event.target.value)} /></label>
       <label className="console-field"><span>Every</span><select className="select" value={frequency} onChange={event => setFrequency(parseFrequency(event.target.value))}><option value="daily">Day</option><option value="weekly">Week</option><option value="monthly">Month</option></select></label>
-      <button type="button" className="button button--secondary button--small" disabled={create.isPending} onClick={() => create.mutate()}>Add</button>
+      <button type="button" className="button button--secondary button--small" disabled={create.isPending || !selectedSetup} onClick={() => create.mutate()}>Add</button>
     </div> : <p className="console-muted">Save a sequence on the Data pipeline page to schedule it.</p>}
     {schedules.data?.length ? <table className="console-table">
-      <thead><tr><th>Schedule</th><th>Every</th><th>On</th><th>Last run</th><th /></tr></thead>
+      <thead><tr><th>Schedule</th><th>Setup</th><th>Every</th><th>On</th><th>Last run</th><th /></tr></thead>
       <tbody>{schedules.data.map(item => <tr key={item.schedule_id}>
-        <td title={item.steps.map(step => step.name).join(' → ')}>{item.name}</td>
+        <td>{item.name}</td>
+        <td className="console-muted">{item.setup_name}</td>
         <td><select className="select" aria-label={`Frequency of ${item.name}`} value={item.frequency} onChange={event => update.mutate({ id: item.schedule_id, changes: { frequency: parseFrequency(event.target.value) } })}><option value="daily">Day</option><option value="weekly">Week</option><option value="monthly">Month</option></select></td>
         <td><input type="checkbox" aria-label={`Enable ${item.name}`} checked={item.enabled} onChange={event => update.mutate({ id: item.schedule_id, changes: { enabled: event.target.checked } })} /></td>
         <td className="console-mono">{when(item.last_run_at)}</td>

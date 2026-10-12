@@ -42,11 +42,12 @@ beforeEach(() => {
           : path.startsWith('/api/admin/auth/credential-resets') ? { reset_token: 'reset-123' }
             : path === '/api/admin/auth/invitations' ? { invitation_token: 'invite-456' }
               : path === '/api/admin/pipeline-schedules' ? []
-                : path === '/api/admin/settings' ? { settings: SERVER_SETTINGS }
-                  : path === '/api/admin/server/tunnel' ? tunnelNow
-                  : path === '/api/system/status' ? { version: '1', timestamp: '', jobs: { queue_depth: 0, active: 1, counts_by_status: { running: 1 } } }
-                  : path.startsWith('/api/admin/settings/') ? { ...SERVER_SETTINGS.find(item => path.endsWith(item.key)), is_set: method === 'PUT', updated_at: '2026-10-10T00:00:00Z' }
-                    : {}
+                : path === '/api/admin/pipeline-setups' ? []
+                  : path === '/api/admin/settings' ? { settings: SERVER_SETTINGS }
+                    : path === '/api/admin/server/tunnel' ? tunnelNow
+                      : path === '/api/system/status' ? { version: '1', timestamp: '', jobs: { queue_depth: 0, active: 1, counts_by_status: { running: 1 } } }
+                      : path.startsWith('/api/admin/settings/') ? { ...SERVER_SETTINGS.find(item => path.endsWith(item.key)), is_set: method === 'PUT', updated_at: '2026-10-10T00:00:00Z' }
+                        : {}
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }))
 })

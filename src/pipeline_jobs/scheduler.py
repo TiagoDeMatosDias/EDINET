@@ -15,7 +15,7 @@ from src.orchestrator.orchestrator import (
 )
 
 from .manager import PipelineJobManager
-from .store import JobStore
+from .store import JobStore, nested_config
 
 logger = logging.getLogger(__name__)
 
@@ -141,12 +141,16 @@ class PipelineScheduler:
         return triggered
 
     def _submit(self, schedule: dict) -> str:
+        # The schedule references a saved setup; submit its current content so
+        # the next run always uses the latest version.
+        setup = self.store.get_setup(schedule["setup_name"])
         job_id = self.manager.new_job_id()
         workspace = self.manager.workspace_for(job_id, create=True)
         try:
-            steps = validate_input(schedule["config"], schedule["steps"])
+            config = nested_config(setup["config"])
+            steps = validate_input(config, setup["steps"])
             config = resolve_file_uploads(
-                dict(schedule["config"]),
+                config,
                 steps,
                 workspace=workspace,
                 max_bytes=self.max_upload_bytes,

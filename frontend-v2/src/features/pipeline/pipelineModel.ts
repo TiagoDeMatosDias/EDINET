@@ -3,8 +3,6 @@ import type { Job, PipelineStep } from '../../api/types'
 export type SelectedStep = { id: string; name: string; overwrite: boolean }
 export type SavedSetup = { name: string; steps: SelectedStep[]; config: Record<string, unknown> }
 
-export const SETUPS_KEY = 'shade.pipeline.setups'
-const MAX_SAVED_SETUP_CHARS = 1_000_000
 const TERMINAL_JOB_STATUSES = new Set(['cancelled', 'completed', 'failed', 'interrupted'])
 export const DAILY_RECIPE = ['download_documents', 'generate_financial_statements', 'generate_ratios', 'update_stock_prices']
 
@@ -23,25 +21,6 @@ function isEmbeddedFile(value: unknown) {
 /** Saved recipes never keep file contents. */
 export function stripFileUploads(config: Record<string, unknown>) {
   return Object.fromEntries(Object.entries(config).filter(([, value]) => !isBrowserFile(value) && !isEmbeddedFile(value)))
-}
-
-export function readSetups(): SavedSetup[] {
-  try {
-    const raw = localStorage.getItem(SETUPS_KEY) ?? ''
-    if (raw.length > MAX_SAVED_SETUP_CHARS) {
-      localStorage.removeItem(SETUPS_KEY)
-      return []
-    }
-    const parsed = JSON.parse(raw || '[]')
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(item => item && typeof item === 'object').map(item => ({
-      ...(item as SavedSetup),
-      config: stripFileUploads((item as SavedSetup).config ?? {}),
-    }))
-  } catch {
-    try { localStorage.removeItem(SETUPS_KEY) } catch { /* ignore storage cleanup failures */ }
-    return []
-  }
 }
 
 export function stepLabel(step: Pick<PipelineStep, 'name' | 'display_name'>) {

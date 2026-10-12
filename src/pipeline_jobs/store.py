@@ -77,6 +77,34 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_schedules_enabled
 ON pipeline_schedules(enabled);
 """
 
+_MIGRATION_4 = """
+CREATE TABLE IF NOT EXISTS pipeline_setups (
+    name TEXT PRIMARY KEY,
+    steps_json TEXT NOT NULL,
+    config_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+
+def nested_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Convert flat ``step_config.field`` keys into per-step nested config."""
+    nested: dict[str, Any] = {}
+    for key, value in config.items():
+        text = str(key)
+        dot = text.find(".")
+        if dot == -1:
+            nested[key] = value
+            continue
+        step_key, field = text[:dot], text[dot + 1:]
+        step = nested.get(step_key)
+        if not isinstance(step, dict):
+            step = {}
+            nested[step_key] = step
+        step[field] = value
+    return nested
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -117,6 +145,11 @@ class JobStore:
             if version < 3:
                 conn.executescript(_MIGRATION_3)
                 record_schema_version(conn, _SCHEMA_COMPONENT, 3, utc_now())
+                version = 3
+            if version < 4:
+                conn.executescript(_MIGRATION_4)
+                self._migrate_setup_references(conn)
+                record_schema_version(conn, _SCHEMA_COMPONENT, 4, utc_now())
 
     @staticmethod
     def _migrate_progress_columns(conn: sqlite3.Connection) -> None:
@@ -139,6 +172,38 @@ class JobStore:
             conn.execute(
                 "ALTER TABLE pipeline_job_steps ADD COLUMN status_message TEXT"
             )
+
+    @staticmethod
+    def _migrate_setup_references(conn: sqlite3.Connection) -> None:
+        """Point existing schedules at saved setups and drop their copies."""
+        schedule_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(pipeline_schedules)")
+        }
+        if "setup_name" not in schedule_columns:
+            conn.execute(
+                "ALTER TABLE pipeline_schedules "
+                "ADD COLUMN setup_name TEXT NOT NULL DEFAULT ''"
+            )
+        now = utc_now()
+        for row in conn.execute(
+            "SELECT schedule_id, name, steps_json, config_json "
+            "FROM pipeline_schedules"
+        ).fetchall():
+            conn.execute(
+                "INSERT INTO pipeline_setups("
+                "name, steps_json, config_json, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(name) DO NOTHING",
+                (row["name"], row["steps_json"], row["config_json"], now, now),
+            )
+            conn.execute(
+                "UPDATE pipeline_schedules SET setup_name = ? "
+                "WHERE schedule_id = ?",
+                (row["name"], row["schedule_id"]),
+            )
+        conn.execute("ALTER TABLE pipeline_schedules DROP COLUMN steps_json")
+        conn.execute("ALTER TABLE pipeline_schedules DROP COLUMN config_json")
 
     def create_job(self, job_id: str, steps: Iterable[dict[str, Any]]) -> dict:
         step_list = list(steps)
@@ -348,8 +413,6 @@ class JobStore:
     def _schedule_row(row: sqlite3.Row) -> dict[str, Any]:
         schedule = dict(row)
         schedule["enabled"] = bool(schedule["enabled"])
-        schedule["steps"] = json.loads(schedule.pop("steps_json"))
-        schedule["config"] = json.loads(schedule.pop("config_json"))
         return schedule
 
     def list_schedules(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
@@ -377,23 +440,21 @@ class JobStore:
         name: str,
         frequency: str,
         enabled: bool,
-        steps: list[dict[str, Any]],
-        config: dict[str, Any],
+        setup_name: str,
     ) -> dict[str, Any]:
         schedule_id = str(uuid4())
         now = utc_now()
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO pipeline_schedules("
-                "schedule_id, name, frequency, enabled, steps_json, config_json, "
-                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "schedule_id, name, frequency, enabled, setup_name, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     schedule_id,
                     name,
                     frequency,
                     int(enabled),
-                    json.dumps(steps, separators=(",", ":")),
-                    json.dumps(config, separators=(",", ":")),
+                    setup_name,
                     now,
                     now,
                 ),
@@ -401,7 +462,7 @@ class JobStore:
         return self.get_schedule(schedule_id)
 
     def update_schedule(self, schedule_id: str, **changes: Any) -> dict[str, Any]:
-        allowed = {"name", "frequency", "enabled", "steps", "config"}
+        allowed = {"name", "frequency", "enabled", "setup_name"}
         unknown = set(changes) - allowed
         if unknown:
             raise ValueError(f"Unknown schedule fields: {sorted(unknown)}")
@@ -410,12 +471,9 @@ class JobStore:
         assignments: list[str] = []
         values: list[Any] = []
         for field, value in changes.items():
-            column = f"{field}_json" if field in {"steps", "config"} else field
             if field == "enabled":
                 value = int(bool(value))
-            elif field in {"steps", "config"}:
-                value = json.dumps(value, separators=(",", ":"))
-            assignments.append(f"{column} = ?")
+            assignments.append(f"{field} = ?")
             values.append(value)
         assignments.append("updated_at = ?")
         values.extend([utc_now(), schedule_id])
@@ -435,6 +493,72 @@ class JobStore:
             cursor = conn.execute(
                 "DELETE FROM pipeline_schedules WHERE schedule_id = ?",
                 (schedule_id,),
+            )
+        return cursor.rowcount == 1
+
+    @staticmethod
+    def _setup_row(row: sqlite3.Row) -> dict[str, Any]:
+        setup = dict(row)
+        setup["steps"] = json.loads(setup.pop("steps_json"))
+        setup["config"] = json.loads(setup.pop("config_json"))
+        return setup
+
+    def list_setups(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM pipeline_setups ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        return [self._setup_row(row) for row in rows]
+
+    def get_setup(self, name: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM pipeline_setups WHERE name = ?",
+                (name,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(name)
+        return self._setup_row(row)
+
+    def save_setup(
+        self,
+        name: str,
+        steps: list[dict[str, Any]],
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create or update the shared setup stored under ``name``."""
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO pipeline_setups("
+                "name, steps_json, config_json, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET "
+                "steps_json = excluded.steps_json, "
+                "config_json = excluded.config_json, "
+                "updated_at = excluded.updated_at",
+                (
+                    name,
+                    json.dumps(steps, separators=(",", ":")),
+                    json.dumps(config, separators=(",", ":")),
+                    now,
+                    now,
+                ),
+            )
+        return self.get_setup(name)
+
+    def delete_setup(self, name: str) -> bool:
+        with self._connect() as conn:
+            referenced = conn.execute(
+                "SELECT COUNT(*) AS count FROM pipeline_schedules "
+                "WHERE setup_name = ?",
+                (name,),
+            ).fetchone()
+            if int(referenced["count"]):
+                raise ValueError(f"Setup '{name}' is referenced by a schedule")
+            cursor = conn.execute(
+                "DELETE FROM pipeline_setups WHERE name = ?",
+                (name,),
             )
         return cursor.rowcount == 1
 

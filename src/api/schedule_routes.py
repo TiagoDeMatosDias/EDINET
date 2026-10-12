@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from src.auth.models import AuthenticatedUser
 from src.orchestrator import validate_input
 from src.orchestrator.common.validation import MissingSettingsError
+from src.pipeline_jobs import nested_config
 
 from . import runtime
 from .models import (
@@ -30,7 +31,7 @@ def _require_admin(request: Request) -> AuthenticatedUser:
 
 def _validate_pipeline(steps: list[dict], config: dict) -> None:
     try:
-        validate_input(config=config, steps=steps)
+        validate_input(config=nested_config(config), steps=steps)
         json.dumps(config, separators=(",", ":"))
     except MissingSettingsError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -54,7 +55,11 @@ def create_schedule(
     payload: PipelineScheduleRequest,
 ) -> PipelineScheduleResponse:
     _require_admin(request)
-    _validate_pipeline(payload.steps, payload.config)
+    try:
+        setup = runtime.job_store.get_setup(payload.setup_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Setup not found") from exc
+    _validate_pipeline(setup["steps"], setup["config"])
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="Schedule name is required")
@@ -63,8 +68,7 @@ def create_schedule(
             name=name,
             frequency=payload.frequency,
             enabled=payload.enabled,
-            steps=payload.steps,
-            config=payload.config,
+            setup_name=payload.setup_name,
         )
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Invalid schedule data") from exc
@@ -102,15 +106,17 @@ def update_schedule(
 ) -> PipelineScheduleResponse:
     _require_admin(request)
     try:
-        current = runtime.job_store.get_schedule(schedule_id)
+        runtime.job_store.get_schedule(schedule_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Schedule not found") from exc
 
     changes = payload.model_dump(exclude_unset=True)
-    next_steps = changes.get("steps", current["steps"])
-    next_config = changes.get("config", current["config"])
-    if "steps" in changes or "config" in changes:
-        _validate_pipeline(next_steps, next_config)
+    if "setup_name" in changes:
+        try:
+            setup = runtime.job_store.get_setup(changes["setup_name"])
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Setup not found") from exc
+        _validate_pipeline(setup["steps"], setup["config"])
     if "name" in changes:
         changes["name"] = str(changes["name"]).strip()
         if not changes["name"]:

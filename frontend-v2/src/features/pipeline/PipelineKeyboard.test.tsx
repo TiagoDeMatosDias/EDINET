@@ -13,16 +13,16 @@ const posted: Array<{ path: string; body: unknown }> = []
 
 beforeEach(() => {
   posted.length = 0
-  window.localStorage.clear()
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input)
     if (init?.method === 'POST') posted.push({ path, body: JSON.parse(String(init.body)) })
     const body = path === '/api/steps' ? { steps: STEPS }
-      : path.startsWith('/api/jobs') && !path.includes('/api/jobs/') ? [{ job_id: 'j1', status: 'failed', current_step: null, created_at: '2026-10-03T13:42:48Z', started_at: '2026-10-03T13:42:48Z', completed_at: '2026-10-03T13:42:52Z', error_message: "Step 'detect_splits' failed (ZeroDivisionError)", steps: [{ ordinal: 0, step_name: 'detect_splits', status: 'failed' }] }]
-        : path.startsWith('/api/jobs/j1/output') ? { job_id: 'j1', status: 'failed', output: {} }
-          : path.startsWith('/api/jobs/') ? { job_id: 'j1', status: 'failed', steps: [{ ordinal: 0, step_name: 'detect_splits', status: 'failed', error_message: 'boom' }] }
-            : path === '/api/pipeline/run' ? { job_id: 'j2', status: 'queued', created_at: '' }
-              : { max_upload_bytes: 1000 }
+      : path === '/api/admin/pipeline-setups' ? []
+        : path.startsWith('/api/jobs') && !path.includes('/api/jobs/') ? [{ job_id: 'j1', status: 'failed', current_step: null, created_at: '2026-10-03T13:42:48Z', started_at: '2026-10-03T13:42:48Z', completed_at: '2026-10-03T13:42:52Z', error_message: "Step 'detect_splits' failed (ZeroDivisionError)", steps: [{ ordinal: 0, step_name: 'detect_splits', status: 'failed' }] }]
+          : path.startsWith('/api/jobs/j1/output') ? { job_id: 'j1', status: 'failed', output: {} }
+            : path.startsWith('/api/jobs/') ? { job_id: 'j1', status: 'failed', steps: [{ ordinal: 0, step_name: 'detect_splits', status: 'failed', error_message: 'boom' }] }
+              : path === '/api/pipeline/run' ? { job_id: 'j2', status: 'queued', created_at: '' }
+                : { max_upload_bytes: 1000 }
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }))
 })

@@ -213,6 +213,8 @@ Authenticated preview APIs also support tax-lot matching, option Greeks, and det
 
 The Pipeline workspace discovers available steps from the backend. Load a prepared recipe or assemble individual steps, order them, configure their generated fields, upload required files, and run the recipe as a durable job.
 
+Saved setups are stored in the database and shared by every administrator — they are not kept in the browser. On the Data pipeline page, **Save** stores the current sequence and settings under a name (saving the same name again updates it), and the **Load setup** list offers every saved setup. Under **Admin → Pipeline schedules**, a schedule references one saved setup by name; it never copies the steps, so whenever the setup is edited the next scheduled run uses the latest version. A setup that a schedule references cannot be deleted until the schedule is removed or repointed.
+
 <img src="images/web-pipeline.png" alt="Data pipeline builder and step library" width="900">
 
 Important current behavior:

@@ -7,7 +7,7 @@ from .manager import (
     PipelineJobManager,
 )
 from .scheduler import CHECK_INTERVAL_SECONDS, PipelineScheduler
-from .store import ACTIVE_STATUSES, TERMINAL_STATUSES, JobStore
+from .store import ACTIVE_STATUSES, TERMINAL_STATUSES, JobStore, nested_config
 
 __all__ = [
     "ACTIVE_STATUSES",
@@ -20,4 +20,5 @@ __all__ = [
     "PipelineScheduler",
     "PipelineCancelled",
     "StepExecutionContext",
+    "nested_config",
 ]
