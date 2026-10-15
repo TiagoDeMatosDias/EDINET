@@ -43,6 +43,7 @@ export const financialsScope = defineScope({
   hotkeys: [
     { id: 'previous-statement', keys: '[', label: 'Previous statement', role: 'previous' },
     { id: 'next-statement', keys: ']', label: 'Next statement', role: 'next' },
+    { id: 'rolling', keys: 'r', label: 'Toggle the rolling view of this statement, keeping the charted lines', description: 'Screen-specific: switches between the annual statement and its rolling averages, not a run/refresh action.' },
     { id: 'view', keys: 'v', label: 'Cycle Values, YoY, Common size' },
     { id: 'filter', keys: 'f', label: 'Filter lines', role: 'filter' },
     { id: 'empty', keys: 'e', label: 'Show or hide empty lines' },

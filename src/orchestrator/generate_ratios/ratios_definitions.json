@@ -54,6 +54,62 @@
                 }
             },
             {
+                "ROIC": {
+                    "format": "percent",
+                    "inputs": [
+                        {
+                            "name": "EBIT",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Operating Income - Operating profit (loss)",
+                                "Operating Income - Operating income"
+                            ],
+                            "Aggregation": "FirstNonNull"
+                        },
+                        {
+                            "name": "InvestedCapital",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Net assets",
+                                "Short-term borrowings",
+                                "Long-term borrowings",
+                                "Current portion of long-term borrowings"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "EBIT / InvestedCapital",
+                    "skip_nulls": true
+                }
+            },
+            {
+                "ROCE": {
+                    "format": "percent",
+                    "inputs": [
+                        {
+                            "name": "EBIT",
+                            "Table": "IncomeStatement",
+                            "Columns": [
+                                "Operating Income - Operating profit (loss)",
+                                "Operating Income - Operating income"
+                            ],
+                            "Aggregation": "FirstNonNull"
+                        },
+                        {
+                            "name": "CapitalEmployed",
+                            "Table": "BalanceSheet",
+                            "Columns": [
+                                "Net assets",
+                                "Non-current liabilities"
+                            ],
+                            "Aggregation": "sum"
+                        }
+                    ],
+                    "formula": "EBIT / CapitalEmployed",
+                    "skip_nulls": true
+                }
+            },
+            {
                 "Sales on Assets": {
                     "inputs": [
                         {

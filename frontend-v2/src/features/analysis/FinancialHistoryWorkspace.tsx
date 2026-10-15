@@ -1,5 +1,5 @@
 import { BarElement, CategoryScale, Chart as ChartJS, LinearScale, LineElement, PointElement, Tooltip, type ChartOptions, type TooltipItem } from 'chart.js'
-import { BarChart3, Download, LineChart, Search, X } from 'lucide-react'
+import { BarChart3, Download, FileText, LineChart, Search, TrendingUp, X } from 'lucide-react'
 import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Bar, Line } from 'react-chartjs-2'
 
@@ -17,6 +17,7 @@ import { downloadTextFile, selectedMetricsCsv } from './downloads'
 import { formatGranularNumber } from './numberFormat'
 import { describeSplit, SHARE_BASES, type ShareBasis } from './shareBasis'
 import {
+  baseMetricFor,
   chooseFinancialUnit,
   commonSize,
   commonSizeBase,
@@ -31,7 +32,10 @@ import {
   moneyDigits,
   orderTableKeys,
   periodChanges,
+  rollingMetricFor,
   shortTableName,
+  statementFamily,
+  tableSection,
   type FinancialUnit,
   type StatementRow,
   type StatementView,
@@ -222,6 +226,21 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
     selectTable(next)
     tabRefs.current[next]?.focus()
   }
+  const toggleRolling = () => {
+    const family = statementFamily(sourceKey)
+    const target = isRollingTable(sourceKey) ? family : `${family}_Rolling`
+    const targetRows = layouts[target]
+    if (!targetRows?.length) {
+      setNotice(isRollingTable(sourceKey) ? 'No annual table to compare with.' : 'No rolling table for this statement.')
+      return
+    }
+    const mapped = selected
+      .map(field => isRollingTable(sourceKey) ? baseMetricFor(field) : rollingMetricFor(field))
+      .filter(field => targetRows.some(row => row.field === field))
+    setSlotsByTable(current => ({ ...current, [target]: mapped }))
+    selectTable(target)
+    tabRefs.current[target]?.focus()
+  }
   const setSlots = (next: Slots) => setSlotsByTable(current => ({ ...current, [sourceKey]: next }))
   const toggle = (field: string) => {
     setNotice('')
@@ -252,6 +271,7 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
     'clear-chart': () => { setSlots([]); setNotice('') },
   }, { enabled: populated.length > 0 })
 
+
   const moveFocus = (index: number) => {
     const next = Math.max(0, Math.min(visibleRows.length - 1, index))
     setFocusIndex(next)
@@ -278,6 +298,11 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
     event.preventDefault()
     cycleTable(event.key === 'ArrowRight' ? 1 : -1)
   }
+  const onStatementsKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'r' || event.ctrlKey || event.metaKey || event.altKey) return
+    event.preventDefault()
+    toggleRolling()
+  }
 
   if (isLoading) return <LoadingState label="Loading financial statements" />
   if (error) return <ErrorState error={error} retry={retry} />
@@ -293,7 +318,8 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
   }
   const safeFocus = Math.min(focusIndex, Math.max(0, visibleRows.length - 1))
   const adjustedLines = visibleRows.filter(row => row.alternate).length
-  const statementTabs = tableKeys.filter(key => !isRollingTable(key))
+  const filedTabs = tableKeys.filter(key => !isRollingTable(key) && tableSection(key) === 'filed')
+  const calculatedTabs = tableKeys.filter(key => !isRollingTable(key) && tableSection(key) === 'calculated')
   const rollingTabs = tableKeys.filter(key => isRollingTable(key))
   const tab = (key: string) => {
     const count = layouts[key].length
@@ -313,9 +339,12 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
     >{label}<small>{count || '—'}</small></button>
   }
 
-  return <div className="statements">
+  return <div className="statements" onKeyDown={onStatementsKeyDown}>
     <div className="statement-tabs" role="tablist" aria-label="Financial statements" onKeyDown={onTabKeyDown}>
-      {statementTabs.map(tab)}
+      {filedTabs.length > 0 && <span className="statement-tabs__divider"><Tip content="The statements the company files." focusable={false}>Filed</Tip></span>}
+      {filedTabs.map(tab)}
+      {calculatedTabs.length > 0 && <span className="statement-tabs__divider"><Tip content="Figures the pipeline derives from the filed statements." focusable={false}>Calculated</Tip></span>}
+      {calculatedTabs.map(tab)}
       {rollingTabs.length > 0 && <span className="statement-tabs__divider"><Tip content="Rolling tables hold multi-year averages and growth rates derived from the annual statements." focusable={false}>Rolling</Tip></span>}
       {rollingTabs.map(tab)}
       <span className="statement-tabs__keys" aria-hidden="true"><HotkeyKbd hotkey={financialsScope.byId['previous-statement']} /><HotkeyKbd hotkey={financialsScope.byId['next-statement']} /></span>
@@ -334,6 +363,9 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
         {showEmpty ? 'Hide empty lines' : `Show ${emptyCount.toLocaleString()} empty lines`} <HotkeyKbd hotkey={financialsScope.byId.empty} />
       </button>}
       <span className="statement-toolbar__spacer" />
+      <button type="button" className="button button--ghost button--small" onClick={toggleRolling} title={isRollingTable(sourceKey) ? 'Show the annual statement, keeping the charted lines (R)' : 'Show the rolling statement, keeping the charted lines (R)'}>
+        {isRollingTable(sourceKey) ? <><FileText aria-hidden="true" />Annual</> : <><TrendingUp aria-hidden="true" />Rolling</>} <HotkeyKbd hotkey={financialsScope.byId.rolling} />
+      </button>
       {splits.length > 0 && <>
         <div className="segmented segmented--small" role="group" aria-label="Share basis">
           {BASES.map(item => <button key={item.key} type="button" className={activeBasis === item.key ? 'active' : ''} aria-pressed={activeBasis === item.key} title={item.hint} onClick={() => setBasis(item.key)}>{item.label}</button>)}

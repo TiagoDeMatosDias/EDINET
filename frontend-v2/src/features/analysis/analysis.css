@@ -124,6 +124,7 @@
 .statement-tab.active { border-bottom-color: var(--vermilion); color: var(--text); font-weight: 500; }
 .statement-tab:disabled { opacity: .45; cursor: not-allowed; }
 .statement-tabs__divider { display: inline-flex; align-items: center; margin: 8px 2px 8px 8px; padding-left: 12px; border-left: 1px solid var(--border); color: var(--muted); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
+.statement-tabs__divider:first-child { margin-left: 2px; padding-left: 0; border-left: 0; }
 .statement-tabs__keys { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; padding-left: 10px; }
 .statement-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: .76rem; }
 .statement-toolbar__spacer { flex: 1; }

@@ -439,8 +439,9 @@ def get_history(
             "Valuation": "Financial Ratios",
             "Financial_Ratios": "Financial Ratios",
             "Financial_Ratios_Rolling": "Financial Ratios (Rolling)",
-            "PerShare_Metrics": "Per Share Metrics",
-            "PerShare_Metrics_Rolling": "Per Share Metrics (Rolling)",
+            "PerShare_Metrics": "Key Metrics",
+            "PerShare_Metrics_Rolling": "Key Metrics (Rolling)",
+            "ShareMetrics_Corrections": "Corrections",
         }
 
         tables_out = {}

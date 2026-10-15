@@ -41,6 +41,17 @@ export function isRollingTable(sourceKey: string) {
   return sourceKey.endsWith('_Rolling')
 }
 
+/** The rolling counterpart of a line: "Net sales" → "Net sales_Average_3_Year". */
+export function rollingMetricFor(field: string) {
+  return `${field}_Average_3_Year`
+}
+
+/** The annual line behind a rolling column: "Net sales_Average_3_Year" → "Net sales". */
+export function baseMetricFor(field: string) {
+  const match = /^(.*)_(?:Average|Growth)_(?:\d+)_Year$/.exec(field)
+  return match ? match[1] : field
+}
+
 /** Statement tables first, in reading order, then their rolling variants. */
 const TABLE_ORDER = ['IncomeStatement', 'BalanceSheet', 'CashflowStatement', 'ShareMetrics', 'PerShare_Metrics', 'Financial_Ratios']
 const SHORT_TABLE_NAMES: Record<string, string> = {
@@ -48,8 +59,22 @@ const SHORT_TABLE_NAMES: Record<string, string> = {
   BalanceSheet: 'Balance sheet',
   CashflowStatement: 'Cash flow',
   ShareMetrics: 'Share data',
-  PerShare_Metrics: 'Per share',
+  PerShare_Metrics: 'Key metrics',
   Financial_Ratios: 'Ratios',
+}
+
+/** The tables a company files, as opposed to the ones the pipeline derives from them. */
+const FILED_TABLES: Record<string, true> = {
+  IncomeStatement: true,
+  BalanceSheet: true,
+  CashflowStatement: true,
+  ShareMetrics: true,
+}
+
+export type TableSection = 'filed' | 'calculated'
+
+export function tableSection(sourceKey: string): TableSection {
+  return FILED_TABLES[statementFamily(sourceKey)] ? 'filed' : 'calculated'
 }
 
 export function orderTableKeys(keys: string[]) {
