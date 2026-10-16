@@ -15,6 +15,7 @@ second instance). Its layout::
 
     app.db       settings, secrets, accounts, research, pipeline jobs, portfolio
     chat.db      chat, kept apart because it grows with use
+    jobs.db      queued and finished jobs, worker sessions (written by the server only)
     market.db    rebuildable market data (default location)
     filings.db   rebuildable filing archive (default location)
     certs/       TLS certificate and key
@@ -59,6 +60,10 @@ def app_db_path() -> Path:
 
 def chat_db_path() -> Path:
     return data_dir() / "chat.db"
+
+
+def jobs_db_path() -> Path:
+    return data_dir() / "jobs.db"
 
 
 def default_market_db_path() -> Path:

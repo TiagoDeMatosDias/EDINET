@@ -18,7 +18,7 @@ from __future__ import annotations
 import io
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable
 
 import numpy as np
 import pandas as pd
@@ -1166,6 +1166,7 @@ def run_screening_backtest_set(
     ratios_table: str = "ShareMetrics",
     company_table: str = "CompanyInfo",
     financial_statements_table: str = "FinancialStatements",
+    company_tags: Iterable[tuple[str, str]] | None = None,
 ) -> dict:
     """Run a screen once at *screening_date*, then backtest the resulting
     ticker set across multiple durations anchored at that date.
@@ -1196,6 +1197,7 @@ def run_screening_backtest_set(
         ranking_rules=ranking_rules,
         computed_columns=computed_columns,
         criteria_match=criteria_match,
+        company_tags=company_tags,
     )
 
     if screen_df is None or screen_df.empty:
@@ -1785,6 +1787,7 @@ def run_screening_backtest_rolling(
     ratios_table: str = "ShareMetrics",
     company_table: str = "CompanyInfo",
     financial_statements_table: str = "FinancialStatements",
+    company_tags: Iterable[tuple[str, str]] | None = None,
 ) -> dict:
     """Run a screening criteria at regular intervals, backtesting each
     resulting portfolio.
@@ -1884,6 +1887,7 @@ def run_screening_backtest_rolling(
                 computed_columns=computed_columns,
                 available_metrics=available_metrics,
                 criteria_match=criteria_match,
+                company_tags=company_tags,
             )
         except Exception as e:
             logger.warning(

@@ -1,7 +1,9 @@
 from fastapi.testclient import TestClient
 
 from src.backtesting import api as backtesting_api
+from src.jobs.service import get_job_service
 from src.web_app.server import app
+from src.worker.inline import InlineWorker
 
 
 def test_run_response_includes_chart_and_breakdown_data(monkeypatch, tmp_path) -> None:
@@ -21,13 +23,15 @@ def test_run_response_includes_chart_and_breakdown_data(monkeypatch, tmp_path) -
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(backtesting_api, "_resolve_db", lambda _path="": "test.db")
     monkeypatch.setattr(backtesting_api._bt, "run_backtest_web", lambda **_kwargs: result)
-    monkeypatch.setattr(backtesting_api, "build_single_backtest_zip", lambda _result: b"zip")
+    monkeypatch.setattr("src.worker.handlers.backtest._market_db", lambda: "test.db")
+    monkeypatch.setattr("src.backtesting.zip_export.build_single_backtest_zip", lambda _result: b"zip")
 
-    response = TestClient(app).post("/api/backtesting/run", json={
-        "portfolio": {"TEST": {"mode": "weight", "value": 100}},
-        "start_date": "2024-01-01",
-        "end_date": "2025-01-01",
-    })
+    with InlineWorker(get_job_service()):
+        response = TestClient(app).post("/api/backtesting/run", json={
+            "portfolio": {"TEST": {"mode": "weight", "value": 100}},
+            "start_date": "2024-01-01",
+            "end_date": "2025-01-01",
+        })
 
     assert response.status_code == 200
     payload = response.json()

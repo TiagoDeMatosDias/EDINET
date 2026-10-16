@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Double-click to build release/linux/ShadeResearch (see docs/BUILDING.md).
+# Double-click to build release/linux/ShadeResearch and ShadeWorker (see docs/BUILDING.md).
 #
 # The first run creates .venv-build/linux with the CPU build of torch and the
 # build dependencies; later runs reinstall them only when pyproject.toml or

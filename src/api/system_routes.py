@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 
 from src.auth.models import AuthenticatedUser
+from src.jobs.service import get_job_service
 from src.orchestrator import list_available_steps
 from src.version import __version__
 
@@ -114,5 +115,5 @@ def system_status(request: Request) -> SystemStatusResponse:
     return SystemStatusResponse(
         version=__version__,
         timestamp=datetime.now(timezone.utc),
-        jobs=JobHealthResponse(**runtime.job_manager.health_summary()),
+        jobs=JobHealthResponse(**get_job_service().health_summary()),
     )

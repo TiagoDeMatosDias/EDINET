@@ -60,6 +60,12 @@ const SAVED = [
   { id: SINGLE.id, created: SINGLE.id, has_zip: true, kind: 'single', title: 'Backtest · 7203', subtitle: '2024 to 2025', headline: { annualized_return: 0.118, excess_return: 0.15 } },
 ]
 
+let startedKind = ''
+
+function jobView(status: string, progress: Record<string, unknown>, resultId: string | null) {
+  return { job_id: 'job1', kind: startedKind, status, progress, result_id: resultId, error: null, created_at: 1, title: 'Backtest', waiting_for_worker: false }
+}
+
 function respond(value: unknown, status = 200) {
   return Promise.resolve(new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } }))
 }
@@ -67,6 +73,7 @@ function respond(value: unknown, status = 200) {
 beforeEach(() => {
   calls.length = 0
   jobPolls = 0
+  startedKind = ''
   localStorage.clear()
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input)
@@ -76,15 +83,16 @@ beforeEach(() => {
     if (path === '/api/backtesting/base-currencies') return respond({ currencies: ['JPY', 'EUR'] })
     if (path === '/api/backtesting/available-tickers') return respond({ tickers: ['72030'] })
     if (path === '/api/backtesting/list') return respond({ backtests: SAVED })
-    if (path === '/api/backtesting/rolling-jobs' && method === 'GET') return respond({ jobs: [] })
     if (path.startsWith('/api/backtesting/rolling-periods')) return respond({ periods: [], count: 7, estimated_backtests: 7 })
-    if (path === '/api/backtesting/run') return respond(SINGLE)
-    if (path === '/api/backtesting/rolling-jobs' && method === 'POST') return respond({ job_id: 'job1', status: 'queued', progress: {}, result_id: null, error: null, created_at: 1 }, 202)
-    if (path === '/api/backtesting/rolling-jobs/job1') {
+    if (path === '/api/backtesting/jobs' && method === 'POST') {
+      startedKind = (JSON.parse(String(init?.body)) as { kind: string }).kind
+      return respond(jobView('queued', {}, null), 202)
+    }
+    if (path === '/api/backtesting/jobs' && method === 'GET') {
+      if (!startedKind) return respond({ jobs: [] })
       jobPolls += 1
-      return respond(jobPolls < 2
-        ? { job_id: 'job1', status: 'running', progress: { completed_backtests: 2, total_backtests: 7, period_index: 1, total_periods: 7, phase: 'Screening at 2020-01-01…' }, result_id: null, error: null, created_at: 1 }
-        : { job_id: 'job1', status: 'complete', progress: {}, result_id: ROLLING.id, error: null, created_at: 1 })
+      if (jobPolls < 2) return respond({ jobs: [jobView('running', { completed_backtests: 2, total_backtests: 7, period_index: 1, total_periods: 7, phase: 'Screening at 2020-01-01…' }, null)] })
+      return respond({ jobs: [jobView('complete', {}, startedKind === 'single' ? SINGLE.id : ROLLING.id)] })
     }
     if (path === `/api/backtesting/result/${ROLLING.id}`) return respond(ROLLING)
     if (path === `/api/backtesting/result/${SINGLE.id}`) return respond(SINGLE)
@@ -109,8 +117,8 @@ describe('BacktestingPage', () => {
     await screen.findByRole('option', { name: /TOPIX · TPX/ })
     expect(screen.getByRole('option', { name: /MSCI World · IWDA \(no prices\)/ })).toBeDisabled()
     fireEvent.keyDown(window, { key: 'r' })
-    await screen.findByRole('region', { name: 'Backtest result' })
-    const body = calls.find(call => call.path === '/api/backtesting/run')?.body
+    await screen.findByRole('region', { name: 'Backtest result' }, { timeout: 5000 })
+    const body = calls.find(call => call.method === 'POST' && call.path === '/api/backtesting/jobs')?.body?.request as Record<string, unknown> | undefined
     expect(body).toMatchObject({ portfolio: { 7203: { mode: 'weight', value: 1 } }, benchmark_ticker: 'TPX', benchmark_mode: 'ticker' })
     expect(screen.getByText('Excess ann.').nextSibling).toHaveTextContent('+6.90%')
     expect(screen.getByText('Benchmark covers only part of the period')).toBeInTheDocument()
@@ -136,8 +144,8 @@ describe('BacktestingPage', () => {
     fireEvent.keyDown(window, { key: '2' })
     expect(await screen.findByText('Cheap quality')).toBeInTheDocument()
     fireEvent.keyDown(window, { key: 'r' })
-    await waitFor(() => expect(calls.some(call => call.method === 'POST' && call.path === '/api/backtesting/rolling-jobs')).toBe(true))
-    const body = calls.find(call => call.method === 'POST' && call.path === '/api/backtesting/rolling-jobs')?.body
+    await waitFor(() => expect(calls.some(call => call.method === 'POST' && call.path === '/api/backtesting/jobs')).toBe(true))
+    const body = calls.find(call => call.method === 'POST' && call.path === '/api/backtesting/jobs')?.body?.request as Record<string, unknown> | undefined
     expect(body).toMatchObject({ ranking_algorithm: 'weighted_percentile', ranking_rules: [{ column: 'Yield', direction: 'desc', weight: 1 }], computed_columns: [{ name: 'Yield', formula_type: 'ratio' }], benchmark_ticker: 'TPX', cadence: 'quarterly' })
     expect((body?.criteria as Array<Record<string, unknown>>)[0]).not.toHaveProperty('id')
 

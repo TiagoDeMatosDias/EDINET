@@ -14,16 +14,17 @@ Everything the application writes lives in one data folder: `data/` beside `main
 
 | Path | Holds | Rebuildable |
 |---|---|---|
-| `app.db` | Settings and secrets, accounts, research, pipeline jobs, portfolio, and who ran each saved backtest | No: back it up |
+| `app.db` | Settings and secrets, accounts, research, pipeline setups and schedules, enrolled workers, portfolio, and who ran each saved backtest | No: back it up |
 | `chat.db` | Chat channels and messages (kept apart because it grows with use) | No: back it up |
+| `jobs.db` | The job queue: open, running, and recently finished jobs with their progress and results, and worker sessions (see [Job workers](#job-workers)) | Finished jobs expire; open ones are lost with it |
 | `market.db` | EDINET document index (`DocumentList`), taxonomy, company info, statements, ratios, rolling metrics, prices, splits, and bonds | Yes, by the pipeline |
 | `filings.db` | Provider ZIPs, XBRL facts, catalog, and translations | Yes, by the pipeline |
 | `certs/` | TLS certificate and key | Generated |
-| `logs/` | Rotating `server.log` | Generated |
+| `logs/` | Rotating `server.log` and `worker-<id>.log` per worker | Generated |
 | `tools/` | `cloudflared`, downloaded when a tunnel is opened from a source checkout that has none (a release carries its own) | Generated |
-| `artifacts/` | Backtests, reports, screening exports, job uploads, downloaded documents | Generated |
+| `artifacts/` | Backtests, reports, screening exports, per-job workspaces (`artifacts/jobs/`), downloaded documents | Generated |
 
-When the web server starts, it creates any missing database with its managed schema. Components that share `app.db` record their migrations per component in `schema_migrations`. The market tables are created by the pipeline; only the bond tables have a fixed schema. The server always reads its own databases; API requests cannot name one.
+When the web server starts, it creates any missing database with its managed schema, before it starts the local worker; from then on it opens `market.db` and `filings.db` read-only and leaves every write to the workers. Components that share `app.db` record their migrations per component in `schema_migrations`. The market tables are created by the pipeline; only the bond tables have a fixed schema. The server always reads its own databases; API requests cannot name one.
 
 Settings are rows in the `settings` table of `app.db`, declared with their types, defaults, and validation in `src/settings/registry.py`. Administrators edit them under **Admin → Server settings**; from a terminal:
 
@@ -45,6 +46,7 @@ Settings are rows in the `settings` table of `app.db`, declared with their types
 | `limits.max_backtest_artifact_bytes` | 256 MiB | Largest backtest archive. |
 | `limits.max_report_artifact_bytes` | 128 MiB | Largest report archive. |
 | `jobs.retention_hours` | 24 | Finished jobs and their uploads are removed after this long. |
+| `workers.launch_local` | `on` | The server starts a job worker beside itself. `off`: only enrolled workers run jobs; see [Job workers](#job-workers). |
 | `tunnel.enabled` | `off` | `on` publishes the workstation through a Cloudflare tunnel; see [Cloudflare tunnel](#cloudflare-tunnel). |
 | `tunnel.token` | not set | Token of a tunnel in a Cloudflare account, for an address that stays the same. Write-only in the UI. |
 | `storage.market_db_path`, `storage.filings_db_path` | data folder | Move the two large databases, for example to a bigger disk. Move the file yourself with the server stopped, then set the path. |
@@ -86,7 +88,7 @@ Launch the local workstation:
 
 Open `https://127.0.0.1:8000`.
 
-Stop the server with `Ctrl+C`, or with **Shut down server** under **Admin → Server settings** when there is no terminal to press it in (a packaged build started by double-click). Either way it stops listening at once and gives open connections three seconds. After **Shut down server** the process always ends: a pipeline step still running is cut off after ten seconds, and its job is marked interrupted on the next start.
+Stop the server with `Ctrl+C`, or with **Shut down server** under **Admin → Server settings** when there is no terminal to press it in (a packaged build started by double-click). Either way it stops listening at once and gives open connections three seconds. The server stops the local worker with it: a job still running is cut off after ten seconds, a pipeline or download is marked interrupted, and a backtest, screen, or translation goes back to the queue for the next start.
 
 ### TLS certificates
 
@@ -184,6 +186,34 @@ To rebuild an existing catalog with the compact numeric-only schema, use a new o
 
 The rebuild omits nonnumeric/nil facts, materialized sections, and the FTS copy of narrative text while retaining the compressed ZIPs. Verify the output before pointing the `storage.filings_db_path` setting at it.
 
+## Job workers
+
+The server does no heavy work itself. Pipelines, backtests, screens, translations, price and split refreshes, company descriptions, and filing downloads are queued as jobs in `data/jobs.db` and run by a job worker, a separate program: `ShadeWorker` (`ShadeWorker.exe` on Windows) in a release, `shade_worker.py` (or `main.py worker`) from source. The worker writes `market.db` and `filings.db`; the server opens them read-only, so a running pipeline never blocks or takes down the website.
+
+```
+User → Server → jobs.db → Worker → Server → User (job tray / toast)
+```
+
+**The local worker.** With the `workers.launch_local` setting on (the default), the server starts one worker beside itself when it starts and stops it when it stops, restarting it with a growing delay if it exits. It logs to `data/logs/worker-local.log`. **Admin → Workers** shows whether it is online and has data access, its slots, the jobs it is running, a **Restart** button, and **Run test job**, which runs a diagnostic job end to end. With the setting off, only enrolled workers run jobs.
+
+**Slots and lanes.** Each worker runs one child process per slot. Interactive slots (default 1) take only quick jobs (single and CSV backtests, screens, translations, price refreshes); batch slots (default 2) take pipelines, rolling backtests, and downloads first and quick jobs when no batch job is waiting, so a long pipeline never makes a screen wait. Slot counts are edited per worker on the Admin page and apply at the worker's next heartbeat. At most one pipeline runs at a time, and filing downloads never overlap a pipeline.
+
+**Enrolling another worker.** On **Admin → Workers**, choose **Add a worker**. The server shows a one-time command, valid for 30 minutes:
+
+```powershell
+.\ShadeWorker.exe enroll SRW1.xxxxx --name "Second worker"
+.\ShadeWorker.exe run
+.\ShadeWorker.exe status       # enrollment and whether the server answers
+```
+
+`enroll` saves the server address, the server certificate's fingerprint, and the worker's own token in `worker.db` beside the worker; `run` then connects and works until stopped with `Ctrl+C`. The worker trusts only the certificate it enrolled with, so a regenerated certificate needs a new enrollment. A disabled or revoked worker stops at its next heartbeat. For now a worker must run **on the same machine** as the server: it opens the server's `market.db` and `filings.db` directly, and a worker that cannot open them is shown as "no data access" and given no jobs. The worker API (`/api/worker/*`) answers only connections from this machine and never through the Cloudflare tunnel.
+
+**Waiting, cancelling, and lost workers.** A job waits as `open` until a worker claims it; the UI says "Waiting for a worker" when none is online. Cancel asks the job to stop at its next safe point; **Force stop** on a pipeline that is already stopping kills its process. Workers renew a lease on each job every 15 seconds. When a worker stops answering for a minute, jobs that are safe to repeat (backtests, screens, translations, descriptions) go back to the queue, up to three attempts, and jobs that change shared data (pipelines, downloads, price and split refreshes) are marked interrupted instead of being repeated half-done. Stopping the server does the same at once for the local worker's jobs.
+
+**Notifications.** The job tray in the top bar lists each user's running and recent jobs with their progress; a toast appears when a job finishes, fails, or is cancelled while the app is open. Finished jobs are removed after `jobs.retention_hours`.
+
+**Rebuilds stay readable.** Steps that rebuild a whole table (financial statements, ratios, rolling metrics, the taxonomy) write a new copy beside the live one and swap it in with one short transaction, so pages keep showing the previous data until the new data is complete.
+
 ## Configuration Format
 
 Execution configuration is supplied explicitly by the React UI, `POST /api/pipeline/run`, or `Config.from_dict(...)`. `Config` does not implicitly read `run_config.json`.
@@ -202,11 +232,11 @@ Execution configuration is supplied explicitly by the React UI, `POST /api/pipel
 - `overwrite` is honored only by steps that declare support.
 - Validation completes before the job is queued.
 
-Submission returns `202` immediately. One managed worker executes jobs, while the UI polls persisted job/step status and retrieves bounded redacted output after a terminal state.
+Submission returns `202` immediately and queues a `pipeline` job; a job worker runs it (see [Job workers](#job-workers)), while the UI polls persisted job/step status and retrieves bounded redacted output after a terminal state.
 
 ## Pre-flight Validation
 
-Before enqueueing, the orchestrator checks required settings (a step that needs the EDINET API key is refused with a message naming `edinet.api_key`), field limits, embedded uploads, and allowed paths. Failure stops later steps. Cancellation is cooperative at safe checkpoints and never force-kills a Python thread.
+Before enqueueing, the orchestrator checks required settings (a step that needs the EDINET API key is refused with a message naming `edinet.api_key`), field limits, embedded uploads, and allowed paths. Failure stops later steps. Cancellation is cooperative at safe checkpoints; **Force stop** kills the worker process running the pipeline once it is already stopping.
 
 ## Bounded verification
 

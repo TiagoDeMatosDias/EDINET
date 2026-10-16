@@ -165,6 +165,16 @@ SETTINGS: tuple[SettingSpec, ...] = (
         restart=True,
     ),
     SettingSpec(
+        "workers.launch_local",
+        "choice",
+        "on",
+        "Start the local worker",
+        "on: the server starts a ShadeWorker process on this machine to run backtests, "
+        "screens, and pipelines. off: only workers you enroll run jobs.",
+        choices=("on", "off"),
+        restart=True,
+    ),
+    SettingSpec(
         "storage.market_db_path",
         "path",
         "",

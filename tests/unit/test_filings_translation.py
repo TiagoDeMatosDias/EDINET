@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -325,6 +326,9 @@ def test_html_merges_prose_split_across_sibling_paragraphs(monkeypatch):
     assert "has been applied." in translated
 
 
+_REQUEST = SimpleNamespace(state=SimpleNamespace(user=None))
+
+
 class _HtmlCatalog:
     def get_filing(self, _doc_id):
         return {"doc_id": "S100TEST"}
@@ -349,7 +353,7 @@ def test_html_endpoint_marks_only_validated_output_as_complete(monkeypatch):
         lambda *_args, **_kwargs: ("<body><p>English</p></body>", 1),
     )
 
-    result = filings_api.get_filing_html("S100TEST", "artifact-1", translate=True)
+    result = filings_api.get_filing_html(_REQUEST, "S100TEST", "artifact-1", translate=True)
 
     assert '<html lang="en">' in result["html_en"]
     assert result["translation"] == {
@@ -368,7 +372,7 @@ def test_html_endpoint_reports_incomplete_translation_as_service_unavailable(mon
     monkeypatch.setattr(filings_api, "translate_html_fragment", fail_translation)
 
     with pytest.raises(HTTPException) as error:
-        filings_api.get_filing_html("S100TEST", "artifact-1", translate=True)
+        filings_api.get_filing_html(_REQUEST, "S100TEST", "artifact-1", translate=True)
 
     assert error.value.status_code == 503
     assert "residual Japanese remains" in error.value.detail

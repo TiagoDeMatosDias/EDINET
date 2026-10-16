@@ -9,16 +9,26 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import src.backtesting.api as backtesting_api
+import src.backtesting.store as bt_store
 from src.web_app.server import app
 
 client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
+def inline_worker():
+    """Backtests are jobs; run them on a worker inside this process."""
+    from src.jobs.service import get_job_service
+    from src.worker.inline import InlineWorker
+
+    with InlineWorker(get_job_service()):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_backtest_artifacts(monkeypatch, tmp_path: Path) -> Path:
     root = tmp_path / "backtests"
-    monkeypatch.setattr(backtesting_api, "_BACKTEST_ROOT", root)
+    monkeypatch.setattr(bt_store, "BACKTEST_ROOT", root)
     return root
 
 

@@ -1,46 +1,39 @@
 from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 import src.api.router as pipeline_api
 import src.api.runtime as api_runtime
 import src.api.schedule_routes as schedule_routes
 import src.api.setup_routes as setup_routes
+import src.jobs.service as job_service_module
+from src.jobs.registry import WorkerRegistry
+from src.jobs.service import JobService, set_job_service
+from src.jobs.store import JobsStore
 from src.pipeline_jobs import JobStore, PipelineScheduler
 
 
-class FakeManager:
-    def __init__(self, active=0):
-        self.active = active
+@pytest.fixture
+def service(tmp_path):
+    """A private job service so "is a pipeline open" depends only on this test."""
+    registry = WorkerRegistry(tmp_path / "workers-app.db")
+    registry.ensure_local_worker()
+    isolated = JobService(JobsStore(tmp_path / "jobs.db"), registry)
+    previous = job_service_module._service
+    set_job_service(isolated)
+    yield isolated
+    set_job_service(previous)
 
-    def active_count(self):
-        return self.active
 
-
-class CapturingManager:
-    """Records what the scheduler submits so tests can inspect the run config."""
-
-    def __init__(self, workspace_root):
-        self.workspace_root = workspace_root
-        self.submitted = []
-
-    def active_count(self):
-        return 0
-
-    def new_job_id(self):
-        return "job-1"
-
-    def workspace_for(self, job_id, create=False):
-        path = self.workspace_root / job_id
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def submit(self, config, steps, job_id=None):
-        self.submitted.append({"config": config, "steps": steps})
-        return {"job_id": job_id}
-
-    def discard_workspace(self, job_id):
-        pass
+def _open_pipeline(service):
+    return service.enqueue(
+        "pipeline",
+        {"config": {}, "steps": [{"name": "x"}]},
+        owner_user_id=None,
+        title="Pipeline",
+        steps=[{"name": "x"}],
+    )
 
 
 def test_setup_round_trip(tmp_path):
@@ -112,7 +105,7 @@ def test_schedule_round_trip_and_last_run(tmp_path):
     assert reset["last_run_at"] is None
 
 
-def test_scheduler_checks_without_uptime_gate(tmp_path):
+def test_scheduler_checks_without_uptime_gate(tmp_path, service):
     store = JobStore(tmp_path / "scheduler.db")
     store.save_setup("Daily refresh", [{"name": "update_stock_prices"}], {})
     store.create_schedule(
@@ -123,7 +116,6 @@ def test_scheduler_checks_without_uptime_gate(tmp_path):
     )
     scheduler = PipelineScheduler(
         store,
-        FakeManager(),
         check_interval_seconds=300,
         now=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
@@ -133,7 +125,8 @@ def test_scheduler_checks_without_uptime_gate(tmp_path):
     assert scheduler.check_interval_seconds == 300
 
 
-def test_scheduler_does_not_queue_behind_active_pipeline(tmp_path):
+def test_scheduler_does_not_queue_behind_active_pipeline(tmp_path, service):
+    _open_pipeline(service)
     store = JobStore(tmp_path / "active.db")
     store.save_setup("Daily refresh", [{"name": "update_stock_prices"}], {})
     store.create_schedule(
@@ -144,7 +137,6 @@ def test_scheduler_does_not_queue_behind_active_pipeline(tmp_path):
     )
     scheduler = PipelineScheduler(
         store,
-        FakeManager(active=1),
         check_interval_seconds=300,
         now=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
@@ -153,30 +145,39 @@ def test_scheduler_does_not_queue_behind_active_pipeline(tmp_path):
     assert scheduler.run_once() == []
 
 
-def test_scheduler_submits_the_current_setup_version(tmp_path):
+def test_scheduler_submits_the_current_setup_version(tmp_path, service):
     store = JobStore(tmp_path / "latest.db")
     store.save_setup(
         "Daily refresh",
         [{"name": "update_stock_prices"}],
         {"update_stock_prices_config.start": "2024-01-01"},
     )
-    store.create_schedule(
+    schedule = store.create_schedule(
         name="Daily",
         frequency="daily",
         enabled=True,
         setup_name="Daily refresh",
     )
-    manager = CapturingManager(tmp_path / "workspaces")
     scheduler = PipelineScheduler(
         store,
-        manager,
         check_interval_seconds=300,
         now=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
-    assert scheduler.run_once() == ["job-1"]
-    first = manager.submitted[0]["config"].settings
-    assert first["update_stock_prices_config"]["start"] == "2024-01-01"
+    (job_id,) = scheduler.run_once()
+    job = service.get(job_id)
+    assert job.kind == "pipeline"
+    assert job.owner_user_id is None
+    assert job.payload["setup_name"] == "Daily refresh"
+    assert job.payload["schedule_id"] == schedule["schedule_id"]
+    assert job.payload["config"]["update_stock_prices_config"]["start"] == "2024-01-01"
+    assert [step["step_name"] for step in service.steps(job_id)] == ["update_stock_prices"]
+    assert scheduler.status()["active_pipeline"] is True
+
+    # While that job is open the scheduler must not queue another one.
+    store.reset_schedule_run(schedule["schedule_id"])
+    assert scheduler.run_once() == []
+    service.cancel(job_id)
 
     # Editing the setup must be picked up by the next run, not a stale copy.
     store.save_setup(
@@ -184,11 +185,10 @@ def test_scheduler_submits_the_current_setup_version(tmp_path):
         [{"name": "update_stock_prices"}],
         {"update_stock_prices_config.start": "2025-06-01"},
     )
-    store.reset_schedule_run(store.list_schedules()[0]["schedule_id"])
-
-    assert scheduler.run_once() == ["job-1"]
-    second = manager.submitted[1]["config"].settings
-    assert second["update_stock_prices_config"]["start"] == "2025-06-01"
+    (second_id,) = scheduler.run_once()
+    second = service.get(second_id)
+    assert second.payload["config"]["update_stock_prices_config"]["start"] == "2025-06-01"
+    assert len(service.list_jobs(kinds=["pipeline"])) == 2
 
 
 def test_schedule_api_persists_enabled_control(monkeypatch, tmp_path):

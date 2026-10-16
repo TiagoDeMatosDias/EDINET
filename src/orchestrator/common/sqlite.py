@@ -2,9 +2,10 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterable, Iterator
 
 logger = logging.getLogger("src.data_processing")
 
@@ -21,6 +22,36 @@ class DatabaseBusyError(RuntimeError):
 def quote_identifier(name: str) -> str:
     """Quote an SQLite identifier without treating it as a value."""
     return '"' + str(name).replace('"', '""') + '"'
+
+
+# Databases the server must never write (market.db, filings.db: only workers
+# do). Armed by the server lifespan; see ``protect_database_paths``.
+_protected_paths: frozenset[Path] = frozenset()
+_protected_lock = threading.Lock()
+
+
+def _canonical(path: str | Path) -> Path:
+    return Path(path).expanduser().resolve(strict=False)
+
+
+def protect_database_paths(paths: Iterable[str | Path]) -> None:
+    """Make later ``connect_write`` calls on these files read-only.
+
+    Replaces any earlier set. Connections opened before this call are not
+    affected.
+    """
+    global _protected_paths
+    with _protected_lock:
+        _protected_paths = frozenset(_canonical(path) for path in paths)
+
+
+def clear_protected_database_paths() -> None:
+    """Disarm the guard (tests)."""
+    protect_database_paths(())
+
+
+def is_protected_database(path: str | Path) -> bool:
+    return bool(_protected_paths) and _canonical(path) in _protected_paths
 
 
 def _configure_connection(
@@ -45,7 +76,12 @@ def connect_write(
         str(Path(path)),
         timeout=busy_timeout_ms / 1000,
     )
-    return _configure_connection(conn, busy_timeout_ms)
+    _configure_connection(conn, busy_timeout_ms)
+    if is_protected_database(path):
+        # Reads and ``CREATE ... IF NOT EXISTS`` on existing objects still work;
+        # any real write raises "attempt to write a readonly database".
+        conn.execute("PRAGMA query_only = ON")
+    return conn
 
 
 def connect_read(

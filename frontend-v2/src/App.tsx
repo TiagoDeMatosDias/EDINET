@@ -3,6 +3,7 @@ import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 
 import { AppShell } from './components/AppShell'
 import { LoadingState } from './components/Feedback'
+import { ToastProvider } from './components/Toasts'
 import { AuthProvider } from './features/auth/AuthProvider'
 import { useAuth } from './features/auth/authContext'
 import { HotkeyProvider } from './hotkeys/HotkeyProvider'
@@ -44,6 +45,7 @@ export function App() {
   return (
     <AuthProvider>
       <HotkeyProvider>
+      <ToastProvider>
       <Suspense fallback={<LoadingState label="Loading page" />}>
         <Routes>
           <Route path="/" element={<HomePage />} />
@@ -74,6 +76,7 @@ export function App() {
           <Route path="*" element={<Navigate replace to="/" />} />
         </Routes>
       </Suspense>
+      </ToastProvider>
       </HotkeyProvider>
     </AuthProvider>
   )

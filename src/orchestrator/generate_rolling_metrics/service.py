@@ -32,6 +32,7 @@ from src.orchestrator.common.rolling_columns import (  # noqa: F401 - re-exporte
 )
 from src.orchestrator.common.share_basis import SHARE_BASIS_COLUMNS, share_basis_rule
 from src.orchestrator.common.sqlite import OrchestratorProcessorBase, connect_read
+from src.orchestrator.common.table_swap import drop_stale_next, next_table_name, swap_in
 
 logger = logging.getLogger("src.data_processing")
 
@@ -378,9 +379,15 @@ def _load_filing_basis(source_db, table_spec) -> dict[str, FilingBasis]:
 
 
 def _ensure_rolling_table_schema(conn, table_name, metric_columns, helper=None, overwrite=False):
+    """Create *table_name* and its rolling columns; return the name to write.
+
+    An overwrite run builds ``<table>__next`` (the caller swaps it in); the live
+    table is left alone until then.
+    """
     helper = helper or _DB_HELPER
     if overwrite:
-        conn.execute(f"DROP TABLE IF EXISTS {helper._sql_ident(table_name)}")
+        drop_stale_next(conn, table_name)
+        table_name = next_table_name(table_name)
 
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {helper._sql_ident(table_name)} ("
@@ -406,6 +413,7 @@ def _ensure_rolling_table_schema(conn, table_name, metric_columns, helper=None, 
             f"ALTER TABLE {helper._sql_ident(table_name)} "
             f"ADD COLUMN {helper._sql_ident(column_name)} REAL"
         )
+    return table_name
 
 
 def _upsert_rolling_rows(conn, table_name, rolling_df, helper=None):
@@ -502,6 +510,7 @@ def generate_rolling_metrics(
 
         processed_tables = []
         skipped_tables = []
+        rebuilt_tables = []
 
         fs_ref = f"{helper._sql_ident(source_schema)}.{helper._sql_ident(fs_actual)}"
         filing_basis = _load_filing_basis(source_db, table_spec)
@@ -573,13 +582,15 @@ def generate_rolling_metrics(
             helper._create_index_if_not_exists(conn, source_schema, source_table, [source_docid_column])
 
             target_table = rolling_table_name(source_table)
-            _ensure_rolling_table_schema(
+            write_table = _ensure_rolling_table_schema(
                 conn,
                 target_table,
                 metric_columns,
                 helper=helper,
                 overwrite=overwrite,
             )
+            if overwrite:
+                rebuilt_tables.append(target_table)
 
             numeric_metric_columns = _collect_numeric_metric_columns(
                 conn,
@@ -647,7 +658,7 @@ def generate_rolling_metrics(
                 rolling_df = _compute_rolling_dataframe(
                     df, metric_columns, source_table=source_table, filing_basis=filing_basis,
                 )
-                _upsert_rolling_rows(conn, target_table, rolling_df, helper=helper)
+                _upsert_rolling_rows(conn, write_table, rolling_df, helper=helper)
                 processed_any_rows = True
                 rows_processed_for_table += len(df)
                 while rows_processed_for_table >= next_progress_log_at:
@@ -670,6 +681,11 @@ def generate_rolling_metrics(
             )
             processed_tables.append(target_table)
 
+        if rebuilt_tables:
+            if context is not None:
+                context.checkpoint()
+            # One short transaction: readers see the old rolling tables or the new ones.
+            swap_in(conn, rebuilt_tables)
         if context is not None and table_count:
             context.report_progress(
                 table_count,

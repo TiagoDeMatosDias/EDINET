@@ -194,15 +194,6 @@ export interface SingleResult {
   warnings?: string[]
 }
 
-export interface RollingJob {
-  job_id: string
-  status: 'queued' | 'running' | 'saving' | 'complete' | 'failed' | 'cancelled'
-  progress: { completed_backtests?: number; total_backtests?: number; period_index?: number; total_periods?: number; phase?: string; period?: string; status?: string }
-  result_id: string | null
-  error: string | null
-  created_at: number
-}
-
 export interface ScreenDraft {
   name?: string
   criteria: Array<Record<string, unknown>>

@@ -8,10 +8,10 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
+from src.jobs.service import get_job_service
 from src.orchestrator.common.db_config import get_market_db
-from src.orchestrator.common.sqlite import connect_read, connect_write
+from src.orchestrator.common.sqlite import connect_read, table_exists
 from src.portfolio.portfolio_state import _invalidate_split_cache
-from src.utilities.price_provenance import refresh_split_adjusted_prices
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,11 @@ def _serialize_row(row) -> dict:
     if row is None:
         return {}
     return {k: row[k] for k in row.keys()}
+
+
+def _has_split_table(conn) -> bool:
+    """Whether Stock_Splits exists; a missing table reads as no splits (workers create it)."""
+    return table_exists(conn, "Stock_Splits")
 
 
 # ── endpoints ───────────────────────────────────────────────────────────────
@@ -46,10 +51,10 @@ def list_splits(
         offset: Pagination offset.
     """
     db2_path = get_market_db()
-    from src.portfolio.split_schema import ensure_split_tables
-    ensure_split_tables(db2_path)
     conn = connect_read(db2_path)
     try:
+        if not _has_split_table(conn):
+            return {"splits": [], "total": 0}
         where: list[str] = []
         params: list = []
         if ticker:
@@ -90,10 +95,10 @@ def list_splits(
 def get_split(split_id: int) -> dict:
     """Get a single split event by its database ID."""
     db2_path = get_market_db()
-    from src.portfolio.split_schema import ensure_split_tables
-    ensure_split_tables(db2_path)
     conn = connect_read(db2_path)
     try:
+        if not _has_split_table(conn):
+            raise HTTPException(status_code=404, detail="Split not found")
         row = conn.execute(
             "SELECT * FROM Stock_Splits WHERE id = ?", (split_id,)
         ).fetchone()
@@ -126,43 +131,30 @@ def update_split(
             detail="confirmation must be 'confirmed', 'pending', or 'rejected'",
         )
 
-    db2_path = get_market_db()
-    from src.portfolio.split_schema import ensure_split_tables
-    ensure_split_tables(db2_path)
-    conn = connect_write(db2_path)
+    conn = connect_read(get_market_db())
     try:
-        row = conn.execute(
-            "SELECT id FROM Stock_Splits WHERE id = ?", (split_id,)
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Split not found")
-
-        detail_suffix = f"; manual review by {_operator.user_id}"
-        if reason and reason.strip():
-            detail_suffix += f": {reason.strip()}"
-        conn.execute(
-            "UPDATE Stock_Splits SET confirmation = ?, "
-            "confirmed_by = CASE WHEN ? = 'confirmed' THEN 'manual' "
-            "ELSE confirmed_by END, "
-            "price_basis = CASE WHEN ? = 'confirmed' THEN 'raw' ELSE price_basis END, "
-            "source_detail = COALESCE(source_detail, '') || ?, "
-            "updated_at = datetime('now') "
-            "WHERE id = ?",
-            (confirmation, confirmation, confirmation, detail_suffix, split_id),
-        )
-        refresh_split_adjusted_prices(conn)
-        conn.commit()
-
-        # Invalidate the split-factor cache so the next price lookup
-        # sees the updated confirmation status.
-        _invalidate_split_cache()
-
-        updated = conn.execute(
-            "SELECT * FROM Stock_Splits WHERE id = ?", (split_id,)
-        ).fetchone()
-        return {"split": _serialize_row(updated)}
+        exists = _has_split_table(conn) and conn.execute(
+            "SELECT 1 FROM Stock_Splits WHERE id = ?", (split_id,)
+        ).fetchone() is not None
     finally:
         conn.close()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Split not found")
+
+    record = get_job_service().run_sync(
+        "split_review",
+        {
+            "split_id": split_id,
+            "confirmation": confirmation,
+            "reason": reason,
+            "reviewer": _operator.user_id,
+        },
+        owner_user_id=_operator.user_id,
+        title=f"Split review · {confirmation}",
+    )
+    # Drop the in-process split-factor cache so the next price lookup sees the change.
+    _invalidate_split_cache()
+    return dict(record.result or {})
 
 
 @router.post("/detect")
@@ -184,17 +176,14 @@ def trigger_detection(
             detail="mode must be 'incremental', 'full', or 'verify_pending'",
         )
 
-    from src.portfolio.split_detection import run_split_detection
-
-    db2_path = get_market_db()
-    tickers = [ticker.strip()] if ticker and ticker.strip() else None
-
-    results = run_split_detection(
-        db2_path=db2_path,
-        tickers=tickers,
-        mode=mode,
+    tickers = ticker.strip() if ticker and ticker.strip() else None
+    record = get_job_service().run_sync(
+        "split_detection",
+        {"ticker": tickers, "mode": mode},
+        owner_user_id=_operator.user_id,
+        title="Split detection" + (f" · {tickers}" if tickers else ""),
     )
-
+    results = dict(record.result or {})
     _invalidate_split_cache()
 
     # Add a hint that the user should rebuild portfolio state

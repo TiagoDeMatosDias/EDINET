@@ -34,7 +34,7 @@ Suggested per-function format:
 - Architecture status: `src.orchestrator` is a thin dispatcher with dynamically discovered step packages; backend modules are decoupled from `Config` and called with explicit parameters.
 - Mature user-facing workflows: ingestion, ETL, ratio generation, backtesting, screening, security analysis, portfolio management, and company tags all have dedicated test coverage.
 - Web workstation: React SPA served at `/`, `/pipeline`, `/screen`, `/analyze`, `/backtest`, and `/portfolio`; `/security` and `/backtesting` remain SPA compatibility aliases.
-- Pipeline execution: `POST /api/pipeline/run` validates and queues work, returning `202`; a single managed worker persists truthful job/step state in `data/app.db`.
+- Job execution: pipelines, backtests, screens, translations, and market refreshes are queued in `data/jobs.db` and run by `ShadeWorker` job workers; `POST /api/pipeline/run` validates and queues a `pipeline` job, returning `202`, and the server records truthful job/step state from the worker's reports. The server opens `market.db` and `filings.db` read-only.
 - Job history accepts bounded `limit`/`offset` pagination, and `/health` exposes only aggregate queue depth and counts by status.
 - Ordinary HTTP exports and generated backtest artifacts use separate limits; rolling ZIPs are size-limited while being written to disk and incomplete archives are removed.
 - Security boundary: loopback is the default. Remote binding requires explicit opt-in, a strong bearer token, and trusted hosts. Database and generated-file access is constrained to configured roots.
@@ -56,71 +56,63 @@ Suggested per-function format:
 
 ## Architecture overview
 
-The application is a React/TypeScript web workstation backed by a FastAPI server. Every `/api/*` route is mounted from an explicit composition root (`src/web_app/api/__init__.py`) and backed by a backend service in `src/`. The orchestrator is a thin dispatcher: it discovers step packages and delegates pipeline work to backend modules.
+The application is a React/TypeScript web workstation backed by two programs. The FastAPI server (`ShadeResearch`) serves the SPA and every `/api/*` route, mounted from an explicit composition root (`src/web_app/api/__init__.py`) and backed by a backend service in `src/`. It owns `app.db`, `chat.db`, and `jobs.db` and only reads `market.db` and `filings.db`. Heavy work — pipelines, backtests, screens, translations, price and split refreshes, filing downloads — is queued in `jobs.db` and run by job workers (`ShadeWorker`, [src/worker/](../src/worker/)), the only writers of the market data. The orchestrator is a thin dispatcher that a worker runs: it discovers step packages and delegates pipeline work to backend modules.
 
 ```mermaid
 flowchart TB
     subgraph Browser["Browser"]
-        SPA["React SPA<br/>frontend-v2/"]
+        SPA["React SPA<br/>frontend-v2/ · job tray"]
     end
 
-    subgraph Server["FastAPI server · HTTPS"]
+    subgraph Server["Server · ShadeResearch · HTTPS"]
         SERVE["Serves SPA + static<br/>/app-assets · /brand-assets"]
         API["API layer<br/>/api/* · /health"]
+        JOBS["Job service · src/jobs/<br/>enqueue · leases · finalize"]
+        WAPI["Worker API<br/>/api/worker/*"]
     end
 
-    subgraph Services["Backend services · src/"]
+    subgraph Services["Backend services · src/ (read paths)"]
         AUTH["Auth & accounts"]
-        SCREEN["Screening"]
-        SEC["Security analysis"]
-        FIL["Filings & XBRL"]
-        COMP["Comparison"]
-        PORT["Portfolio"]
         RES["Research & tags"]
-        BONDS["Bonds"]
-        BT["Backtesting"]
-        REP["Reports"]
+        PORT["Portfolio"]
         CHAT["Chat"]
+        READ["Analysis · Comparison · Filings<br/>Bonds · Reports · saved results"]
     end
 
-    subgraph Pipeline["Orchestrator · src/orchestrator/"]
-        ORCH["16 pipeline steps<br/>ingest · transform · update"]
+    subgraph Worker["Job workers · ShadeWorker · src/worker/"]
+        SUP["Supervisor"]
+        H["Handlers in child processes<br/>pipeline · backtest · screening<br/>translation · market · filings"]
+        ORCH["Orchestrator<br/>16 pipeline steps"]
     end
 
     subgraph Data["SQLite databases · data/"]
-        REBUILD["Rebuildable<br/>market.db · filings.db"]
-        STATE["Irreplaceable<br/>app.db (settings · accounts · research · jobs · portfolio) · chat.db"]
+        STATE["Server only<br/>app.db · chat.db · jobs.db"]
+        REBUILD["Rebuildable, written by workers<br/>market.db · filings.db"]
     end
 
     SPA -->|"HTTPS"| API
     SPA -.->|"static"| SERVE
     API --> AUTH
-    API --> SCREEN
-    API --> SEC
-    API --> FIL
-    API --> COMP
-    API --> PORT
     API --> RES
-    API --> BONDS
-    API --> BT
-    API --> REP
+    API --> PORT
     API --> CHAT
-    API --> ORCH
-    ORCH --> REBUILD
-    SCREEN --> REBUILD
-    SEC --> REBUILD
-    FIL --> REBUILD
-    BONDS --> REBUILD
-    BT --> REBUILD
-    COMP --> REBUILD
+    API --> READ
+    API --> JOBS
     AUTH --> STATE
     RES --> STATE
     PORT --> STATE
     CHAT --> STATE
-    ORCH --> STATE
+    JOBS --> STATE
+    READ -.->|"read only"| REBUILD
+    SUP <-->|"claim · heartbeat · progress · complete"| WAPI
+    WAPI --> JOBS
+    SUP --> H
+    H --> ORCH
+    H --> REBUILD
+    ORCH --> REBUILD
 ```
 
-The FastAPI server mounts the pipeline/jobs, auth, admin, filings, research, reports, screening, security-analysis, splits, tags, backtesting, bonds, comparison, portfolio, chat, profiles, overview, settings, and server-control routers, and starts the Cloudflare tunnel when the `tunnel.enabled` setting is on. The React frontend communicates with all endpoints through the authenticated API client layer in `frontend-v2/src/api/`; it never opens SQLite databases directly.
+The FastAPI server mounts the pipeline/jobs, my-jobs, worker, admin-workers, auth, admin, filings, research, reports, screening, security-analysis, splits, tags, backtesting, bonds, comparison, portfolio, chat, profiles, overview, settings, and server-control routers, and starts the Cloudflare tunnel when the `tunnel.enabled` setting is on. The React frontend communicates with all endpoints through the authenticated API client layer in `frontend-v2/src/api/`; it never opens SQLite databases directly.
 
 ### [src/orchestrator/__init__.py](../src/orchestrator/__init__.py)
 
@@ -304,19 +296,58 @@ Responsibility: portfolio construction, price/dividend ingestion, return calcula
 
 ---
 
+## Job workers (`src/jobs`, `src/worker`)
+
+The server queues heavy work as jobs and separate worker processes run it. The contract (job kinds, payloads, the worker HTTP API, the state machine, leases) is in [Job Workers Plan](Feature%20Development/Job%20Workers%20Plan.md); this is the module map.
+
+### Server side: [src/jobs/](../src/jobs/)
+
+- [protocol.py](../src/jobs/protocol.py) - the worker HTTP API's request and response models and its constants: `LEASE_SECONDS` (60), `HEARTBEAT_SECONDS` (15), `CLAIM_WAIT_SECONDS` (25), `MAX_ATTEMPTS` (3), the job statuses (`open`, `in_progress`, `cancelling`, `completed`, `failed`, `cancelled`, `interrupted`), and the pipeline API's mapping of them. Shared by server and worker.
+- [kinds.py](../src/jobs/kinds.py) - `KIND_SPECS`: one `KindSpec` per job kind with its lane (`interactive` or `batch`), the resources it holds exclusively (`market`, `filings`), whether it is retried when its worker is lost, its handler (`src.worker.handlers.*`), and its optional server-side finalizer. `handler_for` / `finalizer_for` resolve the dotted paths.
+- [store.py](../src/jobs/store.py) - `JobsStore` over `data/jobs.db` (component `jobs`): `jobs`, `job_steps`, `job_events`, `worker_sessions`. Claims happen in one `BEGIN IMMEDIATE` transaction that checks lanes and exclusive resources; lease renewal, the lease sweep (retry or interrupt), cancellation, artifacts, and retention cleanup. Only the server writes it.
+- [registry.py](../src/jobs/registry.py) - `WorkerRegistry` over the `workers` and `worker_enrollments` tables in `app.db`: the local worker's row and fresh token each launch, token authentication (SHA-256 hashes, constant-time compare), slot and enable edits (each bumps `config_version`), revocation, and single-use 30-minute `SRW1.` enrollment strings that carry the server URL and certificate fingerprint.
+- [service.py](../src/jobs/service.py) - `JobService`, the one entry point routes use: `enqueue`, `run` / `run_sync` (wait up to `INTERACTIVE_WAIT_SECONDS`, then raise `JobPending`), `get`, `list_jobs`, `cancel`, `steps`, `artifacts`, and the worker-side calls (`register`, `claim`, `heartbeat`, `progress`, `store_artifact`, `complete`, `fail`, `release`). `complete` runs the kind's finalizer before the job becomes `completed`. `JobMaintenance` sweeps expired leases every 5 seconds and removes old jobs. `get_job_service()` is the process-wide instance.
+- [notifier.py](../src/jobs/notifier.py) - wakes waiting claims and `run` calls without polling.
+- [errors.py](../src/jobs/errors.py) - `JobPending` (HTTP 202 `job_pending`), `JobFailed` (502), `JobCancelled` (409), `InvalidJobState`, `FinalizeError`, and the worker-protocol errors with their codes.
+- [worker_api.py](../src/jobs/worker_api.py) - `/api/worker/*`: enroll (throttled), register, claim (long poll), heartbeat, progress, artifact upload, complete, fail, release, unregister. Every route requires a loopback client that did not come through the tunnel, and all but enroll a worker token; user sign-in does not apply to them.
+- [user_api.py](../src/jobs/user_api.py) - `/api/my-jobs` (the job tray: a user's active and recent jobs; administrators see every job), job detail and cancel, `/api/workers/status`, and `install_job_error_handlers` for the 202/409/502 envelopes.
+- [admin_api.py](../src/jobs/admin_api.py) - `/api/admin/workers`: list workers with their sessions and running jobs, edit slots or enable, revoke, create an enrollment, restart the local worker, and the `echo` diagnostic job.
+- [launcher.py](../src/jobs/launcher.py) - `LocalWorkerLauncher`: when `workers.launch_local` is on, starts `ShadeWorker` (frozen) or `shade_worker.py` beside the server with `run --stdin-credentials`, passes its URL, certificate fingerprint, and a fresh token on stdin, restarts it with backoff, and stops it with the server. Stopping sends SIGTERM, or on Windows `CTRL_BREAK_EVENT` to the worker's own process group (TerminateProcess would end only the onefile launcher, not the worker it started); after ten seconds, or on Windows when there is no console to send the break through, it kills the worker's whole tree (`taskkill /T`). `stopping_soon()`, called from the server's signal handler, marks the worker's own exit on Ctrl+C as expected, so it is neither restarted nor warned about.
+- [legacy.py](../src/jobs/legacy.py) - copies the old `pipeline_jobs` history from `app.db` into `jobs.db` once.
+
+### Worker side: [src/worker/](../src/worker/)
+
+- [cli.py](../src/worker/cli.py) - `ShadeWorker run | enroll | status` (also `main.py worker ...` and [shade_worker.py](../shade_worker.py)). Exit codes: 0 normal, 1 server unreachable, 2 configuration or enrollment problem, 3 rejected by the server.
+- [local_config.py](../src/worker/local_config.py) - `worker.db` beside the worker: server URL, pinned fingerprint, worker id, token, name.
+- [client.py](../src/worker/client.py) - `WorkerClient`: HTTPS with the server certificate pinned by SHA-256 fingerprint, retries with backoff while the server is unreachable, and typed errors for lost leases, unknown sessions, and rejection.
+- [supervisor.py](../src/worker/supervisor.py) - `Supervisor`: registers, checks that it can open the server's `market.db` and `filings.db`, starts one child process per slot, long-polls claims for idle slots, sends one heartbeat for all running leases, honours soft and hard cancels and lost leases by killing and replacing a child, re-registers when its configuration changes, and exits when its parent (the server) is gone.
+- [child.py](../src/worker/child.py) - the slot process: preloads heavy modules, runs one assignment at a time with a `JobContext`, uploads files from the job's output folder as artifacts, then completes or fails the job.
+- [context.py](../src/worker/context.py) - `JobContext` (payload, `report_progress`, `step_event`, `checkpoint`, `output_dir`), `JobError`, `JobCancelledError`.
+- [runtime.py](../src/worker/runtime.py) - installs the server's settings snapshot (`src.settings.install_overrides`) and database paths (`db_config.install_worker_paths`; `app.db` and `chat.db` refuse to open in a worker) and the `worker-<id>.log` logging.
+- [maintenance.py](../src/worker/maintenance.py) - schema creation and index/helper upkeep on `market.db` and `filings.db` at startup and after write jobs, and passive WAL checkpoints.
+- [inline.py](../src/worker/inline.py) - `InlineWorker`, which runs real handlers inside a test process.
+- [handlers/](../src/worker/handlers/) - one module per area: `pipeline`, `backtest`, `screening`, `translation`, `market` (price refresh, portfolio prices, split review and detection, company descriptions), `filings` (acquire, XBRL backfill), and `diagnostic` (`echo`).
+
+### [src/orchestrator/common/table_swap.py](../src/orchestrator/common/table_swap.py)
+
+Build-then-swap for whole-table rebuilds: `next_table_name`, `drop_stale_next`, and `swap_in(conn, tables, *, indexes=None, keep_live_indexes=True)`, which replaces each live table by its `__next` copy in one `BEGIN IMMEDIATE` transaction and recreates the live table's indexes and triggers, so readers see the old or the new table and never a missing or half-built one. Used by financial statements, ratios, rolling metrics, and taxonomy migrations.
+
+---
+
 ### [src/paths.py](../src/paths.py)
 
-Responsibility: the application's filesystem roots. `app_dir()` is the folder holding the executable (frozen) or the repository root; `bundle_dir()` holds bundled read-only files (PyInstaller's unpack folder when frozen; never written). `data_dir()` is `app_dir()/data` or `EDINET_DATA_DIR`, and `app_db_path`, `chat_db_path`, `default_market_db_path`, `default_filings_db_path`, `certs_dir`, `logs_dir`, `artifacts_dir`, `tools_dir`, `backtests_dir`, `reports_dir`, `exports_dir`, `jobs_dir`, `manual_uploads_dir`, and `downloads_dir` are fixed places inside it. Runtime folders are never derived from `__file__`.
+Responsibility: the application's filesystem roots. `app_dir()` is the folder holding the executable (frozen) or the repository root; `bundle_dir()` holds bundled read-only files (PyInstaller's unpack folder when frozen; never written). `data_dir()` is `app_dir()/data` or `EDINET_DATA_DIR`, and `app_db_path`, `chat_db_path`, `jobs_db_path`, `default_market_db_path`, `default_filings_db_path`, `certs_dir`, `logs_dir`, `artifacts_dir`, `tools_dir`, `backtests_dir`, `reports_dir`, `exports_dir`, `jobs_dir`, `manual_uploads_dir`, and `downloads_dir` are fixed places inside it. Runtime folders are never derived from `__file__`.
 
 ### [src/orchestrator/common/db_config.py](../src/orchestrator/common/db_config.py)
 
-Responsibility: the four database locations.
+Responsibility: the database locations (`jobs.db` is at the fixed `paths.jobs_db_path()`).
 
-- `def get_app_db() -> str` - `data/app.db`: settings, secrets, accounts, research, pipeline jobs, portfolio.
+- `def get_app_db() -> str` - `data/app.db`: settings, secrets, accounts, research, pipeline setups and schedules, workers, portfolio.
 - `def get_chat_db() -> str` - `data/chat.db`.
 - `def get_market_db() -> str` - `data/market.db`, or the `storage.market_db_path` setting.
 - `def get_filings_db() -> str` - `data/filings.db`, or the `storage.filings_db_path` setting.
 - `def reload() -> None` - forget the cached storage settings and layout check.
+- `def install_worker_paths(market_db, filings_db) -> None` / `def clear_worker_paths() -> None` - in a worker, answer with the server's market and filings paths and refuse `get_app_db()` and `get_chat_db()`, since workers never open the server's own databases.
 - Every getter first checks `migrate_layout.pending_databases()` and raises `LegacyLayoutError` while an old-layout database has not been migrated, so no lookup creates an empty database beside a real one.
 
 ### [src/orchestrator/common/migrate_layout.py](../src/orchestrator/common/migrate_layout.py)
@@ -334,9 +365,11 @@ Responsibility: `BacktestCatalog` owns the `saved_backtests` table in `app.db`: 
 
 ### [src/orchestrator/common/database_bootstrap.py](../src/orchestrator/common/database_bootstrap.py)
 
-Responsibility: Startup creation and schema initialization for the four databases.
+Responsibility: Startup creation and schema initialization for the five databases.
 
-- `def ensure_application_databases(*, settings=None, app_db_path=None, chat_db_path=None, market_db_path=None, filings_db_path=None, busy_timeout_ms=None) -> dict[str, Path]` - runs the idempotent initializers of the settings, auth, research, pipeline-jobs, and portfolio components on `app.db`, of chat on `chat.db`, the bond tables on `market.db` (its other tables are pipeline-owned), and the filing catalog on `filings.db`. Called from the web server lifespan.
+- `def ensure_server_databases(*, settings=None, busy_timeout_ms=None) -> dict[str, Path]` - the server's own databases: the settings, auth, research, pipeline-setup, workers, portfolio, and saved-backtest components on `app.db`, chat on `chat.db`, and the queue on `jobs.db` (importing the old pipeline history once).
+- `def ensure_data_databases(*, market_db_path=None, filings_db_path=None, busy_timeout_ms=None) -> dict[str, Path]` - `market.db` (bond and ownership tables) and `filings.db` (the filing catalog). The server lifespan runs both before it arms the read-only guard and starts the local worker; workers run the data half at startup.
+- `def ensure_application_databases(*, settings=None, app_db_path=None, chat_db_path=None, market_db_path=None, filings_db_path=None, busy_timeout_ms=None) -> dict[str, Path]` - runs the idempotent initializers of the settings, auth, research, pipeline-jobs, and portfolio components on `app.db`, of chat on `chat.db`, the bond tables on `market.db` (its other tables are pipeline-owned), and the filing catalog on `filings.db`. Both halves at once, for tests and tools.
 
 ### [src/orchestrator/common/sqlite.py](../src/orchestrator/common/sqlite.py) (migrations)
 
@@ -349,6 +382,9 @@ Responsibility: Ratio generation logic consumed by `generate_ratios` and `genera
 ### [src/orchestrator/common/sqlite.py](../src/orchestrator/common/sqlite.py)
 
 Responsibility: Shared SQLite helpers (table creation, schema introspection, batch operations).
+
+- `connect_read(path)` / `connect_write(path)` - the connections every module uses (WAL, busy timeout).
+- `protect_database_paths(paths)` / `clear_protected_database_paths()` / `is_protected_database(path)` - the server's read-only guard. The server arms it for `market.db` and `filings.db` after startup schema creation; from then on `connect_write` on those paths returns a `query_only` connection, so a stray server-side write fails with "attempt to write a readonly database" instead of competing with a worker.
 
 ### [src/orchestrator/common/validation.py](../src/orchestrator/common/validation.py)
 

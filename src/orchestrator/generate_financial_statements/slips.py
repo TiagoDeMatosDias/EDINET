@@ -66,25 +66,27 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
 
 
-def ensure_corrections_table(conn: sqlite3.Connection, *, clear: bool = False) -> None:
-    if clear:
-        conn.execute(f'DROP TABLE IF EXISTS "{CORRECTIONS_TABLE}"')
+def ensure_corrections_table(conn: sqlite3.Connection, table: str = CORRECTIONS_TABLE) -> None:
     conn.execute(
-        f'CREATE TABLE IF NOT EXISTS "{CORRECTIONS_TABLE}" ('
+        f'CREATE TABLE IF NOT EXISTS "{table}" ('
         '"docID" TEXT NOT NULL, "column_name" TEXT NOT NULL, "filed" REAL, "corrected" REAL, "reason" TEXT, '
         'PRIMARY KEY ("docID", "column_name"))'
     )
 
 
-def _annual_reports(conn: sqlite3.Connection) -> pd.DataFrame:
-    share_columns = _columns(conn, "ShareMetrics")
+def _annual_reports(conn: sqlite3.Connection, names: dict[str, str] | None = None) -> pd.DataFrame:
+    names = names or {}
+    fs_table, share_table, income_table, balance_table = (
+        names.get(table, table) for table in ("FinancialStatements", "ShareMetrics", "IncomeStatement", "BalanceSheet")
+    )
+    share_columns = _columns(conn, share_table)
     present = [name for name in (EPS, PER, BPS, *SHARE_COUNTS) if name in share_columns]
     if not {EPS, BPS} <= set(present) or not any(name in present for name in SHARE_COUNTS):
         return pd.DataFrame()
     counts = [name for name in SHARE_COUNTS[:2] if name in present]
     count_sql = "COALESCE(" + ", ".join(f's."{name}"' for name in counts) + ")" if len(counts) > 1 else f's."{counts[0]}"'
-    profit_sql = 'i."Profit (loss)"' if "Profit (loss)" in _columns(conn, "IncomeStatement") else "NULL"
-    net_assets_sql = 'b."Net assets"' if "Net assets" in _columns(conn, "BalanceSheet") else "NULL"
+    profit_sql = 'i."Profit (loss)"' if "Profit (loss)" in _columns(conn, income_table) else "NULL"
+    net_assets_sql = 'b."Net assets"' if "Net assets" in _columns(conn, balance_table) else "NULL"
     price_columns = _columns(conn, "Stock_Prices")
     price_sql = "NULL"
     if {"Ticker", "Date", "Price"} <= price_columns:
@@ -98,9 +100,9 @@ def _annual_reports(conn: sqlite3.Connection) -> pd.DataFrame:
     return pd.read_sql_query(
         f"SELECT {key} AS company, fs.docID AS doc, fs.periodEnd AS period_end, {selected}, {count_sql} AS shares, {profit_sql} AS profit, "
         f"{net_assets_sql} AS net_assets, {price_sql} AS stored "
-        "FROM FinancialStatements fs JOIN ShareMetrics s ON s.docID = fs.docID "
+        f'FROM "{fs_table}" fs JOIN "{share_table}" s ON s.docID = fs.docID '
         "JOIN CompanyInfo c ON c.Company_Code = fs.Company_Code "
-        "LEFT JOIN IncomeStatement i ON i.docID = fs.docID LEFT JOIN BalanceSheet b ON b.docID = fs.docID "
+        f'LEFT JOIN "{income_table}" i ON i.docID = fs.docID LEFT JOIN "{balance_table}" b ON b.docID = fs.docID '
         "WHERE fs.docTypeCode = '030000'",
         conn,
     )
@@ -194,22 +196,36 @@ def find_decimal_slips(rows: pd.DataFrame, factors: dict[str, tuple[float, float
     return slips
 
 
-def correct_decimal_slips(conn: sqlite3.Connection) -> int:
-    """Correct the slips in ``ShareMetrics`` and record each; returns how many."""
+def correct_decimal_slips(conn: sqlite3.Connection, names: dict[str, str] | None = None) -> int:
+    """Correct the slips in ``ShareMetrics`` and record each; returns how many.
+
+    *names* maps a table to the name to read and write (the ``__next`` copies
+    of an overwrite rebuild); default the live tables.
+    """
     from src.orchestrator.common.corporate_actions import filing_basis_factors
 
-    ensure_corrections_table(conn)
+    names = names or {}
+    share_table = names.get("ShareMetrics", "ShareMetrics")
+    corrections_table = names.get(CORRECTIONS_TABLE, CORRECTIONS_TABLE)
+    ensure_corrections_table(conn, corrections_table)
     try:
-        rows = _annual_reports(conn)
-        factors = {item.doc_id: (item.restated, item.fiscal) for item in filing_basis_factors(conn)}
+        rows = _annual_reports(conn, names)
+        factors = {
+            item.doc_id: (item.restated, item.fiscal)
+            for item in filing_basis_factors(
+                conn,
+                per_share_table=share_table,
+                financial_statements_table=names.get("FinancialStatements", "FinancialStatements"),
+            )
+        }
     except (sqlite3.Error, pd.errors.DatabaseError):
         logger.warning("Could not check filed figures for decimal slips", exc_info=True)
         return 0
     slips = find_decimal_slips(rows, factors)
     for doc, column, filed, corrected, reason in slips:
-        conn.execute(f'UPDATE ShareMetrics SET "{column}" = ? WHERE docID = ?', (corrected, doc))
+        conn.execute(f'UPDATE "{share_table}" SET "{column}" = ? WHERE docID = ?', (corrected, doc))
         conn.execute(
-            f'INSERT OR REPLACE INTO "{CORRECTIONS_TABLE}" ("docID", "column_name", "filed", "corrected", "reason") VALUES (?, ?, ?, ?, ?)',
+            f'INSERT OR REPLACE INTO "{corrections_table}" ("docID", "column_name", "filed", "corrected", "reason") VALUES (?, ?, ?, ?, ?)',
             (doc, column, filed, corrected, reason),
         )
     if slips:

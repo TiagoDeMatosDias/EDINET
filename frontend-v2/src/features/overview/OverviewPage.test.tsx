@@ -52,9 +52,9 @@ describe('OverviewPage', () => {
     expect(requests.some(path => path.startsWith('/api/jobs') || path === '/api/system/status')).toBe(false)
   })
 
-  it('adds the pipeline status and runs for administrators', async () => {
+  it('adds the job status and runs for administrators', async () => {
     renderAs('admin')
-    expect(await screen.findByText('1 active')).toBeInTheDocument()
+    expect(await screen.findByText('1 running')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Refresh data' })).toHaveAttribute('href', '/pipeline')
     expect(await screen.findByText('Recent pipeline runs')).toBeInTheDocument()
     expect(await screen.findByText('boom')).toBeInTheDocument()

@@ -6,7 +6,6 @@ The frontend never touches the database directly.
 
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import logging
@@ -14,19 +13,25 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
-import pandas as pd
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from src import screening as _screening
-from src import security_analysis as _security
 from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
+from src.jobs.service import get_job_service
 from src.orchestrator.common.db_config import get_market_db
 from src.paths import exports_dir
 from src.research.runtime import store as _research_store
 from src.screening.display_formats import catalog_column_formats, result_column_formats
+from src.screening.job_runner import (
+    computed_column_specs,
+    criteria_to_dicts,
+    ranking_rules_to_dicts,
+    validate_screening_request,
+)
 from src.screening.persistence import normalize_screening_date
 from src.web_app.security import get_settings
 
@@ -189,112 +194,11 @@ def _resolve_db() -> str:
 
 def _criteria_to_dicts(criteria: list[ScreeningCriterion]) -> list[dict]:
     """Convert Pydantic criteria to plain dicts, dropping None values."""
-    result = []
-    for c in criteria:
-        d = {
-            "table": c.table,
-            "column": c.column,
-            "operator": c.operator,
-            "value": c.value,
-            "field_type": c.field_type,
-            "comparison_mode": c.comparison_mode,
-        }
-        if c.comparison_mode == "recent_split":
-            d.update(
-                split_action=c.split_action,
-                split_status=c.split_status,
-                split_date_operator=c.split_date_operator,
-            )
-            if c.split_window_days is not None:
-                d["split_window_days"] = c.split_window_days
-        if c.value2 is not None:
-            d["value2"] = c.value2
-        if c.values is not None:
-            d["values"] = c.values
-        if c.compare_table is not None:
-            d["compare_table"] = c.compare_table
-        if c.compare_column is not None:
-            d["compare_column"] = c.compare_column
-        if c.offset is not None:
-            d["offset"] = c.offset
-        if c.right_side is not None:
-            d["right_side"] = c.right_side
-        if c.left_side is not None:
-            d["left_side"] = c.left_side
-        if c.left_expression is not None:
-            d["left_expression"] = c.left_expression
-        if c.group:
-            d["group"] = c.group
-            d["group_match"] = c.group_match
-        if not c.enabled:
-            d["enabled"] = False
-        result.append(d)
-    return result
+    return criteria_to_dicts([c.model_dump() for c in criteria])
 
 
 def _ranking_rules_to_dicts(rules: list[RankingRule]) -> list[dict]:
-    return [
-        {"table": r.table, "column": r.column, "weight": r.weight, "direction": r.direction}
-        for r in rules
-    ]
-
-
-def _df_to_json(df: pd.DataFrame) -> dict:
-    """Convert a DataFrame to a JSON-safe dict with columns and rows."""
-    if df is None or df.empty:
-        return {"columns": [], "rows": [], "row_count": 0}
-    # Replace NaN with None for JSON serialization
-    clean = df.where(pd.notna(df), None)
-    return {
-        "columns": [str(c) for c in clean.columns],
-        "rows": clean.values.tolist(),
-        "row_count": len(clean),
-    }
-
-
-def _screening_definition(payload: ScreeningRunRequest) -> dict[str, Any]:
-    """Return the serialisable screen definition stored with a result."""
-    return {
-        "criteria": _criteria_to_dicts(payload.criteria),
-        "criteria_match": payload.criteria_match,
-        "columns": list(payload.columns),
-        "computed_columns": _computed_column_specs(payload.computed_columns),
-        "screening_date": payload.screening_date,
-        "period": payload.period,
-        "ranking_algorithm": payload.ranking_algorithm,
-        "ranking_rules": _ranking_rules_to_dicts(payload.ranking_rules),
-        "sort_by": payload.sort_by,
-        "sort_order": payload.sort_order,
-    }
-
-
-def _persist_screening_result(
-    user: AuthenticatedUser,
-    payload: ScreeningRunRequest,
-    result: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Persist a user's last result and add it to the recent-work stream."""
-    try:
-        from src.portfolio.screening_results import replace_last_screening_result
-
-        definition = _screening_definition(payload)
-        stored = replace_last_screening_result(user.user_id, result, definition)
-        fingerprint = hashlib.sha256(
-            json.dumps(definition, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
-        ).hexdigest()[:24]
-        _research_store.record_recent_work(
-            user.user_id,
-            "screen",
-            f"definition:{fingerprint}",
-            f"Screen · {result.get('row_count', 0):,} matches",
-            f"As of {payload.screening_date or 'latest available data'}",
-            "/screen",
-            {"row_count": result.get("row_count", 0), "definition": definition},
-        )
-        return stored
-    except Exception as exc:  # noqa: BLE001 - a cache failure must not discard a completed screen
-        logger.warning("Could not persist latest screening result for %s: %s", user.user_id, exc, exc_info=True)
-        return None
+    return ranking_rules_to_dicts([r.model_dump() for r in rules])
 
 
 # ---------------------------------------------------------------------------
@@ -330,25 +234,23 @@ def update_prices(
     Each ticker is a provider round trip that writes shared market data, so
     the call is operator-only and bounded to ``MAX_PRICE_UPDATE_TICKERS``.
     """
-    resolved = _resolve_db()
+    _resolve_db()
+    record = get_job_service().run_sync(
+        "price_refresh",
+        {"tickers": list(request.tickers)},
+        owner_user_id=_operator.user_id,
+        title=f"Update prices · {len(request.tickers)} tickers",
+    )
+    by_ticker = (record.result or {}).get("results") or {}
     results = []
     for ticker in request.tickers:
-        try:
-            result = _security.update_security_price(resolved, ticker)
-            results.append({
-                "ticker": ticker,
-                "ok": result.get("ok", False),
-                "rows_inserted": result.get("rows_inserted", 0),
-                "message": result.get("message", ""),
-            })
-        except Exception as e:  # noqa: BLE001 - one failed ticker must not abort the batch
-            logger.warning("Update price failed for %s: %s", ticker, str(e))
-            results.append({
-                "ticker": ticker,
-                "ok": False,
-                "rows_inserted": 0,
-                "message": str(e),
-            })
+        result = by_ticker.get(ticker) or {}
+        results.append({
+            "ticker": ticker,
+            "ok": result.get("ok", False),
+            "rows_inserted": result.get("rows_inserted", 0),
+            "message": result.get("message", ""),
+        })
     return {"results": results}
 
 
@@ -421,84 +323,35 @@ def get_available_formulas() -> dict:
 
 
 @router.post("/run")
-def run_screening_endpoint(
+async def run_screening_endpoint(
     http_request: Request,
     payload: ScreeningRunRequest = Body(...),
 ) -> dict:
-    """Run a screening query and return the matching rows."""
-    import time as _t
-    _t0 = _t.monotonic()
-    logger.info("screening/run START criteria=%d cols=%d",
-                len(payload.criteria), len(payload.columns))
+    """Run a screening query on a worker and return the matching rows.
 
+    Answers 202 ``job_pending`` when no worker finishes it in time; the result
+    is then stored as the user's last result when the job completes.
+    """
+    resolved = _resolve_db()
+    user = getattr(http_request.state, "user", None)
+    request_dict = payload.model_dump()
     try:
-        _t1 = _t.monotonic()
-        resolved = _resolve_db()
-        # Populate user-scoped tags before running the screen
-        user = getattr(http_request.state, "user", None)
-        if isinstance(user, AuthenticatedUser):
-            _screening.populate_user_tags(str(resolved), user.user_id)
-        logger.info("screening/run database resolved (%.2fs)", _t.monotonic() - _t1)
-
-        _t1 = _t.monotonic()
-        criteria_dicts = _criteria_to_dicts(payload.criteria)
-        ranking_dicts = _ranking_rules_to_dicts(payload.ranking_rules)
-        logger.info("screening/run criteria/ranking converted (%.2fs)", _t.monotonic() - _t1)
-
-        all_columns = list(payload.columns)
-        computed_specs = _computed_column_specs(payload.computed_columns)
-
-        # Build the SQL for display before executing
-        _t1 = _t.monotonic()
-        available = _screening.get_available_metrics(resolved)
-        logger.info("screening/run metrics loaded: %d tables (%.2fs)",
-                    len(available), _t.monotonic() - _t1)
-
-
-        _t1 = _t.monotonic()
-        df = _screening.run_screening(
-            db_path=resolved,
-            criteria=criteria_dicts,
-            columns=all_columns,
-            period=payload.period,
-            screening_date=payload.screening_date,
-            sort_by=payload.sort_by,
-            sort_order=payload.sort_order,
-            ranking_algorithm=payload.ranking_algorithm,
-            ranking_rules=ranking_dicts,
-            computed_columns=computed_specs,
-            available_metrics=available,
-            criteria_match=payload.criteria_match,
-        )
-        logger.info("screening/run query executed (%.2fs)", _t.monotonic() - _t1)
-
-        _t1 = _t.monotonic()
-        result = _df_to_json(df)
-        result["error"] = None
-        result["column_formats"] = {
-            **result_column_formats(list(payload.columns), resolved),
-            **_computed_column_formats(payload.computed_columns),
-        }
-        if isinstance(user, AuthenticatedUser):
-            stored = _persist_screening_result(user, payload, result)
-            if stored:
-                result["last_run_at"] = stored["updated_at"]
-        logger.info("screening/run result serialised (%.2fs)", _t.monotonic() - _t1)
-        logger.info("screening/run DONE rows=%d total=%.2fs",
-                    result["row_count"], _t.monotonic() - _t0)
-        return result
-
-    except HTTPException:
-        logger.warning("screening/run HTTP exception after %.2fs", _t.monotonic() - _t0)
-        raise
-    except ValueError as e:
-        logger.warning("screening/run validation error after %.2fs: %s",
-                       _t.monotonic() - _t0, str(e))
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        logger.error("screening/run FAILED after %.2fs: %s",
-                     _t.monotonic() - _t0, str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        await run_in_threadpool(validate_screening_request, resolved, request_dict)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    tags: list[list[str]] = []
+    owner: str | None = None
+    if isinstance(user, AuthenticatedUser):
+        owner = user.user_id
+        pairs = await run_in_threadpool(_screening.collect_user_company_tags, resolved, owner)
+        tags = [[code, tag] for code, tag in pairs]
+    record = await get_job_service().run(
+        "screening",
+        {"request": request_dict, "owner_user_id": owner, "company_tags": tags},
+        owner_user_id=owner,
+        title=f"Screen · {len(payload.criteria)} criteria",
+    )
+    return record.result or {}
 
 
 def _require_user(request: Request) -> AuthenticatedUser:
@@ -643,25 +496,7 @@ def save_history(request: Request, entry: ScreeningHistoryEntry = Body(...)) -> 
 
 def _computed_column_specs(columns: list[ComputedColumn]) -> list[dict]:
     """Convert computed-column request models to screening-layer values."""
-    return [
-        {
-            "name": column.name,
-            "formula_type": column.formula_type,
-            "expression_tokens": column.expression_tokens,
-            "numerator_table": column.numerator_table,
-            "numerator_column": column.numerator_column,
-            "denominator_table": column.denominator_table,
-            "denominator_column": column.denominator_column,
-            "formula": column.formula,
-            "format": column.format,
-        }
-        for column in columns
-    ]
-
-
-def _computed_column_formats(columns: list[ComputedColumn]) -> dict[str, str]:
-    """Declared formats of derived result columns, keyed by their names."""
-    return {column.name: column.format for column in columns if column.format and column.format != "number"}
+    return computed_column_specs([column.model_dump() for column in columns])
 
 
 def _saved_screen_summary(screen: dict[str, Any]) -> dict[str, Any]:
@@ -696,6 +531,7 @@ def _export_csv_content(
     criteria: list[dict],
     ranking_rules: list[dict],
     computed_columns: list[dict],
+    company_tags: list[tuple[str, str]] | None = None,
 ) -> str:
     dataframe = _screening.run_screening(
         db_path=resolved,
@@ -707,6 +543,7 @@ def _export_csv_content(
         ranking_rules=ranking_rules,
         computed_columns=computed_columns,
         criteria_match=request.criteria_match,
+        company_tags=company_tags,
     )
     stream = io.StringIO()
     dataframe.to_csv(stream, index=False)
@@ -719,6 +556,7 @@ def _export_backtest_content(
     criteria: list[dict],
     ranking_rules: list[dict],
     computed_columns: list[dict],
+    company_tags: list[tuple[str, str]] | None = None,
 ) -> str:
     """Generate a backtest file in an owned, request-unique workspace."""
     export_root = exports_dir()
@@ -737,6 +575,7 @@ def _export_backtest_content(
             historical=request.historical,
             computed_columns=computed_columns,
             criteria_match=request.criteria_match,
+            company_tags=company_tags,
         )
         if output_path.stat().st_size > get_settings().max_export_bytes:
             raise HTTPException(
@@ -747,21 +586,31 @@ def _export_backtest_content(
 
 
 @router.post("/export")
-def export_results(request: ScreeningExportRequest = Body(...)) -> StreamingResponse:
-    """Export screening results to CSV (or backtest CSV format)."""
+def export_results(http_request: Request, request: ScreeningExportRequest = Body(...)) -> StreamingResponse:
+    """Export screening results to CSV (or backtest CSV format).
+
+    Reads only: the user's tags are given to the query instead of written to
+    the shared table, as for ``/run``.
+    """
     try:
         resolved = _resolve_db()
         criteria_dicts = _criteria_to_dicts(request.criteria)
         ranking_dicts = _ranking_rules_to_dicts(request.ranking_rules)
         computed_specs = _computed_column_specs(request.computed_columns)
+        user = getattr(http_request.state, "user", None)
+        tags = (
+            _screening.collect_user_company_tags(resolved, user.user_id)
+            if isinstance(user, AuthenticatedUser)
+            else []
+        )
         if request.format == "backtest":
             content = _export_backtest_content(
-                request, resolved, criteria_dicts, ranking_dicts, computed_specs
+                request, resolved, criteria_dicts, ranking_dicts, computed_specs, tags
             )
             filename = "screening_backtest_export.csv"
         elif request.format == "csv":
             content = _export_csv_content(
-                request, resolved, criteria_dicts, ranking_dicts, computed_specs
+                request, resolved, criteria_dicts, ranking_dicts, computed_specs, tags
             )
             filename = "screening_export.csv"
         else:

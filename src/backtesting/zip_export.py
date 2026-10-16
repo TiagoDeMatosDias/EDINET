@@ -141,9 +141,9 @@ def _write_rolling_zip(
     archive: zipfile.ZipFile,
     rolling_result: dict[str, Any],
 ) -> None:
-    config = rolling_result.get("config", {})
-    aggregate = rolling_result.get("aggregate", {})
-    results = rolling_result.get("results", [])
+    config = rolling_result.get("config") or {}
+    aggregate = rolling_result.get("aggregate") or {}
+    results = rolling_result.get("results") or []
     _add_summary_txt(archive, config, aggregate)
     archive.writestr("report.html", _report_html(rolling_result))
     _add_summary_csv(archive, aggregate)
@@ -278,7 +278,7 @@ def _add_summary_txt(
     lines.append(f"  Failed:             {agg.get('failed', 0)}")
     lines.append(f"  Periods screened:   {agg.get('periods', 0)}")
 
-    date_range = agg.get("date_range", {})
+    date_range = agg.get("date_range") or {}
     if date_range:
         lines.append(
             f"  Date range:         {date_range.get('first', '?')} → "
@@ -286,13 +286,13 @@ def _add_summary_txt(
         )
 
     # Overall stats
-    stats: dict = agg.get("stats", {})
+    stats: dict = agg.get("stats") or {}
     for stat_key, stat_label in [
         ("total_return", "Total Return"),
         ("sharpe_ratio", "Sharpe Ratio"),
         ("max_drawdown", "Max Drawdown"),
     ]:
-        s = stats.get(stat_key, {})
+        s = stats.get(stat_key) or {}
         if s:
             lines.append("")
             lines.append(f"  {stat_label}:")
@@ -305,7 +305,7 @@ def _add_summary_txt(
     lines.append("")
 
     # ── By-weighting × duration table ─────────────────────────────────
-    by_weighting: dict = agg.get("by_weighting", {})
+    by_weighting: dict = agg.get("by_weighting") or {}
     if by_weighting:
         lines.append("--- Returns by Weighting & Duration ---")
         header = (
@@ -362,7 +362,7 @@ def _add_summary_txt(
 
 def _add_summary_csv(zf: zipfile.ZipFile, agg: dict) -> None:
     """Write ``summary.csv`` — one row per weighting × duration combo."""
-    by_weighting: dict = agg.get("by_weighting", {})
+    by_weighting: dict = agg.get("by_weighting") or {}
     if not by_weighting:
         return
 
@@ -399,7 +399,7 @@ def _add_heatmap_csv(zf: zipfile.ZipFile, agg: dict) -> None:
             },
         }
     """
-    heatmap: dict = agg.get("heatmap", {})
+    heatmap: dict = agg.get("heatmap") or {}
     if not heatmap:
         return
 
@@ -437,7 +437,7 @@ def _add_heatmap_csv(zf: zipfile.ZipFile, agg: dict) -> None:
         for dur in all_durations:
             header.append(f"{wm}_{dur}")
     # Excess columns
-    excess_data: dict = heatmap.get("excess", {})
+    excess_data: dict = heatmap.get("excess") or {}
     for dur in all_durations:
         if dur in excess_data:
             header.append(f"excess_{dur}")

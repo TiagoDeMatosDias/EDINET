@@ -7,6 +7,7 @@ import sqlite3
 from src.orchestrator.common import StepDefinition, StepFieldDefinition
 from src.orchestrator.common import ratios as ratio_services
 from src.orchestrator.common.db_config import get_market_db
+from src.orchestrator.common.table_swap import drop_stale_next, next_table_name, swap_in
 
 logger = logging.getLogger(__name__)
 
@@ -137,9 +138,15 @@ def _load_ratio_definitions(formulas_path):
 
 
 def _ensure_ratio_table_schema(conn, table_name, ratio_names, overwrite=False, helper=None):
+    """Create *table_name* and its ratio columns; return the name to write.
+
+    An overwrite run builds ``<table>__next`` (the caller swaps it in); the live
+    table is left alone until then.
+    """
     helper = helper or ratio_services._DB_HELPER
     if overwrite:
-        conn.execute(f"DROP TABLE IF EXISTS {helper._sql_ident(table_name)}")
+        drop_stale_next(conn, table_name)
+        table_name = next_table_name(table_name)
 
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {helper._sql_ident(table_name)} ("
@@ -156,6 +163,7 @@ def _ensure_ratio_table_schema(conn, table_name, ratio_names, overwrite=False, h
             f"ALTER TABLE {helper._sql_ident(table_name)} "
             f"ADD COLUMN {helper._sql_ident(ratio_name)} REAL"
         )
+    return table_name
 
 
 def _seed_ratio_docids(helper, conn, source_schema, fs_actual, target_tables, fs_docid_col):
@@ -447,6 +455,7 @@ def generate_ratios(
             raise RuntimeError("Source table 'FinancialStatements' not found; required for generate_ratios.")
 
         target_tables = list(ratio_definitions)
+        write_tables = {}
         table_count = len(ratio_definitions)
         for table_index, (target_table, ratio_entries) in enumerate(
             ratio_definitions.items()
@@ -458,7 +467,7 @@ def generate_ratios(
                     f"Preparing ratio table {table_index + 1} of {table_count}",
                 )
             ratio_names = [ratio_entry["name"] for ratio_entry in ratio_entries]
-            _ensure_ratio_table_schema(
+            write_tables[target_table] = _ensure_ratio_table_schema(
                 conn,
                 target_table,
                 ratio_names,
@@ -475,7 +484,7 @@ def generate_ratios(
             conn,
             source_schema,
             fs_actual,
-            target_tables,
+            list(write_tables.values()),
             fs_docid_col,
         )
 
@@ -494,12 +503,17 @@ def generate_ratios(
                 conn,
                 source_schema,
                 fs_actual,
-                target_table,
+                write_tables[target_table],
                 ratio_entries,
             )
             successful_ratio_count += populated
 
         conn.commit()
+        if overwrite:
+            if context is not None:
+                context.checkpoint()
+            # One short transaction: readers see the old ratio tables or the new ones.
+            swap_in(conn, target_tables)
         if context is not None and table_count:
             context.report_progress(
                 table_count * 2,

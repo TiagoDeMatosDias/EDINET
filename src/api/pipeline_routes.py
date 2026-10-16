@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from json import JSONDecodeError
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
-from config import Config
 from src.auth.models import AuthenticatedUser
 from src.orchestrator import validate_input
 from src.orchestrator.common.validation import MissingSettingsError
@@ -20,6 +22,7 @@ from src.orchestrator.orchestrator import (
     resolve_file_uploads,
     resolve_streamed_file_uploads,
 )
+from src.pipeline_jobs.submission import enqueue_pipeline, pipeline_workspace
 
 from . import runtime
 from .models import JobCreateResponse, PipelineConfig
@@ -109,32 +112,43 @@ async def _prepare_submission(
         config=resolved_config,
         steps=selected_steps,
     )
-    return Config.from_dict(resolved_config), normalized_steps
+    return resolved_config, normalized_steps
 
 
 @router.post("/run", response_model=JobCreateResponse, status_code=202)
 async def submit_pipeline(request: Request) -> JobCreateResponse:
     """Validate and queue a pipeline without holding the request open."""
-    _require_operator(request)
+    user = _require_operator(request)
     config, uploads = await _parse_submission(request)
-    manager = runtime.job_manager
-    job_id = manager.new_job_id()
-    workspace = manager.workspace_for(job_id, create=True)
+    job_id = str(uuid4())
+    workspace = pipeline_workspace(job_id)
+    await run_in_threadpool(workspace.mkdir, parents=True, exist_ok=True)
+
+    def discard() -> None:
+        shutil.rmtree(workspace, ignore_errors=True)
+
     try:
-        config_object, normalized_steps = await _prepare_submission(
+        config_dict, normalized_steps = await _prepare_submission(
             config,
             workspace,
             uploads,
         )
-        job = manager.submit(config_object, normalized_steps, job_id=job_id)
+        job = await run_in_threadpool(
+            lambda: enqueue_pipeline(
+                config_dict,
+                normalized_steps,
+                job_id=job_id,
+                owner_user_id=user.user_id,
+            )
+        )
     except UploadTooLargeError as exc:
-        manager.discard_workspace(job_id)
+        await run_in_threadpool(discard)
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except (InvalidUploadError, MissingSettingsError) as exc:
-        manager.discard_workspace(job_id)
+        await run_in_threadpool(discard)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (RuntimeError, TypeError, ValueError) as exc:
-        manager.discard_workspace(job_id)
+        await run_in_threadpool(discard)
         logger.warning("Pipeline validation failed: %s", exc)
         raise HTTPException(
             status_code=400,
@@ -146,11 +160,11 @@ async def submit_pipeline(request: Request) -> JobCreateResponse:
 
     logger.info(
         "Queued pipeline job %s with steps: %s",
-        job["job_id"],
+        job.job_id,
         [step["name"] for step in normalized_steps],
     )
     return JobCreateResponse(
-        job_id=job["job_id"],
-        status=job["status"],
-        created_at=job["created_at"],
+        job_id=job.job_id,
+        status=job.public_status,
+        created_at=job.created_at,
     )

@@ -29,7 +29,12 @@ from src.orchestrator.common.corporate_actions import (
     load_split_events,
 )
 from src.orchestrator.common.share_basis import share_basis_rule, to_adjusted_basis
-from src.orchestrator.common.sqlite import connect_read, connect_write, transaction
+from src.orchestrator.common.sqlite import (
+    connect_read,
+    connect_write,
+    is_protected_database,
+    transaction,
+)
 from src.utilities.price_provenance import is_squeeze_out, table_columns
 
 # ``_create_prices_table`` and ``load_ticker_data`` are re-exported: callers
@@ -1350,6 +1355,36 @@ def _get_cached_company_frame(db_path: str) -> pd.DataFrame:
         conn.close()
 
 
+_WARNED_MISSING_INDEXES: set[str] = set()
+
+
+def _security_analysis_index_names(schema: Any) -> list[str]:
+    names = ["idx_sa_prices_ticker_date", "idx_sa_company_edinet", "idx_sa_company_ticker", "idx_sa_fs_edinet_period"]
+    if schema.company_industry_col:
+        names.append("idx_sa_company_industry")
+    return names
+
+
+def _missing_security_analysis_objects(db_path: str, schema: Any) -> list[str]:
+    """Indexes and price-provenance columns not yet present (a read-only check)."""
+    from src.utilities.price_provenance import PRICE_PROVENANCE_COLUMNS
+
+    try:
+        conn = connect_read(db_path)
+    except (OSError, sqlite3.Error):
+        return []  # nothing to prepare in a file that cannot be opened
+    try:
+        existing = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        missing = [name for name in _security_analysis_index_names(schema) if name not in existing]
+        columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({_quote_ident(schema.prices_table)})")}
+        missing.extend(f"column {name}" for name in PRICE_PROVENANCE_COLUMNS if columns and name not in columns)
+        return missing
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
 def ensure_security_analysis_indexes(db_path: str) -> dict[str, Any]:
     """Create one-time indexes used by the Security Analysis view.
 
@@ -1367,6 +1402,21 @@ def ensure_security_analysis_indexes(db_path: str) -> dict[str, Any]:
             return {"ok": True, "created": [], "cached": True}
 
         schema = resolve_schema(normalised_path)
+        missing = _missing_security_analysis_objects(normalised_path, schema)
+        if not missing:
+            _OPTIMIZED_DB_PATHS.add(normalised_path)
+            return {"ok": True, "created": [], "cached": False}
+        if is_protected_database(normalised_path):
+            # The web server never writes this database; a worker creates the
+            # indexes at startup. Queries work without them, only slower.
+            if normalised_path not in _WARNED_MISSING_INDEXES:
+                _WARNED_MISSING_INDEXES.add(normalised_path)
+                logger.warning(
+                    "Security Analysis indexes are missing in %s (%s); a worker creates them",
+                    normalised_path,
+                    ", ".join(missing),
+                )
+            return {"ok": False, "created": [], "cached": False, "missing": missing}
         created: list[str] = []
         with transaction(normalised_path) as conn:
             # Migrate legacy price rows before any split-aware read.  Unknown

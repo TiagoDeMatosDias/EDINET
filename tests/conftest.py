@@ -44,6 +44,8 @@ from src.settings.store import SettingsStore  # noqa: E402
 _settings = SettingsStore(_TEST_DATA_DIR / "app.db")
 _settings.set("auth.mode", "disabled")
 _settings.set("pipeline.allowed_data_roots", [str(_TEST_DATA_DIR)])
+# Tests that run the app lifespan must not spawn the local worker process.
+_settings.set("workers.launch_local", "off")
 
 # The server creates missing databases in its startup hook, which plain
 # ``TestClient(app)`` calls never run. Bootstrap the isolated set once here.

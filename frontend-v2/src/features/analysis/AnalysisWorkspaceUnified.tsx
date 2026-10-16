@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import { ApiError, apiPost, apiRequest, queryString } from '../../api/client'
+import { isJobPending, JobEndedError, waitForJob } from '../../api/jobs'
 import type { SecurityHistory, SecurityOverview } from '../../api/types'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
 import { PageHeader } from '../../components/Page'
@@ -244,8 +245,21 @@ export default function AnalysisWorkspaceUnified() {
   // Provider refreshes write shared market data; the API allows operators and admins only.
   // With authentication disabled the server treats every request as the local admin.
   const canRefreshPrice = auth.status?.mode === 'disabled' || auth.user?.role === 'admin' || auth.user?.role === 'operator'
+  const [priceNotice, setPriceNotice] = useState('')
   const updatePrice = useMutation({
-    mutationFn: () => apiPost('/api/security/update-price', { ticker }),
+    mutationFn: async () => {
+      const answer = await apiPost<unknown>('/api/security/update-price', { ticker })
+      if (!isJobPending(answer)) return answer
+      // Still running on a worker: show why, and refresh the page data when it finishes.
+      setPriceNotice(answer.detail)
+      try {
+        const job = await waitForJob(answer.job_id)
+        if (job.status !== 'completed') throw new JobEndedError(job)
+        return job.result
+      } finally {
+        setPriceNotice('')
+      }
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['security-overview', lookupKey] })
       void queryClient.invalidateQueries({ queryKey: ['security-prices', ticker] })
@@ -365,6 +379,7 @@ export default function AnalysisWorkspaceUnified() {
       </div>
       <Quote market={market} metrics={metrics} formatMetric={formatMetric} refresh={refresh} />
     </div>
+    {updatePrice.isPending && priceNotice && <div className="callout" role="status">{priceNotice}</div>}
     {updatePrice.isError && <div className="callout callout--warning" role="alert">Price refresh failed: {updatePrice.error instanceof Error ? updatePrice.error.message : 'unknown error'}</div>}
     {tickerOnly && <div className="callout callout--warning" role="status"><strong>“{tickerParam}” has no EDINET filings, so only its stored prices are shown{market.price_currency ? ` (in ${String(market.price_currency)})` : ''}.</strong> Companies and funds listed outside Japan do not file with EDINET. For a Japanese company, search by its name or EDINET code (/) to see statements and filings.</div>}
 

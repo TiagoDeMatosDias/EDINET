@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import src.backtesting.api as backtesting_api
+import src.backtesting.store as bt_store
 from src.backtesting import run_backtest_set_web, run_backtest_web
 from src.backtesting.catalog import BacktestCatalog
 from src.backtesting.detail import build_single_detail
@@ -83,8 +84,8 @@ def test_archive_carries_the_report_and_dividend_ledger(single):
 @pytest.fixture
 def client(tmp_path, monkeypatch, single):
     root = tmp_path / "backtests"
-    monkeypatch.setattr(backtesting_api, "_BACKTEST_ROOT", root)
-    monkeypatch.setattr(backtesting_api, "catalog", BacktestCatalog(tmp_path / "app.db"))
+    monkeypatch.setattr(bt_store, "BACKTEST_ROOT", root)
+    monkeypatch.setattr(bt_store, "catalog", BacktestCatalog(tmp_path / "app.db"))
     app = FastAPI()
     app.include_router(backtesting_api.router)
     install_security(app, AppSettings(auth_mode="accounts", registration_mode="open", auth_db_path=tmp_path / "auth.db"))
@@ -95,7 +96,7 @@ def client(tmp_path, monkeypatch, single):
         directory = root / backtest_id
         directory.mkdir(parents=True)
         (directory / "result.json").write_text(json.dumps(payload), encoding="utf-8")
-        backtesting_api.catalog.record_owner(backtest_id, alice.user_id)
+        bt_store.catalog.record_owner(backtest_id, alice.user_id)
 
     def headers(username: str) -> dict[str, str]:
         return {"Authorization": f"Bearer {service.login(username, PASSWORD).tokens.access_token}"}

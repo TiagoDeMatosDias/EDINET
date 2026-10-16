@@ -27,11 +27,30 @@ from pathlib import Path
 from src import paths
 
 _layout_checked = False
+# Set inside worker processes, which are told where the databases are and never
+# open app.db (see ``src.worker.runtime``).
+_worker_paths: tuple[str, str] | None = None
+
+
+def install_worker_paths(market_db: str, filings_db: str) -> None:
+    """Return these market/filings paths from now on and forbid app.db and chat.db."""
+    global _worker_paths
+    _worker_paths = (str(market_db), str(filings_db))
+
+
+def clear_worker_paths() -> None:
+    global _worker_paths
+    _worker_paths = None
+
+
+def _refuse_in_worker() -> None:
+    if _worker_paths is not None:
+        raise RuntimeError("Workers never open app.db")
 
 
 def _require_migrated_layout() -> None:
     global _layout_checked
-    if _layout_checked:
+    if _layout_checked or _worker_paths is not None:
         return
     from .migrate_layout import LegacyLayoutError, pending_databases
 
@@ -48,24 +67,30 @@ def _require_migrated_layout() -> None:
 
 def get_app_db() -> str:
     """Return the absolute path to the irreplaceable application database."""
+    _refuse_in_worker()
     _require_migrated_layout()
     return str(paths.app_db_path())
 
 
 def get_chat_db() -> str:
     """Return the absolute path to the chat database."""
+    _refuse_in_worker()
     _require_migrated_layout()
     return str(paths.chat_db_path())
 
 
 def get_market_db() -> str:
     """Return the absolute path to the rebuildable market database."""
+    if _worker_paths is not None:
+        return _worker_paths[0]
     _require_migrated_layout()
     return _configured_path("storage.market_db_path", paths.default_market_db_path())
 
 
 def get_filings_db() -> str:
     """Return the absolute path to the rebuildable filing archive."""
+    if _worker_paths is not None:
+        return _worker_paths[1]
     _require_migrated_layout()
     return _configured_path("storage.filings_db_path", paths.default_filings_db_path())
 

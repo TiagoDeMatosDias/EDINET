@@ -7,12 +7,15 @@ import json
 import logging
 import re
 import sqlite3
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.filings.remote_translation import owner_of
+from src.jobs.errors import JobFailed
 from src.orchestrator.common.db_config import get_market_db
 
 from . import service
@@ -134,24 +137,29 @@ class CareerRequest(BaseModel):
     period_end: str = Field(default="", max_length=10)
 
 
+_translation_owner: ContextVar[str | None] = ContextVar("ownership_translation_owner", default=None)
+
+
 def _machine_translation(texts: list[str]) -> dict[str, str]:
-    """The local translation engine's English for lines no rule covers; nothing when it is unavailable."""
+    """English for lines no rule covers: the translation cache here, the engine in a worker.
+
+    A translation that is still running propagates as ``JobPending`` (HTTP 202) so
+    the page asks again when it is done; an unavailable engine leaves the lines as filed.
+    """
+    from src.filings.remote_translation import server_translator
+    from src.filings.runtime import catalog
+
     try:
-        from src.filings.runtime import catalog
-        from src.filings.translate import TranslationError, translate_batch
-    except Exception as exc:  # noqa: BLE001 - careers are still shown as filed
-        logger.warning("Career lines cannot be machine-translated: %s", exc)
-        return {}
-    try:
-        return translate_batch(texts, catalog)
-    except TranslationError as exc:
+        return server_translator(catalog, owner_user_id=_translation_owner.get(), title="Translating career lines")(texts)
+    except JobFailed as exc:
         logger.info("Career lines were not machine-translated: %s", exc)
         return {}
 
 
 @router.post("/careers/translate")
-def translate_career(payload: CareerRequest) -> dict[str, Any]:
-    """A career summary's lines in English: standard lines by rule, the rest by the local translation engine."""
+def translate_career(request: Request, payload: CareerRequest) -> dict[str, Any]:
+    """A career summary's lines in English: standard lines by rule, the rest by the translation worker."""
+    _translation_owner.set(owner_of(request))
     path = _require(_database())
     lines = [line[:600] for line in payload.lines]
     try:

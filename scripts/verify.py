@@ -113,6 +113,9 @@ def _stages() -> tuple[Stage, ...]:
     npm = _npm_executable()
     ruff_targets = (
         "src/api",
+        "src/jobs",
+        "src/worker",
+        "shade_worker.py",
         "src/pipeline_jobs",
         "src/web_app/security.py",
         "src/web_app/server.py",
@@ -160,6 +163,8 @@ def _stages() -> tuple[Stage, ...]:
                 "-m",
                 "mypy",
                 "src/api",
+                "src/jobs",
+                "src/worker",
                 "src/pipeline_jobs",
                 "src/web_app/security.py",
                 "src/web_app/server.py",

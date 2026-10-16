@@ -19,9 +19,10 @@ from src import security_analysis as _security
 from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
 from src.comparison.service import METRIC_DEFINITIONS, flatten_overview
+from src.jobs.service import get_job_service
 from src.orchestrator.common.db_config import get_market_db
 from src.orchestrator.common.sqlite import connect_read
-from src.security_analysis.company_descriptions import get_or_fetch_description, yahoo_symbol
+from src.security_analysis.company_descriptions import read_cached_description, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,24 @@ def _resolve_db() -> str:
     if not db_path or not Path(db_path).is_file():
         raise HTTPException(status_code=503, detail="Database not found.")
     return db_path
+
+
+def _cached_description(db: str, company_code: str | None, ticker: str) -> str:
+    """The cached external description; a miss queues a worker fetch for the next load."""
+    description, needs_fetch = read_cached_description(db, company_code, ticker)
+    if needs_fetch:
+        try:
+            get_job_service().enqueue(
+                "description_fetch",
+                {"company_code": company_code, "ticker": ticker},
+                owner_user_id=None,
+                title=f"Company description · {ticker}",
+                notify=False,
+                dedupe_key=f"description:{ticker}",
+            )
+        except Exception as exc:  # noqa: BLE001 - the description is optional
+            logger.info("Could not queue the description fetch for %s: %s", ticker, exc)
+    return description
 
 
 def _filing_description_source(company: dict[str, Any]) -> dict[str, str] | None:
@@ -133,7 +152,7 @@ def get_overview(
             # The external profile is only a fallback for companies whose own
             # filings carry no business description.
             try:
-                description = get_or_fetch_description(
+                description = _cached_description(
                     db,
                     str(company.get("company_code") or code or "") or None,
                     external_ticker,
@@ -385,7 +404,16 @@ def update_price(
     """Refresh one ticker from the price provider (writes shared market data)."""
     if not request.ticker.strip():
         raise HTTPException(status_code=400, detail="ticker is required")
-    return _security.update_security_price(_resolve_db(), request.ticker.strip())
+    ticker = request.ticker.strip()
+    _resolve_db()
+    record = get_job_service().run_sync(
+        "price_refresh",
+        {"tickers": [ticker]},
+        owner_user_id=_operator.user_id,
+        title=f"Update price · {ticker}",
+    )
+    results = (record.result or {}).get("results") or {}
+    return results.get(ticker) or {"ok": False, "rows_inserted": 0, "message": "No result was returned."}
 
 
 # ---------------------------------------------------------------------------

@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Callable
+from uuid import uuid4
 
-from config import Config
 from src.orchestrator import validate_input
 from src.orchestrator.orchestrator import (
     constrain_pipeline_paths,
     resolve_file_uploads,
 )
 
-from .manager import PipelineJobManager
 from .store import JobStore, nested_config
+from .submission import active_pipeline_count, enqueue_pipeline, pipeline_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,6 @@ class PipelineScheduler:
     def __init__(
         self,
         store: JobStore,
-        manager: PipelineJobManager,
         *,
         input_roots: tuple[str, ...] = (),
         max_upload_bytes: int = 10 * 1024 * 1024,
@@ -36,7 +36,6 @@ class PipelineScheduler:
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.store = store
-        self.manager = manager
         self.input_roots = input_roots
         self.max_upload_bytes = max_upload_bytes
         self.check_interval_seconds = check_interval_seconds
@@ -111,12 +110,12 @@ class PipelineScheduler:
         return {
             "checked_at": self._now(),
             "next_check_at": self.next_check_at(),
-            "active_pipeline": self.manager.active_count() > 0,
+            "active_pipeline": active_pipeline_count() > 0,
             "triggered_job_ids": triggered_job_ids or [],
         }
 
     def _run_once(self) -> list[str]:
-        if self.manager.active_count() > 0:
+        if active_pipeline_count() > 0:
             return []
 
         current = self._now()
@@ -144,8 +143,9 @@ class PipelineScheduler:
         # The schedule references a saved setup; submit its current content so
         # the next run always uses the latest version.
         setup = self.store.get_setup(schedule["setup_name"])
-        job_id = self.manager.new_job_id()
-        workspace = self.manager.workspace_for(job_id, create=True)
+        job_id = str(uuid4())
+        workspace = pipeline_workspace(job_id)
+        workspace.mkdir(parents=True, exist_ok=True)
         try:
             config = nested_config(setup["config"])
             steps = validate_input(config, setup["steps"])
@@ -161,11 +161,18 @@ class PipelineScheduler:
                 workspace=workspace,
                 allowed_input_roots=self.input_roots,
             )
-            job = self.manager.submit(Config.from_dict(config), steps, job_id=job_id)
+            job = enqueue_pipeline(
+                config,
+                steps,
+                job_id=job_id,
+                owner_user_id=None,
+                setup_name=str(schedule["setup_name"]),
+                schedule_id=str(schedule["schedule_id"]),
+            )
         except Exception:
-            self.manager.discard_workspace(job_id)
+            shutil.rmtree(workspace, ignore_errors=True)
             raise
-        return str(job["job_id"])
+        return job.job_id
 
     @staticmethod
     def _is_due(schedule: dict, now: datetime) -> bool:

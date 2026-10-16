@@ -287,3 +287,68 @@ def _fetch_etf_to_db(conn: sqlite3.Connection, ticker: str, expected_currency: s
             return False
 
     return False
+
+
+def refresh_market_prices(db2_path: str, tickers: list[str], currency: str) -> dict:
+    """Repair currency labels, fetch new prices, FX and interest rates (all market.db writes).
+
+    The market part of a portfolio "refresh market data": run by a worker.
+    Returns ``tickers``, ``updated``, ``failed``, ``refetched_daily_history``,
+    ``relabelled_prices``, ``fx_rows`` and ``risk_free_rows``.
+    """
+    from src.orchestrator.update_fx_data.update_fx_data import (
+        _fetch_ecb_fx_prices,
+        _insert_new_pairs,
+        update_risk_free_rates,
+    )
+    from src.orchestrator.update_stock_prices.update_stock_prices import _update_ticker
+    from src.portfolio.data_quality import sparse_price_years
+    from src.utilities.stock_prices import repair_price_currency_labels, yahoo_listing_currency
+
+    updated: list[str] = []
+    failed: list[str] = []
+    refetched: list[str] = []
+    relabelled = 0
+    conn = connect_write(db2_path)
+    try:
+        for index, ticker in enumerate(tickers):
+            try:
+                relabelled += repair_price_currency_labels(
+                    conn, "Stock_Prices", ticker, listing_currency=yahoo_listing_currency,
+                )
+                conn.commit()
+                if sparse_price_years(conn, ticker):
+                    # Weekly history: replace it with the provider's daily series.
+                    if _update_ticker(conn, "Stock_Prices", ticker, currency=None, overwrite=True, savepoint_id=index):
+                        refetched.append(ticker)
+                if load_ticker_data(ticker, "Stock_Prices", conn):
+                    conn.commit()
+                    updated.append(ticker)
+                else:
+                    conn.rollback()
+                    failed.append(ticker)
+            except Exception as exc:  # noqa: BLE001 - one ticker must not stop the rest
+                conn.rollback()
+                logger.warning("Price refresh failed for %s: %s", ticker, exc)
+                failed.append(ticker)
+    finally:
+        conn.close()
+    fx_rows = 0
+    rate_rows = 0
+    try:
+        fx_rows = _insert_new_pairs(_fetch_ecb_fx_prices(), db2_path, "Stock_Prices", label="FX records")
+    except Exception as exc:  # noqa: BLE001 - FX refresh is best effort
+        logger.warning("FX refresh failed: %s", exc)
+    try:
+        rate_rows = update_risk_free_rates(db2_path, {currency.upper(), "EUR"})
+    except Exception as exc:  # noqa: BLE001 - rate refresh is best effort
+        logger.warning("Interest-rate refresh failed: %s", exc)
+    return {
+        "tickers": len(tickers),
+        "updated": updated,
+        "failed": failed,
+        "refetched_daily_history": refetched,
+        "relabelled_prices": relabelled,
+        "fx_rows": fx_rows,
+        "risk_free_rows": rate_rows,
+    }

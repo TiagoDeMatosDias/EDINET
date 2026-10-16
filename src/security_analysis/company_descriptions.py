@@ -283,6 +283,28 @@ def _empty_cache_is_fresh(cached: dict[str, Any]) -> bool:
         return False
 
 
+def read_cached_description(
+    db_path: str,
+    company_code: str | None,
+    ticker: str | None,
+) -> tuple[str, bool]:
+    """The cached description and whether a worker should fetch it (read-only).
+
+    Used by the web server, which never writes the market database: a stale or
+    missing entry returns ``(whatever is cached, True)``. Companies that get no
+    external profile return ``("", False)``.
+    """
+    cache_key = _key(company_code, ticker)
+    if not cache_key.split(":", 1)[1]:
+        return "", False
+    if str(company_code or "").strip() and tse_code(ticker) is None:
+        return "", False
+    cached = _cached(db_path, cache_key)
+    if cached is not None and _empty_cache_is_fresh(cached):
+        return str(cached.get("description") or ""), False
+    return str((cached or {}).get("description") or ""), True
+
+
 def get_or_fetch_description(
     db_path: str,
     company_code: str | None,

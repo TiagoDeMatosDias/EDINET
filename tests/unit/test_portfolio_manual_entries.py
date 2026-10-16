@@ -45,7 +45,7 @@ def test_incomplete_records_are_refused(entry):
 
 def test_a_manual_buy_and_deposit_appear_in_activity_and_holdings(populated_api_database, monkeypatch):  # noqa: F811
     fetched = []
-    monkeypatch.setattr("src.portfolio.api.ensure_prices_for_tickers", lambda _db, tickers: fetched.append(tickers) or {"fetched": [], "failed": []})
+    monkeypatch.setattr("src.worker.handlers.market.ensure_prices_for_tickers", lambda _db, tickers: fetched.append(tickers) or {"fetched": [], "failed": []})
     response = client.post("/api/portfolio/transactions/manual", json={
         "kind": "buy", "trade_date": "2024-01-10", "currency": "USD", "symbol": "AAA", "quantity": 3, "price": 10, "commission": 1,
     })

@@ -11,7 +11,9 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
+from src.jobs.service import get_job_service
 from src.web_app.server import app
+from src.worker.inline import InlineWorker
 
 client = TestClient(app)
 
@@ -50,7 +52,9 @@ def db(tmp_path, monkeypatch):
     _create_db(p)
     import src.web_app.api.security_analysis as m
     monkeypatch.setattr(m, "get_market_db", lambda: p)
-    return p
+    monkeypatch.setattr("src.worker.handlers.market.get_market_db", lambda: p)
+    with InlineWorker(get_job_service(), kinds=["price_refresh"]):
+        yield p
 
 
 # ---------------------------------------------------------------------------
@@ -264,8 +268,8 @@ def test_overview_prefers_filing_description_without_external_lookup(db, monkeyp
     monkeypatch.setattr(m._security, "get_security_overview", with_filing_text)
     monkeypatch.setattr(
         m,
-        "get_or_fetch_description",
-        lambda *args: calls.append(args) or "External profile text.",
+        "read_cached_description",
+        lambda *args: calls.append(args) or ("External profile text.", False),
     )
 
     company = client.get("/api/security/overview", params={"company_code": "E00001"}).json()["company"]
@@ -284,8 +288,8 @@ def test_overview_labels_external_description_fallback(db, monkeypatch):
     calls: list[tuple] = []
     monkeypatch.setattr(
         m,
-        "get_or_fetch_description",
-        lambda *args: calls.append(args) or "External profile text.",
+        "read_cached_description",
+        lambda *args: calls.append(args) or ("External profile text.", False),
     )
 
     company = client.get("/api/security/overview", params={"company_code": "E00001"}).json()["company"]
@@ -298,6 +302,20 @@ def test_overview_labels_external_description_fallback(db, monkeypatch):
         "label": "Yahoo Finance profile",
         "symbol": "1001.T",
     }
+
+
+def test_overview_queues_a_description_fetch_on_a_cache_miss(db):
+    jobs = get_job_service()
+    company = client.get("/api/security/overview", params={"company_code": "E00001"}).json()["company"]
+
+    assert company["yahoo_description"] == ""
+    queued = [job for job in jobs.list_jobs(kinds=["description_fetch"], include_system=True, limit=200) if job.dedupe_key == "description:1001.T"]
+    assert queued and queued[0].payload == {"company_code": "E00001", "ticker": "1001.T"}
+    assert queued[0].notify is False
+    # A second load does not queue another while the first is active.
+    client.get("/api/security/overview", params={"company_code": "E00001"})
+    again = [job for job in jobs.list_jobs(kinds=["description_fetch"], include_system=True, limit=200) if job.dedupe_key == "description:1001.T"]
+    assert len(again) == len(queued)
 
 
 def test_overview_reports_price_and_reporting_currencies(db):

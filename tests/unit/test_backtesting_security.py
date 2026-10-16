@@ -64,17 +64,6 @@ def test_export_size_limit_is_enforced(monkeypatch):
     assert exc_info.value.status_code == 413
 
 
-def test_backtest_artifact_uses_its_own_size_limit(monkeypatch):
-    from dataclasses import replace
-
-    limited = replace(backtesting_api.get_settings(), max_export_bytes=4, max_backtest_artifact_bytes=8)
-    monkeypatch.setattr(backtesting_api, "get_settings", lambda: limited)
-    assert backtesting_api._enforce_backtest_artifact_size(b"12345") == b"12345"
-    with pytest.raises(HTTPException) as exc_info:
-        backtesting_api._enforce_backtest_artifact_size(b"123456789")
-    assert exc_info.value.status_code == 413
-
-
 def test_recent_backtest_labels_name_holdings_instead_of_run_ids():
     assert backtesting_api._holdings_label(["7203", "6758"]) == "7203, 6758"
     assert backtesting_api._holdings_label(["7203", "6758", "9984", "8306", " "]) == "7203, 6758, 9984 +1 more"

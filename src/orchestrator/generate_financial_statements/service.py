@@ -8,6 +8,9 @@ from collections import Counter, defaultdict
 import pandas as pd
 
 from src.orchestrator.common.sqlite import OrchestratorProcessorBase
+from src.orchestrator.common.table_swap import drop_stale_next, next_table_name, swap_in
+
+from .slips import CORRECTIONS_TABLE
 
 logger = logging.getLogger("src.data_processing")
 
@@ -171,36 +174,48 @@ def _ensure_case_insensitive_columns(helper, conn, table_name, columns):
     return resolved
 
 
-def _ensure_financial_statement_tables(helper, conn, overwrite=False):
-    if overwrite:
-        conn.executescript(
-            """
-            DROP TABLE IF EXISTS FinancialStatements;
-            DROP TABLE IF EXISTS IncomeStatement;
-            DROP TABLE IF EXISTS BalanceSheet;
-            DROP TABLE IF EXISTS CashflowStatement;
-            DROP TABLE IF EXISTS ShareMetrics;
-            """
-        )
+_FINANCIAL_STATEMENTS_TABLE = "FinancialStatements"
+# Tables an overwrite run rebuilds; ``slips.CORRECTIONS_TABLE`` joins them.
+_REBUILT_TABLES = (_FINANCIAL_STATEMENTS_TABLE, *_STATEMENT_TABLES, CORRECTIONS_TABLE)
 
+
+def _target_table_names(overwrite):
+    """``{table: name to write}``: the ``__next`` copy on an overwrite run, else the live table."""
+    return {table: next_table_name(table) if overwrite else table for table in _REBUILT_TABLES}
+
+
+def _ensure_financial_statement_tables(helper, conn, overwrite=False):
+    """Create the output tables and return ``{table: name to write}``.
+
+    An overwrite run builds ``<table>__next`` (dropping a leftover one) and the
+    caller swaps them in with ``swap_in`` once everything is built; the live
+    tables are not touched until then.
+    """
+    names = _target_table_names(overwrite)
+    if overwrite:
+        for table in _REBUILT_TABLES:
+            drop_stale_next(conn, table)
+
+    fs_table = names[_FINANCIAL_STATEMENTS_TABLE]
     fs_cols_sql = ",\n          ".join(
         f'"{name}" {col_type}' for name, col_type in _FINANCIAL_STATEMENTS_COLUMNS
     )
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS FinancialStatements (\n"
+        f"CREATE TABLE IF NOT EXISTS {helper._sql_ident(fs_table)} (\n"
         f"          {fs_cols_sql}\n"
         "        )"
     )
     helper._ensure_typed_table_columns(
         conn,
-        "FinancialStatements",
+        fs_table,
         [(name, column_type) for name, column_type in _FINANCIAL_STATEMENTS_COLUMNS if name != "docID"],
     )
 
     for table_name in _STATEMENT_TABLES:
         conn.execute(
-            f"CREATE TABLE IF NOT EXISTS \"{table_name}\" (\"docID\" TEXT PRIMARY KEY)"
+            f"CREATE TABLE IF NOT EXISTS \"{names[table_name]}\" (\"docID\" TEXT PRIMARY KEY)"
         )
+    return names
 
 
 def _resolve_source_table(helper, conn, source_schema, source_table):
@@ -299,7 +314,7 @@ def _resolve_release_ids(metadata_batch_df, release_catalog):
     return resolved.drop(columns=[column for column in ("submit_date_token", "submit_date_dt") if column in resolved.columns])
 
 
-def _fetch_pending_doc_ids(helper, conn, source_schema, source_table):
+def _fetch_pending_doc_ids(helper, conn, source_schema, source_table, fs_table=_FINANCIAL_STATEMENTS_TABLE):
     source_ref = _source_table_ref(helper, source_schema, source_table)
     col_names = helper._resolve_source_col_names(conn, source_schema, source_table)
     doc_col = col_names.get("docID") or "docID"
@@ -310,7 +325,7 @@ def _fetch_pending_doc_ids(helper, conn, source_schema, source_table):
         f"""
         SELECT CAST(s.{helper._sql_ident(doc_col)} AS TEXT) AS docID
         FROM {source_ref} s
-        LEFT JOIN {helper._sql_ident('FinancialStatements')} fs
+        LEFT JOIN {helper._sql_ident(fs_table)} fs
             ON CAST(s.{helper._sql_ident(doc_col)} AS TEXT) = fs.{helper._sql_ident('docID')}
         WHERE s.{helper._sql_ident(doc_col)} IS NOT NULL
           AND fs.{helper._sql_ident('docID')} IS NULL
@@ -323,7 +338,7 @@ def _fetch_pending_doc_ids(helper, conn, source_schema, source_table):
     return [str(row[0]) for row in rows]
 
 
-def _fetch_pending_filings_doc_ids(helper, conn, source_schema):
+def _fetch_pending_filings_doc_ids(helper, conn, source_schema, fs_table=_FINANCIAL_STATEMENTS_TABLE):
     """Return parsed filings with numeric facts not yet in the target."""
     filings_ref = _source_table_ref(helper, source_schema, _FILINGS_TABLE_NAME)
     facts_ref = _source_table_ref(helper, source_schema, _FILINGS_FACT_TABLE_NAME)
@@ -331,7 +346,7 @@ def _fetch_pending_filings_doc_ids(helper, conn, source_schema):
         f"""
         SELECT CAST(f.doc_id AS TEXT) AS docID
         FROM {filings_ref} f
-        LEFT JOIN {helper._sql_ident('FinancialStatements')} fs
+        LEFT JOIN {helper._sql_ident(fs_table)} fs
             ON CAST(f.doc_id AS TEXT) = fs.{helper._sql_ident('docID')}
         WHERE f.status = 'parsed'
           AND fs.{helper._sql_ident('docID')} IS NULL
@@ -645,7 +660,8 @@ def _source_term_candidates(concept_qnames):
     return sorted(candidates)
 
 
-def _synchronize_statement_tables(helper, conn, taxonomy_bundle):
+def _synchronize_statement_tables(helper, conn, taxonomy_bundle, names=None):
+    names = names or {}
     for statement_family in _STATEMENT_TABLES:
         groups = list(taxonomy_bundle["groups_by_family"][statement_family].values())
         if not groups:
@@ -657,7 +673,7 @@ def _synchronize_statement_tables(helper, conn, taxonomy_bundle):
         resolved_columns = _ensure_case_insensitive_columns(
             helper,
             conn,
-            statement_family,
+            names.get(statement_family, statement_family),
             group_columns,
         )
         for group in groups:
@@ -954,12 +970,16 @@ def generate_financial_statements(
         if not taxonomy_actual:
             raise ValueError("Target_Database must contain a Taxonomy table before generating financial statements.")
 
-        _ensure_financial_statement_tables(helper, conn, overwrite=overwrite)
+        table_names = _ensure_financial_statement_tables(helper, conn, overwrite=overwrite)
         release_catalog = _load_release_catalog(conn, helper._sql_ident(taxonomy_actual))
         if normalized_source_mode == _SOURCE_MODE_FILINGS:
-            pending_doc_ids = _fetch_pending_filings_doc_ids(helper, conn, source_schema)
+            pending_doc_ids = _fetch_pending_filings_doc_ids(
+                helper, conn, source_schema, table_names[_FINANCIAL_STATEMENTS_TABLE]
+            )
         else:
-            pending_doc_ids = _fetch_pending_doc_ids(helper, conn, source_schema, source_actual)
+            pending_doc_ids = _fetch_pending_doc_ids(
+                helper, conn, source_schema, source_actual, table_names[_FINANCIAL_STATEMENTS_TABLE]
+            )
         total_documents = len(pending_doc_ids)
         taxonomy_cache = {}
         processed_documents = 0
@@ -1018,7 +1038,7 @@ def generate_financial_statements(
                         release_id,
                         granularity,
                     )
-                    _synchronize_statement_tables(helper, conn, taxonomy_bundle)
+                    _synchronize_statement_tables(helper, conn, taxonomy_bundle, table_names)
                     mapping_df = _build_taxonomy_mapping_frame(taxonomy_bundle)
                     taxonomy_bundle["mapping_df"] = mapping_df
                     taxonomy_bundle["concept_qnames"] = tuple(mapping_df["concept_qname"].drop_duplicates().tolist())
@@ -1083,14 +1103,14 @@ def generate_financial_statements(
             _bulk_replace_rows(
                 conn,
                 helper,
-                "FinancialStatements",
+                table_names[_FINANCIAL_STATEMENTS_TABLE],
                 pd.concat(financial_statement_frames, ignore_index=True),
             )
             for statement_family, frames in statement_frames_by_family.items():
                 _bulk_replace_rows(
                     conn,
                     helper,
-                    statement_family,
+                    table_names[statement_family],
                     pd.concat(frames, ignore_index=True),
                 )
 
@@ -1114,15 +1134,22 @@ def generate_financial_statements(
         # Figures an issuer tagged a power of ten off, against the report's own others.
         from .slips import correct_decimal_slips, ensure_corrections_table
 
-        ensure_corrections_table(conn, clear=overwrite)
-        correct_decimal_slips(conn)
+        ensure_corrections_table(conn, table_names[CORRECTIONS_TABLE])
+        correct_decimal_slips(conn, table_names)
         conn.commit()
         # Ensure screening performance index exists
-        conn.execute(
+        fs_index_sql = (
             "CREATE INDEX IF NOT EXISTS idx_fin_company_period "
-            "ON FinancialStatements(Company_Code, periodEnd)"
+            f"ON {_FINANCIAL_STATEMENTS_TABLE}(Company_Code, periodEnd)"
         )
-        conn.commit()
+        if overwrite:
+            if context is not None:
+                context.checkpoint()
+            # One short transaction: readers see the old tables or the new ones.
+            swap_in(conn, _REBUILT_TABLES, indexes={_FINANCIAL_STATEMENTS_TABLE: [fs_index_sql]})
+        else:
+            conn.execute(fs_index_sql)
+            conn.commit()
         logger.info(
             "Completed generate_financial_statements: %d document(s) processed.",
             processed_documents,

@@ -7,14 +7,26 @@ The frontend is the React SPA at ``frontend-v2``.  API routes are built by
 from __future__ import annotations
 
 import os
+import signal
+import threading
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
-from src.orchestrator.common.database_bootstrap import ensure_application_databases
+from src.jobs.launcher import LocalWorkerLauncher, default_server_url
+from src.jobs.protocol import LOCAL_WORKER_ID
+from src.jobs.service import get_job_service, start_job_service
+from src.orchestrator.common.database_bootstrap import (
+    ensure_data_databases,
+    ensure_server_databases,
+)
+from src.orchestrator.common.db_config import get_filings_db, get_market_db
+from src.orchestrator.common.sqlite import clear_protected_database_paths, protect_database_paths
 from src.paths import bundle_dir
 from src.version import __version__
 from src.web_app.api import router_app
@@ -60,6 +72,29 @@ app.state.tunnel = TunnelManager(_local_origin(), blocked=_tunnel_blocked)
 _api_lifespan = app.router.lifespan_context
 
 
+def _on_stop_signal(callback: Callable[[], None]) -> None:
+    """Run ``callback`` as soon as a stop signal arrives, then let uvicorn handle it.
+
+    uvicorn closes the listener and waits for open requests before the lifespan
+    shutdown runs, so workers' long-poll claims would hold the shutdown open until
+    they are cancelled. ``callback`` runs inside the signal handler and must only
+    set flags. Signals can be handled only on the main thread (not under tests).
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        previous = signal.getsignal(sig) if sig is not None else None
+        if sig is None or not callable(previous):
+            continue
+
+        def handler(signum, frame, previous=previous):
+            callback()
+            previous(signum, frame)
+
+        signal.signal(sig, handler)
+
+
 @asynccontextmanager
 async def _lifespan(lifespan_app: FastAPI):
     """Create missing databases at startup rather than at import time.
@@ -77,13 +112,47 @@ async def _lifespan(lifespan_app: FastAPI):
     from src.utilities.logger import setup_logging
 
     setup_logging()
-    ensure_application_databases(settings=SETTINGS)
-    async with _api_lifespan(lifespan_app):
-        lifespan_app.state.tunnel.apply()
-        try:
-            yield
-        finally:
-            lifespan_app.state.tunnel.stop()
+    ensure_server_databases(settings=SETTINGS)
+    # Workers write market.db and filings.db. Their fixed schema is still created
+    # (and migrated) here once, before any worker starts and before request
+    # handling, so a clean install or an upgrade never serves pages against a
+    # missing file or an older schema.
+    await run_in_threadpool(ensure_data_databases)
+    # From here on only workers write market.db and filings.db: any write the
+    # server attempts fails loudly instead of contending with a worker.
+    protect_database_paths([get_market_db(), get_filings_db()])
+    maintenance = start_job_service()
+    service = get_job_service()
+    service.stopping = False
+
+    def _stop_signal() -> None:
+        service.begin_shutdown()
+        launcher = getattr(lifespan_app.state, "launcher", None)
+        if launcher is not None:
+            launcher.stopping_soon()
+
+    _on_stop_signal(_stop_signal)
+    try:
+        async with _api_lifespan(lifespan_app):
+            launcher = LocalWorkerLauncher(
+                service.registry,
+                server_url=default_server_url(SETTINGS),
+            )
+            lifespan_app.state.launcher = launcher
+            await run_in_threadpool(launcher.start)
+            lifespan_app.state.tunnel.apply()
+            try:
+                yield
+            finally:
+                service.begin_shutdown()
+                lifespan_app.state.tunnel.stop()
+                await run_in_threadpool(launcher.stop)
+                # The listener is already closed, so the local worker could not
+                # release its jobs itself; settle them now that its process is gone.
+                await run_in_threadpool(service.release_worker_jobs, LOCAL_WORKER_ID)
+    finally:
+        maintenance.stop()
+        clear_protected_database_paths()
 
 
 app.router.lifespan_context = _lifespan

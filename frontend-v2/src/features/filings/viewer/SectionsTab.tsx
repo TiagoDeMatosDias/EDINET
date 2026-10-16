@@ -3,9 +3,11 @@ import { Search } from 'lucide-react'
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { apiRequest, queryString } from '../../../api/client'
+import type { JobPendingBody } from '../../../api/jobs'
 import { EmptyState, LoadingState } from '../../../components/Feedback'
 import { HotkeyKbd } from '../../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../../hotkeys/useHotkeyScope'
+import { requestFollowingJob } from '../followJob'
 import { sectionsTabScope } from '../filingsHotkeys'
 import { usePersistentState } from '../../../hooks/usePersistentState'
 import type { ReportFile, Section } from './viewerTypes'
@@ -27,12 +29,22 @@ export function SectionsTab({ docId, files, sections, loading }: { docId: string
   const [current, setCurrent] = useState(0)
   const [translating, setTranslating] = useState<Set<string>>(new Set())
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [pendingDetail, setPendingDetail] = useState('')
   const search = useRef<HTMLInputElement>(null)
   const translations = useQuery({
     queryKey: ['filing-sections-en', docId],
     enabled: sideBySide && sections.length > 0,
     retry: false,
-    queryFn: () => apiRequest<{ sections: Section[]; count: number }>(`/api/filings/${encodeURIComponent(docId)}/sections-translated${queryString({ limit: 500, bodies: 'true' })}`),
+    queryFn: async () => {
+      try {
+        return await requestFollowingJob(
+          () => apiRequest<{ sections: Section[]; count: number } | JobPendingBody>(`/api/filings/${encodeURIComponent(docId)}/sections-translated${queryString({ limit: 500, bodies: 'true' })}`),
+          { onPending: pending => setPendingDetail(pending.detail) },
+        )
+      } finally {
+        setPendingDetail('')
+      }
+    },
   })
   const merged = useMemo(() => {
     const byId = new Map((translations.data?.sections ?? []).map(section => [section.section_id, section]))
@@ -67,7 +79,8 @@ export function SectionsTab({ docId, files, sections, loading }: { docId: string
     setTranslating(previous => new Set(previous).add(sectionId))
     setErrors(previous => { const next = { ...previous }; delete next[sectionId]; return next })
     try {
-      const data = await apiRequest<{ section: Section }>(`/api/filings/${encodeURIComponent(docId)}/translate-body${queryString(force ? { section_id: sectionId, force: 'true' } : { section_id: sectionId })}`)
+      const read = (forced: boolean) => () => apiRequest<{ section: Section } | JobPendingBody>(`/api/filings/${encodeURIComponent(docId)}/translate-body${queryString(forced ? { section_id: sectionId, force: 'true' } : { section_id: sectionId })}`)
+      const data = await requestFollowingJob(read(force), { afterJob: read(false) })
       if (data.section?.text_en) {
         queryClient.setQueryData(['filing-sections-en', docId], (old: { sections: Section[]; count: number } | undefined) => {
           const base = old ?? { sections, count: sections.length }
@@ -109,7 +122,7 @@ export function SectionsTab({ docId, files, sections, loading }: { docId: string
         <label className="inline-toggle"><input type="checkbox" checked={sideBySide} onChange={event => setSideBySide(event.target.checked)} /> English alongside</label>
         <span title="Toggle English"><HotkeyKbd hotkey={sectionsTabScope.byId['side-by-side']} /></span>
       </header>
-      {sideBySide && translations.isFetching && <p className="viewer-note" role="status">Translating the complete document with the local Argos model…</p>}
+      {sideBySide && translations.isFetching && <p className="viewer-note" role="status">{pendingDetail || 'Translating the complete document…'}</p>}
       {sideBySide && translations.isError && <p className="viewer-note viewer-note--error" role="alert">{errorMessage(translations.error, 'Document translation failed')} Sections can still be translated one at a time below. <button type="button" className="text-button" onClick={() => void translations.refetch()}>Retry the whole document</button></p>}
       <div className="sections-reader">
         {visible.map(section => {

@@ -12,7 +12,7 @@ import logging
 import re
 from threading import Lock
 from time import monotonic
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -453,6 +453,36 @@ def _translate_complete_text(text: str) -> str:
     return "".join(_translate_chunk(chunk) for chunk in chunks)
 
 
+def cached_translations(texts: list[str], catalog: Any) -> dict[str, str]:
+    """Usable cached English for ``texts`` as ``{source: english}``; a read-only lookup.
+
+    A cached value is accepted when it is fully English or carries only a handful
+    of residual Japanese characters. The web server calls this to decide which
+    texts still need the translation engine (which only workers load).
+    """
+    found: dict[str, str] = {}
+    for source, translated in catalog.lookup_translations(texts, version=TRANSLATOR_VERSION).items():
+        if _is_complete_translation(source, translated) or _is_acceptable_translation(translated):
+            found[source] = translated
+        else:
+            logger.warning("Ignoring incomplete cached translation of %.40r", source)
+    return found
+
+
+def local_translation(text: str) -> str | None:
+    """English for ``text`` when no engine is needed (not Japanese, or fully covered by the glossary)."""
+    if not _needs_translation(text):
+        return text
+    if len(text) <= _MAX_TRANSLATION_CHARS:
+        glossary = _dict_translate(text)
+        if _is_complete_translation(text, glossary):
+            return glossary
+    return None
+
+
+TextTranslator = Callable[[list[str]], dict[str, str]]
+
+
 def translate_batch(
     texts: list[str],
     catalog: Any | None = None,
@@ -477,19 +507,7 @@ def translate_batch(
     cached: dict[str, str] = {}
     uncached = unique
     if catalog is not None and not force:
-        import hashlib
-
-        hashed = catalog.lookup_translations(unique, version=TRANSLATOR_VERSION)
-        hash_to_text = {hashlib.sha256(t.encode("utf-8")).hexdigest(): t for t in unique}
-        for h, translated in hashed.items():
-            src = hash_to_text.get(h)
-            if src and (
-                _is_complete_translation(src, translated)
-                or _is_acceptable_translation(translated)
-            ):
-                cached[src] = translated
-            elif src:
-                logger.warning("Ignoring incomplete cached translation for source hash %s", h)
+        cached = cached_translations(unique, catalog)
         uncached = [t for t in unique if t not in cached]
 
     needs_model = any(
@@ -586,6 +604,7 @@ def translate_html_fragment(
     catalog: Any | None = None,
     *,
     force: bool = False,
+    translate_texts: TextTranslator | None = None,
 ) -> tuple[str, int]:
     """Translate visible prose and user-facing attributes in HTML.
 
@@ -594,6 +613,10 @@ def translate_html_fragment(
     translated as one unit rather than as isolated fragments such as ``ます。``.
     Short untranslatable tokens (proper nouns) are kept verbatim instead of
     failing the whole document.
+
+    ``translate_texts`` supplies the English for the extracted strings; by default
+    the local engine (``translate_batch``) is used. The web server passes a
+    translator that sends only uncached strings to a worker.
     """
     from bs4 import BeautifulSoup, Comment, Declaration, Doctype, ProcessingInstruction
 
@@ -667,7 +690,7 @@ def translate_html_fragment(
             + [source for _node, _raw, source in text_targets]
         )
     )
-    translations = translate_batch(sources, catalog, force=force)
+    translations = (translate_texts or (lambda texts: translate_batch(texts, catalog, force=force)))(sources)
 
     for run, source, leading, trailing in run_targets:
         first_block = run[0]
@@ -696,6 +719,7 @@ def translate_filing_sections(
     *,
     translate_bodies: bool = True,
     force: bool = False,
+    translate_texts: TextTranslator | None = None,
 ) -> list[dict[str, Any]]:
     """Translate complete section titles and bodies without truncation."""
     if not sections:
@@ -709,7 +733,7 @@ def translate_filing_sections(
             if body and _needs_translation(body):
                 all_texts.append(body)
 
-    translations = translate_batch(all_texts, catalog, force=force)
+    translations = (translate_texts or (lambda texts: translate_batch(texts, catalog, force=force)))(all_texts)
     result = []
     for section in sections:
         entry = dict(section)

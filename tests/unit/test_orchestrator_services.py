@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import pytest
+
 from src.orchestrator.generate_financial_statements import service as financial_statement_services
 from src.orchestrator.generate_ratios.generate_ratios import generate_ratios
 from src.orchestrator.generate_rolling_metrics import service as rolling_metrics_services
@@ -798,3 +800,133 @@ class TestGenerateRatios(unittest.TestCase):
                 ("DOC3", None),
             ],
         )
+
+
+# --- overwrite rebuilds build into __next tables and swap at the end ---------
+
+
+class _ProbeContext:
+    """A step context that runs ``probe()`` at every progress report."""
+
+    def __init__(self, probe):
+        self.probe = probe
+
+    def report_progress(self, *args, **kwargs):
+        self.probe()
+
+    def checkpoint(self):
+        self.probe()
+
+
+def _db_snapshot(path, tables):
+    conn = sqlite3.connect(path)
+    try:
+        names = sorted(
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")
+        )
+        columns = {t: [row[1:3] for row in conn.execute(f'PRAGMA table_info("{t}")')] for t in tables}
+        rows = {t: conn.execute(f'SELECT * FROM "{t}" ORDER BY docID').fetchall() for t in tables}
+    finally:
+        conn.close()
+    return names, columns, rows
+
+
+@pytest.fixture()
+def ratios_env():
+    case = TestGenerateRatios()
+    case.setUp()
+    patcher = patch(
+        "src.orchestrator.generate_ratios.generate_ratios.RATIO_DEFINITIONS_PATH", case.formulas_file
+    )
+    patcher.start()
+    yield case
+    patcher.stop()
+    case.tearDown()
+
+
+@pytest.fixture()
+def rolling_env():
+    case = TestGenerateRollingMetricsService()
+    case.setUp()
+    yield case
+    case.tearDown()
+
+
+_RATIO_TABLES = ("Financial_Ratios", "PerShare_Metrics")
+
+
+def test_ratios_overwrite_matches_a_fresh_run_and_swaps_in(ratios_env):
+    generate_ratios(database=ratios_env.db_path, overwrite=False)
+    expected = _db_snapshot(ratios_env.db_path, _RATIO_TABLES)
+    reader = sqlite3.connect(ratios_env.db_path)
+    seen = []
+
+    def probe():
+        seen.append(reader.execute("SELECT COUNT(*) FROM Financial_Ratios").fetchone()[0])
+        seen.append(reader.execute("SELECT COUNT(*) FROM PerShare_Metrics").fetchone()[0])
+
+    generate_ratios(database=ratios_env.db_path, overwrite=True, context=_ProbeContext(probe))
+    reader.close()
+    assert seen and set(seen) == {3}
+    actual = _db_snapshot(ratios_env.db_path, _RATIO_TABLES)
+    assert actual == expected
+    assert not [name for name in actual[0] if name.endswith("__next")]
+
+
+def test_ratios_failure_before_the_swap_leaves_the_live_tables_unchanged(ratios_env):
+    generate_ratios(database=ratios_env.db_path, overwrite=False)
+    before = _db_snapshot(ratios_env.db_path, _RATIO_TABLES)
+
+    class Cancelled(Exception):
+        pass
+
+    class Context:
+        def report_progress(self, *args, **kwargs):
+            pass
+
+        def checkpoint(self):
+            raise Cancelled()
+
+    with pytest.raises(Cancelled):
+        generate_ratios(database=ratios_env.db_path, overwrite=True, context=Context())
+    after = _db_snapshot(ratios_env.db_path, _RATIO_TABLES)
+    assert after[1:] == before[1:]
+    generate_ratios(database=ratios_env.db_path, overwrite=True)
+    assert _db_snapshot(ratios_env.db_path, _RATIO_TABLES) == before
+
+
+def test_rolling_overwrite_matches_a_fresh_run_and_swaps_in(rolling_env):
+    tables = ("IncomeStatement_Rolling",)
+    rolling_env._run_generate(overwrite=False)
+    expected = _db_snapshot(rolling_env.database, tables)
+    reader = sqlite3.connect(rolling_env.database)
+    seen = []
+    with patch.object(rolling_metrics_services, "ROLLING_METRICS_CONFIG_PATH", rolling_env.rolling_metrics_config):
+        rolling_metrics_services.generate_rolling_metrics(
+            source_database=rolling_env.database,
+            target_database=rolling_env.database,
+            overwrite=True,
+            context=_ProbeContext(
+                lambda: seen.append(reader.execute("SELECT COUNT(*) FROM IncomeStatement_Rolling").fetchone()[0])
+            ),
+        )
+    reader.close()
+    assert seen and set(seen) == {8}
+    actual = _db_snapshot(rolling_env.database, tables)
+    assert actual == expected
+    assert not [name for name in actual[0] if name.endswith("__next")]
+
+
+def test_rolling_failure_before_the_swap_leaves_the_live_table_unchanged(rolling_env):
+    tables = ("IncomeStatement_Rolling",)
+    rolling_env._run_generate(overwrite=False)
+    before = _db_snapshot(rolling_env.database, tables)
+    with patch.object(
+        rolling_metrics_services, "_upsert_rolling_rows", side_effect=RuntimeError("interrupted")
+    ):
+        with pytest.raises(RuntimeError):
+            rolling_env._run_generate(overwrite=True)
+    after = _db_snapshot(rolling_env.database, tables)
+    assert after[1:] == before[1:]
+    rolling_env._run_generate(overwrite=True)
+    assert _db_snapshot(rolling_env.database, tables) == before

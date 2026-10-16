@@ -16,15 +16,43 @@ __all__ = [
     "SETTINGS",
     "SettingError",
     "SettingSpec",
+    "clear_overrides",
     "describe_settings",
     "edinet_api_key",
     "get_setting",
+    "install_overrides",
     "load_settings",
     "parse_text",
     "set_setting",
     "spec_for",
     "unset_setting",
 ]
+
+
+# Worker processes never open app.db: the server sends them the values they
+# need at registration and they answer every read from those.
+_overrides: dict[str, Any] | None = None
+
+
+def install_overrides(values: dict[str, Any]) -> None:
+    """Answer every setting read from ``values`` and the spec defaults, never ``app.db``."""
+    global _overrides
+    _overrides = dict(values)
+
+
+def clear_overrides() -> None:
+    global _overrides
+    _overrides = None
+
+
+def _overridden(spec: SettingSpec) -> Any:
+    assert _overrides is not None
+    return _effective(spec, _overrides.get(spec.key))
+
+
+def _refuse_writes_under_overrides() -> None:
+    if _overrides is not None:
+        raise SettingError("Settings cannot be changed from a worker process")
 
 
 def _app_db(app_db: str | Path | None) -> Path:
@@ -48,11 +76,15 @@ def _effective(spec: SettingSpec, stored: Any) -> Any:
 
 def get_setting(key: str, *, app_db: str | Path | None = None) -> Any:
     spec = spec_for(key)
+    if _overrides is not None:
+        return _overridden(spec)
     return _effective(spec, read_stored_value(_app_db(app_db), key))
 
 
 def load_settings(*, app_db: str | Path | None = None) -> dict[str, Any]:
     """Every editable setting's effective value."""
+    if _overrides is not None:
+        return {spec.key: _overridden(spec) for spec in SETTINGS if spec.editable}
     stored = read_stored_values(_app_db(app_db))
     return {spec.key: _effective(spec, stored.get(spec.key)) for spec in SETTINGS if spec.editable}
 
@@ -63,6 +95,7 @@ def edinet_api_key(*, app_db: str | Path | None = None) -> str:
 
 
 def set_setting(key: str, value: Any, *, updated_by: str | None = None, app_db: str | Path | None = None) -> Any:
+    _refuse_writes_under_overrides()
     spec = spec_for(key)
     if not spec.editable:
         raise SettingError(f"{key} is managed by the application")
@@ -73,6 +106,7 @@ def set_setting(key: str, value: Any, *, updated_by: str | None = None, app_db: 
 
 def unset_setting(key: str, *, app_db: str | Path | None = None) -> None:
     """Return a setting to its default."""
+    _refuse_writes_under_overrides()
     spec = spec_for(key)
     if not spec.editable:
         raise SettingError(f"{key} is managed by the application")
@@ -81,13 +115,17 @@ def unset_setting(key: str, *, app_db: str | Path | None = None) -> None:
 
 def describe_settings(*, app_db: str | Path | None = None) -> list[dict[str, Any]]:
     """Every editable setting with its metadata; secret values are never included."""
-    rows = SettingsStore(_app_db(app_db)).rows()
+    rows = {} if _overrides is not None else SettingsStore(_app_db(app_db)).rows()
     described = []
     for spec in SETTINGS:
         if not spec.editable:
             continue
         row = rows.get(spec.key)
-        value = _effective(spec, row["value"] if row else None)
+        if _overrides is not None:
+            value = _overridden(spec)
+            row = {"value": value, "updated_at": None, "updated_by": None} if spec.key in _overrides else None
+        else:
+            value = _effective(spec, row["value"] if row else None)
         described.append(
             {
                 "key": spec.key,

@@ -4,6 +4,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { apiRequest, queryString } from '../../api/client'
+import { isJobPending, JobEndedError, waitForJob, type JobPendingBody } from '../../api/jobs'
 import { Card } from '../../components/Page'
 import { Tip } from '../../components/Tooltip'
 import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
@@ -167,7 +168,20 @@ export default function PortfolioWorkspace() {
     onError: error => setStatus(error instanceof Error ? error.message : 'Rebuild failed'),
   })
   const refresh = useMutation({
-    mutationFn: () => apiRequest<RefreshResult>(`/api/portfolio/refresh-market-data${queryString({ base_currency: currency, benchmark: benchmark || undefined })}`, { method: 'POST' }),
+    mutationFn: async () => {
+      const url = `/api/portfolio/refresh-market-data${queryString({ base_currency: currency, benchmark: benchmark || undefined })}`
+      let answer = await apiRequest<RefreshResult | JobPendingBody>(url, { method: 'POST' })
+      if (isJobPending(answer)) {
+        // The market-data job runs on a worker; once it ends, ask again so the ledger is rebuilt with the new prices.
+        setStatus(answer.detail)
+        const job = await waitForJob(answer.job_id)
+        if (job.status !== 'completed') throw new JobEndedError(job)
+        setStatus('Prices fetched. Rebuilding the portfolio…')
+        answer = await apiRequest<RefreshResult | JobPendingBody>(url, { method: 'POST' })
+        if (isJobPending(answer)) throw new Error(answer.detail)
+      }
+      return answer
+    },
     onMutate: () => setStatus('Fetching the latest prices, exchange rates, and interest rates — this takes a minute or two…'),
     onSuccess: async result => {
       const parts = [`Updated prices for ${result.updated.length} of ${result.tickers} tickers`]
@@ -185,10 +199,12 @@ export default function PortfolioWorkspace() {
     setStatus(`Importing ${files.length} file${files.length === 1 ? '' : 's'}…`)
     try {
       const totals = { inserted: 0, skipped: 0, updated: 0 }
+      let pricesPending = false
       for (const file of Array.from(files)) {
         const form = new FormData()
         form.set('file', file)
-        const result = await apiRequest<Partial<typeof totals>>('/api/portfolio/upload', { method: 'POST', body: form })
+        const result = await apiRequest<Partial<typeof totals> & { prices_pending?: boolean }>('/api/portfolio/upload', { method: 'POST', body: form })
+        if (result?.prices_pending) pricesPending = true
         totals.inserted += result?.inserted ?? 0
         totals.skipped += result?.skipped ?? 0
         totals.updated += result?.updated ?? 0
@@ -196,7 +212,7 @@ export default function PortfolioWorkspace() {
       const imported = importSummary(files.length, totals)
       setStatus(`${imported} Rebuilding…`)
       const rebuilt = await rebuild.mutateAsync()
-      setStatus(`${imported} Rebuilt ${rebuilt.holdings_count ?? 0} holdings.`)
+      setStatus(`${imported} Rebuilt ${rebuilt.holdings_count ?? 0} holdings.${pricesPending ? ' Prices for new holdings are still being fetched; refresh market data once they are in.' : ''}`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Import failed')
     }

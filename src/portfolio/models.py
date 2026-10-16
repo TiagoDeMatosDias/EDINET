@@ -54,6 +54,8 @@ class UploadResponse(BaseModel):
     by_activity: dict[str, int] = Field(default_factory=dict)
     new_tickers_fetched: list[str] = Field(default_factory=list)
     ticker_fetch_failures: list[str] = Field(default_factory=list)
+    # True when the price fetch is still running on a worker (or waiting for one).
+    prices_pending: bool = False
 
 
 class HoldingItem(BaseModel):

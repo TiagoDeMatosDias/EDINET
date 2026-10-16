@@ -23,19 +23,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
 from src.auth.models import AuthenticatedUser
+from src.jobs.service import get_job_service
 from src.orchestrator.common.db_config import get_market_db
 from src.orchestrator.common.sqlite import connect_read
 
-from .acquisition import EdinetAcquisitionError, EdinetDownloadClient
 from .archive import ArchiveMemberNotFoundError, UnsafeArchiveError
 from .catalog import FilingCatalog
+from .remote_translation import owner_of, server_translator
 from .report_files import describe_report_files
 from .runtime import catalog
 from .statements import build_statement_tables, read_linkbases
 from .translate import (
     TRANSLATOR_VERSION,
     TranslationError,
-    translate_batch,
     translate_filing_sections,
     translate_html_fragment,
 )
@@ -413,21 +413,21 @@ def download_artifact(request: Request, doc_id: str) -> Response:
     )
 
 
+def _queued(record: Any) -> dict[str, Any]:
+    return {"job_id": record.job_id, "status": record.status, "kind": record.kind, "title": record.title}
+
+
 @router.post("/acquire", status_code=status.HTTP_202_ACCEPTED)
 def acquire_filing(request: Request, payload: AcquireRequest) -> dict[str, Any]:
-    """Acquire a type-1 archive; provider credentials are read only by the client."""
-    _require_operator(request)
-    metadata = payload.model_dump(exclude_none=True)
-    try:
-        client = EdinetDownloadClient.from_settings()
-        fact_count = client.acquire_type1(
-            payload.doc_id,
-            catalog,
-            metadata,
-        )
-    except (ValueError, EdinetAcquisitionError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"doc_id": payload.doc_id, "status": "parsed", "fact_count": fact_count}
+    """Queue the download of a type-1 archive; a worker runs it (batch lane) and the job tray follows it."""
+    user = _require_operator(request)
+    record = get_job_service().enqueue(
+        "filing_acquire",
+        payload.model_dump(exclude_none=True),
+        owner_user_id=user.user_id,
+        title=f"Download filing {payload.doc_id}",
+    )
+    return _queued(record)
 
 
 @router.get("/xbrl-eligible")
@@ -496,77 +496,22 @@ def trigger_xbrl_backfill(
     limit: int = 50,
     doc_type_code: str = "120",
 ) -> dict[str, Any]:
-    """Download and archive XBRL packages for all eligible documents.
+    """Queue the download and archiving of XBRL packages for eligible documents.
 
     Set *doc_type_code* to filter by EDINET document type (120=annual securities report, 140=quarterly, 160=semi-annual).
-    Leave empty for all document types. Requires operator or admin permission.
+    Leave empty for all document types. Requires operator or admin permission. A worker runs the job; the
+    answer is the queued job, and its result is the downloaded/skipped/failed/total summary.
     """
-    _require_operator(request)
-    db1_path = get_market_db()
-    if not os.path.exists(db1_path):
+    user = _require_operator(request)
+    if not os.path.exists(get_market_db()):
         return {"downloaded": 0, "skipped": 0, "failed": 0, "total": 0}
-
-    conn = connect_read(db1_path)
-    try:
-        where = (
-            "WHERE xbrlFlag = '1' "
-            "  AND Downloaded IN ('True', 'Checked_Unavailable') "
-            "  AND legalStatus IN ('1', '2')"
-        )
-        params: list = []
-        fc = doc_type_code.strip()
-        if fc:
-            where += " AND docTypeCode = ?"
-            params.append(fc)
-        params.append(min(max(limit, 1), 200))
-        rows = conn.execute(
-            "SELECT docID, edinetCode, submitDateTime, periodStart, periodEnd, "
-            "formCode, docDescription, filerName "
-            "FROM DocumentList " + where +
-            " ORDER BY submitDateTime DESC LIMIT ?",
-            params,
-        ).fetchall()
-    finally:
-        conn.close()
-
-    client = EdinetDownloadClient.from_settings()
-    downloaded = 0
-    skipped = 0
-    failed = 0
-
-    for row in rows:
-        doc_id = str(row["docID"]).strip()
-        if not doc_id:
-            continue
-        existing = catalog.get_filing(doc_id)
-        if existing is not None and existing["status"] in ("parsed", "archived", "error"):
-            skipped += 1
-            continue
-        try:
-            client.acquire_type1(
-                doc_id,
-                catalog,
-                {
-                    "edinet_code": row["edinetCode"] or "",
-                    "submitted_at": row["submitDateTime"] or "",
-                    "period_start": row["periodStart"] or "",
-                    "period_end": row["periodEnd"] or "",
-                    "doc_type_code": row["formCode"] or "",
-                },
-            )
-            downloaded += 1
-        except Exception as exc:  # noqa: BLE001  # continue the independent backfill batch
-            logger.warning("XBRL backfill failed for %s: %s", doc_id, exc)
-            failed += 1
-
-    client.close()
-
-    return {
-        "downloaded": downloaded,
-        "skipped": skipped,
-        "failed": failed,
-        "total": len(rows),
-    }
+    record = get_job_service().enqueue(
+        "xbrl_backfill",
+        {"limit": min(max(limit, 1), 200), "doc_type_code": doc_type_code.strip()},
+        owner_user_id=user.user_id,
+        title="XBRL backfill",
+    )
+    return _queued(record)
 
 
 # -- original HTM report viewer --
@@ -574,6 +519,7 @@ def trigger_xbrl_backfill(
 
 @router.get("/{doc_id}/html/{artifact_id}")
 def get_filing_html(
+    request: Request,
     doc_id: str,
     artifact_id: str,
     translate: bool = False,
@@ -640,6 +586,12 @@ def get_filing_html(
                 str(body),
                 catalog,
                 force=force,
+                translate_texts=server_translator(
+                    catalog,
+                    force=force,
+                    owner_user_id=owner_of(request),
+                    title=f"Translating filing {doc_id}",
+                ),
             )
         except TranslationError as exc:
             raise _translation_http_exception(exc) from exc
@@ -687,17 +639,20 @@ class TranslateRequest(BaseModel):
 
 
 @router.post("/translate")
-def translate_texts(payload: TranslateRequest) -> dict[str, Any]:
-    """Translate a batch of Japanese text strings to English."""
+def translate_texts(request: Request, payload: TranslateRequest) -> dict[str, Any]:
+    """Translate a batch of Japanese text strings to English (cache here, the engine in a worker)."""
     try:
-        translations = translate_batch(payload.texts, catalog, force=payload.force)
+        translator = server_translator(
+            catalog, force=payload.force, owner_user_id=owner_of(request), title="Translating text"
+        )
+        translations = translator(payload.texts)
     except TranslationError as exc:
         raise _translation_http_exception(exc) from exc
     return {"translations": [{"source": k, "translated": v} for k, v in translations.items()]}
 
 
 @router.get("/{doc_id}/sections-translated")
-def translated_sections(doc_id: str, bodies: bool = False, limit: int = 500) -> dict[str, Any]:
+def translated_sections(request: Request, doc_id: str, bodies: bool = False, limit: int = 500) -> dict[str, Any]:
     """Return filing sections with English translations added.
 
     Set *bodies=true* to also translate body text (slower — may time out for large filings).
@@ -711,6 +666,9 @@ def translated_sections(doc_id: str, bodies: bool = False, limit: int = 500) -> 
             [_record(r) for r in rows],
             catalog,
             translate_bodies=bodies,
+            translate_texts=server_translator(
+                catalog, owner_user_id=owner_of(request), title=f"Translating filing {doc_id}"
+            ),
         )
     except TranslationError as exc:
         raise _translation_http_exception(exc) from exc
@@ -719,6 +677,7 @@ def translated_sections(doc_id: str, bodies: bool = False, limit: int = 500) -> 
 
 @router.get("/{doc_id}/translate-body")
 def translate_section_body(
+    request: Request,
     doc_id: str,
     section_id: str,
     force: bool = False,
@@ -740,6 +699,9 @@ def translate_section_body(
             catalog,
             translate_bodies=True,
             force=force,
+            translate_texts=server_translator(
+                catalog, force=force, owner_user_id=owner_of(request), title=f"Translating filing {doc_id}"
+            ),
         )
     except TranslationError as exc:
         raise _translation_http_exception(exc) from exc

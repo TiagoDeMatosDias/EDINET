@@ -11,7 +11,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 import src.web_app.api.screening as screening_api
+from src.jobs.service import get_job_service
 from src.web_app.server import app
+from src.worker.handlers import market as market_handlers
+from src.worker.inline import InlineWorker
 
 client = TestClient(app)
 
@@ -24,7 +27,17 @@ client = TestClient(app)
 def _use_database(monkeypatch, path) -> str:
     """Make ``path`` the server's configured screening database."""
     monkeypatch.setattr(screening_api, "get_market_db", lambda: str(path))
+    # Workers resolve the database themselves; point them at the same file.
+    monkeypatch.setattr("src.worker.handlers.screening.get_market_db", lambda: str(path))
+    monkeypatch.setattr("src.worker.handlers.market.get_market_db", lambda: str(path))
     return str(path)
+
+
+@pytest.fixture(autouse=True)
+def inline_worker():
+    """Run queued jobs in this process, as a worker would."""
+    with InlineWorker(get_job_service()):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -718,6 +731,30 @@ def test_export_backtest(test_db_path, monkeypatch):
     assert not generated_path["value"].parent.exists()
 
 
+def test_export_screens_with_the_users_tags_without_writing_them(test_db_path, monkeypatch):
+    """Exports filter on the requesting user's tags, as /run does, and leave the shared table alone."""
+    monkeypatch.setattr(
+        screening_api._screening, "collect_user_company_tags", lambda db, owner: [("E00002", "Favorite")]
+    )
+    with sqlite3.connect(test_db_path) as conn:
+        conn.execute("CREATE TABLE Company_Tags (edinetCode TEXT NOT NULL, tag TEXT NOT NULL)")
+        conn.execute("INSERT INTO Company_Tags VALUES ('E00001', 'Favorite')")
+    criteria = [{
+        "comparison_mode": "full_expression", "operator": ">",
+        "left_side": [{"type": "column", "table": "Company_Tags", "column": "tag"}],
+        "right_side": [{"type": "tag", "value": "Favorite"}],
+    }]
+
+    resp = client.post("/api/screening/export", json={
+        "criteria": criteria, "columns": ["CompanyInfo.Company_Code"], "format": "csv",
+    })
+
+    assert resp.status_code == 200, resp.text
+    assert "E00002" in resp.text and "E00001" not in resp.text
+    with sqlite3.connect(test_db_path) as conn:
+        assert conn.execute("SELECT edinetCode FROM Company_Tags").fetchall() == [("E00001",)]
+
+
 def test_export_enforces_response_size_limit(test_db_path, monkeypatch):
     """CSV responses larger than the configured limit are rejected."""
     from dataclasses import replace
@@ -855,7 +892,7 @@ def test_update_prices_returns_results_structure(tmp_path, monkeypatch):
     db_path = _use_database(monkeypatch, _create_db_for_update_prices(str(tmp_path / "test.db")))
     calls = []
     monkeypatch.setattr(
-        screening_api._security, "update_security_price", _fake_price_update(calls)
+        market_handlers._security, "update_security_price", _fake_price_update(calls)
     )
     resp = client.post(
         "/api/screening/update-prices",
@@ -879,7 +916,7 @@ def test_update_prices_requires_operator_role(tmp_path, monkeypatch):
     _use_database(monkeypatch, _create_db_for_update_prices(str(tmp_path / "test.db")))
     calls = []
     monkeypatch.setattr(
-        screening_api._security, "update_security_price", _fake_price_update(calls)
+        market_handlers._security, "update_security_price", _fake_price_update(calls)
     )
     member = AuthenticatedUser("member-1", "member", None, "member", "active")
     app.dependency_overrides[current_user] = lambda: member

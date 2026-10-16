@@ -91,10 +91,19 @@ export default function PipelinePage() {
     },
     onSuccess: created => { setActiveJobId(created.job_id); void queryClient.invalidateQueries({ queryKey: ['jobs'] }) },
   })
+  const waitingJob = activeStatus === 'pending'
+  const workers = useQuery({
+    queryKey: ['workers-status'],
+    queryFn: () => apiRequest<{ online: number }>('/api/workers/status'),
+    enabled: waitingJob,
+    refetchInterval: waitingJob ? 3000 : false,
+    retry: false,
+  })
+  const waitingForWorker = waitingJob && workers.data?.online === 0
   const cancel = useMutation({
-    mutationFn: () => {
+    mutationFn: (force: boolean) => {
       if (!runningJobId) throw new Error('No pipeline job is running')
-      return apiPost<Job>(`/api/jobs/${encodeURIComponent(runningJobId)}/cancel`, { force: false })
+      return apiPost<Job>(`/api/jobs/${encodeURIComponent(runningJobId)}/cancel`, { force })
     },
     onSuccess: job => { queryClient.setQueryData(['job', job.job_id], job); void queryClient.invalidateQueries({ queryKey: ['jobs'] }) },
   })
@@ -163,7 +172,7 @@ export default function PipelinePage() {
   const startRun = () => { if (selected.length && !running && !run.isPending) run.mutate() }
   const cancelRun = () => {
     if (!running) return
-    if (armedCancel) { setArmedCancel(false); cancel.mutate() } else setArmedCancel(true)
+    if (armedCancel) { setArmedCancel(false); cancel.mutate(false) } else setArmedCancel(true)
   }
 
   useHotkeyScope(pipelineScope, {
@@ -193,12 +202,16 @@ export default function PipelinePage() {
       </div>
       <div className="pl-head__run">
         {running
-          ? <button type="button" className="button button--danger button--small" disabled={cancel.isPending || activeStatus === 'cancelling'} onClick={cancelRun}><CircleStop aria-hidden="true" />{activeStatus === 'cancelling' ? 'Cancelling…' : armedCancel ? 'Cancel: sure?' : 'Cancel run'} <HotkeyKbd hotkey={pipelineScope.byId.cancel} /></button>
+          ? <>
+            <button type="button" className="button button--danger button--small" disabled={cancel.isPending || activeStatus === 'cancelling'} onClick={cancelRun}><CircleStop aria-hidden="true" />{activeStatus === 'cancelling' ? 'Cancelling…' : armedCancel ? 'Cancel: sure?' : 'Cancel run'} <HotkeyKbd hotkey={pipelineScope.byId.cancel} /></button>
+            {activeStatus === 'cancelling' && <button type="button" className="button button--secondary button--small" disabled={cancel.isPending} onClick={() => cancel.mutate(true)} title="Stop the running step immediately">Force stop</button>}
+          </>
           : <button type="button" className="button button--primary button--small" disabled={!selected.length || run.isPending} onClick={startRun}><Play aria-hidden="true" />{run.isPending ? 'Queueing…' : `Run ${selected.length} step${selected.length === 1 ? '' : 's'}`} <HotkeyKbd hotkey={pipelineScope.byId.run} /></button>}
         <HotkeyHelpButton />
       </div>
     </header>
     {notice && <div className="pl-notice" role="status">{notice}</div>}
+    {waitingForWorker && <div className="pl-notice" role="status">Waiting for a worker. The pipeline starts as soon as one connects.</div>}
     {run.isError && <ErrorState error={run.error} retry={() => run.mutate()} />}
     {cancel.isError && <ErrorState error={cancel.error} />}
 

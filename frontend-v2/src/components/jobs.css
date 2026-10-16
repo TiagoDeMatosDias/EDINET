@@ -1,0 +1,37 @@
+/* Job tray (top bar) and toast stack. */
+.job-tray { position: relative; }
+.job-tray__button { min-height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); cursor: pointer; font-size: .82rem; font-weight: 500; }
+.job-tray__button:hover, .job-tray__button[aria-expanded="true"] { background: var(--surface-subtle); }
+.job-tray__count { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--vermilion); color: var(--paper); font-family: var(--font-mono); font-size: .7rem; line-height: 18px; text-align: center; }
+.job-tray__panel { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; width: min(380px, calc(100vw - 32px)); max-height: min(70vh, 560px); overflow-y: auto; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-pop); }
+.job-tray__panel h3 { margin: 4px 4px 6px; color: var(--muted); font-size: .66rem; letter-spacing: .07em; text-transform: uppercase; }
+.job-tray__panel ul { margin: 0 0 6px; padding: 0; list-style: none; }
+.job-tray__empty { margin: 8px 4px; color: var(--muted); font-size: .82rem; }
+.job-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 6px; border-top: 1px solid var(--border); font-size: .82rem; }
+.job-row:first-child { border-top: 0; }
+.job-row__head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.job-row__title { min-width: 0; overflow-wrap: anywhere; }
+.job-row__kind { flex: none; color: var(--muted); font-size: .72rem; }
+.job-row__status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: .76rem; }
+.job-row__waiting { border-color: var(--warning-border); color: var(--warning); background: var(--warning-soft); }
+.job-row__bar { height: 6px; overflow: hidden; border-radius: 3px; background: var(--surface-subtle); }
+.job-row__bar > span { display: block; height: 100%; background: var(--indigo); transition: width .3s ease; }
+.job-row__message { color: var(--muted); overflow-wrap: anywhere; }
+.job-row__error { color: var(--danger); overflow-wrap: anywhere; }
+.job-row--failed .job-row__status > span:first-child, .job-row--interrupted .job-row__status > span:first-child { color: var(--danger); }
+.job-row__actions { display: flex; gap: 12px; }
+.job-row__actions .text-button { text-decoration: none; }
+
+.toast-stack { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 32px)); }
+.toast { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border-strong); border-left-width: 3px; border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-pop); font-size: .84rem; }
+.toast--success { border-left-color: var(--indigo); }
+.toast--danger { border-left-color: var(--danger); }
+.toast__message { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toast__link { flex: none; color: var(--text); font-weight: 500; }
+.toast__close { flex: none; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius); background: transparent; color: var(--muted); cursor: pointer; }
+.toast__close:hover { background: var(--surface-subtle); color: var(--text); }
+@media (max-width: 760px) {
+  .job-tray__label { display: none; }
+  .job-tray__panel { position: fixed; top: 62px; right: 16px; left: 16px; width: auto; }
+  .toast-stack { bottom: 80px; }
+}

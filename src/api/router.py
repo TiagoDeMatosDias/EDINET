@@ -16,15 +16,9 @@ from .setup_routes import router as setup_router
 from .system_routes import router as system_router
 
 
-def cleanup_completed_jobs(max_age_hours: int | None = None) -> None:
-    """Compatibility facade for application startup cleanup."""
-    runtime.cleanup_completed_jobs(max_age_hours)
-
-
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Apply cleanup and run automatic pipeline schedules while the API lives."""
-    cleanup_completed_jobs()
+    """Run automatic pipeline schedules while the API lives (the job service expires old jobs)."""
     runtime.scheduler.start()
     try:
         yield

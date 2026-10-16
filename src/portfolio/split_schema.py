@@ -126,9 +126,13 @@ def ensure_split_tables(db2_path: str | None = None, conn: sqlite3.Connection | 
         # transaction.  Do not commit its price or split writes implicitly;
         # the caller owns commit/rollback semantics for an injected connection.
         return
-    own_conn = sqlite3.connect(db2_path or ":memory:")
+    if db2_path:
+        from src.orchestrator.common.sqlite import connect_write
+
+        own_conn = connect_write(db2_path, busy_timeout_ms=30_000)
+    else:
+        own_conn = sqlite3.connect(":memory:")
     try:
-        own_conn.execute("PRAGMA busy_timeout = 30000")
         _create_split_tables(own_conn)
         own_conn.commit()
         logger.debug("Stock_Splits schema is current")

@@ -11,6 +11,7 @@ import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { useAuth } from './authContext'
 import { ADMIN_SECTIONS, adminScope } from './adminHotkeys'
 import { ShutdownServer } from './ShutdownServer'
+import { WorkersPanel } from './WorkersPanel'
 import './admin.css'
 
 interface AdminUser {
@@ -269,6 +270,7 @@ export default function AdminPage() {
           {settings.data ? <AccessForm key={settings.data.updated_at ?? 'defaults'} settings={settings.data} /> : <LoadingState label="Loading settings" />}
         </Section>
         <Section index={7} title="Remote access" meta="Cloudflare tunnel"><RemoteAccessSection registrationOpen={settings.data?.registration_mode === 'open'} /></Section>
+        <Section index={8} title="Workers" meta="background jobs"><WorkersPanel /></Section>
         <Section index={4} title="Pipeline schedules"><SchedulesSection /></Section>
         <Section index={5} title="Audit log" meta={audit.data ? `${audit.data.length} latest events` : undefined}>
           <AuditTable events={audit.data ?? []} users={usersById} loading={audit.isLoading} />
@@ -334,7 +336,7 @@ function ServerSettingsSection() {
   return <div className="console-settings">
     <p className="console-muted">Everything the server needs is configured here, or with <code>main.py config</code>. Settings marked * apply after a restart; how the server listens (host, port, remote access) is chosen when it is started.</p>
     {restart && <p className="console-warn" role="status">Restart the server to apply the change.</p>}
-    {settings.data.settings.filter(setting => !isTunnelSetting(setting)).map(setting => <SettingRow key={`${setting.key}:${setting.updated_at ?? 'default'}`} setting={setting} onSaved={saved => { if (saved.restart_required) setRestart(true) }} />)}
+    {settings.data.settings.filter(setting => !isTunnelSetting(setting) && setting.key !== 'workers.launch_local').map(setting => <SettingRow key={`${setting.key}:${setting.updated_at ?? 'default'}`} setting={setting} onSaved={saved => { if (saved.restart_required) setRestart(true) }} />)}
   </div>
 }
 

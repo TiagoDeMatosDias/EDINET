@@ -67,3 +67,17 @@ def test_rolling_archive_limit_removes_partial_directory(tmp_path):
         )
 
     assert list(tmp_path.iterdir()) == []
+
+
+def test_rolling_archive_of_a_screen_with_no_runs(tmp_path):
+    """A screen that matched nothing reports ``stats: None``; the archive still builds."""
+    empty = {
+        "config": {"cadence": "yearly"},
+        "aggregate": {"total_runs": 0, "successful": 0, "failed": 0, "benchmark_comparison": None, "stats": None},
+        "results": [],
+    }
+
+    saved = Path(save_rolling_backtest_zip(empty, str(tmp_path), 10_000_000))
+
+    with zipfile.ZipFile(saved / "backtest.zip") as archive:
+        assert "Total backtests:   0" in archive.read("summary.txt").decode()

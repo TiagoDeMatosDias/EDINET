@@ -12,7 +12,7 @@ export interface Health {
 export interface SystemStatus {
   version: string
   timestamp: string
-  jobs: { queue_depth: number; active: number; counts_by_status: Record<string, number> }
+  jobs: { queue_depth: number; active: number; workers_online: number; counts_by_status: Record<string, number> }
 }
 
 export interface JobStep {

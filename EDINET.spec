@@ -7,7 +7,9 @@
 # The resulting dist/ShadeResearch(.exe) bundles all Python code, the web frontend,
 # brand assets, ratio definitions, rolling-metrics config, and cloudflared.
 #
-# The exe is the whole release. On first start it creates data/ beside itself
+# The server exe and ShadeWorker(.exe) (ShadeWorker.spec) are the whole release;
+# the server starts the worker beside it.
+# This exe is the server. On first start it creates data/ beside itself
 # (databases, TLS certificate, logs); settings such as the EDINET API key live
 # in data/app.db and are set on the Admin page or with `ShadeResearch.exe config`.
 # ─────────────────────────────────────────────────────────────────────────
@@ -115,9 +117,10 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # triton is torch's GPU kernel compiler (0.7 GB). torch imports it only when
-    # present, and it lingers in an environment that once held a CUDA torch.
-    excludes=['triton'],
+    # The translation engine lives in ShadeWorker (ShadeWorker.spec); the server
+    # never imports it. triton is torch's GPU kernel compiler (0.7 GB) and lingers
+    # in an environment that once held a CUDA torch.
+    excludes=['triton', 'torch', 'argostranslate', 'ctranslate2', 'sentencepiece', 'stanza', 'spacy'],
     noarchive=False,
     optimize=0,
 )

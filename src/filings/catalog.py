@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Iterable
 
-from src.orchestrator.common.sqlite import connect_write, table_exists, transaction
+from src.orchestrator.common.sqlite import connect_read, connect_write, table_exists, transaction
 
 from .archive import DEFAULT_ARCHIVE_POLICY, extract_zip_member
 from .xbrl import parse_narrative
@@ -734,18 +734,26 @@ class FilingCatalog:
         }
 
     def lookup_translations(self, texts: list[str], *, version: int = 3) -> dict[str, str]:
-        """Return cached translations for a batch of source texts (only current translator version)."""
+        """Cached translations of ``texts`` as ``{source: english}`` (current translator version only).
+
+        Read-only, so the web server can consult the cache without ever writing filings.db.
+        """
         import hashlib
 
         if not texts:
             return {}
-        hashes = [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in texts]
-        placeholders = ",".join("?" for _ in hashes)
-        rows = self._all(
-            f"SELECT source_hash, translated_text FROM filing_translations WHERE source_hash IN ({placeholders}) AND translator_version = ?",
-            (*hashes, version),
-        )
-        return {r["source_hash"]: r["translated_text"] for r in rows}
+        by_hash = {hashlib.sha256(t.encode("utf-8")).hexdigest(): t for t in texts}
+        found: dict[str, str] = {}
+        hashes = list(by_hash)
+        for start in range(0, len(hashes), 500):
+            chunk = hashes[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._all(
+                f"SELECT source_hash, translated_text FROM filing_translations WHERE source_hash IN ({placeholders}) AND translator_version = ?",
+                (*chunk, version),
+            )
+            found.update({by_hash[r["source_hash"]]: r["translated_text"] for r in rows})
+        return found
 
     def store_translations(self, translations: dict[str, str], *, version: int = 3) -> None:
         """Persist translated text keyed by source text."""
@@ -764,14 +772,14 @@ class FilingCatalog:
                 )
 
     def _one(self, query: str, params: tuple[Any, ...]) -> sqlite3.Row | None:
-        conn = connect_write(self.path, busy_timeout_ms=self.busy_timeout_ms)
+        conn = connect_read(self.path, busy_timeout_ms=self.busy_timeout_ms)
         try:
             return conn.execute(query, params).fetchone()
         finally:
             conn.close()
 
     def _all(self, query: str, params: tuple[Any, ...]) -> list[sqlite3.Row]:
-        conn = connect_write(self.path, busy_timeout_ms=self.busy_timeout_ms)
+        conn = connect_read(self.path, busy_timeout_ms=self.busy_timeout_ms)
         try:
             return list(conn.execute(query, params).fetchall())
         finally:

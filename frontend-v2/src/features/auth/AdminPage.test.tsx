@@ -43,6 +43,7 @@ beforeEach(() => {
             : path === '/api/admin/auth/invitations' ? { invitation_token: 'invite-456' }
               : path === '/api/admin/pipeline-schedules' ? []
                 : path === '/api/admin/pipeline-setups' ? []
+                  : path === '/api/admin/workers' ? { workers: [], launcher: { state: 'running', pid: 1, restarts: 0, last_exit_code: null, command: null }, settings: { launch_local: 'on' } }
                   : path === '/api/admin/settings' ? { settings: SERVER_SETTINGS }
                     : path === '/api/admin/server/tunnel' ? tunnelNow
                       : path === '/api/system/status' ? { version: '1', timestamp: '', jobs: { queue_depth: 0, active: 1, counts_by_status: { running: 1 } } }
@@ -162,7 +163,7 @@ describe('AdminPage', () => {
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus()
     fireEvent.keyDown(dialog, { key: '1' })
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus()
-    expect(await within(dialog).findByText(/A pipeline job is active/)).toBeInTheDocument()
+    expect(await within(dialog).findByText(/A job is running/)).toBeInTheDocument()
     fireEvent.keyDown(dialog, { key: 'Escape' })
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(open).toHaveFocus()

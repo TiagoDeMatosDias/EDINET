@@ -367,3 +367,119 @@ def test_only_the_slipped_count_of_a_report_is_corrected():
     ], columns=rows.columns[:-1])
     split["shares"] = split[SHARE_COUNTS[0]]
     assert find_decimal_slips(split, {}) == []
+
+
+# --- overwrite rebuilds build into __next tables and swap at the end ---------
+
+
+class _ProbeContext:
+    """A step context that runs ``probe()`` at every progress report."""
+
+    def __init__(self, probe=None):
+        self.probe = probe
+
+    def report_progress(self, *args, **kwargs):
+        if self.probe is not None:
+            self.probe()
+
+    def checkpoint(self):
+        if self.probe is not None:
+            self.probe()
+
+
+def _filings_fixture(tmp_path):
+    filings_path = tmp_path / "Filings.db"
+    target_path = tmp_path / "Standardized.db"
+    catalog = FilingCatalog(filings_path)
+    ingest_content(
+        _zip_bytes(_XBRL),
+        "S100FILINGS",
+        catalog,
+        {
+            "edinet_code": "E12345",
+            "submitted_at": "2025-06-01T09:00:00",
+            "period_start": "2024-04-01",
+            "period_end": "2025-03-31",
+            "doc_type_code": "120",
+        },
+    )
+    _create_taxonomy(target_path)
+    return filings_path, target_path
+
+
+def _generate(filings_path, target_path, **kwargs):
+    return generate_financial_statements(
+        source_database=str(filings_path),
+        target_database=str(target_path),
+        granularity_level=1,
+        source_mode="filings",
+        **kwargs,
+    )
+
+
+def _snapshot(path):
+    tables = ("FinancialStatements", "IncomeStatement", "BalanceSheet", "CashflowStatement", "ShareMetrics", "ShareMetrics_Corrections")
+    with sqlite3.connect(path) as conn:
+        names = sorted(row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')"))
+        columns = {t: [row[1:3] for row in conn.execute(f'PRAGMA table_info("{t}")')] for t in tables}
+        rows = {t: conn.execute(f'SELECT * FROM "{t}" ORDER BY docID').fetchall() for t in tables}
+    return names, columns, rows
+
+
+def test_overwrite_matches_a_fresh_run_and_leaves_no_next_tables(tmp_path):
+    filings_path, target_path = _filings_fixture(tmp_path)
+    _generate(filings_path, target_path)
+    expected = _snapshot(target_path)
+    _generate(filings_path, target_path, overwrite=True)
+    actual = _snapshot(target_path)
+    assert actual == expected
+    assert not [name for name in actual[0] if name.endswith("__next")]
+    assert "idx_fin_company_period" in actual[0]
+
+
+def test_overwrite_keeps_the_live_tables_readable_while_it_rebuilds(tmp_path):
+    filings_path, target_path = _filings_fixture(tmp_path)
+    _generate(filings_path, target_path)
+    expected = _snapshot(target_path)[2]
+    reader = sqlite3.connect(target_path)
+    seen = []
+
+    def probe():
+        seen.append(
+            (
+                reader.execute("SELECT COUNT(*) FROM FinancialStatements").fetchone()[0],
+                reader.execute("SELECT COUNT(*) FROM IncomeStatement").fetchone()[0],
+                reader.execute("SELECT COUNT(*) FROM ShareMetrics").fetchone()[0],
+            )
+        )
+
+    _generate(filings_path, target_path, overwrite=True, context=_ProbeContext(probe))
+    reader.close()
+    assert seen and all(counts[0] == 1 and counts[1] == 1 for counts in seen)
+    assert _snapshot(target_path)[2] == expected
+
+
+def test_a_failure_before_the_swap_leaves_the_live_tables_unchanged(tmp_path, monkeypatch):
+    import pytest
+
+    from src.orchestrator.generate_financial_statements import slips
+
+    filings_path, target_path = _filings_fixture(tmp_path)
+    _generate(filings_path, target_path)
+    before = _snapshot(target_path)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("interrupted mid-rebuild")
+
+    monkeypatch.setattr(slips, "correct_decimal_slips", boom)
+    with pytest.raises(RuntimeError):
+        _generate(filings_path, target_path, overwrite=True)
+    monkeypatch.undo()
+
+    after = _snapshot(target_path)
+    assert after[1:] == before[1:]
+    # The unfinished copy stays for the next run to clean up.
+    assert "FinancialStatements__next" in after[0]
+    _generate(filings_path, target_path, overwrite=True)
+    final = _snapshot(target_path)
+    assert final == before

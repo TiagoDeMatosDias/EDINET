@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.jobs.service import get_job_service
+from src.jobs.user_api import install_job_error_handlers
 from src.portfolio.api import router
 from src.portfolio.ibkr_parser import normalize_entries, parse_ibkr_xml
 from src.portfolio.portfolio_state import build_portfolio_state
 from src.portfolio.schema import create_tables
 from src.portfolio.transactions import insert_entries
 from src.web_app.security import AppSettings, install_security
+from src.worker.inline import InlineWorker
 
 app = FastAPI()
 app.include_router(router)
+install_job_error_handlers(app)
 install_security(app, AppSettings.load())
 client = TestClient(app)
 
@@ -25,6 +30,7 @@ def _configure_database(monkeypatch, portfolio_path: str, market_path: str) -> N
     monkeypatch.setattr("src.portfolio.api.get_app_db", lambda: portfolio_path)
     monkeypatch.setattr("src.portfolio.api.get_market_db", lambda: market_path)
     monkeypatch.setattr("src.portfolio.price_fetcher.get_market_db", lambda: market_path)
+    monkeypatch.setattr("src.worker.handlers.market.get_market_db", lambda: market_path)
     monkeypatch.setattr("src.portfolio.portfolio_state.get_app_db", lambda: portfolio_path)
     monkeypatch.setattr("src.portfolio.portfolio_state.get_market_db", lambda: market_path)
     monkeypatch.setattr("src.portfolio.performance.get_app_db", lambda: portfolio_path)
@@ -32,15 +38,16 @@ def _configure_database(monkeypatch, portfolio_path: str, market_path: str) -> N
 
 
 @pytest.fixture
-def empty_api_database(monkeypatch, tmp_path: Path, market_db_path: str) -> str:
+def empty_api_database(monkeypatch, tmp_path: Path, market_db_path: str) -> Iterator[str]:
     path = str(tmp_path / "portfolio.db")
     create_tables(path)
     _configure_database(monkeypatch, path, market_db_path)
     monkeypatch.setattr(
-        "src.portfolio.api.ensure_prices_for_tickers",
+        "src.worker.handlers.market.ensure_prices_for_tickers",
         lambda *_args, **_kwargs: {"fetched": [], "failed": []},
     )
-    return path
+    with InlineWorker(get_job_service()):
+        yield path
 
 
 @pytest.fixture
@@ -49,7 +56,7 @@ def populated_api_database(
     tmp_path: Path,
     market_db_path: str,
     sample_ibkr_content: str,
-) -> str:
+) -> Iterator[str]:
     path = str(tmp_path / "portfolio.db")
     create_tables(path)
     _configure_database(monkeypatch, path, market_db_path)
@@ -67,7 +74,8 @@ def populated_api_database(
         base_currency="EUR",
         owner_user_id="local",
     )
-    return path
+    with InlineWorker(get_job_service()):
+        yield path
 
 
 class TestUpload:

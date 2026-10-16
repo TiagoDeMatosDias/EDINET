@@ -1327,6 +1327,67 @@ class TestTaxonomyProcessing(unittest.TestCase):
         self.assertEqual(restored, 3)
         self.assertEqual(self._sync()["archives_processed"], 0, "complete releases are not reparsed")
 
+    def _old_schema_database(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("CREATE TABLE Taxonomy (release_id TEXT, concept_qname TEXT, legacy_column TEXT)")
+        conn.execute("INSERT INTO Taxonomy VALUES ('old-release', 'old:Concept', 'x')")
+        conn.commit()
+        conn.close()
+
+    def _taxonomy_state(self):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            return (
+                sorted(row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")),
+                [row[1:3] for row in conn.execute("PRAGMA table_info(Taxonomy)")],
+                conn.execute("SELECT * FROM Taxonomy ORDER BY level, concept_qname").fetchall(),
+            )
+        finally:
+            conn.close()
+
+    def test_sync_rebuilds_an_outdated_taxonomy_table_beside_the_live_one(self):
+        self._sync()
+        expected = self._taxonomy_state()
+        os.remove(self.db_path)
+        for suffix in ("-wal", "-shm"):
+            if os.path.exists(self.db_path + suffix):
+                os.remove(self.db_path + suffix)
+        self._old_schema_database()
+
+        reader = sqlite3.connect(self.db_path)
+        seen = []
+        original = taxonomy_processing._persist_taxonomy_package
+
+        def probing(*args, **kwargs):
+            seen.append(reader.execute("SELECT * FROM Taxonomy").fetchall())
+            return original(*args, **kwargs)
+
+        with patch.object(taxonomy_processing, "_persist_taxonomy_package", side_effect=probing):
+            self._sync()
+        reader.close()
+
+        self.assertEqual(seen, [[("old-release", "old:Concept", "x")]])
+        actual = self._taxonomy_state()
+        self.assertEqual(actual, expected)
+        self.assertIn("idx_taxonomy_release_family_level", actual[0])
+        self.assertFalse([name for name in actual[0] if name.endswith("__next")])
+
+    def test_a_failed_rebuild_leaves_the_outdated_table_in_place(self):
+        self._old_schema_database()
+        with patch.object(
+            taxonomy_processing, "_persist_taxonomy_package", side_effect=RuntimeError("interrupted")
+        ):
+            with self.assertRaises(RuntimeError):
+                self._sync()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute("SELECT * FROM Taxonomy").fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(rows, [("old-release", "old:Concept", "x")])
+        self._sync()
+        self.assertEqual(len(self._taxonomy_state()[2]), 2)
+
     def test_sync_taxonomy_releases_parses_archive_into_single_taxonomy_table(self):
         def fake_session_factory():
             return _FakeSession(self.html_text, self.archive_bytes)

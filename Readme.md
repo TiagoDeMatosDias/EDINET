@@ -6,72 +6,52 @@ It always serves HTTPS, from `https://127.0.0.1:8000/` on the public homepage an
 
 ## Architecture
 
-One HTTPS process: a React single-page app in the browser talks to a FastAPI server, which serves the app bundle and the `/api/*` routes. Every route is backed by a backend service in `src/`; the orchestrator runs the data pipeline; and everything it writes lives in one `data/` folder: four SQLite databases, the certificate, logs, and generated artifacts.
+Two programs share one `data/` folder. The **server** (`ShadeResearch`) is an HTTPS FastAPI process: it serves the React app and the `/api/*` routes, owns the irreplaceable databases, and only reads the market data. **Job workers** (`ShadeWorker`) do the heavy work: pipelines, backtests, screens, translations, price and split refreshes, and filing downloads. They are the only writers of `market.db` and `filings.db`. The server starts one local worker beside itself; more workers on the same machine can be enrolled from **Admin → Workers**.
+
+A request that needs heavy work becomes a row in `jobs.db`. A worker claims it through the server's worker API, runs it in a child process, reports progress, and hands back the result, which the server turns into the response, a saved backtest, or a notification in the job tray:
+
+```
+User → Server → jobs.db → Worker → Server → User (job tray / toast)
+```
 
 ```mermaid
 flowchart TB
     subgraph Browser["Browser"]
-        SPA["React SPA<br/>frontend-v2/"]
+        SPA["React SPA<br/>frontend-v2/ · job tray"]
     end
 
-    subgraph Server["FastAPI server · HTTPS"]
-        SERVE["Serves SPA + static<br/>/app-assets · /brand-assets"]
+    subgraph Server["Server · ShadeResearch · HTTPS"]
+        SERVE["Serves SPA + static"]
         API["API layer<br/>/api/* · /health"]
+        JOBS["Job service<br/>enqueue · leases · finalize"]
+        WAPI["Worker API<br/>/api/worker/* (loopback, token)"]
     end
 
-    subgraph Services["Backend services · src/"]
-        AUTH["Auth & accounts"]
-        SCREEN["Screening"]
-        SEC["Security analysis"]
-        FIL["Filings & XBRL"]
-        COMP["Comparison"]
-        PORT["Portfolio"]
-        RES["Research & tags"]
-        BONDS["Bonds"]
-        BT["Backtesting"]
-        REP["Reports"]
-        CHAT["Chat"]
-    end
-
-    subgraph Pipeline["Orchestrator · src/orchestrator/"]
-        ORCH["16 pipeline steps<br/>ingest · transform · update"]
+    subgraph Workers["Job workers · ShadeWorker"]
+        SUP["Supervisor<br/>claims · heartbeats"]
+        CHILD["Child process per slot<br/>interactive · batch"]
     end
 
     subgraph Data["SQLite databases · data/"]
-        REBUILD["Rebuildable<br/>market.db · filings.db"]
-        STATE["Irreplaceable<br/>app.db (settings · accounts · research · jobs · portfolio) · chat.db"]
+        STATE["Server only<br/>app.db · chat.db · jobs.db"]
+        REBUILD["Workers write, server reads<br/>market.db · filings.db"]
     end
 
     SPA -->|"HTTPS"| API
     SPA -.->|"static"| SERVE
-    API --> AUTH
-    API --> SCREEN
-    API --> SEC
-    API --> FIL
-    API --> COMP
-    API --> PORT
-    API --> RES
-    API --> BONDS
-    API --> BT
-    API --> REP
-    API --> CHAT
-    API --> ORCH
-    ORCH --> REBUILD
-    SCREEN --> REBUILD
-    SEC --> REBUILD
-    FIL --> REBUILD
-    BONDS --> REBUILD
-    BT --> REBUILD
-    COMP --> REBUILD
-    AUTH --> STATE
-    RES --> STATE
-    PORT --> STATE
-    CHAT --> STATE
-    ORCH --> STATE
+    API --> JOBS
+    API --> STATE
+    API -.->|"read only"| REBUILD
+    JOBS --> STATE
+    SUP <-->|"HTTPS: claim · progress · complete"| WAPI
+    WAPI --> JOBS
+    SUP --> CHILD
+    CHILD --> REBUILD
 ```
 
-The frontend never opens a database directly; it only calls the API. The orchestrator is a thin dispatcher that discovers its step packages, so adding a pipeline step does not touch the server. See [Frontend Architecture](docs/Frontend%20Architecture.md) for the UI layer and [Application Details](docs/Application%20Details.md) for the backend module reference.
+Each job has a kind (`src/jobs/kinds.py`) that sets its lane, the resources it holds exclusively, and whether it is retried when its worker disappears. Interactive work (a backtest, a screen, a translation) has its own slot, so it never waits behind a pipeline. Workers hold a lease on each job and renew it with heartbeats. When a worker stops responding, jobs that are safe to repeat (backtests, screens, translations) go back to the queue, and jobs that were rebuilding data (pipelines, downloads, refreshes) are marked interrupted rather than retried half-done. Rebuilds of the large market tables build a new copy and swap it in, so the website keeps answering while a pipeline runs.
 
+The frontend never opens a database directly; it only calls the API. The orchestrator is a thin dispatcher that discovers its step packages, so adding a pipeline step does not touch the server. See [Running the Application](docs/RUNNING.md#job-workers) for workers, [Frontend Architecture](docs/Frontend%20Architecture.md) for the UI layer and [Application Details](docs/Application%20Details.md) for the backend module reference.
 
 ## Capabilities
 
@@ -82,10 +62,11 @@ The frontend never opens a database directly; it only calls the API. The orchest
 - **Research and tagging** — one private tag system shared by favorites, watchlists, Analysis, and Screening, plus notes, thesis state, targets, review dates, and in-app alerts.
 - **Chat** — company channels and direct messages: direct and group conversations are end-to-end encrypted in the browser, channel messages are encrypted at rest, with per-channel company context, profiles, and unread badges.
 - **Testing ideas** — expression screening, point-in-time rolling backtests, manual and CSV backtests, IBKR FlexQuery portfolio imports, and reproducible report ZIPs.
+- **Job workers** — pipelines, backtests, screens, and translations run in a separate `ShadeWorker` process, so the website stays responsive; several backtests run at once, interactive work has its own slot, and a job tray with notifications follows every job.
 - **Data pipeline** — 16 dynamically discovered steps, durable job state, cancellation, progress reporting, safe file uploads, XBRL `explicit`/`backfill`/`all` modes, and financial statements generated from CSV or compact filing facts.
 - **Optional accounts** — registration, login, rotating sessions, personal API tokens, administrator controls, and an administrator-set 5–128-character password minimum.
 - **Remote access without opening a port** — an administrator can publish the workstation through a Cloudflare tunnel from the Admin page, at a temporary address or one of their own; visitors sign in as usual.
-- **Zero-setup storage** — the four databases and their schemas are created in `data/` on first start, and every setting, including the EDINET API key, is stored in `app.db` and edited on the Admin page.
+- **Zero-setup storage** — the five databases and their schemas are created in `data/` on first start, and every setting, including the EDINET API key, is stored in `app.db` and edited on the Admin page.
 
 ## Screenshots
 
@@ -143,7 +124,7 @@ Account mode with open registration is the default; the first registered account
 
 Every setting lives in `data/app.db`; `main.py config list` shows them all. The API key is an outbound provider credential only and is never accepted as an application login token. Run `main.py config set auth.mode disabled` only for unrestricted loopback use.
 
-On first start the server creates `data/` with its four databases. Populate market and filing data from the Pipeline workspace. An installation that still has the older layout (`config/`, `data/databases/`, `.env`) is moved into `data/` automatically on start; `main.py migrate --dry-run` lists what would move.
+On first start the server creates `data/` with its five databases and starts the local job worker (`shade_worker.py` from source, `ShadeWorker` in a release), which runs pipelines, backtests, screens, and translations. Populate market and filing data from the Pipeline workspace; **Admin → Workers** shows whether the worker is online. An installation that still has the older layout (`config/`, `data/databases/`, `.env`) is moved into `data/` automatically on start; `main.py migrate --dry-run` lists what would move.
 
 For frontend development, keep FastAPI serving HTTPS on port 8000 and run `npm run dev` from `frontend-v2/`; the Vite proxy targets `https://127.0.0.1:8000` without verifying the self-signed certificate. See [Running the Application](docs/RUNNING.md) for account mode, remote binding, storage, pipeline configuration, and recovery commands.
 
@@ -197,14 +178,15 @@ Everything the application writes is in `data/` beside `main.py` or `ShadeResear
 
 | Path | Holds |
 |---|---|
-| `data/app.db` | Settings and secrets, accounts, research, pipeline jobs, and portfolio. Irreplaceable: back up this file (and `chat.db`). |
+| `data/app.db` | Settings and secrets, accounts, research, pipeline setups and schedules, enrolled workers, and portfolio. Irreplaceable: back up this file (and `chat.db`). |
 | `data/chat.db` | Chat channels and messages, kept apart because it grows with use; its at-rest key ring is in `app.db`. |
+| `data/jobs.db` | The job queue: open, running, and recently finished jobs, their progress and results, and worker sessions. Written by the server only; finished jobs are removed after `jobs.retention_hours`. |
 | `data/market.db` | Rebuildable market data: the EDINET document index, taxonomy, company info, statements, ratios, rolling metrics, prices, splits, and bonds. |
 | `data/filings.db` | Rebuildable filing archive: compressed provider ZIPs, compact numeric facts, catalog metadata, and translation-cache rows. Narrative HTML and text are reconstructed from the retained ZIP only when requested. |
 | `data/tools/` | `cloudflared`, downloaded when a tunnel is opened from a source checkout that has none. The release executable carries its own. |
-| `data/certs/`, `data/logs/`, `data/artifacts/` | TLS certificate, rotating server log, and generated backtests, reports, exports, and job uploads. |
+| `data/certs/`, `data/logs/`, `data/artifacts/` | TLS certificate, rotating server and worker logs, and generated backtests, reports, exports, and per-job workspaces (`artifacts/jobs/`). |
 
-Settings are rows in `app.db`, edited under **Admin → Server settings** or with `main.py config list|get|set|unset`. Among them: `edinet.api_key`, `auth.mode`, `server.trusted_hosts`, `tunnel.enabled` to publish the workstation through a Cloudflare tunnel, upload and archive limits, job retention, and `storage.market_db_path` / `storage.filings_db_path` to move the two large databases to another disk. How the server listens is chosen at launch (`--host`, `--port`, `--allow-remote`). `EDINET_DATA_DIR` points the application at another data folder, which tests and scratch runs use.
+Settings are rows in `app.db`, edited under **Admin → Server settings** or with `main.py config list|get|set|unset`. Among them: `edinet.api_key`, `auth.mode`, `server.trusted_hosts`, `tunnel.enabled` to publish the workstation through a Cloudflare tunnel, upload and archive limits, job retention, `workers.launch_local` to turn the server-started local worker off, and `storage.market_db_path` / `storage.filings_db_path` to move the two large databases to another disk. How the server listens is chosen at launch (`--host`, `--port`, `--allow-remote`). `EDINET_DATA_DIR` points the application at another data folder, which tests and scratch runs use.
 
 Ratio and rolling-metric definitions ship with the code in `src/orchestrator/generate_ratios/ratios_definitions.json` and `src/orchestrator/generate_rolling_metrics/rolling_metrics.json`.
 
@@ -233,7 +215,7 @@ Build the release by double-clicking `build.sh` on Linux or `build.bat` on Windo
 .\.venv-build\windows\Scripts\python.exe -B scripts\build.py
 ```
 
-The release is the executable alone (`ShadeResearch.exe` or `ShadeResearch`); it creates `data/` on first start and never bundles development databases, credentials, logs, uploads, or portfolio data.
+The release is two executables side by side: `ShadeResearch(.exe)`, the server, and `ShadeWorker(.exe)`, the job worker it starts. The server creates `data/` on first start; neither bundles development databases, credentials, logs, uploads, or portfolio data.
 
 ## Common EDINET document type codes
 

@@ -2,7 +2,8 @@
 
 ``main.py`` starts the web workstation. ``main.py config`` reads and changes
 the settings stored in ``app.db``; ``main.py migrate`` moves an installation
-from the old storage layout (it also runs automatically on start).
+from the old storage layout (it also runs automatically on start);
+``main.py worker ...`` runs the job worker (``python main.py worker --help``).
 """
 
 import argparse
@@ -247,12 +248,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     unset = config_commands.add_parser("unset", help="Return one setting to its default.")
     unset.add_argument("key")
 
+    commands.add_parser("worker", help="Run the job worker (run, enroll, status); see `worker --help`.")
     migrate = commands.add_parser("migrate", help="Move an old installation into the data folder.")
     migrate.add_argument("--dry-run", action="store_true", help="List the steps without taking them.")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else list(argv)
+    if arguments and arguments[0] == "worker":
+        # The job worker has its own command line (see src/worker/cli.py).
+        from src.worker.cli import main as worker_main
+
+        return worker_main(arguments[1:])
     args = _parse_args(argv)
     try:
         if args.command == "config":
@@ -290,12 +298,12 @@ def _hold_window_open() -> None:
 if __name__ == '__main__':
     try:
         code = main()
-    except Exception:
+    except Exception:  # noqa: BLE001 - show any startup failure before the window closes
         import traceback
 
         traceback.print_exc()
         _hold_window_open()
-        raise SystemExit(1)
+        raise SystemExit(1) from None
     if code:
         _hold_window_open()
     raise SystemExit(code)

@@ -1,4 +1,4 @@
-"""API integration tests for persisted pipeline jobs."""
+"""API tests for pipeline jobs: enqueue into jobs.db, run on a worker, same HTTP shapes."""
 
 from __future__ import annotations
 
@@ -6,24 +6,44 @@ import json
 import threading
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 import src.api.job_routes as job_routes
 import src.api.pipeline_routes as pipeline_routes
 import src.api.router as pipeline_api
-import src.api.runtime as api_runtime
+import src.api.system_routes as system_routes
+import src.jobs.service as job_service_module
+from src.auth.models import AuthenticatedUser
+from src.jobs.registry import WorkerRegistry
+from src.jobs.service import JobService, set_job_service
+from src.jobs.store import JobsStore
 from src.orchestrator.orchestrator import UploadTooLargeError
-from src.pipeline_jobs import JobStore, PipelineJobManager
+from src.paths import jobs_dir
+from src.worker.handlers import pipeline as pipeline_handler
+from src.worker.inline import InlineWorker
+
+OPERATOR = AuthenticatedUser(
+    user_id="operator-1", username="op", email=None, role="operator", status="active"
+)
 
 
-def _install_manager(monkeypatch, tmp_path, executor):
-    manager = PipelineJobManager(
-        JobStore(tmp_path / "api-jobs.db"),
-        step_executor=executor,
-    )
-    monkeypatch.setattr(pipeline_routes, "_require_operator", lambda _request: None)
-    monkeypatch.setattr(job_routes, "_require_operator", lambda _request: None)
-    monkeypatch.setattr(api_runtime, "job_manager", manager)
+@pytest.fixture
+def service(tmp_path):
+    registry = WorkerRegistry(tmp_path / "workers-app.db")
+    registry.ensure_local_worker()
+    isolated = JobService(JobsStore(tmp_path / "jobs.db"), registry)
+    previous = job_service_module._service
+    set_job_service(isolated)
+    yield isolated
+    set_job_service(previous)
+
+
+@pytest.fixture
+def client(service, monkeypatch):
+    monkeypatch.setattr(pipeline_routes, "_require_operator", lambda _request: OPERATOR)
+    monkeypatch.setattr(job_routes, "_require_operator", lambda _request: OPERATOR)
+    monkeypatch.setattr(system_routes, "_require_operator", lambda _request: OPERATOR)
     monkeypatch.setattr(
         pipeline_routes,
         "resolve_file_uploads",
@@ -34,140 +54,168 @@ def _install_manager(monkeypatch, tmp_path, executor):
         "validate_input",
         lambda config, steps: list(steps or []),
     )
-    monkeypatch.setattr(
-        pipeline_routes.Config,
-        "from_dict",
-        staticmethod(lambda config: dict(config)),
+    return TestClient(pipeline_api.app)
+
+
+def _run(client, steps, config=None):
+    response = client.post(
+        "/api/pipeline/run",
+        json={"steps": steps, "config": config or {}},
     )
-    return manager
+    assert response.status_code == 202, response.text
+    return response.json()
 
 
-def test_submit_returns_202_and_terminal_output_is_persisted(
-    monkeypatch,
-    tmp_path,
-):
-    def execute(name, config, *, overwrite=False):
-        return {
-            "name": name,
-            "overwrite": overwrite,
-            "api_key": config.get("api_key"),
-        }
+def _wait_status(client, job_id, wanted, timeout=5.0):
+    import time
 
-    manager = _install_manager(monkeypatch, tmp_path, execute)
-    try:
-        with TestClient(pipeline_api.app) as client:
-            response = client.post(
-                "/api/pipeline/run",
-                json={
-                    "steps": [
-                        {"name": "first", "overwrite": False},
-                        {"name": "second", "overwrite": True},
-                    ],
-                    "config": {"api_key": "never-persist-this"},
-                },
-            )
-            assert response.status_code == 202
-            created = response.json()
-
-            terminal = manager.wait_for_terminal(created["job_id"], timeout=2)
-            assert terminal["status"] == "completed"
-
-            status = client.get(f"/api/jobs/{created['job_id']}")
-            assert status.status_code == 200
-            status_body = status.json()
-            assert status_body["status"] == "completed"
-            assert [step["step_name"] for step in status_body["steps"]] == [
-                "first",
-                "second",
-            ]
-
-            output = client.get(f"/api/jobs/{created['job_id']}/output")
-            assert output.status_code == 200
-            assert (
-                output.json()["output"]["first"]["api_key"]
-                == "[REDACTED]"
-            )
-
-            first_page = client.get("/api/jobs?limit=1&offset=0")
-            assert first_page.status_code == 200
-            assert [job["job_id"] for job in first_page.json()] == [
-                created["job_id"]
-            ]
-            assert client.get("/api/jobs?limit=1&offset=1").json() == []
-
-            status = client.get("/api/system/status")
-            assert status.status_code == 200
-            assert status.json()["jobs"]["active"] == 0
-            assert status.json()["jobs"]["counts_by_status"]["completed"] == 1
-            # The public health check no longer describes the queue.
-            assert "jobs" not in client.get("/health").json()
-    finally:
-        manager.shutdown(wait=True)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        body = client.get(f"/api/jobs/{job_id}").json()
+        if body["status"] in wanted:
+            return body
+        time.sleep(0.02)
+    raise AssertionError(f"job did not reach {wanted}: {body['status']}")
 
 
-def test_running_job_returns_before_step_finishes_and_cancels_truthfully(
-    monkeypatch,
-    tmp_path,
-):
+def test_submit_creates_a_pending_job_with_steps_and_workspace(client, service):
+    created = _run(
+        client,
+        [{"name": "first", "overwrite": False}, {"name": "second", "overwrite": True}],
+        {"api_key": "kept-in-payload-only"},
+    )
+
+    assert created["status"] == "pending"
+    job_id = created["job_id"]
+    record = service.get(job_id)
+    assert record.kind == "pipeline"
+    assert record.owner_user_id == "operator-1"
+    assert record.payload["workspace"] == str(jobs_dir() / job_id)
+    assert (jobs_dir() / job_id).is_dir()
+    assert [(s["step_name"], s["overwrite"]) for s in service.steps(job_id)] == [
+        ("first", 0),
+        ("second", 1),
+    ]
+
+    body = client.get(f"/api/jobs/{job_id}").json()
+    assert body["status"] == "pending"
+    assert body["step_count"] == 2
+    assert body["completed_step_count"] == 0
+    assert [step["status"] for step in body["steps"]] == ["pending", "pending"]
+    assert "api_key" not in json.dumps(body)
+    assert [job["job_id"] for job in client.get("/api/jobs").json()] == [job_id]
+
+
+def test_job_runs_on_a_worker_and_keeps_the_old_shapes(client, service, monkeypatch):
+    def execute(name, config, *, overwrite=False, context=None):
+        return {"name": name, "overwrite": overwrite, "api_key": "never-persist-this"}
+
+    monkeypatch.setattr(pipeline_handler, "execute_step", execute)
+    with InlineWorker(service):
+        created = _run(client, [{"name": "first"}, {"name": "second", "overwrite": True}])
+        body = _wait_status(client, created["job_id"], {"completed", "failed"})
+
+        assert body["status"] == "completed"
+        assert body["progress_percent"] == 100
+        assert body["completed_step_count"] == 2
+        assert body["current_step"] is None
+        assert [step["step_name"] for step in body["steps"]] == ["first", "second"]
+        assert all(step["duration_ms"] is not None for step in body["steps"])
+
+        output = client.get(f"/api/jobs/{created['job_id']}/output").json()
+        assert output["status"] == "completed"
+        assert output["output"]["first"]["api_key"] == "[REDACTED]"
+        assert output["output"]["second"]["overwrite"] is True
+
+        assert [j["job_id"] for j in client.get("/api/jobs?limit=1&offset=0").json()] == [
+            created["job_id"]
+        ]
+        assert client.get("/api/jobs?limit=1&offset=1").json() == []
+
+        status = client.get("/api/system/status")
+        assert status.status_code == 200
+        jobs = status.json()["jobs"]
+        assert jobs["active"] == 0
+        assert jobs["counts_by_status"]["completed"] == 1
+        assert jobs["workers_online"] == 1
+        assert "jobs" not in client.get("/health").json()
+
+
+def test_failed_step_surfaces_the_public_error(client, service, monkeypatch):
+    def execute(name, config, *, overwrite=False, context=None):
+        raise ValueError(r"secret=C:\private\operator.db")
+
+    monkeypatch.setattr(pipeline_handler, "execute_step", execute)
+    with InlineWorker(service):
+        created = _run(client, [{"name": "fails"}, {"name": "never"}])
+        body = _wait_status(client, created["job_id"], {"failed"})
+
+    assert body["error_message"] == "Step 'fails' failed (ValueError)"
+    assert [step["status"] for step in body["steps"]] == ["failed", "pending"]
+    assert "private" not in json.dumps(body)
+
+
+def test_pending_job_cancels_at_once_and_force_needs_a_running_job(client, service):
+    job_id = _run(client, [{"name": "waiting"}])["job_id"]
+
+    forced = client.post(f"/api/jobs/{job_id}/cancel", json={"force": True})
+    assert forced.status_code == 409
+
+    cancelled = client.post(f"/api/jobs/{job_id}/cancel", json={"force": False})
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+
+    again = client.post(f"/api/jobs/{job_id}/cancel", json={"force": False})
+    assert again.status_code == 409
+    assert client.post("/api/jobs/missing/cancel", json={}).status_code == 404
+
+
+def test_running_job_soft_then_force_cancel(client, service, monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
-    def execute(name, _config, *, overwrite=False):
+    def execute(name, config, *, overwrite=False, context=None):
         started.set()
-        assert release.wait(2), "test-controlled step was not released"
+        # The worker raises the cancel flag once it sees the request on a heartbeat.
+        assert context.cancel_event.wait(5) or release.is_set(), "cancel never reached the step"
+        context.checkpoint()
         return name
 
-    manager = _install_manager(monkeypatch, tmp_path, execute)
+    monkeypatch.setattr(pipeline_handler, "execute_step", execute)
     try:
-        with TestClient(pipeline_api.app) as client:
-            response = client.post(
-                "/api/pipeline/run",
-                json={
-                    "steps": [
-                        {"name": "blocking"},
-                        {"name": "must-not-run"},
-                    ],
-                    "config": {},
-                },
-            )
-            assert response.status_code == 202
-            job_id = response.json()["job_id"]
-            assert started.wait(2), "worker did not start"
+        with InlineWorker(service):
+            job_id = _run(client, [{"name": "blocking"}, {"name": "must-not-run"}])["job_id"]
+            assert started.wait(5), "worker did not start"
+            assert client.get(f"/api/jobs/{job_id}").json()["status"] == "running"
 
-            force = client.post(
-                f"/api/jobs/{job_id}/cancel",
-                json={"force": True},
-            )
-            assert force.status_code == 409
+            soft = client.post(f"/api/jobs/{job_id}/cancel", json={"force": False})
+            assert soft.status_code == 200
+            assert soft.json()["status"] == "cancelling"
 
-            cancel = client.post(
-                f"/api/jobs/{job_id}/cancel",
-                json={"force": False},
-            )
-            assert cancel.status_code == 200
-            assert cancel.json()["status"] == "cancelling"
+            force = client.post(f"/api/jobs/{job_id}/cancel", json={"force": True})
+            assert force.status_code == 200
+            assert service.get(job_id).cancel_requested == "hard"
 
-            release.set()
-            terminal = manager.wait_for_terminal(job_id, timeout=2)
-            assert terminal["status"] == "cancelled"
-            assert [step["status"] for step in terminal["steps"]] == [
-                "completed",
-                "pending",
-            ]
+            body = _wait_status(client, job_id, {"cancelled"})
+        assert [step["status"] for step in body["steps"]] == ["cancelled", "pending"]
     finally:
         release.set()
-        manager.shutdown(wait=True)
 
 
-def test_oversized_embedded_upload_returns_413_without_workspace(
-    monkeypatch,
-    tmp_path,
-):
-    manager = _install_manager(
-        monkeypatch,
-        tmp_path,
-        lambda *_args, **_kwargs: None,
-    )
+def test_output_is_rejected_before_the_job_finishes(client):
+    job_id = _run(client, [{"name": "waiting"}])["job_id"]
+
+    assert client.get(f"/api/jobs/{job_id}/output").status_code == 409
+
+
+def test_other_job_kinds_are_not_pipeline_jobs(client, service):
+    echo = service.enqueue("echo", {}, owner_user_id=None, title="Echo")
+
+    assert client.get(f"/api/jobs/{echo.job_id}").status_code == 404
+    assert client.get("/api/jobs").json() == []
+
+
+def test_oversized_embedded_upload_returns_413_without_workspace(client, monkeypatch, service):
     captured = {}
 
     def reject_upload(_config, _steps, **kwargs):
@@ -175,76 +223,63 @@ def test_oversized_embedded_upload_returns_413_without_workspace(
         raise UploadTooLargeError("Embedded file exceeds the configured size limit")
 
     monkeypatch.setattr(pipeline_routes, "resolve_file_uploads", reject_upload)
-    try:
-        with TestClient(pipeline_api.app) as client:
-            response = client.post(
-                "/api/pipeline/run",
-                json={"steps": [{"name": "upload"}], "config": {}},
-            )
-        assert response.status_code == 413
-        assert not captured["workspace"].exists()
-    finally:
-        manager.shutdown(wait=True)
+    response = client.post(
+        "/api/pipeline/run",
+        json={"steps": [{"name": "upload"}], "config": {}},
+    )
+
+    assert response.status_code == 413
+    assert not captured["workspace"].exists()
+    assert service.list_jobs(kinds=["pipeline"]) == []
 
 
-def test_multipart_upload_is_streamed_into_job_workspace(monkeypatch, tmp_path):
+def test_multipart_upload_is_streamed_into_the_job_workspace(client, service, monkeypatch):
     captured = {}
 
-    def execute(_name, config, *, overwrite=False):
-        captured["config"] = config
-        captured["overwrite"] = overwrite
+    def execute(_name, config, *, overwrite=False, context=None):
+        captured["config"] = config.settings
         return None
 
-    manager = _install_manager(monkeypatch, tmp_path, execute)
-    try:
-        payload = {
-            "steps": [{"name": "import_stock_prices_csv"}],
-            "config": {
-                "import_stock_prices_csv_config": {
-                    "csv_file": {
-                        "__pipeline_upload__": "import_stock_prices_csv_config.csv_file",
-                    },
-                    "date_column": "Date",
-                    "price_column": "Price",
-                    "default_currency": "JPY",
+    monkeypatch.setattr(pipeline_handler, "execute_step", execute)
+    payload = {
+        "steps": [{"name": "import_stock_prices_csv"}],
+        "config": {
+            "import_stock_prices_csv_config": {
+                "csv_file": {
+                    "__pipeline_upload__": "import_stock_prices_csv_config.csv_file",
                 },
+                "date_column": "Date",
+                "price_column": "Price",
+                "default_currency": "JPY",
             },
-        }
-        with TestClient(pipeline_api.app) as client:
-            response = client.post(
-                "/api/pipeline/run",
-                data={"config": json.dumps(payload)},
-                files={
-                    "upload:import_stock_prices_csv_config.csv_file": (
-                        "prices.csv",
-                        b"Date,Price\n2025-01-01,100\n",
-                        "text/csv",
-                    ),
-                },
-            )
-
+        },
+    }
+    with InlineWorker(service):
+        response = client.post(
+            "/api/pipeline/run",
+            data={"config": json.dumps(payload)},
+            files={
+                "upload:import_stock_prices_csv_config.csv_file": (
+                    "prices.csv",
+                    b"Date,Price\n2025-01-01,100\n",
+                    "text/csv",
+                ),
+            },
+        )
         assert response.status_code == 202
-        created = response.json()
-        assert manager.wait_for_terminal(created["job_id"], timeout=2)["status"] == "completed"
-        csv_path = captured["config"]["import_stock_prices_csv_config"]["csv_file"]
-        assert csv_path.endswith("-prices.csv")
-        assert Path(csv_path).read_bytes() == b"Date,Price\n2025-01-01,100\n"
-    finally:
-        manager.shutdown(wait=True)
+        job_id = response.json()["job_id"]
+        _wait_status(client, job_id, {"completed"})
+
+    csv_path = Path(captured["config"]["import_stock_prices_csv_config"]["csv_file"])
+    assert csv_path.name.endswith("-prices.csv")
+    assert (jobs_dir() / job_id) in csv_path.parents
+    assert csv_path.read_bytes() == b"Date,Price\n2025-01-01,100\n"
 
 
-def test_pipeline_request_rejects_unknown_fields(monkeypatch, tmp_path):
-    manager = _install_manager(
-        monkeypatch,
-        tmp_path,
-        lambda *_args, **_kwargs: None,
+def test_pipeline_request_rejects_unknown_fields(client):
+    response = client.post(
+        "/api/pipeline/run",
+        json={"steps": [], "config": {}, "unexpected": True},
     )
-    try:
-        with TestClient(pipeline_api.app) as client:
-            response = client.post(
-                "/api/pipeline/run",
-                json={"steps": [], "config": {}, "unexpected": True},
-            )
-        assert response.status_code == 422
-    finally:
-        manager.shutdown(wait=True)
+
+    assert response.status_code == 422

@@ -18,7 +18,7 @@ from datetime import date as Date
 from datetime import timedelta
 
 from src.orchestrator.common.db_config import get_app_db, get_market_db
-from src.orchestrator.common.sqlite import connect_read, connect_write
+from src.orchestrator.common.sqlite import connect_read, connect_write, is_protected_database
 from src.portfolio import option_pricing as _op
 from src.portfolio.market_data import is_share_split
 from src.portfolio.schema import create_tables
@@ -36,17 +36,43 @@ _split_table_checked: set[str] = set()
 _split_factor_cache: dict[tuple[int, str], list[tuple[str, float]]] = {}
 
 
+def _split_table_ready(db2_path: str) -> bool:
+    """Whether Stock_Splits (current schema) and price provenance columns exist (read-only)."""
+    from src.portfolio.split_schema import _column_names
+    from src.utilities.price_provenance import PRICE_PROVENANCE_COLUMNS
+
+    conn = connect_read(db2_path)
+    try:
+        if "superseded_by" not in _column_names(conn, "Stock_Splits"):
+            return False
+        price_columns = _column_names(conn, "Stock_Prices")
+        return not price_columns or set(PRICE_PROVENANCE_COLUMNS) <= price_columns
+    finally:
+        conn.close()
+
+
 def _ensure_split_table_exists(db2_path: str) -> None:
-    """Ensure the Stock_Splits table exists in db2 (idempotent)."""
+    """Ensure the Stock_Splits table exists in db2 (idempotent).
+
+    A read-only check first; the migration only runs when something is missing
+    and never in the web server (workers create the schema at startup), where
+    a ledger rebuild simply treats a missing table as "no splits".
+    """
     global _split_table_checked
     db_key = str(db2_path)
     if db_key in _split_table_checked:
         return
     try:
+        if _split_table_ready(db2_path):
+            _split_table_checked.add(db_key)
+            return
+        if is_protected_database(db2_path):
+            logger.warning("Stock_Splits is missing or outdated in %s; a worker creates it", db2_path)
+            return
         from src.portfolio.split_schema import ensure_split_tables
         from src.utilities.price_provenance import ensure_price_provenance_columns
 
-        migration_conn = sqlite3.connect(db2_path)
+        migration_conn = connect_write(db2_path)
         try:
             ensure_split_tables(conn=migration_conn)
             ensure_price_provenance_columns(migration_conn, "Stock_Prices")

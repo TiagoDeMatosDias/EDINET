@@ -3,9 +3,11 @@ import { RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 
 import { apiRequest, queryString } from '../../../api/client'
+import type { JobPendingBody } from '../../../api/jobs'
 import { EmptyState, ErrorState, LoadingState } from '../../../components/Feedback'
 import { HotkeyKbd } from '../../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../../hotkeys/useHotkeyScope'
+import { requestFollowingJob } from '../followJob'
 import { reportTabScope } from '../filingsHotkeys'
 import { usePersistentState } from '../../../hooks/usePersistentState'
 import { formatBytes } from '../filingFormat'
@@ -41,6 +43,7 @@ export function ReportTab({ docId, files, filesLoading, active, onSelect }: { do
   const [language, setLanguage] = usePersistentState<Language>('filings.report.language', 'ja', LANGUAGE_KEYS)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState('')
+  const [pendingDetail, setPendingDetail] = useState('')
   const selected = files.find(file => file.artifact_id === active) ?? files.find(file => file.group === 'business') ?? files[0]
   const artifactId = selected?.artifact_id ?? ''
   const wantsEnglish = language !== 'ja'
@@ -55,7 +58,16 @@ export function ReportTab({ docId, files, filesLoading, active, onSelect }: { do
     enabled: Boolean(artifactId) && wantsEnglish,
     staleTime: Infinity,
     retry: false,
-    queryFn: () => apiRequest<HtmlResponse>(`/api/filings/${encodeURIComponent(docId)}/html/${encodeURIComponent(artifactId)}${queryString({ translate: true })}`),
+    queryFn: async () => {
+      try {
+        return await requestFollowingJob(
+          () => apiRequest<HtmlResponse | JobPendingBody>(`/api/filings/${encodeURIComponent(docId)}/html/${encodeURIComponent(artifactId)}${queryString({ translate: true })}`),
+          { onPending: pending => setPendingDetail(pending.detail) },
+        )
+      } finally {
+        setPendingDetail('')
+      }
+    },
   })
   const index = files.findIndex(file => file.artifact_id === artifactId)
   const step = (delta: number) => {
@@ -71,7 +83,8 @@ export function ReportTab({ docId, files, filesLoading, active, onSelect }: { do
     setRefreshing(true)
     setRefreshError('')
     try {
-      const data = await apiRequest<HtmlResponse>(`/api/filings/${encodeURIComponent(docId)}/html/${encodeURIComponent(artifactId)}${queryString({ translate: true, force: true })}`)
+      const read = (params: Record<string, boolean>) => () => apiRequest<HtmlResponse | JobPendingBody>(`/api/filings/${encodeURIComponent(docId)}/html/${encodeURIComponent(artifactId)}${queryString(params)}`)
+      const data = await requestFollowingJob(read({ translate: true, force: true }), { afterJob: read({ translate: true }) })
       queryClient.setQueryData(['filing-html-en', docId, artifactId], data)
     } catch (error) {
       setRefreshError(error instanceof Error ? error.message : 'Retranslation failed')
@@ -112,7 +125,7 @@ export function ReportTab({ docId, files, filesLoading, active, onSelect }: { do
         <span title="Cycle the report language"><HotkeyKbd hotkey={reportTabScope.byId.language} /></span>
         {wantsEnglish && englishHtml && <button type="button" className="text-button" disabled={refreshing} onClick={() => void retranslate()} title="Discard the cached translation of this document and translate it again"><RefreshCw aria-hidden="true" className={refreshing ? 'spin' : undefined} />Retranslate</button>}
       </header>
-      {wantsEnglish && english.isFetching && !englishHtml && <p className="viewer-note" role="status">Translating this document with the local Argos model. Long sections can take a minute; the Japanese original stays readable meanwhile.</p>}
+      {wantsEnglish && english.isFetching && !englishHtml && <p className="viewer-note" role="status">{pendingDetail || 'Translating this document. Long sections can take a minute; the Japanese original stays readable meanwhile.'}</p>}
       {wantsEnglish && english.isError && <p className="viewer-note viewer-note--error" role="alert">{english.error instanceof Error ? english.error.message : 'Translation failed'} <button type="button" className="text-button" onClick={() => void english.refetch()}>Try again</button></p>}
       {refreshError && <p className="viewer-note viewer-note--error" role="alert">{refreshError}</p>}
       {original.isLoading ? <LoadingState label="Loading the report" /> : original.isError ? <ErrorState error={original.error} retry={() => void original.refetch()} /> : <div className={showJapanese && showEnglish ? 'report-frames report-frames--dual' : 'report-frames'}>

@@ -18,7 +18,7 @@ from src.filings.archive import (
 from src.filings.catalog import FilingCatalog
 from src.filings.ingest import ingest_archive
 from src.filings.quality import assess_facts
-from src.orchestrator.common.sqlite import connect_write
+from src.orchestrator.common.sqlite import connect_read, connect_write
 
 XBRL = b"""<?xml version='1.0'?>
 <xbrli:xbrl xmlns:xbrli='http://www.xbrl.org/2003/instance'
@@ -144,7 +144,7 @@ def test_coverage_summary_reads_no_column_stored_after_the_archive_blob(tmp_path
     read: set[str] = set()
 
     def recording_connect(*args, **kwargs):
-        connection = connect_write(*args, **kwargs)
+        connection = connect_read(*args, **kwargs)
 
         def authorizer(action, table, column, *_):
             if action == sqlite3.SQLITE_READ and table == "filings":
@@ -154,7 +154,7 @@ def test_coverage_summary_reads_no_column_stored_after_the_archive_blob(tmp_path
         connection.set_authorizer(authorizer)
         return connection
 
-    monkeypatch.setattr(catalog_module, "connect_write", recording_connect)
+    monkeypatch.setattr(catalog_module, "connect_read", recording_connect)
     catalog.coverage_summary()
     catalog.form_coverage()
 

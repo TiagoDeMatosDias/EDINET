@@ -14,6 +14,8 @@ from datetime import date as Date
 from fractions import Fraction
 from typing import Callable
 
+from src.orchestrator.common.sqlite import connect_write
+
 logger = logging.getLogger(__name__)
 
 # Days between consecutive price rows that still count as "adjacent" for
@@ -659,8 +661,7 @@ def run_split_detection(
 
     ensure_split_tables(db2_path)
 
-    conn = sqlite3.connect(db2_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_write(db2_path, busy_timeout_ms=30_000)
 
     try:
         # Migrate legacy price rows before classification so a heuristic event

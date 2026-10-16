@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 
 from src.api.router import app as _api_app  # noqa: F401
-from src.api.router import cleanup_completed_jobs
 from src.auth.api import admin_router as _admin_router
 from src.auth.api import router as _auth_router
 from src.backtesting.api import router as _backtesting_router
@@ -14,6 +13,10 @@ from src.chat.api import router as _chat_router
 from src.chat.profiles_api import router as _profiles_router
 from src.comparison.api import router as _comparison_router
 from src.filings.api import router as _filings_router
+from src.jobs.admin_api import router as _workers_admin_router
+from src.jobs.user_api import install_job_error_handlers
+from src.jobs.user_api import router as _my_jobs_router
+from src.jobs.worker_api import router as _worker_router
 from src.ownership.api import router as _ownership_router
 from src.portfolio.api import router as _portfolio_router
 from src.reports.api import router as _reports_router
@@ -30,6 +33,7 @@ from src.web_app.api.tags import router as _tags_router
 logger = logging.getLogger(__name__)
 
 router_app = _api_app
+install_job_error_handlers(router_app)
 
 _ROUTERS = (
     _auth_router,
@@ -52,10 +56,13 @@ _ROUTERS = (
     _profiles_router,
     _overview_router,
     _settings_router,
+    _worker_router,
+    _my_jobs_router,
+    _workers_admin_router,
 )
 
 for _router in _ROUTERS:
     router_app.include_router(_router)
     logger.info("Registered API router: prefix=%s", _router.prefix)
 
-__all__ = ["router_app", "cleanup_completed_jobs"]
+__all__ = ["router_app"]

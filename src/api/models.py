@@ -155,7 +155,7 @@ class CancelJobRequest(BaseModel):
 
     force: bool = Field(
         default=False,
-        description="Request force cancellation (unsupported during a step)",
+        description="Stop the running pipeline at once instead of waiting for the current step",
     )
 
 
@@ -184,6 +184,7 @@ class JobHealthResponse(BaseModel):
     queue_depth: int
     active: int
     counts_by_status: dict[str, int]
+    workers_online: int = 0
 
 
 class HealthResponse(BaseModel):

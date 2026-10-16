@@ -1,6 +1,8 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 
 import { apiPost, apiRequest, queryString } from '../../api/client'
+import type { JobPendingBody } from '../../api/jobs'
+import { requestFollowingJob } from '../filings/followJob'
 import type { CompanyOwnership, EntityDetail, EntityKind, EntityList, MarketCaps, OwnershipStatus } from './ownershipTypes'
 
 const STALE = 5 * 60_000
@@ -69,7 +71,7 @@ export function useCareerTranslation(career: { doc_id: string; edinet_code: stri
     queryKey: ['ownership', 'career', career.doc_id, lines.length, lines[0] ?? ''],
     enabled: lines.length > 0,
     queryFn: async () => {
-      const result = await apiPost<{ translations: Array<{ source: string; english: string }> }>('/api/ownership/careers/translate', { lines, company: career.edinet_code, period_end: career.period_end })
+      const result = await requestFollowingJob(() => apiPost<{ translations: Array<{ source: string; english: string }> } | JobPendingBody>('/api/ownership/careers/translate', { lines, company: career.edinet_code, period_end: career.period_end }))
       return Object.fromEntries(result.translations.map(item => [item.source, item.english]))
     },
     retry: false,

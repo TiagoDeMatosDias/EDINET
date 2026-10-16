@@ -11,6 +11,7 @@ import math
 import os
 import re
 import sqlite3
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -614,6 +615,8 @@ def get_available_metrics(db_path: str) -> dict[str, list[str]]:
     # even before the first split-detection run creates it; screening setup
     # creates the table transactionally before executing a query.
     result.setdefault("Stock_Splits", list(STOCK_SPLIT_SCREENING_COLUMNS))
+    # Company_Tags is supplied per query (a TEMP table) and may be absent from the file.
+    result.setdefault("Company_Tags", ["edinetCode", "tag"])
     return result
 
 
@@ -1643,19 +1646,19 @@ def _read_legacy_company_tags(db_path: str) -> list[tuple[str, str]]:
         conn.close()
 
 
-def populate_user_tags(db_path: str, owner_user_id: str) -> None:
-    """Populate Company_Tags in *db_path* with tags from research.db for one user.
+def collect_user_company_tags(db_path: str, owner_user_id: str) -> list[tuple[str, str]]:
+    """One user's ``(edinetCode, tag)`` pairs from the research store.
 
-    The table is cleared and repopulated on each call so screening queries
-    always see the current owner's tags.  Pass ``owner_user_id=''`` (or omit)
-    to keep the existing behaviour for unauthenticated compatibility use.
+    Runs the legacy-tag claim first (app.db writes only; the shared database
+    is only read). The web server calls this and hands the pairs to a screening
+    job, so the server never writes market.db. Returns ``[]`` without an owner.
     """
     if not owner_user_id:
-        return
+        return []
     try:
         from src.research.runtime import store as _store
     except Exception:
-        return
+        return []
     try:
         legacy_tags = _read_legacy_company_tags(db_path)
         _store.preserve_legacy_company_tags(legacy_tags)
@@ -1667,25 +1670,90 @@ def populate_user_tags(db_path: str, owner_user_id: str) -> None:
         _store.claim_legacy_company_tags(owner_user_id, user_tag_names)
     except Exception as exc:  # noqa: BLE001 - legacy data must not block screening
         logger.info("Could not claim legacy company tags for %s: %s", owner_user_id, exc)
+    return [
+        (str(code), str(t["tag"]))
+        for t in _store.list_all_company_tags(owner_user_id)
+        if (code := t.get("company_code") or t.get("edinet_code"))
+    ]
+
+
+def populate_user_tags(db_path: str, owner_user_id: str) -> None:
+    """Write one user's tags into the shared ``Company_Tags`` table (not for the web server).
+
+    Kept for offline tools; screens now receive tags per query
+    (``run_screening(company_tags=...)``) so nothing needs the shared table.
+    The table is cleared and repopulated on each call.
+    """
+    if not owner_user_id:
+        return
+    pairs = collect_user_company_tags(db_path, owner_user_id)
     _ensure_company_tags_table(db_path)
     with transaction(db_path) as conn:
-        # Company_Tags is a per-query compatibility table in the shared
-        # standardized database.  Always clear it first, including when the
-        # current owner has no tags, so stale memberships cannot leak into a
-        # later screen.
         conn.execute("DELETE FROM Company_Tags")
-        user_tags = _store.list_all_company_tags(owner_user_id)
-        conn.executemany(
-            "INSERT OR IGNORE INTO Company_Tags (edinetCode, tag) VALUES (?, ?)",
-            [
-                (
-                    t.get("company_code") or t.get("edinet_code"),
-                    t["tag"],
-                )
-                for t in user_tags
-                if t.get("company_code") or t.get("edinet_code")
-            ],
+        conn.executemany("INSERT OR IGNORE INTO Company_Tags (edinetCode, tag) VALUES (?, ?)", pairs)
+
+
+def _screening_database_ready(db_path: str) -> bool:
+    """Whether the helper objects ``_prepare_screening_database`` creates already exist.
+
+    A read-only check, so a screen running beside a pipeline that holds the
+    write lock does not queue behind it. Workers prepare the database at
+    startup and after every market-data write.
+    """
+    from src.portfolio.split_schema import _column_names
+    from src.utilities.price_provenance import PRICE_PROVENANCE_COLUMNS
+
+    try:
+        conn = connect_read(db_path)
+    except (OSError, sqlite3.Error):
+        return False
+    try:
+        objects = {
+            (str(row[0]), str(row[1]))
+            for row in conn.execute("SELECT type, name FROM sqlite_master WHERE type IN ('table', 'index')")
+        }
+        tables = {name for kind, name in objects if kind == "table"}
+        if "Company_Tags" not in tables or "Stock_Splits" not in tables:
+            return False
+        if "superseded_by" not in _column_names(conn, "Stock_Splits"):
+            return False
+        if "Stock_Prices" in tables:
+            price_columns = {str(row[1]) for row in conn.execute('PRAGMA table_info("Stock_Prices")')}
+            if not set(PRICE_PROVENANCE_COLUMNS) <= price_columns:
+                return False
+        if "FinancialStatements" in tables and ("index", "idx_fin_company_period") not in objects:
+            return False
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
+def ensure_screening_database(db_path: str) -> None:
+    """Prepare the database for screening unless it already is (see above)."""
+    if not _screening_database_ready(db_path):
+        _prepare_screening_database(db_path)
+
+
+def install_company_tags(conn: sqlite3.Connection, company_tags: Iterable[tuple[str, str]]) -> None:
+    """Shadow ``Company_Tags`` with a TEMP table holding one user's tags.
+
+    Screens resolve the unqualified name to the TEMP table first, so a user's
+    tags reach the query without writing the shared database (the worker gets
+    them in the job payload). ``query_only`` is lifted only while it is filled.
+    """
+    rows = [(str(code), str(tag)) for code, tag in company_tags if code and tag]
+    conn.execute("PRAGMA query_only = OFF")
+    try:
+        conn.execute("DROP TABLE IF EXISTS temp.Company_Tags")
+        conn.execute(
+            "CREATE TEMP TABLE Company_Tags (edinetCode TEXT NOT NULL, tag TEXT NOT NULL, "
+            "PRIMARY KEY (edinetCode, tag))"
         )
+        conn.executemany("INSERT OR IGNORE INTO temp.Company_Tags (edinetCode, tag) VALUES (?, ?)", rows)
+    finally:
+        conn.execute("PRAGMA query_only = ON")
 
 
 def _prepare_screening_database(db_path: str) -> None:
@@ -1736,6 +1804,7 @@ def run_screening(
     computed_columns: list[dict] | None = None,
     available_metrics: dict[str, list[str]] | None = None,
     criteria_match: str = "all",
+    company_tags: Iterable[tuple[str, str]] | None = None,
 ) -> pd.DataFrame:
     """Execute a screening query and return formatted results.
 
@@ -1755,11 +1824,14 @@ def run_screening(
             If None, computed fresh from the database.
         criteria_match: ``"all"`` or ``"any"``; how criteria and criteria
             groups combine (see ``build_screening_query``).
+        company_tags: ``(edinetCode, tag)`` pairs of the user running the
+            screen; installed as a TEMP ``Company_Tags`` for this query only.
+            ``None`` reads the shared table.
 
     Returns:
         DataFrame with screening results.
     """
-    _prepare_screening_database(db_path)
+    ensure_screening_database(db_path)
     if available_metrics is None:
         available_metrics = get_available_metrics(db_path)
     available = available_metrics
@@ -1791,6 +1863,8 @@ def run_screening(
     conn = connect_read(db_path, busy_timeout_ms=30_000)
     logger.info("screening db connected (%.2fs)", _time.monotonic() - _connect_start)
     try:
+        if company_tags is not None:
+            install_company_tags(conn, company_tags)
         if SHARE_BASIS_TABLE in sql:
             install_share_basis(conn, db_path)
         # Log the query plan for diagnostics
@@ -2047,8 +2121,10 @@ def export_screening_to_backtest_csv(
     historical: bool = False,
     computed_columns: list[dict] | None = None,
     criteria_match: str = "all",
+    company_tags: Iterable[tuple[str, str]] | None = None,
 ) -> str:
     """Export screening results in the CSV format used by run_backtest_set."""
+    tags = list(company_tags) if company_tags is not None else None
     if max_companies <= 0:
         raise ValueError("max_companies must be greater than 0")
 
@@ -2087,6 +2163,7 @@ def export_screening_to_backtest_csv(
             ranking_rules=ranking_rules,
             computed_columns=computed_columns,
             criteria_match=criteria_match,
+            company_tags=tags,
         )
         export_df = _resolve_backtest_export_frame(df, year, max_companies)
         if not export_df.empty:

@@ -27,7 +27,7 @@ def test_ensure_application_databases_creates_the_four_databases(tmp_path):
     assert {"settings", "users", "watchlists", "pipeline_jobs", "Transactions", "schema_migrations"} <= _tables(paths["app"])
     with sqlite3.connect(paths["app"]) as conn:
         components = {row[0] for row in conn.execute("SELECT DISTINCT component FROM schema_migrations")}
-    assert components == {"pipeline_jobs", "portfolio"}
+    assert components == {"pipeline_jobs", "portfolio", "workers"}
     assert "messages" in _tables(paths["chat"])
     assert "filings" in _tables(paths["filings"])
     # Market tables come from the pipeline; only the bond tables are fixed.

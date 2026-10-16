@@ -9,6 +9,7 @@ startups reuse the same certificate.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import ipaddress
 import logging
 from pathlib import Path
@@ -40,6 +41,16 @@ _SELF_SIGNED_VALIDITY_DAYS = 3650  # ten years; browsers must be told to trust i
 _SELF_SIGNED_KEY_SIZE_BITS = 2048
 
 
+def certificate_fingerprint(cert_path: str | Path) -> str:
+    """SHA-256 of the certificate's DER encoding as lowercase hex without colons.
+
+    Workers pin this value when they connect, so it must match what the TLS
+    handshake presents.
+    """
+    certificate = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
+    return hashlib.sha256(certificate.public_bytes(serialization.Encoding.DER)).hexdigest()
+
+
 def default_cert_dir() -> Path:
     """Return the certificate directory used when none is supplied: ``data/certs``."""
     return certs_dir()
@@ -53,6 +64,12 @@ def _find_certificate_pair(cert_dir: Path) -> tuple[Path, Path] | None:
         if cert_path.is_file() and key_path.is_file():
             return cert_path, key_path
     return None
+
+
+def server_certificate_path(cert_dir: Path | None = None) -> Path | None:
+    """The certificate file the server presents, or ``None`` before one exists."""
+    pair = _find_certificate_pair(Path(cert_dir) if cert_dir is not None else default_cert_dir())
+    return pair[0] if pair else None
 
 
 def _pair_is_consistent(cert_path: Path, key_path: Path) -> bool:

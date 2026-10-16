@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -71,7 +72,17 @@ _CONTENT_SECURITY_POLICY = "; ".join(
 )
 
 
+_WORKER_PREFIX = "/api/worker/"
+_WORKER_ARTIFACT_PATH = re.compile(r"^/api/worker/jobs/[^/]+/artifacts/[^/]+$")
+# Largest result a worker may return in ``complete`` (see ``src.jobs.protocol``).
+_WORKER_RESULT_BYTES = 32 * 1024 * 1024
+
+
 def _max_request_bytes(settings: "AppSettings", path: str) -> int:
+    if _WORKER_ARTIFACT_PATH.match(path):
+        return settings.max_backtest_artifact_bytes + _REQUEST_ENVELOPE_OVERHEAD_BYTES
+    if path.startswith(_WORKER_PREFIX):
+        return _WORKER_RESULT_BYTES + _REQUEST_ENVELOPE_OVERHEAD_BYTES
     limit = (
         max(settings.max_upload_bytes, settings.max_export_bytes)
         + _REQUEST_ENVELOPE_OVERHEAD_BYTES
@@ -429,7 +440,10 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
     async def request_security(request: Request, call_next):
         correlation_id = str(uuid4())
         request.state.correlation_id = correlation_id
-        if not settings.authentication_required:
+        # Workers authenticate themselves (src.jobs.worker_api) with their own
+        # tokens, in both auth modes; they are never a user.
+        is_worker_route = request.url.path.startswith(_WORKER_PREFIX)
+        if not settings.authentication_required and not is_worker_route:
             request.state.user = local_user
         max_request_bytes = _max_request_bytes(settings, request.url.path)
         content_length = request.headers.get("Content-Length")
@@ -446,6 +460,7 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
         if (
             settings.authentication_required
             and request.url.path.startswith("/api/")
+            and not is_worker_route
             and request.url.path not in _PUBLIC_AUTH_PATHS
         ):
             authorization = request.headers.get("Authorization", "")

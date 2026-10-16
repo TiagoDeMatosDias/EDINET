@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 're
 import { useSearchParams } from 'react-router-dom'
 
 import { apiPost, apiRequest } from '../../api/client'
+import type { BacktestJobView } from '../../api/jobs'
 import { downloadApiFile } from '../../api/download'
 import { ErrorState, LoadingState } from '../../components/Feedback'
 import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
@@ -15,7 +16,7 @@ import { backtestScope } from './backtestHotkeys'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { BacktestResults } from './BacktestResults'
 import { BacktestSetup, type BacktestSetupHandle, type Settings } from './BacktestSetup'
-import { benchmarkFields, isSingle, pct, portfolioPayload, readScreenDraft, savedWhen, type Benchmark, type Mode, type RollingJob, type SavedBacktest, type SetResult, type SingleResult } from './backtestModel'
+import { benchmarkFields, isSingle, pct, portfolioPayload, readScreenDraft, savedWhen, type Benchmark, type Mode, type SavedBacktest, type SetResult, type SingleResult } from './backtestModel'
 import { SetResults, type SetResultsHandle } from './SetResults'
 import './backtesting.css'
 
@@ -93,18 +94,24 @@ function SavedList({ items, current, onOpen }: { items: SavedBacktest[]; current
   </section>
 }
 
-function JobProgress({ job, onCancel }: { job: RollingJob; onCancel: () => void }) {
+function JobProgress({ job, onCancel }: { job: BacktestJobView; onCancel: () => void }) {
   const progress = job.progress ?? {}
   const done = progress.completed_backtests ?? 0
   const total = progress.total_backtests ?? 0
   const share = total ? done / total : 0
-  return <section className="bt-progress" aria-live="polite">
-    <div><strong>{job.status === 'queued' ? 'Waiting for a free slot…' : job.status === 'saving' ? 'Saving results…' : progress.phase ?? 'Starting…'}</strong>
-      <span className="muted">{total ? `${done.toLocaleString()} of ${total.toLocaleString()} backtests · period ${(progress.period_index ?? 0) + 1} of ${progress.total_periods ?? '—'}` : 'Preparing rolling periods'}</span>
+  const headline = job.status === 'queued' ? (job.waiting_for_worker ? 'Waiting for a worker…' : 'Waiting for a free slot…') : job.status === 'saving' ? 'Saving results…' : progress.phase ?? 'Starting…'
+  return <section className="bt-progress" aria-live="polite" aria-label={job.title}>
+    <div><strong>{headline}</strong>
+      <span className="muted">{job.title}{total ? ` · ${done.toLocaleString()} of ${total.toLocaleString()} backtests · period ${(progress.period_index ?? 0) + 1} of ${progress.total_periods ?? '—'}` : ''}</span>
       <button type="button" className="button button--danger button--small" onClick={onCancel}><CircleStop />Cancel <HotkeyKbd hotkey={backtestScope.byId.cancel} /></button></div>
-    <progress max={1} value={share} aria-label="Backtest progress" />
-    <small className="muted">Runs on the server: you can leave this page and come back.</small>
+    {job.kind === 'rolling' || total ? <progress max={1} value={share} aria-label="Backtest progress" /> : <progress aria-label="Backtest progress" />}
+    {job.waiting_for_worker && <small className="muted">No worker is online yet; the backtest starts as soon as one connects.</small>}
+    <small className="muted">Runs on a worker: you can leave this page and come back.</small>
   </section>
+}
+
+function startJob(kind: BacktestJobView['kind'], request: Record<string, unknown>) {
+  return apiPost<BacktestJobView>('/api/backtesting/jobs', { kind, request })
 }
 
 export default function BacktestingPage() {
@@ -117,7 +124,8 @@ export default function BacktestingPage() {
   const [settings, setSettings] = useState<Settings>(() => readSettings(params.get('symbol')))
   const [csvContent, setCsvContent] = useState('')
   const [setupOpen, setSetupOpen] = usePersistentState('shade.backtest.setupOpen', true)
-  const [startedJob, setStartedJob] = useState<string | null>(null)
+  const [startedJobs, setStartedJobs] = useState<string[]>([])
+  const openedJobs = useRef(new Set<string>())
   const [draft, setDraft] = useState(readScreenDraft)
   const setupRef = useRef<BacktestSetupHandle>(null)
   const setRef = useRef<SetResultsHandle>(null)
@@ -150,28 +158,30 @@ export default function BacktestingPage() {
     queryFn: () => apiRequest<SingleResult | SetResult>(`/api/backtesting/result/${encodeURIComponent(resultId)}`),
     staleTime: Infinity,
   })
-  // A rolling run started earlier (or in another tab) is picked up again.
-  const jobs = useQuery({ queryKey: ['rolling-jobs'], queryFn: () => apiRequest<{ jobs: RollingJob[] }>('/api/backtesting/rolling-jobs'), staleTime: Infinity, retry: false })
-  const jobId = startedJob ?? jobs.data?.jobs.find(item => !TERMINAL.has(item.status))?.job_id ?? null
-  const job = useQuery({
-    queryKey: ['rolling-job', jobId],
-    enabled: Boolean(jobId),
-    queryFn: () => apiRequest<RollingJob>(`/api/backtesting/rolling-jobs/${jobId}`),
-    refetchInterval: query => TERMINAL.has(query.state.data?.status ?? '') ? false : 1500,
+  // Runs started earlier (or in another tab) are picked up again; several may be queued at once.
+  const jobs = useQuery({
+    queryKey: ['backtest-jobs'],
+    queryFn: () => apiRequest<{ jobs: BacktestJobView[] }>('/api/backtesting/jobs'),
+    retry: false,
+    refetchInterval: query => query.state.data?.jobs.some(item => !TERMINAL.has(item.status)) ? 1500 : false,
   })
-  const running = Boolean(job.data && !TERMINAL.has(job.data.status))
-  const finishedId = job.data?.status === 'complete' ? job.data.result_id : null
+  const activeJobs = (jobs.data?.jobs ?? []).filter(item => !TERMINAL.has(item.status))
+  const running = activeJobs.length > 0
+  const lastStarted = startedJobs[startedJobs.length - 1]
 
   const open = useCallback((id: string) => {
     setParams(current => { const next = new URLSearchParams(current); next.set('result', id); next.delete('symbol'); next.delete('source'); return next })
     window.scrollTo({ top: 0 })
   }, [setParams])
 
+  // A run started from this page opens by itself when it finishes.
   useEffect(() => {
-    if (!finishedId) return
+    const finished = (jobs.data?.jobs ?? []).find(item => item.status === 'complete' && item.result_id && startedJobs.includes(item.job_id) && !openedJobs.current.has(item.job_id))
+    if (!finished?.result_id) return
+    openedJobs.current.add(finished.job_id)
     void queryClient.invalidateQueries({ queryKey: ['saved-backtests'] })
-    open(finishedId)
-  }, [finishedId, open, queryClient])
+    open(finished.result_id)
+  }, [jobs.data, startedJobs, open, queryClient])
 
   const run = useMutation({
     mutationFn: async () => {
@@ -181,20 +191,18 @@ export default function BacktestingPage() {
         const portfolio = portfolioPayload(settings.holdings)
         if (!Object.keys(portfolio).length) throw new Error('Add at least one ticker with an amount above zero.')
         if (!settings.startDate || !settings.endDate || settings.startDate >= settings.endDate) throw new Error('The start date must come before the end date.')
-        const response = await apiPost<SingleResult>('/api/backtesting/run', { ...base, portfolio, start_date: settings.startDate, end_date: settings.endDate, commission_bps: settings.commissionBps, slippage_bps: settings.slippageBps, spread_bps: settings.spreadBps })
-        return { kind: 'done' as const, id: response.id, data: response as SingleResult | SetResult }
+        return startJob('single', { ...base, portfolio, start_date: settings.startDate, end_date: settings.endDate, commission_bps: settings.commissionBps, slippage_bps: settings.slippageBps, spread_bps: settings.spreadBps })
       }
       if (!settings.durations.length) throw new Error('Choose at least one holding period.')
       if (mode === 'csv') {
         if (!csvContent.trim()) throw new Error('Choose or paste a CSV file first.')
-        const response = await apiPost<SetResult>('/api/backtesting/run-from-csv', { ...base, csv_content: csvContent, durations: settings.durations })
-        return { kind: 'done' as const, id: response.id, data: response as SingleResult | SetResult }
+        return startJob('csv', { ...base, csv_content: csvContent, durations: settings.durations })
       }
       const screen = readScreenDraft()
       setDraft(screen)
       if (!screen) throw new Error('Build a screen in Screening first; its current draft is what gets backtested.')
       if (!settings.weightings.length) throw new Error('Choose at least one weighting.')
-      const started = await apiPost<RollingJob>('/api/backtesting/rolling-jobs', {
+      return startJob('rolling', {
         ...base,
         criteria: screen.criteria,
         criteria_match: screen.criteria_match,
@@ -209,25 +217,18 @@ export default function BacktestingPage() {
         start_period: settings.startPeriod || null,
         end_period: settings.endPeriod || null,
       })
-      return { kind: 'job' as const, id: started.job_id, job: started }
     },
-    onSuccess: outcome => {
-      if (outcome.kind === 'job') {
-        queryClient.setQueryData(['rolling-job', outcome.id], outcome.job)
-        setStartedJob(outcome.id)
-        return
-      }
-      queryClient.setQueryData(['backtest-result', outcome.id], outcome.data)
-      void queryClient.invalidateQueries({ queryKey: ['saved-backtests'] })
-      open(outcome.id)
+    onSuccess: started => {
+      setStartedJobs(current => [...current, started.job_id])
+      void queryClient.invalidateQueries({ queryKey: ['backtest-jobs'] })
     },
   })
   const cancel = useMutation({
-    mutationFn: () => apiPost<RollingJob>(`/api/backtesting/rolling-jobs/${jobId}/cancel`, {}),
-    onSuccess: view => queryClient.setQueryData(['rolling-job', view.job_id], view),
+    mutationFn: (id: string) => apiPost<BacktestJobView>(`/api/backtesting/jobs/${id}/cancel`, {}),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['backtest-jobs'] }) },
   })
   const start = () => {
-    if (run.isPending || running) return
+    if (run.isPending) return
     if (mode !== storedMode) setStoredMode(mode)
     run.mutate()
   }
@@ -238,7 +239,7 @@ export default function BacktestingPage() {
     'mode-screen': () => setMode('screen'),
     'mode-csv': () => setMode('csv'),
     run: start,
-    cancel: () => { if (running) cancel.mutate() },
+    cancel: () => { const target = activeJobs.find(item => startedJobs.includes(item.job_id)) ?? activeJobs[0]; if (target) cancel.mutate(target.job_id) },
     'setup-panel': () => setSetupOpen(!setupOpen),
     'setup-focus': () => { if (!setupOpen) setSetupOpen(true); requestAnimationFrame(() => setupRef.current?.focusFirst()) },
     'add-holding': () => { if (mode === 'manual') { if (!setupOpen) setSetupOpen(true); setupRef.current?.addHolding() } },
@@ -255,7 +256,8 @@ export default function BacktestingPage() {
 
   const currencyCodes = (currencies.data?.currencies ?? []).map(item => typeof item === 'string' ? item : item.code ?? '').filter(Boolean)
   const shown = resultId ? result.data : undefined
-  const failedJob = job.data && (job.data.status === 'failed' || job.data.status === 'cancelled') && job.data.job_id === startedJob ? job.data : null
+  const lastJob = (jobs.data?.jobs ?? []).find(item => item.job_id === lastStarted)
+  const failedJob = lastJob && (lastJob.status === 'failed' || lastJob.status === 'cancelled') ? lastJob : null
 
   return <div className="bt-page">
     <header className="bt-head">
@@ -264,7 +266,7 @@ export default function BacktestingPage() {
       <div className="bt-actions">
         <button type="button" className="icon-button" onClick={() => setSetupOpen(!setupOpen)} title={`${setupOpen ? 'Hide' : 'Show'} setup (${setupKey})`} aria-label={setupOpen ? 'Hide setup' : 'Show setup'}>{setupOpen ? <PanelLeftClose /> : <PanelLeftOpen />}</button>
         <HotkeyHelpButton />
-        <button type="button" className="button button--primary button--small" disabled={run.isPending || running} onClick={start}><FlaskConical />{run.isPending ? 'Running…' : running ? 'Rolling backtest running' : 'Run'} <HotkeyKbd hotkey={backtestScope.byId.run} /></button>
+        <button type="button" className="button button--primary button--small" disabled={run.isPending} onClick={start}><FlaskConical />{run.isPending ? 'Starting…' : 'Run'} <HotkeyKbd hotkey={backtestScope.byId.run} /></button>
       </div>
     </header>
     <div className={`bt-layout ${setupOpen ? '' : 'is-collapsed'}`}>
@@ -272,9 +274,8 @@ export default function BacktestingPage() {
         <BacktestSetup ref={setupRef} mode={mode} settings={settings} onChange={updateSettings} benchmarks={benchmarks.data?.benchmarks ?? []} currencies={currencyCodes} draft={draft} estimate={estimate.data} tickers={tickers.data?.tickers ?? []} csvContent={csvContent} onCsvContent={setCsvContent} onRun={start} />
       </aside>}
       <main className="bt-main">
-        {running && job.data && <JobProgress job={job.data} onCancel={() => cancel.mutate()} />}
-        {failedJob && <p className="bt-warnings" role="alert">{failedJob.status === 'cancelled' ? 'The rolling backtest was cancelled.' : `The rolling backtest failed: ${failedJob.error ?? 'unknown error'}`}</p>}
-        {run.isPending && mode !== 'screen' && <LoadingState label={mode === 'manual' ? 'Running the backtest…' : 'Running each year and holding period…'} />}
+        {activeJobs.map(item => <JobProgress key={item.job_id} job={item} onCancel={() => cancel.mutate(item.job_id)} />)}
+        {failedJob && <p className="bt-warnings" role="alert">{failedJob.status === 'cancelled' ? 'The backtest was cancelled.' : `The backtest failed: ${failedJob.error ?? 'unknown error'}`}</p>}
         {run.isError && <ErrorState error={run.error} retry={start} />}
         {resultId && result.isLoading && <LoadingState label="Loading the saved backtest" />}
         {resultId && result.isError && <ErrorState error={result.error} retry={() => result.refetch()} />}

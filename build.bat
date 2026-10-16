@@ -1,5 +1,5 @@
 @echo off
-rem Double-click to build release\windows\ShadeResearch.exe (see docs\BUILDING.md).
+rem Double-click to build release\windows\ShadeResearch.exe and ShadeWorker.exe (see docs\BUILDING.md).
 rem
 rem The first run creates .venv-build\windows with the CPU build of torch and the
 rem build dependencies; later runs reinstall them only when pyproject.toml or

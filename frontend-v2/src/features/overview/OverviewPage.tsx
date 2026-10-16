@@ -172,7 +172,7 @@ export default function OverviewPage() {
       <Kpi label="Followed" value={research.followed} detail={thesisText || `${research.notes} notes`} />
       <Kpi label="Reviews due" value={research.reviews_due.length} className={research.reviews_due.length ? 'is-down' : undefined} detail={`${research.alerts} alerts set`} />
       <Kpi label="Unread chat" value={unread.data?.total ?? '—'} className={unread.data?.total ? 'is-down' : undefined} detail={unread.data?.invitations ? `${unread.data.invitations} invitations` : 'channels and messages'} />
-      {isAdmin && <Kpi label="Pipeline" value={status.data ? `${status.data.jobs.active} active` : '—'} detail={status.data ? `${status.data.jobs.queue_depth} queued · v${status.data.version}` : 'checking'} />}
+      {isAdmin && <Kpi label="Jobs" value={status.data ? `${status.data.jobs.active} running` : '—'} detail={status.data ? `${status.data.jobs.queue_depth} queued · v${status.data.version}` : 'checking'} />}
     </div>
 
     <div className="ov-grid">

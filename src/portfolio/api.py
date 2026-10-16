@@ -17,6 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.auth.dependencies import require_operator
 from src.auth.models import AuthenticatedUser
+from src.jobs.errors import JobCancelled, JobFailed, JobPending
+from src.jobs.service import get_job_service
 from src.orchestrator.common.db_config import get_app_db, get_market_db
 from src.orchestrator.common.sqlite import connect_read
 from src.portfolio.currency import (
@@ -51,7 +53,7 @@ from src.portfolio.portfolio_state import (
     get_holding_performance,
     get_holdings_at_date,
 )
-from src.portfolio.price_fetcher import _build_currency_map, ensure_prices_for_tickers
+from src.portfolio.price_fetcher import _build_currency_map
 from src.portfolio.scenarios import ScenarioShock, apply_scenario
 from src.portfolio.tax_lots import LotLedger, TaxLot
 from src.portfolio.transactions import (
@@ -163,6 +165,29 @@ async def _read_limited_upload(file: UploadFile, limit: int) -> bytes:
             raise HTTPException(413, "Uploaded XML exceeds the configured size limit")
 
 
+async def _fetch_prices(ticker_map: dict[str, str], user_id: str) -> tuple[dict, bool]:
+    """Fetch missing prices on a worker; ``(result, still_pending)``.
+
+    The caller carries on with its own (app.db) work either way: when no worker
+    finishes in time the prices keep loading and show up on a later refresh.
+    """
+    if not ticker_map:
+        return {"fetched": [], "failed": []}, False
+    try:
+        record = await get_job_service().run(
+            "portfolio_prices",
+            {"ticker_map": ticker_map},
+            owner_user_id=user_id,
+            title="Fetch prices for imported holdings",
+        )
+    except JobPending:
+        return {"fetched": [], "failed": []}, True
+    except (JobFailed, JobCancelled):
+        logger.warning("The price fetch job did not complete", exc_info=True)
+        return {"fetched": [], "failed": sorted(ticker_map)}, False
+    return dict(record.result or {"fetched": [], "failed": []}), False
+
+
 @router.post("/upload", response_model=UploadResponse)
 async def upload_xml(request: Request, file: Annotated[UploadFile, File()]):
     """Upload an IBKR FlexQuery XML file.  Parses, fetches missing ticker
@@ -192,11 +217,8 @@ async def upload_xml(request: Request, file: Annotated[UploadFile, File()]):
 
     # Fetch missing prices
     ticker_map = _build_currency_map(entries)
-    db2_path = get_market_db()
     db3_path = get_app_db()
-    price_result = await asyncio.to_thread(
-        ensure_prices_for_tickers, db2_path, ticker_map
-    )
+    price_result, prices_pending = await _fetch_prices(ticker_map, user.user_id)
 
     # Insert with owner scoping
     result = await asyncio.to_thread(
@@ -212,6 +234,7 @@ async def upload_xml(request: Request, file: Annotated[UploadFile, File()]):
         by_activity=result["by_activity"],
         new_tickers_fetched=price_result["fetched"],
         ticker_fetch_failures=price_result["failed"],
+        prices_pending=prices_pending,
     )
 
 
@@ -369,7 +392,7 @@ async def add_manual_transaction(request: Request, payload: ManualTransactionReq
     if entry.kind in TRADE_KINDS:
         # Best effort: a new holding needs prices to be valued; the record is kept either way.
         try:
-            await asyncio.to_thread(ensure_prices_for_tickers, db2, _build_currency_map([record]))
+            await _fetch_prices(_build_currency_map([record]), user.user_id)
         except Exception:
             logger.warning("Prices for manual record %s could not be fetched", record["symbol"], exc_info=True)
     await asyncio.to_thread(insert_entries, db3, [record], MANUAL_SOURCE, owner_user_id=user.user_id)
@@ -1055,75 +1078,26 @@ async def data_quality(request: Request, display_currency: str = Query("EUR")):
 
 
 def _refresh_market_data(db3_path: str, db2_path: str, owner_user_id: str, currency: str, benchmark: str | None) -> dict:
-    """Repair currency labels, fetch new prices and rates, then rebuild the ledger."""
-    from src.orchestrator.common.sqlite import connect_write
-    from src.orchestrator.update_fx_data.update_fx_data import (
-        _fetch_ecb_fx_prices,
-        _insert_new_pairs,
-        update_risk_free_rates,
-    )
-    from src.orchestrator.update_stock_prices.update_stock_prices import _update_ticker
-    from src.portfolio.data_quality import sparse_price_years
-    from src.utilities.stock_prices import (
-        load_ticker_data,
-        repair_price_currency_labels,
-        yahoo_listing_currency,
-    )
+    """Refresh market data on a worker, then rebuild the ledger in app.db.
 
+    ``held_refresh_tickers`` reads the owner's holdings here (workers never
+    open app.db); everything that writes market.db runs as a
+    ``portfolio_market_refresh`` job.
+    """
     tickers = held_refresh_tickers(db3_path, owner_user_id)
     if benchmark:
         tickers.append(benchmark.strip())
     tickers = list(dict.fromkeys(ticker for ticker in tickers if ticker))
-    updated: list[str] = []
-    failed: list[str] = []
-    refetched: list[str] = []
-    relabelled = 0
-    conn = connect_write(db2_path)
-    try:
-        for index, ticker in enumerate(tickers):
-            try:
-                relabelled += repair_price_currency_labels(
-                    conn, "Stock_Prices", ticker, listing_currency=yahoo_listing_currency,
-                )
-                conn.commit()
-                if sparse_price_years(conn, ticker):
-                    # Weekly history: replace it with the provider's daily series.
-                    if _update_ticker(conn, "Stock_Prices", ticker, currency=None, overwrite=True, savepoint_id=index):
-                        refetched.append(ticker)
-                if load_ticker_data(ticker, "Stock_Prices", conn):
-                    conn.commit()
-                    updated.append(ticker)
-                else:
-                    conn.rollback()
-                    failed.append(ticker)
-            except Exception as exc:  # noqa: BLE001 - one ticker must not stop the rest
-                conn.rollback()
-                logger.warning("Price refresh failed for %s: %s", ticker, exc)
-                failed.append(ticker)
-    finally:
-        conn.close()
-    fx_rows = 0
-    rate_rows = 0
-    try:
-        fx_rows = _insert_new_pairs(_fetch_ecb_fx_prices(), db2_path, "Stock_Prices", label="FX records")
-    except Exception as exc:  # noqa: BLE001 - FX refresh is best effort
-        logger.warning("FX refresh failed: %s", exc)
-    try:
-        rate_rows = update_risk_free_rates(db2_path, {currency.upper(), "EUR"})
-    except Exception as exc:  # noqa: BLE001 - rate refresh is best effort
-        logger.warning("Interest-rate refresh failed: %s", exc)
+    record = get_job_service().run_sync(
+        "portfolio_market_refresh",
+        {"tickers": tickers, "base_currency": currency},
+        owner_user_id=owner_user_id,
+        title="Refresh portfolio market data",
+    )
+    market = dict(record.result or {})
     rebuilt = build_portfolio_state(db3_path, db2_path, owner_user_id=owner_user_id)
     _retag_positions(owner_user_id)
-    return {
-        "tickers": len(tickers),
-        "updated": updated,
-        "failed": failed,
-        "refetched_daily_history": refetched,
-        "relabelled_prices": relabelled,
-        "fx_rows": fx_rows,
-        "risk_free_rows": rate_rows,
-        **rebuilt,
-    }
+    return {**market, **rebuilt}
 
 
 @router.post("/refresh-market-data")

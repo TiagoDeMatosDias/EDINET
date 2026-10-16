@@ -2,10 +2,11 @@ import { BarChart3, BriefcaseBusiness, Building2, CircleCheck, CircleX, FileText
 import { useEffect, useState, type ReactNode } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 
-import { useHealth, useSystemStatus } from '../hooks/useHealth'
+import { useHealth } from '../hooks/useHealth'
 import { BrandLockup } from './Brand'
 import { GlobalCompanySearch } from './GlobalCompanySearch'
 import { GlobalHotkeys } from './GlobalHotkeys'
+import { JobTray } from './JobTray'
 import { globalScope } from '../hotkeys/globalScopes'
 import { useGotoPages } from '../hotkeys/goto'
 import { useHotkeyText } from '../hotkeys/useHotkeyText'
@@ -115,9 +116,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const location = useLocation()
   const auth = useAuth()
   const unread = useChatUnread(Boolean(auth.user) || auth.status?.mode === 'disabled')
-  const operator = auth.user?.role === 'admin' || auth.user?.role === 'operator'
-  const system = useSystemStatus(operator)
-  const activeJobs = operator ? system.data?.jobs.active ?? 0 : 0
+  const signedIn = Boolean(auth.user) || auth.status?.mode === 'disabled'
   const mobileNavigation = navigation.slice(0, 5)
   // Pages remount per path; start each one at the top instead of the previous page's scroll position.
   useEffect(() => { window.scrollTo(0, 0) }, [location.pathname])
@@ -130,7 +129,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     </aside>
     {mobileOpen && <button className="backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
     <div className="app-content">
-      <header className="topbar"><button className="icon-button mobile-only" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button><GlobalCompanySearch /><div className="topbar-actions"><div className={health.isError ? 'health health--error' : 'health'}>{health.isError ? <CircleX /> : <CircleCheck />}<span>{health.isError ? 'Backend unavailable' : activeJobs ? `${activeJobs} job${activeJobs === 1 ? '' : 's'} active` : 'Data service ready'}</span></div><AuthSection /></div></header>
+      <header className="topbar"><button className="icon-button mobile-only" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button><GlobalCompanySearch /><div className="topbar-actions"><div className={health.isError ? 'health health--error' : 'health'}>{health.isError ? <CircleX /> : <CircleCheck />}<span>{health.isError ? 'Backend unavailable' : 'Data service ready'}</span></div><JobTray enabled={signedIn} /><AuthSection /></div></header>
       <main id="main-content" key={location.pathname}>{children}</main>
       <GlobalHotkeys isAdmin={auth.user?.role === 'admin'} signedIn={Boolean(auth.user)} onPendingChange={setKeysActive} />
       <nav className="mobile-nav" aria-label="Mobile primary navigation">{mobileNavigation.map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/overview'}><Icon /><span>{item.label}</span></NavLink> })}</nav>

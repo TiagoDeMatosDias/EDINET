@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { apiPost, apiRequest, authenticatedFetch } from '../../api/client'
+import { isJobPending, resultOfJob, type JobPendingBody } from '../../api/jobs'
 import { downloadBlob } from '../../api/download'
 import type { ScreeningResult } from '../../api/types'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
@@ -161,7 +162,16 @@ export default function ScreeningWorkspace() {
   const run = useMutation({
     mutationFn: async ({ body, key }: { body: ReturnType<typeof screenDefinition>; key: string }) => {
       const started = performance.now()
-      const result = await apiPost<ScreeningResult>('/api/screening/run', { ...body, sort_order: 'DESC' })
+      const answer = await apiPost<ScreeningResult | JobPendingBody>('/api/screening/run', { ...body, sort_order: 'DESC' })
+      let result: ScreeningResult
+      if (isJobPending(answer)) {
+        // No worker finished it in time: say so, keep the page usable, and show the result when the job ends.
+        setNotice({ text: answer.detail, tone: 'info' })
+        result = await resultOfJob<ScreeningResult>(answer)
+        setNotice(null)
+      } else {
+        result = answer
+      }
       return { result, key, ms: performance.now() - started, at: Date.now() }
     },
     onSuccess: data => {

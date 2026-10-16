@@ -18,6 +18,8 @@ from urllib.parse import urlsplit
 import requests
 from bs4 import BeautifulSoup
 
+from src.orchestrator.common.table_swap import drop_stale_next, next_table_name, swap_in
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TAXONOMY_PAGE_URL = "https://disclosure2.edinet-fsa.go.jp/weee0020.aspx"
@@ -513,10 +515,10 @@ def _release_id_for_listing_entry(listing_entry: TaxonomyListingEntry) -> str:
     return str(listing_entry.taxonomy_date or listing_entry.archive_name)
 
 
-def _taxonomy_schema_sql() -> str:
+def _taxonomy_table_sql(table_name: str = _TAXONOMY_TABLE_NAME) -> str:
     supported_families = "', '".join(_SUPPORTED_STATEMENT_FAMILIES)
     return f"""
-        CREATE TABLE IF NOT EXISTS \"{_TAXONOMY_TABLE_NAME}\" (
+        CREATE TABLE IF NOT EXISTS \"{table_name}\" (
             release_id TEXT NOT NULL,
             statement_family TEXT NOT NULL,
             value_type TEXT NOT NULL,
@@ -535,14 +537,23 @@ def _taxonomy_schema_sql() -> str:
                 OR (level > 0 AND parent_concept_qname IS NOT NULL)
             )
         );
+    """
 
-        CREATE INDEX IF NOT EXISTS idx_taxonomy_release_family_level
-            ON \"{_TAXONOMY_TABLE_NAME}\"(release_id, statement_family, level);
-        CREATE INDEX IF NOT EXISTS idx_taxonomy_release_parent
-            ON \"{_TAXONOMY_TABLE_NAME}\"(release_id, parent_concept_qname);
-        CREATE INDEX IF NOT EXISTS idx_taxonomy_release_column
-            ON \"{_TAXONOMY_TABLE_NAME}\"(release_id, column_concept_qname);
 
+def _taxonomy_index_statements(table_name: str = _TAXONOMY_TABLE_NAME) -> list[str]:
+    return [
+        f'''CREATE INDEX IF NOT EXISTS idx_taxonomy_release_family_level
+            ON "{table_name}"(release_id, statement_family, level)''',
+        f'''CREATE INDEX IF NOT EXISTS idx_taxonomy_release_parent
+            ON "{table_name}"(release_id, parent_concept_qname)''',
+        f'''CREATE INDEX IF NOT EXISTS idx_taxonomy_release_column
+            ON "{table_name}"(release_id, column_concept_qname)''',
+    ]
+
+
+def _taxonomy_support_sql() -> str:
+    """The dictionary and hierarchy tables that sit beside ``Taxonomy``."""
+    return f"""
         CREATE TABLE IF NOT EXISTS "{_DICTIONARY_TABLE_NAME}" (
             release_id TEXT NOT NULL,
             concept_qname TEXT NOT NULL,
@@ -575,31 +586,76 @@ def _taxonomy_schema_sql() -> str:
     """
 
 
-def _ensure_taxonomy_schema(conn: sqlite3.Connection) -> None:
+def _taxonomy_schema_sql() -> str:
+    return (
+        _taxonomy_table_sql()
+        + ";\n".join(_taxonomy_index_statements())
+        + ";\n"
+        + _taxonomy_support_sql()
+    )
+
+
+def _drop_legacy_taxonomy_tables(conn: sqlite3.Connection) -> None:
     for table_name in _LEGACY_TAXONOMY_TABLES:
         conn.execute(f"DROP VIEW IF EXISTS {table_name}")
         conn.execute(f"DROP TABLE IF EXISTS {table_name}")
 
+
+def _taxonomy_schema_outdated(conn: sqlite3.Connection) -> bool:
+    """True when the stored ``Taxonomy`` table has other columns than the current schema."""
     existing_columns = [
         str(row[1])
         for row in conn.execute(f'PRAGMA table_info("{_TAXONOMY_TABLE_NAME}")').fetchall()
     ]
-    if existing_columns and existing_columns != list(_TAXONOMY_COLUMNS):
+    return bool(existing_columns) and existing_columns != list(_TAXONOMY_COLUMNS)
+
+
+def _ensure_taxonomy_schema(conn: sqlite3.Connection) -> None:
+    _drop_legacy_taxonomy_tables(conn)
+
+    if _taxonomy_schema_outdated(conn):
         conn.execute(f'DROP TABLE IF EXISTS "{_TAXONOMY_TABLE_NAME}"')
 
     conn.executescript(_taxonomy_schema_sql())
 
 
-def _delete_release_namespace_rows(conn: sqlite3.Connection, release_id: str, namespace_prefix: str | None) -> None:
+def _prepare_taxonomy_rebuild(conn: sqlite3.Connection) -> str:
+    """Start a rebuild of an outdated ``Taxonomy`` beside the live table; returns its name.
+
+    The live table keeps serving readers until ``_finish_taxonomy_rebuild``
+    swaps the rebuilt copy in.
+    """
+    _drop_legacy_taxonomy_tables(conn)
+    drop_stale_next(conn, _TAXONOMY_TABLE_NAME)
+    next_name = next_table_name(_TAXONOMY_TABLE_NAME)
+    conn.executescript(_taxonomy_table_sql(next_name) + _taxonomy_support_sql())
+    return next_name
+
+
+def _finish_taxonomy_rebuild(conn: sqlite3.Connection) -> None:
+    swap_in(
+        conn,
+        [_TAXONOMY_TABLE_NAME],
+        indexes={_TAXONOMY_TABLE_NAME: _taxonomy_index_statements()},
+        keep_live_indexes=False,
+    )
+
+
+def _delete_release_namespace_rows(
+    conn: sqlite3.Connection,
+    release_id: str,
+    namespace_prefix: str | None,
+    taxonomy_table: str = _TAXONOMY_TABLE_NAME,
+) -> None:
     if namespace_prefix:
         conn.execute(
-            f'DELETE FROM "{_TAXONOMY_TABLE_NAME}" WHERE release_id = ? AND concept_qname LIKE ?',
+            f'DELETE FROM "{taxonomy_table}" WHERE release_id = ? AND concept_qname LIKE ?',
             (str(release_id), f"{namespace_prefix}:%"),
         )
         return
 
     conn.execute(
-        f'DELETE FROM "{_TAXONOMY_TABLE_NAME}" WHERE release_id = ?',
+        f'DELETE FROM "{taxonomy_table}" WHERE release_id = ?',
         (str(release_id),),
     )
 
@@ -672,17 +728,22 @@ def _persist_concept_dictionary(conn: sqlite3.Connection, rows_by_namespace: dic
     return count
 
 
-def _taxonomy_rows_exist(conn: sqlite3.Connection, release_id: str, namespace_prefix: str | None) -> bool:
-    if not _table_exists(conn, _TAXONOMY_TABLE_NAME):
+def _taxonomy_rows_exist(
+    conn: sqlite3.Connection,
+    release_id: str,
+    namespace_prefix: str | None,
+    taxonomy_table: str = _TAXONOMY_TABLE_NAME,
+) -> bool:
+    if not _table_exists(conn, taxonomy_table):
         return False
     if namespace_prefix:
         row = conn.execute(
-            f'SELECT 1 FROM "{_TAXONOMY_TABLE_NAME}" WHERE release_id = ? AND concept_qname LIKE ? LIMIT 1',
+            f'SELECT 1 FROM "{taxonomy_table}" WHERE release_id = ? AND concept_qname LIKE ? LIMIT 1',
             (str(release_id), f"{namespace_prefix}:%"),
         ).fetchone()
         return row is not None
     row = conn.execute(
-        f'SELECT 1 FROM "{_TAXONOMY_TABLE_NAME}" WHERE release_id = ? LIMIT 1',
+        f'SELECT 1 FROM "{taxonomy_table}" WHERE release_id = ? LIMIT 1',
         (str(release_id),),
     ).fetchone()
     return row is not None
@@ -1792,6 +1853,7 @@ def _persist_taxonomy_package(
     archive_path: str,
     archive_bytes: bytes,
     downloaded_at: str,
+    taxonomy_table: str = _TAXONOMY_TABLE_NAME,
 ) -> dict[str, int]:
     del archive_path, downloaded_at
 
@@ -1841,13 +1903,13 @@ def _persist_taxonomy_package(
 
     label_rows = [item for items in labels_by_concept.values() for item in items]
     taxonomy_rows = _build_taxonomy_level_rows(release_id, namespace_prefix, concepts)
-    _delete_release_namespace_rows(conn, release_id, namespace_prefix)
+    _delete_release_namespace_rows(conn, release_id, namespace_prefix, taxonomy_table)
     dictionary_count = _persist_concept_dictionary(conn, dictionary_rows)
 
     if taxonomy_rows:
         conn.executemany(
             f"""
-            INSERT OR REPLACE INTO \"{_TAXONOMY_TABLE_NAME}\" (
+            INSERT OR REPLACE INTO \"{taxonomy_table}\" (
                 release_id,
                 statement_family,
                 value_type,
@@ -2002,7 +2064,14 @@ def sync_taxonomy_releases(
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
-        _ensure_taxonomy_schema(conn)
+        # A table with outdated columns is rebuilt beside the live one and
+        # swapped in at the end, so readers never see it missing or half-filled.
+        rebuilding = _taxonomy_schema_outdated(conn)
+        if rebuilding:
+            taxonomy_table = _prepare_taxonomy_rebuild(conn)
+        else:
+            _ensure_taxonomy_schema(conn)
+            taxonomy_table = _TAXONOMY_TABLE_NAME
 
         stats = {
             "releases_processed": 0,
@@ -2046,7 +2115,7 @@ def sync_taxonomy_releases(
                 # Releases parsed before the concept dictionary existed are
                 # reparsed once from the cached archive to fill it.
                 if (
-                    _taxonomy_rows_exist(conn, release_id, entry.namespace_prefix)
+                    _taxonomy_rows_exist(conn, release_id, entry.namespace_prefix, taxonomy_table)
                     and _dictionary_rows_exist(conn, release_id)
                     and not force_reparse
                 ):
@@ -2066,6 +2135,7 @@ def sync_taxonomy_releases(
                     archive_path=archive_path,
                     archive_bytes=archive_bytes,
                     downloaded_at=downloaded_at,
+                    taxonomy_table=taxonomy_table,
                 )
                 for key, value in package_stats.items():
                     stats[key] += value
@@ -2076,6 +2146,10 @@ def sync_taxonomy_releases(
             session.close()
 
         conn.commit()
+        if rebuilding:
+            if context is not None:
+                context.checkpoint()
+            _finish_taxonomy_rebuild(conn)
         if context is not None:
             context.report_progress(
                 len(selected),

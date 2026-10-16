@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from contextlib import closing
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -93,7 +94,7 @@ def create_market_database(path: str | Path) -> Path:
     """Create a compact standardized database with realistic market series."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(target) as conn:
+    with closing(sqlite3.connect(target)) as conn, conn:
         conn.executescript(
             """
             CREATE TABLE Stock_Prices (
@@ -189,7 +190,7 @@ def create_docs_market_database(path: str | Path) -> Path:
     comparisons, while still remaining completely detached from operator data.
     """
     target = create_market_database(path)
-    with sqlite3.connect(target) as conn:
+    with closing(sqlite3.connect(target)) as conn, conn:
         conn.executescript(
             """
             ALTER TABLE CompanyInfo ADD COLUMN Listed TEXT;
@@ -433,7 +434,7 @@ def add_split_test_data(path: str | Path) -> Path:
     Returns *path* for chaining.
     """
     target = Path(path)
-    with sqlite3.connect(target) as conn:
+    with closing(sqlite3.connect(target)) as conn, conn:
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS Stock_Splits (

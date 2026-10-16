@@ -58,7 +58,7 @@ function ShutdownDialog({ onCancel }: { onCancel: () => void }) {
           {stillStopped && <p className="console-warn" role="status">The server is not running yet.</p>}
         </> : <>
           <p>The workstation stops for everyone using it, and scheduled pipeline runs do not start while it is off. It can only be started again on the machine it runs on, not from a browser.</p>
-          {activeJobs > 0 && <p className="console-warn"><AlertTriangle aria-hidden="true" /> {activeJobs === 1 ? 'A pipeline job is active. It' : `${activeJobs} pipeline jobs are active. They`} will be interrupted and must be run again.</p>}
+          {activeJobs > 0 && <p className="console-warn"><AlertTriangle aria-hidden="true" /> {activeJobs === 1 ? 'A job is running.' : `${activeJobs} jobs are running.`} A pipeline or download is interrupted and must be run again; backtests, screens, and translations run again after the next start.</p>}
           {shutdown.isError && <p className="form-error" role="alert">{shutdown.error instanceof Error ? shutdown.error.message : 'The server could not be shut down.'}</p>}
         </>}
       </div>
