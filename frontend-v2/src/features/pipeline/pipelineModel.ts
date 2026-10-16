@@ -1,7 +1,7 @@
 import type { Job, PipelineStep } from '../../api/types'
 
 export type SelectedStep = { id: string; name: string; overwrite: boolean }
-export type SavedSetup = { name: string; steps: SelectedStep[]; config: Record<string, unknown> }
+export type SavedSetup = { name: string; steps: Array<Pick<SelectedStep, 'name'> & { overwrite?: boolean }>; config: Record<string, unknown> }
 
 const TERMINAL_JOB_STATUSES = new Set(['cancelled', 'completed', 'failed', 'interrupted'])
 export const DAILY_RECIPE = ['download_documents', 'generate_financial_statements', 'generate_ratios', 'update_stock_prices']

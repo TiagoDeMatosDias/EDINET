@@ -156,14 +156,21 @@ export default function PipelinePage() {
   const loadSetup = (name: string) => {
     const setup = setups.data?.find(item => item.name === name)
     if (!setup) return
+    // Saved steps keep only name and overwrite; each needs its own id to be picked on its own.
+    const loaded = setup.steps.map(step => ({ id: crypto.randomUUID(), name: step.name, overwrite: Boolean(step.overwrite) }))
     setSetupName(setup.name)
-    setSelected(setup.steps)
+    setSelected(loaded)
+    setFocusedStep(loaded[0]?.id ?? null)
+    setSeqIndex(0)
     setConfig(setup.config)
     setNotice(`Loaded “${setup.name}”`)
   }
   const useDaily = () => {
     const matches = DAILY_RECIPE.map(name => metaFor(name)).filter(Boolean) as PipelineStep[]
-    setSelected(matches.map(step => ({ id: crypto.randomUUID(), name: step.name, overwrite: false })))
+    const recipe = matches.map(step => ({ id: crypto.randomUUID(), name: step.name, overwrite: false }))
+    setSelected(recipe)
+    setFocusedStep(recipe[0]?.id ?? null)
+    setSeqIndex(0)
   }
   const focusRegion = (index: number) => {
     const region = document.getElementById(`pl-region-${index}`)
@@ -186,7 +193,9 @@ export default function PipelinePage() {
   })
 
   const configured = selected.map(item => ({ item, meta: metaFor(item.name) })).filter(entry => entry.meta && (entry.meta.input_fields ?? entry.meta.parameters ?? []).length)
-  const shownConfig = showAllConfig ? configured : configured.filter(entry => entry.item.id === (focusedStep ?? selected[seqIndex]?.id))
+  const currentStep = selected.find(item => item.id === focusedStep) ?? selected[seqIndex]
+  const currentMeta = currentStep && metaFor(currentStep.name)
+  const shownConfig = showAllConfig ? configured : configured.filter(entry => entry.item === currentStep)
   const job = activeJob.data
   const progress = Math.round(job?.progress_percent ?? 0)
 
@@ -274,7 +283,7 @@ export default function PipelinePage() {
               onChange={value => setConfig(current => ({ ...current, [configKey(item.name, field.name)]: value }))}
             />)}
           </div>
-        </div>) : <p className="pl-muted">{configured.length ? 'Pick a step in the sequence to set it up.' : 'The steps in the sequence take no settings.'}</p>}
+        </div>) : <p className="pl-muted">{!configured.length ? 'The steps in the sequence take no settings.' : currentStep ? `${currentMeta ? stepLabel(currentMeta) : currentStep.name} takes no settings.` : 'Pick a step in the sequence to set it up.'}</p>}
       </Region>
     </div>
 

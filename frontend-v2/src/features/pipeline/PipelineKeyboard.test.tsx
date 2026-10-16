@@ -8,16 +8,19 @@ import PipelinePage from './PipelinePage'
 const STEPS = [
   { name: 'update_stock_prices', display_name: 'Update Stock Prices', description: 'Fetch prices', input_fields: [] },
   { name: 'detect_splits', display_name: 'Detect Splits', description: 'Find splits', input_fields: [{ name: 'mode', label: 'Detection Mode', choices: ['incremental', 'full'], default: 'incremental' }] },
+  { name: 'generate_ratios', display_name: 'Generate Ratios', description: 'Compute ratios', input_fields: [{ name: 'workers', label: 'Workers', type: 'int', default: 4 }] },
 ]
 const posted: Array<{ path: string; body: unknown }> = []
+let setups: unknown[] = []
 
 beforeEach(() => {
   posted.length = 0
+  setups = []
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input)
     if (init?.method === 'POST') posted.push({ path, body: JSON.parse(String(init.body)) })
     const body = path === '/api/steps' ? { steps: STEPS }
-      : path === '/api/admin/pipeline-setups' ? []
+      : path === '/api/admin/pipeline-setups' ? setups
         : path.startsWith('/api/jobs') && !path.includes('/api/jobs/') ? [{ job_id: 'j1', status: 'failed', current_step: null, created_at: '2026-10-03T13:42:48Z', started_at: '2026-10-03T13:42:48Z', completed_at: '2026-10-03T13:42:52Z', error_message: "Step 'detect_splits' failed (ZeroDivisionError)", steps: [{ ordinal: 0, step_name: 'detect_splits', status: 'failed' }] }]
           : path.startsWith('/api/jobs/j1/output') ? { job_id: 'j1', status: 'failed', output: {} }
             : path.startsWith('/api/jobs/') ? { job_id: 'j1', status: 'failed', steps: [{ ordinal: 0, step_name: 'detect_splits', status: 'failed', error_message: 'boom' }] }
@@ -63,5 +66,22 @@ describe('PipelinePage keyboard', () => {
       steps: [{ name: 'detect_splits', overwrite: false }, { name: 'update_stock_prices', overwrite: true }],
       config: { detect_splits_config: { mode: 'full' } },
     }))
+  })
+
+  it('shows only the configuration of the step picked in a loaded setup', async () => {
+    // Saved setups come back without step ids.
+    setups = [{ name: 'Nightly', steps: [{ name: 'detect_splits', overwrite: false }, { name: 'generate_ratios', overwrite: true }], config: {} }]
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><MemoryRouter><PipelinePage /></MemoryRouter></QueryClientProvider>)
+    await screen.findByRole('option', { name: 'Nightly' })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Load saved setup' }), { target: { value: 'Nightly' } })
+
+    const config = document.getElementById('pl-region-3')!
+    expect(within(config).getByRole('combobox', { name: /Detection Mode/ })).toBeInTheDocument()
+    expect(within(config).queryByRole('spinbutton', { name: /Workers/ })).not.toBeInTheDocument()
+
+    fireEvent.click(within(screen.getByRole('list', { name: 'Sequence' })).getAllByRole('listitem')[1])
+    expect(within(config).getByRole('spinbutton', { name: /Workers/ })).toBeInTheDocument()
+    expect(within(config).queryByRole('combobox', { name: /Detection Mode/ })).not.toBeInTheDocument()
   })
 })
