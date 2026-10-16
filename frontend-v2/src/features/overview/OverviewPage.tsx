@@ -12,6 +12,8 @@ import { HotkeyHelpButton } from '../../hotkeys/HotkeyHelpButton'
 import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { useAuth } from '../auth/authContext'
+import { type FilingStorageNotice } from '../auth/filingStorage'
+import { FilingStorageBanner } from '../auth/FilingStorageBanner'
 import { chatApi, chatKeys, useChatUnread } from '../chat/chatApi'
 import { colorFor, messageTime, personName, relativeTime } from '../chat/chatModel'
 import { recentWorkTitle } from './recentWork'
@@ -54,6 +56,8 @@ interface OverviewData {
     latest_price_date: string | null
     priced_securities: number | null
     filings: null | { unique_filings: number; unique_companies: number; last_submitted: string | null; first_submitted: string | null; filings_with_issues: number }
+    /** Set while filings.db still has the old single-file layout. */
+    filing_storage?: FilingStorageNotice | null
   }
 }
 
@@ -162,6 +166,8 @@ export default function OverviewPage() {
         <HotkeyHelpButton />
       </nav>
     </header>
+
+    {data.filing_storage && <FilingStorageBanner notice={data.filing_storage} action={auth.user?.role === 'admin' ? <Link className="text-button" to="/admin#filing-storage">Admin → Filing storage</Link> : <span> An administrator starts the split from Admin.</span>} />}
 
     <div className="ov-kpis">
       <Kpi label="Portfolio" value={portfolio ? `€${money.format(portfolio.total_value)}` : '—'} detail={portfolio ? `as of ${day(portfolio.valuation_date)}` : 'Import activity in Portfolio'} />

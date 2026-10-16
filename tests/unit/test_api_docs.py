@@ -6,6 +6,7 @@ import inspect
 import json
 import re
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlencode
 
 import pytest
@@ -39,11 +40,26 @@ APP_TSX = Path(__file__).resolve().parents[2] / "frontend-v2" / "src" / "App.tsx
 OPERATIONS = documented_operations(server_app)
 
 
+def _api_routes(routes: list[Any]) -> list[Any]:
+    """The app's API routes; newer FastAPI wraps each included router, so look inside it."""
+    found: list[Any] = []
+    for route in routes:
+        if isinstance(route, APIRoute):
+            found.append(route)
+        elif hasattr(route, "effective_route_contexts"):
+            found.extend(context for context in route.effective_route_contexts() if context.methods)
+    return found
+
+
+def _api_routers(routes: list[Any]) -> list[Any]:
+    """The app's API routes as mounted, to copy into a test app (without the SPA fallback)."""
+    return [route for route in routes if isinstance(route, APIRoute) or hasattr(route, "effective_route_contexts")]
+
+
 def _routes() -> dict[tuple[str, str], APIRoute]:
     return {
         (method, route.path_format): route
-        for route in server_app.routes
-        if isinstance(route, APIRoute)
+        for route in _api_routes(server_app.routes)
         for method in route.methods
     }
 
@@ -70,7 +86,7 @@ def _filled(method: str, path: str) -> str:
 def _docs_app(tmp_path) -> FastAPI:
     """The real routes behind accounts-mode security, as a deployed server runs them."""
     app = FastAPI()
-    app.router.routes.extend(route for route in server_app.routes if isinstance(route, APIRoute))
+    app.router.routes.extend(_api_routers(server_app.routes))
     install_job_error_handlers(app)
     install_security(
         app,
@@ -501,7 +517,7 @@ def test_full_schema_and_explorers_are_closed_with_accounts(accounts, tmp_path):
         for header in ({}, headers["admin"]):
             assert client.get(path, headers=header).status_code == 404, path
     open_app = FastAPI()
-    open_app.router.routes.extend(route for route in server_app.routes if isinstance(route, APIRoute))
+    open_app.router.routes.extend(_api_routers(server_app.routes))
     install_security(open_app, AppSettings(auth_mode="disabled", auth_db_path=tmp_path / "open.db"))
     install_openapi_security(open_app)
     open_client = TestClient(open_app)

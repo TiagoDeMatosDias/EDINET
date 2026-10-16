@@ -18,12 +18,19 @@ const SERVER_SETTINGS = [
   { key: 'tunnel.token', label: 'Cloudflare tunnel token', description: 'Token of a tunnel created in Cloudflare Zero Trust.', kind: 'secret', choices: [], minimum: null, restart_required: false, value: null, is_set: false, updated_at: null },
 ]
 const TUNNEL_OFF = { enabled: false, kind: 'quick', state: 'off', url: null, message: null, origin: 'https://127.0.0.1:8000', blocked_reason: null }
+const STORAGE_LEGACY = {
+  layout: 'legacy', state: 'legacy', index: { path: '/data/filings.db', bytes: 77_567_938_560 }, shards_folder: '/data/filings', shards: [], jobs: [],
+  preflight: { layout: 'legacy', needed: true, needed_bytes: 81_446_335_488, free_bytes: 300_000_000_000, enough_space: true, filings: 72514, years: [], undated_count: 0, target_folder: '/data/filings' },
+}
+const STORAGE_SPLIT = { layout: 'split-v1', state: 'split', index: { path: '/data/filings.db', bytes: 50_000_000 }, shards_folder: '/data/filings', shards: [], jobs: [] }
 const calls: Array<{ method: string; path: string; body?: unknown }> = []
+let storage: Record<string, unknown> = STORAGE_SPLIT
 let serverRunning = true
 let tunnel: Record<string, unknown> = TUNNEL_OFF
 
 beforeEach(() => {
   calls.length = 0
+  storage = STORAGE_SPLIT
   serverRunning = true
   tunnel = TUNNEL_OFF
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -45,6 +52,7 @@ beforeEach(() => {
                 : path === '/api/admin/pipeline-setups' ? []
                   : path === '/api/admin/workers' ? { workers: [], launcher: { state: 'running', pid: 1, restarts: 0, last_exit_code: null, command: null }, settings: { launch_local: 'on' } }
                   : path === '/api/admin/settings' ? { settings: SERVER_SETTINGS }
+                  : path === '/api/admin/filing-storage' ? storage
                     : path === '/api/admin/server/tunnel' ? tunnelNow
                       : path === '/api/system/status' ? { version: '1', timestamp: '', jobs: { queue_depth: 0, active: 1, counts_by_status: { running: 1 } } }
                       : path.startsWith('/api/admin/settings/') ? { ...SERVER_SETTINGS.find(item => path.endsWith(item.key)), is_set: method === 'PUT', updated_at: '2026-10-10T00:00:00Z' }
@@ -61,6 +69,20 @@ function renderAdmin() {
 }
 
 describe('AdminPage', () => {
+  it('shows the filing storage banner on the old layout and jumps to the panel', async () => {
+    storage = STORAGE_LEGACY
+    renderAdmin()
+    expect(await screen.findAllByText('Filing storage needs reorganising — ≈81 GB free space needed')).not.toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Open filing storage' }))
+    expect(document.getElementById('console-section-9')).toContainElement(screen.getByRole('button', { name: /Split filing storage/ }))
+  })
+
+  it('shows no banner once filing storage is split', async () => {
+    renderAdmin()
+    await screen.findByText(/yearly files? in/)
+    expect(screen.queryByText(/Filing storage needs reorganising/)).not.toBeInTheDocument()
+  })
+
   it('walks users from the keyboard and issues a one-time reset link', async () => {
     renderAdmin()
     const table = (await screen.findAllByRole('table'))[0]

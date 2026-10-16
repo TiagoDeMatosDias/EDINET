@@ -17,7 +17,8 @@ second instance). Its layout::
     chat.db      chat, kept apart because it grows with use
     jobs.db      queued and finished jobs, worker sessions (written by the server only)
     market.db    rebuildable market data (default location)
-    filings.db   rebuildable filing archive (default location)
+    filings.db   filing index: one row per filing (default location)
+    filings/     filing archives, one database per submission year, beside filings.db
     certs/       TLS certificate and key
     logs/        rotating server log
     artifacts/   backtests, reports, exports, job workspaces, downloads
@@ -72,6 +73,11 @@ def default_market_db_path() -> Path:
 
 def default_filings_db_path() -> Path:
     return data_dir() / "filings.db"
+
+
+def filing_shards_dir(index_path: str | Path) -> Path:
+    """The folder of the yearly filing databases: ``filings/`` beside the filing index."""
+    return Path(index_path).expanduser().parent / "filings"
 
 
 def certs_dir() -> Path:

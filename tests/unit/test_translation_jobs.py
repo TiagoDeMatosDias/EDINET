@@ -156,7 +156,7 @@ def test_sections_and_body_and_html_translation(http, catalog, service, monkeypa
     monkeypatch.setattr(catalog, "list_sections", lambda _doc, query=None, limit=200: sections)
     monkeypatch.setattr(catalog, "get_section", lambda _doc, _sid: sections[0])
     monkeypatch.setattr(catalog, "list_artifacts", lambda _doc: [{"artifact_id": "a1", "member_path": "PublicDoc/r.htm"}])
-    monkeypatch.setattr(catalog, "get_artifact_content", lambda _id: {"content": HTML.encode()})
+    monkeypatch.setattr(catalog, "get_artifact_content", lambda _id, _doc_id=None: {"content": HTML.encode()})
     with InlineWorker(get_job_service()):
         listed = http.get("/api/filings/S100TEST/sections-translated", params={"bodies": "true"}).json()
         body = http.get("/api/filings/S100TEST/translate-body", params={"section_id": "s1"}).json()
@@ -187,7 +187,7 @@ def test_read_endpoints_work_with_filings_db_protected(http, catalog, monkeypatc
     protect_database_paths([catalog.path])
     monkeypatch.setattr(catalog, "get_filing", lambda _doc: {"doc_id": "S100TEST"})
     monkeypatch.setattr(catalog, "list_artifacts", lambda _doc: [{"artifact_id": "a1", "member_path": "PublicDoc/r.htm"}])
-    monkeypatch.setattr(catalog, "get_artifact_content", lambda _id: {"content": HTML.encode()})
+    monkeypatch.setattr(catalog, "get_artifact_content", lambda _id, _doc_id=None: {"content": HTML.encode()})
 
     assert http.get("/api/filings").status_code == 200
     assert http.get("/api/filings/coverage").status_code == 200

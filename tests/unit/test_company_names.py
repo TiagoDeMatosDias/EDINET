@@ -5,11 +5,14 @@ from __future__ import annotations
 import io
 import sqlite3
 import zipfile
+from pathlib import Path
 
 import pytest
 
+from src.filings.catalog import FilingCatalog
 from src.orchestrator.common import company_names
 from src.orchestrator.common.sqlite import connect_write
+from tests.filing_fixtures import create_legacy_filings_db, filing_row
 
 HEADER = """<html><body><div style="display:none"><ix:header><ix:hidden>
 <ix:nonNumeric name="jpdei_cor:EDINETCodeDEI" contextRef="FilingDateInstant">E00002</ix:nonNumeric>
@@ -34,8 +37,8 @@ def test_a_filing_states_its_filers_name_in_english():
     assert company_names.filer_english_name(_report(None)) == ""
 
 
-@pytest.fixture
-def databases(tmp_path):
+@pytest.fixture(params=["split", "legacy"])
+def databases(tmp_path, request):
     market, filings = str(tmp_path / "market.db"), str(tmp_path / "filings.db")
     conn = sqlite3.connect(market)
     conn.execute('CREATE TABLE CompanyInfo (Company_Code TEXT, "Submitter Name" TEXT, Company_Name TEXT, Company_Ticker TEXT)')
@@ -48,9 +51,7 @@ def databases(tmp_path):
     ])
     conn.commit()
     conn.close()
-    conn = sqlite3.connect(filings)
-    conn.execute("CREATE TABLE filings (doc_id TEXT PRIMARY KEY, edinet_code TEXT, submitter_name TEXT, period_start TEXT, period_end TEXT, submitted_at TEXT, form_code TEXT, doc_type_code TEXT, archive_content BLOB)")
-    conn.executemany("INSERT INTO filings VALUES (?, ?, '', '', ?, ?, ?, '120', ?)", [
+    reports = [
         ("S1", "E00001", "2026-03-31", "2026-06-20", "030000", _report("Alpha Motor Kabushiki Kaisha")),
         ("S2OLD", "E00002", "2025-03-31", "2025-06-20", "030000", _report("Old Beta Shipping")),
         ("S2", "E00002", "2026-03-31", "2026-06-20", "030000", _report("Beta Kaiun Kabushiki Kaisha")),
@@ -58,10 +59,38 @@ def databases(tmp_path):
         # Not an annual report: a company that files only these stays as EDINET lists it.
         ("S4", "E00004", "2026-03-31", "2026-06-20", "07A000", _report("Delta Fund")),
         ("S5", "E00005", "2026-03-31", "2026-06-20", "030000", _report(None)),
-    ])
-    conn.commit()
-    conn.close()
+    ]
+    rows = [
+        filing_row(doc_id, code, submitted, content=content, form_code=form, period_end=period_end, doc_type_code="120")
+        for doc_id, code, period_end, submitted, form, content in reports
+    ]
+    if request.param == "split":
+        catalog = FilingCatalog(filings)
+        for row in rows:
+            catalog.upsert_filing(row)
+    else:
+        create_legacy_filings_db(Path(filings), rows)
     return market, filings
+
+
+def _add(filings: str, rows: list[dict]) -> None:
+    """Add filings to either layout (the old single file is written directly, as before the split)."""
+    catalog = FilingCatalog(filings)
+    if catalog.layout != "legacy":
+        for row in rows:
+            catalog.upsert_filing(row)
+        return
+    conn = sqlite3.connect(filings)
+    try:
+        for row in rows:
+            columns = [column for column in row if column != "archive_path"]
+            conn.execute(
+                f"INSERT INTO filings ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                [row[column] for column in columns],
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _names(market: str) -> dict[str, str | None]:
@@ -105,11 +134,10 @@ def test_names_come_back_after_the_code_list_is_imported_again_without_opening_f
 def test_a_newer_annual_report_updates_a_name_it_filled_before(databases):
     market, filings = databases
     company_names.fill_english_names(market, filings)
-    conn = sqlite3.connect(filings)
-    conn.execute("INSERT INTO filings VALUES ('S2NEW', 'E00002', '', '', '2027-03-31', '2027-06-20', '030000', '120', ?)", (_report("Beta Marine Holdings, Inc."),))
-    conn.execute("INSERT INTO filings VALUES ('S1NEW', 'E00001', '', '', '2027-03-31', '2027-06-20', '030000', '120', ?)", (_report("Alpha Renamed"),))
-    conn.commit()
-    conn.close()
+    _add(filings, [
+        filing_row("S2NEW", "E00002", "2027-06-20", content=_report("Beta Marine Holdings, Inc."), period_end="2027-03-31", doc_type_code="120"),
+        filing_row("S1NEW", "E00001", "2027-06-20", content=_report("Alpha Renamed"), period_end="2027-03-31", doc_type_code="120"),
+    ])
 
     assert company_names.fill_english_names(market, filings) == {"read": 1, "named": 1, "filled": 0}
     assert _names(market)["E00002"] == "Beta Marine Holdings, Inc." and _names(market)["E00001"] == "ALPHA MOTOR CORPORATION"
@@ -125,3 +153,26 @@ def test_missing_sources_leave_the_company_table_alone(databases, tmp_path):
         assert company_names.fill(conn, None) == {"read": 0, "named": 0, "filled": 0}
     finally:
         conn.close()
+
+
+def test_a_missing_yearly_file_is_skipped_and_read_once_it_is_back(tmp_path, caplog):
+    market, filings = str(tmp_path / "market.db"), tmp_path / "filings.db"
+    conn = sqlite3.connect(market)
+    conn.execute('CREATE TABLE CompanyInfo (Company_Code TEXT, "Submitter Name" TEXT, Company_Name TEXT, Company_Ticker TEXT)')
+    conn.executemany("INSERT INTO CompanyInfo VALUES (?, ?, ?, ?)", [("E00002", "ベータ", "", "2"), ("E00003", "ガンマ", "", "3")])
+    conn.commit()
+    conn.close()
+    catalog = FilingCatalog(filings)
+    catalog.upsert_filing(filing_row("S2", "E00002", "2025-06-20", content=_report("Beta Kaiun"), period_end="2025-03-31", doc_type_code="120"))
+    catalog.upsert_filing(filing_row("S3", "E00003", "2026-06-20", content=_report("Gamma Trading"), period_end="2026-03-31", doc_type_code="120"))
+    shard = catalog.storage.shard_path("2025")
+    shard.rename(shard.with_suffix(".away"))
+
+    with caplog.at_level("WARNING"):
+        assert company_names.fill_english_names(market, str(filings)) == {"read": 1, "named": 1, "filled": 1}
+    assert "filings_2025.db is missing" in caplog.text
+    assert _names(market) == {"E00002": "", "E00003": "Gamma Trading"}
+
+    shard.with_suffix(".away").rename(shard)
+    assert company_names.fill_english_names(market, str(filings)) == {"read": 1, "named": 1, "filled": 1}
+    assert _names(market)["E00002"] == "Beta Kaiun"

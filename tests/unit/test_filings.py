@@ -18,7 +18,7 @@ from src.filings.archive import (
 from src.filings.catalog import FilingCatalog
 from src.filings.ingest import ingest_archive
 from src.filings.quality import assess_facts
-from src.orchestrator.common.sqlite import connect_read, connect_write
+from src.orchestrator.common.sqlite import connect_read
 
 XBRL = b"""<?xml version='1.0'?>
 <xbrli:xbrl xmlns:xbrli='http://www.xbrl.org/2003/instance'
@@ -63,7 +63,15 @@ def test_type1_archive_is_stored_and_indexed(tmp_path):
     assert len(catalog.list_company("E12345")) == 1
     assert catalog.list_facts("S100TEST")[0]["concept"] == "Revenue"
     assert catalog.list_sections("S100TEST")[0]["title"] == "Overview"
-    assert catalog.artifact_content_summary()["content_count"] == 0
+    # The archive and the parsed rows live in the submission year's file; the index holds no archive.
+    assert [(row["shard"], row["filing_count"]) for row in catalog.shards()] == [("2025", 1)]
+    assert catalog.get_archive_content("S100TEST") == content
+    index = connect_read(catalog.path)
+    try:
+        assert "archive_content" not in {row[1] for row in index.execute("PRAGMA table_info(filings)")}
+        assert tuple(index.execute("SELECT shard, fact_count FROM filings WHERE doc_id = 'S100TEST'").fetchone()) == ("2025", 1)
+    finally:
+        index.close()
     html_artifact = next(
         item for item in catalog.list_artifacts("S100TEST")
         if item["member_path"].endswith("report.htm")
@@ -102,16 +110,11 @@ def test_coverage_summary_counts_filings_companies_forms_and_dates(tmp_path):
     catalog.upsert_filing(filing("S100TWO", "E00001", "parsed", "archive-a", "2025-06-01T00:00:00Z", "043A00"))
     catalog.upsert_filing(filing("S100THREE", "E00002", "error", "archive-b", "2026-06-01T00:00:00Z"))
 
-    conn = connect_write(catalog.path)
-    try:
-        conn.execute(
-            "INSERT INTO quality_issues(issue_id, doc_id, severity, code, message, fact_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("issue-1", "S100THREE", "warning", "test", "Test issue", None, "2025-06-01T00:00:00Z"),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    catalog.replace_quality_issues(
+        "S100THREE",
+        [{"issue_id": "issue-1", "doc_id": "S100THREE", "severity": "warning", "code": "test",
+          "message": "Test issue", "fact_id": None, "created_at": "2025-06-01T00:00:00Z"}],
+    )
 
     assert catalog.coverage_summary() == {
         "unique_filings": 3,
@@ -129,13 +132,41 @@ def test_coverage_summary_counts_filings_companies_forms_and_dates(tmp_path):
     assert [row["doc_id"] for row in catalog.list_recent("E00001", form_codes=["030000"])] == ["S100ONE"]
 
 
-def test_coverage_summary_reads_no_column_stored_after_the_archive_blob(tmp_path, monkeypatch):
-    # Columns after archive_content force SQLite to page through every archive;
-    # on a full catalog that turned the landing page into a minutes-long scan.
+def test_coverage_summary_reads_the_index_only(tmp_path, monkeypatch):
+    # The landing page counts come from the small index; opening a yearly file
+    # (or, on the old layout, paging through archives) made it a minutes-long scan.
     import src.filings.catalog as catalog_module
+    import src.filings.storage as storage_module
 
     catalog = FilingCatalog(tmp_path / "Filings.db")
-    conn = connect_write(catalog.path)
+    catalog.upsert_filing(_filing_row("S100ONE", "E12345", b"zip"))
+    opened: list[str] = []
+    for module in (catalog_module, storage_module):
+        original = module.connect_read
+
+        def recording_connect(path, *args, _original=original, **kwargs):
+            opened.append(str(path))
+            return _original(path, *args, **kwargs)
+
+        monkeypatch.setattr(module, "connect_read", recording_connect)
+
+    assert catalog.coverage_summary()["unique_filings"] == 1
+    catalog.form_coverage()
+    catalog.list_recent()
+    catalog.list_company("E12345")
+
+    assert opened and all(path == str(catalog.path) for path in opened)
+
+
+def test_legacy_coverage_summary_reads_no_column_stored_after_the_archive_blob(tmp_path, monkeypatch):
+    # On the old single file, columns after archive_content force SQLite to page
+    # through every archive.
+    import src.filings.catalog as catalog_module
+    from tests.filing_fixtures import create_legacy_filings_db, filing_row
+
+    path = create_legacy_filings_db(tmp_path / "Filings.db", [filing_row("S100ONE"), filing_row("S100TWO", "E00002")])
+    catalog = FilingCatalog(path)
+    conn = connect_read(path)
     try:
         columns = [row[1] for row in conn.execute("PRAGMA table_info(filings)")]
     finally:
@@ -155,7 +186,7 @@ def test_coverage_summary_reads_no_column_stored_after_the_archive_blob(tmp_path
         return connection
 
     monkeypatch.setattr(catalog_module, "connect_read", recording_connect)
-    catalog.coverage_summary()
+    assert catalog.coverage_summary()["unique_filings"] == 2
     catalog.form_coverage()
 
     assert read and not read & after_blob
@@ -181,7 +212,7 @@ def test_listed_facts_carry_context_periods(tmp_path):
         tmp_path / "archive",
     )
     catalog = FilingCatalog(tmp_path / "Filings.db")
-    ingest_archive(archive, "S100PERIODS", catalog)
+    ingest_archive(archive, "S100PERIODS", catalog, {"submitted_at": "2025-06-20T09:00"})
 
     facts = {row["concept"]: dict(row) for row in catalog.list_facts("S100PERIODS")}
 
@@ -205,7 +236,7 @@ def test_only_structural_numeric_xbrl_facts_are_indexed(tmp_path):
     )
     catalog = FilingCatalog(tmp_path / "Filings.db")
 
-    assert ingest_archive(archive, "S100NUMERIC", catalog) == 1
+    assert ingest_archive(archive, "S100NUMERIC", catalog, {"submitted_at": "2025-06-20T09:00"}) == 1
     facts = catalog.list_facts("S100NUMERIC")
     assert [fact["concept"] for fact in facts] == ["Revenue"]
 
@@ -215,7 +246,7 @@ def test_only_structural_numeric_xbrl_facts_are_indexed(tmp_path):
     text_fact = next(fact for fact in parsed.facts if fact.concept == "NumericLookingText")
     assert text_fact.numeric_value is None
 
-    conn = connect_write(catalog.path)
+    conn = catalog.storage.open_shard("2025")
     try:
         indexes = {
             row["name"]
@@ -228,31 +259,30 @@ def test_only_structural_numeric_xbrl_facts_are_indexed(tmp_path):
     assert "sqlite_autoindex_xbrl_facts_2" not in indexes
 
 
-def test_clear_artifact_content_preserves_archive_fallback(tmp_path):
-    content = _zip_bytes(("PublicDoc/report.txt", b"report"))
-    archive, _, _ = archive_zip(content, "S100COMPACT", tmp_path / "archive")
-    catalog = FilingCatalog(tmp_path / "Filings.db")
-    ingest_archive(archive, "S100COMPACT", catalog)
-    artifact = catalog.list_artifacts("S100COMPACT")[0]
+def test_legacy_layout_reads_archives_and_extracted_bytes_but_refuses_writes(tmp_path):
+    from src.filings.storage import LegacyLayoutError
+    from tests.filing_fixtures import create_legacy_filings_db, filing_row, report_zip
 
-    conn = connect_write(catalog.path)
-    try:
-        conn.execute(
-            "UPDATE artifacts SET content = ? WHERE artifact_id = ?",
-            (b"legacy extracted bytes", artifact["artifact_id"]),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    path = create_legacy_filings_db(tmp_path / "Filings.db", [filing_row("S100OLD", submitted_at="2019-06-20T09:00")])
+    catalog = FilingCatalog(path)
 
-    summary = catalog.artifact_content_summary()
-    assert summary["content_count"] == 1
-    assert summary["safely_clearable_count"] == 1
-    assert catalog.clear_artifact_content() == 1
-    assert catalog.artifact_content_summary()["content_count"] == 0
-    loaded = catalog.get_artifact_content(artifact["artifact_id"])
-    assert loaded is not None
-    assert loaded["content"] == b"report"
+    assert catalog.layout == "legacy"
+    assert catalog.get_archive_content("S100OLD") == report_zip("S100OLD")
+    assert catalog.get_filing("S100OLD")["status"] == "parsed"
+    assert [row["doc_id"] for row in catalog.list_company("E00001")] == ["S100OLD"]
+    artifact = catalog.list_artifacts("S100OLD")[0]
+    # Bytes extracted by old versions are still served from artifacts.content.
+    assert catalog.get_artifact_content(artifact["artifact_id"])["content"] == b"legacy bytes"
+    assert len(catalog.list_facts("S100OLD")) == 2
+    assert catalog.coverage_summary()["filings_with_issues"] == 1
+    with pytest.raises(LegacyLayoutError, match="needs to be split first"):
+        catalog.upsert_filing(filing_row("S100NEW"))
+    with pytest.raises(LegacyLayoutError):
+        catalog.set_status("S100OLD", "parsed", None, "2026-01-01")
+    with pytest.raises(LegacyLayoutError):
+        catalog.require_writable()
+    # Nothing was created beside the old file.
+    assert not (tmp_path / "filings").exists()
 
 
 def test_extract_zip_member_rejects_missing_member():

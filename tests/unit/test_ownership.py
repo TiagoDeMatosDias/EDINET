@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import src.ownership.api as ownership_api
+from src.filings.catalog import FilingCatalog
 from src.ownership import careers, service, update
 from src.ownership.directory import FilerDirectory, legal_key
 from src.ownership.names import (
@@ -30,6 +31,7 @@ from src.ownership.names import (
     title_en,
 )
 from src.ownership.parsing import career_entries, parse_annual_report, person_name, term_end
+from tests.filing_fixtures import filing_row
 
 TODAY = "2026-10-11"
 _NAMESPACE = "jpcrp030000-asr_{code}-000"
@@ -444,9 +446,11 @@ def _sources(tmp_path: Path) -> dict[str, str]:
         ], [{**SATO, "title": "社外取締役", "shares": 0}, other_yamada])),
         ("S100C026", "E99003", "株式会社親会社ホールディングス", "2026-03-31", "2026-06-26T10:00:00", _zip({"XBRL/PublicDoc/0104010_honbun_x_ixbrl.htm": "<html></html>"})),
     ]
-    with _db(filings) as conn:
-        conn.execute("CREATE TABLE filings (doc_id TEXT PRIMARY KEY, edinet_code TEXT, submitter_name TEXT, period_start TEXT, period_end TEXT, submitted_at TEXT, form_code TEXT, doc_type_code TEXT, archive_content BLOB)")
-        conn.executemany("INSERT INTO filings VALUES (?, ?, ?, '', ?, ?, '030000', '1', ?)", reports)
+    catalog = FilingCatalog(filings)
+    for doc_id, code, name, period_end, submitted, content in reports:
+        catalog.upsert_filing(filing_row(
+            doc_id, code, submitted, content=content, submitter_name=name, period_start="", period_end=period_end, doc_type_code="1",
+        ))
     return {"market": str(market), "filings": str(filings)}
 
 
@@ -466,7 +470,7 @@ def _entity(path: str, name: str, born: str | None = None) -> str:
 
 def test_update_reads_every_report_and_decides_who_is_who(updated):
     paths, result = updated
-    assert result["reports"] == {"documents": 4, "shareholders": 13, "officers": 7, "empty": 1, "errors": 0}
+    assert result["reports"] == {"documents": 4, "shareholders": 13, "officers": 7, "empty": 1, "errors": 0, "skipped": 0}
     assert result["entities"]["people"] == 5 and result["entities"]["companies"] == 2
     with _db(paths["market"]) as conn:
         conn.row_factory = sqlite3.Row
@@ -708,3 +712,18 @@ def test_the_pipeline_registers_the_ownership_step():
     definitions = registry[1] if isinstance(registry, tuple) else registry
     names = set(definitions) if isinstance(definitions, dict) else {definition.name for definition in definitions}
     assert "update_ownership" in names
+
+
+def test_a_report_in_a_missing_yearly_file_is_skipped_and_read_once_it_is_back(tmp_path, caplog):
+    paths = _sources(tmp_path)
+    shard = FilingCatalog(paths["filings"]).storage.shard_path("2025")
+    shard.rename(shard.with_suffix(".away"))
+
+    with caplog.at_level("WARNING"):
+        result = update.update_ownership(market_db=paths["market"], filings_db_path=paths["filings"])
+    assert result["reports"]["skipped"] == 1 and result["reports"]["errors"] == 0
+    assert "filings_2025.db is missing" in caplog.text
+
+    shard.with_suffix(".away").rename(shard)
+    again = update.update_ownership(market_db=paths["market"], filings_db_path=paths["filings"])
+    assert again["reports"]["skipped"] == 0 and again["reports"]["documents"] >= 1

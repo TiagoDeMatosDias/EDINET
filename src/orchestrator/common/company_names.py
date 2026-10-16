@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from html import unescape
 from typing import Any
 
+from src.filings.storage import ShardReader, ShardUnavailableError
 from src.orchestrator.common.sqlite import connect_read, connect_write
 
 logger = logging.getLogger(__name__)
@@ -97,13 +98,16 @@ def read_names(conn: sqlite3.Connection, filings_db_path: str, progress: Progres
     if not pending:
         return counts
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    source = connect_read(filings_db_path)
-    try:
+    with ShardReader(filings_db_path) as source:
         for index, code in enumerate(pending, start=1):
-            row = source.execute("SELECT archive_content FROM filings WHERE doc_id = ?", (latest[code],)).fetchone()
-            if row and row[0]:
+            try:
+                archive = source.archive(latest[code])
+            except ShardUnavailableError as exc:
+                logger.warning("The English name of %s was not read: %s", code, exc)
+                archive = None
+            if archive:
                 try:
-                    name = filer_english_name(bytes(row[0]))
+                    name = filer_english_name(archive)
                 except Exception as exc:  # noqa: BLE001 - one unreadable archive must not stop the rest
                     logger.debug("No English name read from %s: %s", latest[code], exc)
                     name = ""
@@ -120,8 +124,6 @@ def read_names(conn: sqlite3.Connection, filings_db_path: str, progress: Progres
                 counts["named"] += bool(name)
             if progress is not None:
                 progress(index, len(pending), f"Read the English name of {code}")
-    finally:
-        source.close()
     return counts
 
 

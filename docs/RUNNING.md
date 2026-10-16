@@ -18,13 +18,14 @@ Everything the application writes lives in one data folder: `data/` beside `main
 | `chat.db` | Chat channels and messages (kept apart because it grows with use) | No: back it up |
 | `jobs.db` | The job queue: open, running, and recently finished jobs with their progress and results, and worker sessions (see [Job workers](#job-workers)) | Finished jobs expire; open ones are lost with it |
 | `market.db` | EDINET document index (`DocumentList`), taxonomy, company info, statements, ratios, rolling metrics, prices, splits, bonds, and ownership | Yes, by the pipeline |
-| `filings.db` | Provider ZIPs, XBRL facts, catalog, translations, and the logs of filings the bond and ownership steps have read (`Bond_Documents`, with the bond supplements' ZIPs, and `Ownership_Documents`) | Yes, by the pipeline |
+| `filings.db` | The filing index: one row per filing (company, form, period, submission time, parse status, and which yearly file holds it), translations, and the logs of filings the bond and ownership steps have read (`Bond_Documents`, `Ownership_Documents`) | Yes, by the pipeline and `main.py filings reindex` |
+| `filings/filings_YYYY.db` | One file per submission year: each filing's provider ZIP, its XBRL facts, contexts, units, quality notes, and parse runs (see [Filing storage](#filing-storage)) | Yes, by the pipeline |
 | `certs/` | TLS certificate and key | Generated |
 | `logs/` | Rotating `server.log` and `worker-<id>.log` per worker | Generated |
 | `tools/` | `cloudflared`, downloaded when a tunnel is opened from a source checkout that has none (a release carries its own) | Generated |
 | `artifacts/` | Backtests, reports, screening exports, per-job workspaces (`artifacts/jobs/`), downloaded documents | Generated |
 
-When the web server starts, it creates any missing database with its managed schema, before it starts the local worker; from then on it opens `market.db` and `filings.db` read-only and leaves every write to the workers. Components that share `app.db` record their migrations per component in `schema_migrations`. The market tables are created by the pipeline; only the bond and ownership tables have a fixed schema. Earlier versions kept `Bond_Documents` and `Ownership_Documents` in `market.db`; the server moves them to `filings.db` when it starts. The server always reads its own databases; API requests cannot name one.
+When the web server starts, it first finishes a filing storage split that is ready (see [Splitting an existing filings.db](#splitting-an-existing-filingsdb)), then creates any missing database with its managed schema, before it starts the local worker; from then on it opens `market.db` and `filings.db` read-only and leaves every write to the workers. Components that share `app.db` record their migrations per component in `schema_migrations`. The market tables are created by the pipeline; only the bond and ownership tables have a fixed schema. Earlier versions kept `Bond_Documents` and `Ownership_Documents` in `market.db`; the server moves them to `filings.db` when it starts. The server always reads its own databases; API requests cannot name one.
 
 Settings are rows in the `settings` table of `app.db`, declared with their types, defaults, and validation in `src/settings/registry.py`. Administrators edit them under **Admin → Server settings**; from a terminal:
 
@@ -49,7 +50,7 @@ Settings are rows in the `settings` table of `app.db`, declared with their types
 | `workers.launch_local` | `on` | The server starts a job worker beside itself. `off`: only enrolled workers run jobs; see [Job workers](#job-workers). |
 | `tunnel.enabled` | `off` | `on` publishes the workstation through a Cloudflare tunnel; see [Cloudflare tunnel](#cloudflare-tunnel). |
 | `tunnel.token` | not set | Token of a tunnel in a Cloudflare account, for an address that stays the same. Write-only in the UI. |
-| `storage.market_db_path`, `storage.filings_db_path` | data folder | Move the two large databases, for example to a bigger disk. Move the file yourself with the server stopped, then set the path. |
+| `storage.market_db_path`, `storage.filings_db_path` | data folder | Move `market.db` or the filing index, for example to a bigger disk. Move the file yourself with the server stopped, then set the path. The yearly filing files live in `filings/` beside the index, so move that folder with it; a single year moves with `main.py filings move-shard` (see [Filing storage](#filing-storage)). |
 
 The API key applies at once, and so do the tunnel settings when they are changed on the Admin page; every other setting takes effect on the next start. How the server listens is not a setting but a launch option (`--host`, `--port`, `--allow-remote`), so a stored value can never make the server listen on the network. The one setting that publishes it, `tunnel.enabled`, goes out through Cloudflare and only while sign-in is on. If an administrator is locked out, `main.py config set auth.mode disabled` and a restart on loopback restore access.
 
@@ -155,40 +156,71 @@ Database inputs are resolved and authorized server-side. Uploads and generated o
 
 Values are byte counts, stored as settings in `app.db`, and read at application startup. Increase the backtest artifact limit only when the expected archive and available disk space justify it, then restart the application.
 
-### Filing archive storage
+### Filing storage
 
-`filings.db` retains each provider ZIP as a compressed `archive_content` BLOB. Extracted member bytes are not written for new ingests; the Filing Explorer extracts the requested member from the ZIP in memory when it is viewed. New catalogs retain numeric/analytical XBRL facts, contexts, units, and artifact metadata; narrative sections are reconstructed from the archive on demand instead of being materialized in the core database.
+Filings are stored in two parts:
 
-Complete Japanese-to-English translations are cached in the versioned `filing_translations` table in `filings.db`. The viewer always preserves the Japanese source and renders English alongside it. Translation covers complete section bodies and visible report HTML; model failures or residual Japanese return a retryable error instead of a partial English result.
+- **`filings.db`, the index** (well under 100 MB): one row per filing with its company, form, period, submission time, parse status and fact count, plus `filing_shards`, which records where each year's file is. Every list, search, count, the coverage summary and the overview read only the index.
+- **`filings/filings_YYYY.db`, one file per submission year**: the provider ZIP of each filing that year (in `filing_archives`, a table nothing scans), and everything parsed from it: XBRL facts, contexts, units, quality notes and parse runs. A file is opened only when someone views a filing from that year, or when a pipeline step reads it.
 
-Existing databases created before this storage mode may still contain extracted `artifacts.content` BLOBs. Review the dry-run summary, then compact an existing database only after confirming that every archive is retained:
+The year is the calendar year in which the filing was submitted, from its `submitted_at`. It never changes for a filing, and a filing without a submission date is not stored. A new year's file is created by the first download for that year. A fresh install starts with an empty index and no yearly files.
 
-```powershell
-\.venv3\Scripts\python.exe scripts/compact_filings_db.py
-\.venv3\Scripts\python.exe scripts/compact_filings_db.py --apply
-```
+Extracted files are never stored: the viewer reads the requested file from the ZIP when it is opened, and narrative sections are rebuilt from the ZIP in the same way. Complete Japanese-to-English translations are cached in `filing_translations` in the index. The viewer always keeps the Japanese source and shows the English beside it. Model failures or Japanese left in a translation give an error you can retry, never a partial English result.
 
-The compaction command refuses to clear an extracted member when its filing has no retained archive. It also requires substantial free disk space for SQLite `VACUUM`; use `--no-vacuum` only when clearing the BLOBs now and reclaiming space later is intentional.
+**A missing yearly file** affects only its year. Lists, search and coverage still work. Opening a filing from that year shows "This filing's archive is unavailable: filings_2018.db is missing" (the API answers 503 with that message). Pipeline steps skip those filings with a warning, and **Admin → Filing storage** shows the year as `missing`. Put the file back, or run `main.py filings check --repair` once it is restored.
 
-To reclaim a large WAL left by a bulk cleanup, stop the application and workers first, inspect it, then checkpoint it through SQLite:
+**Backups** need `filings.db` and every file in `filings/`, copied while the server and workers are stopped. Past years change rarely: `main.py filings close-years` marks each finished year `closed` and compacts it once. A closed year needs backing up only once, until a later write (a re-parse or a late download) sets it back to `active`.
 
-```powershell
-\.venv3\Scripts\python.exe scripts/checkpoint_filings_db.py
-\.venv3\Scripts\python.exe scripts/checkpoint_filings_db.py --apply
-```
+#### Splitting an existing filings.db
 
-To rebuild an existing catalog with the compact numeric-only schema, use a new output path on a volume with sufficient free space. The source database is read-only and is never overwritten:
+Installations from before this version keep all filings in a single `filings.db`. The server still reads that file, but it refuses downloads and other filing writes ("Filing storage needs to be split first (Admin → Filing storage)"). The overview and Admin pages show "Filing storage needs reorganising — ≈80 GB free space needed". The split never starts by itself. Start it when the disk has room for a copy of the old file plus 5%:
+
+- **From Admin → Filing storage.** The panel shows the filings, the years, the space needed and the free space, and lets you choose another absolute folder for the yearly files for this run. **Split filing storage** queues a `filings_split` job. The site keeps serving the old file while the job copies it, and an interrupted split resumes where it stopped. Once the copy is complete and checked, restart the server. Before it opens any database, the server copies the translations and step logs once more (so work logged in the meantime is kept), then renames `filings.db` to `filings.db.migrated` and `filings.next.db` to `filings.db`.
+- **From a terminal**, with the server and workers stopped:
 
 ```powershell
-\.venv3\Scripts\python.exe scripts/rebuild_filings_db.py --source data/filings.db --output D:\data\filings.compact.db
-\.venv3\Scripts\python.exe scripts/rebuild_filings_db.py --source data/filings.db --output D:\data\filings.compact.db --apply
+.\.venv3\Scripts\python.exe main.py filings split --dry-run                 # years, files, space needed
+.\.venv3\Scripts\python.exe main.py filings split                           # copy, check, and switch over
+.\.venv3\Scripts\python.exe main.py filings split --target-folder E:\filings  # yearly files on another disk
+.\.venv3\Scripts\python.exe main.py filings split --no-switch               # copy only; the next server start switches over
 ```
 
-The rebuild omits nonnumeric/nil facts, materialized sections, and the FTS copy of narrative text while retaining the compressed ZIPs. Verify the output before pointing the `storage.filings_db_path` setting at it.
+The split reads the old file only, in read-only mode. It writes `filings.next.db` and the yearly files, compares each year's row counts and archive hashes with the old file, and runs `PRAGMA quick_check` on every new file. A year that fails its check is removed and copied again on the next run. A filing without a submission date stops the split before anything is written; run **Acquire filings** for it first.
+
+**Rolling back**: stop the server, rename `filings.db` (the new index) to something else, and rename `filings.db.migrated` back to `filings.db`. The `filings/` folder can then be deleted. Filings downloaded after the switch-over are only in the new files, so download them again after a rollback.
+
+When the new files have been checked and backed up, delete the old file from **Admin → Filing storage** (it shows the path and size of `filings.db.migrated`) or by hand.
+
+#### Maintenance
+
+| Command (server and workers stopped where noted) | Admin → Filing storage | What it does |
+|---|---|---|
+| `main.py filings status` | the panel itself | Layout, index size, and each year's state, filings, archive bytes, file size and last check |
+| `main.py filings check [--shard 2019] [--full]` | **Check** on a year, **Check all** | Compares the index with the yearly files: missing files, filings missing from their file, filings no index row lists, counters that drifted; then `PRAGMA quick_check` (`integrity_check` with `--full`), recorded per year |
+| `main.py filings check --repair` | **Check and repair the index** | The same, and puts the index right where it differs; a file found in `filings/` that the index does not know is registered |
+| `main.py filings reindex` | — | Rebuilds the index's filing rows and `filing_shards` from the yearly files, which are the source of truth |
+| `main.py filings compact 2019` | **Compact** on a year | `VACUUM` of one year, needing free space the size of that year's file, not of every filing |
+| `main.py filings move-shard 2018 D:\filings\filings_2018.db` (stopped) | — | After you moved a year's file, checks that it is that year's file and points the index at it |
+| `main.py filings close-years` | — | Marks finished years `closed` and compacts each once |
+
+To shrink a large write-ahead log left by a bulk download, stop the application and workers, inspect, then checkpoint the index and every yearly file:
+
+```powershell
+.\.venv3\Scripts\python.exe scripts/checkpoint_filings_db.py
+.\.venv3\Scripts\python.exe scripts/checkpoint_filings_db.py --apply
+```
+
+To rebuild a year's file from its retained ZIPs (facts parsed again, numeric facts only, damaged archives left out with a warning), write new files next to the old ones, check them, then switch with the server stopped. The old file is kept:
+
+```powershell
+.\.venv3\Scripts\python.exe scripts/rebuild_filings_db.py --shard 2019                # dry run
+.\.venv3\Scripts\python.exe scripts/rebuild_filings_db.py --shard 2019 --apply        # writes filings_2019.rebuilt.db
+.\.venv3\Scripts\python.exe scripts/rebuild_filings_db.py --shard 2019 --apply --switch
+```
 
 ## Job workers
 
-The server does no heavy work itself. Pipelines, backtests, screens, translations, price and split refreshes, company descriptions, and filing downloads are queued as jobs in `data/jobs.db` and run by a job worker, a separate program: `ShadeWorker` (`ShadeWorker.exe` on Windows) in a release, `shade_worker.py` (or `main.py worker`) from source. The worker writes `market.db` and `filings.db`; the server opens them read-only, so a running pipeline never blocks or takes down the website.
+The server does no heavy work itself. Pipelines, backtests, screens, translations, price and split refreshes, company descriptions, and filing downloads are queued as jobs in `data/jobs.db` and run by a job worker, a separate program: `ShadeWorker` (`ShadeWorker.exe` on Windows) in a release, `shade_worker.py` (or `main.py worker`) from source. The worker writes `market.db`, `filings.db` and the yearly filing files; the server opens them read-only, so a running pipeline never blocks or takes down the website.
 
 ```
 User → Server → jobs.db → Worker → Server → User (job tray / toast)
@@ -250,7 +282,7 @@ Use repeated `--stage` options for focused checks, or `--timeout-seconds N` for 
 
 ## Steps
 
-Steps always read and write the application's own databases (`market.db`, and `filings.db` for filing archives); none takes a database path. Steps marked as needing the EDINET API key are refused before they start when the `edinet.api_key` setting is empty.
+Steps always read and write the application's own databases (`market.db`, and `filings.db` with its yearly files for filing archives); none takes a database path. Steps marked as needing the EDINET API key are refused before they start when the `edinet.api_key` setting is empty.
 
 ### `get_documents`
 Fetches the list of available filings from the EDINET API and stores document metadata in `DocumentList` in `market.db`. Needs the EDINET API key.
@@ -284,7 +316,7 @@ Downloads filings for documents already in the document list that match the filt
 ---
 
 ### `download_xbrl`
-Downloads and indexes EDINET type-1 XBRL packages into `filings.db`. Uses the `edinet.api_key` setting.
+Downloads and indexes EDINET type-1 XBRL packages: each filing goes to the file of the year it was submitted (`filings/filings_YYYY.db`), then to the index, `filings.db`. Uses the `edinet.api_key` setting.
 
 ```json
 "download_xbrl_config": {
@@ -441,10 +473,16 @@ Reads corporate bonds into the bond tables of `market.db`:
 
 1. **Bond supplements** — every shelf-registration supplement
    (発行登録追補書類, document type 100, with XBRL) listed in `DocumentList`
-   and not read yet is downloaded from EDINET with the API key and kept in
-   `Bond_Documents` in `filings.db`; each bond's terms and ratings go to
-   `Bond_Issuances`.
-   Supplements EDINET no longer serves are marked unavailable.
+   and not read yet is downloaded from EDINET with the API key and stored in
+   the filing catalog like any other filing (its year's file; listed in the
+   Filing Explorer under **Shelf supplements**, without XBRL facts, so the
+   statements step never reads it); each bond's terms and ratings go to
+   `Bond_Issuances`, and `Bond_Documents` in `filings.db` logs what was read.
+   Supplements EDINET no longer serves are marked unavailable. Supplements
+   whose ZIP an earlier version kept in `Bond_Documents` are moved into the
+   catalog at the start of the run, dated from `DocumentList` where the log
+   has no date; one that cannot be placed stays in the log for the next run.
+   A supplement whose yearly file is missing is skipped (`skipped`).
 2. **Annual-report bond schedules** — each company's latest annual report in
    `filings.db` (form 030000) is read for its bond schedule (社債明細表;
    the bonds-and-borrowings note for IFRS filers) into `Bond_Schedule_Rows`.
@@ -468,7 +506,7 @@ Reads corporate bonds into the bond tables of `market.db`:
 Everything already read is skipped, so a daily run takes seconds after the
 first (about 40 s for 561 supplements and 4,948 annual reports when stored).
 A filing counts as read only while its rows are in `market.db`, so a rebuilt
-`market.db` has its filings read again (supplements from their stored ZIP).
+`market.db` has its filings read again (supplements from the catalog).
 **Overwrite** re-reads every stored supplement and report with the current
 parser, without downloading again.
 
@@ -532,7 +570,7 @@ Supports `overwrite` — when enabled, the output tables are dropped and fully r
 }
 ```
 
-- `Source_Mode` — `csv` (default) reads the legacy `financialData_full` table in `market.db`; `filings` reads normalized numeric XBRL facts from `filings.db`.
+- `Source_Mode` — `csv` (default) reads the legacy `financialData_full` table in `market.db`; `filings` reads normalized numeric XBRL facts from the yearly filing files, one year at a time.
 - `Granularity_level` — maximum taxonomy level to materialize into the statement tables. `ShareMetrics` concepts are stored at level `0` so they are always included.
 
 Runtime notes:

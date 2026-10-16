@@ -259,6 +259,9 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .callout--info { background: var(--primary-soft); color: var(--primary); }
 .callout--success { background: var(--success-soft); color: var(--success); }
 .callout--warning { background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning-border); }
+/* Filing storage still has the old single-file layout (overview and Admin). */
+.filing-storage-banner { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.filing-storage-banner .text-button { margin-left: auto; color: inherit; text-decoration: underline; }
 .callout--warning pre { margin: 8px 0 0; padding: 8px; background: rgb(135 86 15 / 6%); border-radius: var(--radius); font-size: .76rem; word-break: break-all; white-space: pre-wrap; max-height: 120px; overflow-y: auto; }
 .form-success { color: var(--success); font-size: .84rem; }
 /* ---- button variants ---- */

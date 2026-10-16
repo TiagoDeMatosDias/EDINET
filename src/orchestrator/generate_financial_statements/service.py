@@ -4,6 +4,7 @@ import re
 import sqlite3
 import uuid
 from collections import Counter, defaultdict
+from contextlib import closing
 
 import pandas as pd
 
@@ -361,6 +362,68 @@ def _fetch_pending_filings_doc_ids(helper, conn, source_schema, fs_table=_FINANC
         """
     ).fetchall()
     return [str(row[0]) for row in rows]
+
+
+def _is_split_filings_index(source_db):
+    """Whether ``source_db`` is a filing index whose content sits in yearly files."""
+    from src.filings.storage import LAYOUT_SPLIT, FilingStorage
+
+    return FilingStorage(source_db).layout() == LAYOUT_SPLIT
+
+
+def _pending_filings_by_shard(source_db, conn, fs_table=_FINANCIAL_STATEMENTS_TABLE):
+    """Pending filings of a split catalog as ``[(shard file, [doc_id, ...]), ...]``, plus how many were skipped.
+
+    Pending: parsed, with numeric facts (the index's ``fact_count``), and no
+    statement row yet. Read from the index alone, which holds no archive; the
+    order is ``submitted_at, doc_id`` as on the single-file catalog, and each
+    year's filings form one group, since a filing's file is its submission year.
+    Filings whose yearly file is missing are skipped with a warning.
+    """
+    from src.filings.storage import FilingStorage
+
+    storage = FilingStorage(source_db)
+    done = {str(row[0]) for row in conn.execute(f'SELECT "docID" FROM {_DB_HELPER._sql_ident(fs_table)}')}
+    index = storage.connect_index()
+    try:
+        rows = index.execute(
+            "SELECT doc_id, shard FROM filings WHERE status = 'parsed' AND fact_count > 0 "
+            "ORDER BY COALESCE(CAST(submitted_at AS TEXT), ''), CAST(doc_id AS TEXT)"
+        ).fetchall()
+        groups: dict[str, list[str]] = {}
+        for doc_id, shard in rows:
+            if str(doc_id) not in done:
+                groups.setdefault(str(shard), []).append(str(doc_id))
+        paths = {shard: storage.shard_path(shard, index) for shard in groups}
+    finally:
+        index.close()
+    shard_groups = []
+    skipped = 0
+    for shard, doc_ids in groups.items():
+        if paths[shard].is_file():
+            shard_groups.append((paths[shard], doc_ids))
+        else:
+            skipped += len(doc_ids)
+            logger.warning(
+                "Skipping %d filing(s) of %s: %s is missing.", len(doc_ids), shard, paths[shard].name
+            )
+    return shard_groups, skipped
+
+
+def _shard_batches(conn, shard_groups, batch_size):
+    """Document batches with their year's file attached as ``src``; one file attached at a time."""
+    for path, doc_ids in shard_groups:
+        conn.execute("ATTACH DATABASE ? AS src", (str(path),))
+        try:
+            yield from _iter_doc_batches(doc_ids, batch_size)
+        except BaseException:
+            try:
+                conn.execute("DETACH DATABASE src")
+            except sqlite3.Error:
+                pass
+            raise
+        # Every batch commits, so nothing is pending on the file when it is detached.
+        conn.execute("DETACH DATABASE src")
 
 
 def _load_metadata_batch(helper, conn, source_schema, source_table, doc_ids):
@@ -959,7 +1022,14 @@ def generate_financial_statements(
         conn.execute("PRAGMA synchronous = NORMAL")
 
         source_schema = "main"
-        if not same_db:
+        # A split filing catalog: the index picks the documents, and each year's
+        # file is attached in turn (SQLite attaches at most ten databases).
+        split_filings = (
+            normalized_source_mode == _SOURCE_MODE_FILINGS and not same_db and _is_split_filings_index(source_db)
+        )
+        if split_filings:
+            source_schema = "src"
+        elif not same_db:
             conn.execute("ATTACH DATABASE ? AS src", (source_db,))
             source_schema = "src"
 
@@ -972,7 +1042,15 @@ def generate_financial_statements(
 
         table_names = _ensure_financial_statement_tables(helper, conn, overwrite=overwrite)
         release_catalog = _load_release_catalog(conn, helper._sql_ident(taxonomy_actual))
-        if normalized_source_mode == _SOURCE_MODE_FILINGS:
+        shard_groups = []
+        if split_filings:
+            shard_groups, skipped_documents = _pending_filings_by_shard(
+                source_db, conn, table_names[_FINANCIAL_STATEMENTS_TABLE]
+            )
+            pending_doc_ids = [doc_id for _path, doc_ids in shard_groups for doc_id in doc_ids]
+            if skipped_documents:
+                logger.warning("%d filing(s) skipped because their yearly file is missing.", skipped_documents)
+        elif normalized_source_mode == _SOURCE_MODE_FILINGS:
             pending_doc_ids = _fetch_pending_filings_doc_ids(
                 helper, conn, source_schema, table_names[_FINANCIAL_STATEMENTS_TABLE]
             )
@@ -990,146 +1068,152 @@ def generate_financial_statements(
             granularity,
         )
 
-        for doc_batch in _iter_doc_batches(pending_doc_ids, _DOCUMENT_BATCH_SIZE):
-            if context is not None:
-                if total_documents:
-                    context.report_progress(
-                        processed_documents,
-                        total_documents,
-                        "Generating financial statement batch",
+        batches = (
+            _shard_batches(conn, shard_groups, _DOCUMENT_BATCH_SIZE)
+            if split_filings
+            else _iter_doc_batches(pending_doc_ids, _DOCUMENT_BATCH_SIZE)
+        )
+        with closing(batches):
+            for doc_batch in batches:
+                if context is not None:
+                    if total_documents:
+                        context.report_progress(
+                            processed_documents,
+                            total_documents,
+                            "Generating financial statement batch",
+                        )
+                    else:
+                        context.checkpoint()
+                if normalized_source_mode == _SOURCE_MODE_FILINGS:
+                    metadata_batch_df = _load_filings_metadata_batch(
+                        helper,
+                        conn,
+                        source_schema,
+                        doc_batch,
                     )
                 else:
-                    context.checkpoint()
-            if normalized_source_mode == _SOURCE_MODE_FILINGS:
-                metadata_batch_df = _load_filings_metadata_batch(
-                    helper,
-                    conn,
-                    source_schema,
-                    doc_batch,
-                )
-            else:
-                metadata_batch_df = _load_metadata_batch(
-                    helper,
-                    conn,
-                    source_schema,
-                    source_actual,
-                    doc_batch,
-                )
-            if metadata_batch_df.empty:
-                continue
-
-            metadata_batch_df = _resolve_release_ids(metadata_batch_df, release_catalog)
-            if metadata_batch_df["release_id"].isna().any():
-                unresolved = metadata_batch_df.loc[metadata_batch_df["release_id"].isna(), "docID"].tolist()
-                raise ValueError(f"No taxonomy release could be resolved for docID(s)={unresolved!r}.")
-
-            financial_statement_frames = []
-            statement_frames_by_family = {statement_family: [] for statement_family in _STATEMENT_TABLES}
-            batch_mapping_frames = []
-
-            for release_id, release_metadata_df in metadata_batch_df.groupby("release_id", sort=False):
-                cache_key = (str(release_id), granularity)
-                taxonomy_bundle = taxonomy_cache.get(cache_key)
-                if taxonomy_bundle is None:
-                    taxonomy_bundle = _load_taxonomy_bundle(
-                        conn,
+                    metadata_batch_df = _load_metadata_batch(
                         helper,
-                        helper._sql_ident(taxonomy_actual),
-                        release_id,
-                        granularity,
+                        conn,
+                        source_schema,
+                        source_actual,
+                        doc_batch,
                     )
-                    _synchronize_statement_tables(helper, conn, taxonomy_bundle, table_names)
-                    mapping_df = _build_taxonomy_mapping_frame(taxonomy_bundle)
-                    taxonomy_bundle["mapping_df"] = mapping_df
-                    taxonomy_bundle["concept_qnames"] = tuple(mapping_df["concept_qname"].drop_duplicates().tolist())
-                    taxonomy_cache[cache_key] = taxonomy_bundle
+                if metadata_batch_df.empty:
+                    continue
 
-                release_mapping_df = taxonomy_bundle["mapping_df"].copy()
-                release_mapping_df["release_id"] = str(release_id)
-                batch_mapping_frames.append(release_mapping_df)
+                metadata_batch_df = _resolve_release_ids(metadata_batch_df, release_catalog)
+                if metadata_batch_df["release_id"].isna().any():
+                    unresolved = metadata_batch_df.loc[metadata_batch_df["release_id"].isna(), "docID"].tolist()
+                    raise ValueError(f"No taxonomy release could be resolved for docID(s)={unresolved!r}.")
 
-                financial_statement_frames.append(
-                    release_metadata_df[
-                        [
-                            "docID",
-                            "Company_Code",
-                            "docTypeCode",
-                            "Currency",
-                            "Data_Source",
-                            "submitDateTime",
-                            "periodStart",
-                            "periodEnd",
-                            "release_id",
-                        ]
+                financial_statement_frames = []
+                statement_frames_by_family = {statement_family: [] for statement_family in _STATEMENT_TABLES}
+                batch_mapping_frames = []
+
+                for release_id, release_metadata_df in metadata_batch_df.groupby("release_id", sort=False):
+                    cache_key = (str(release_id), granularity)
+                    taxonomy_bundle = taxonomy_cache.get(cache_key)
+                    if taxonomy_bundle is None:
+                        taxonomy_bundle = _load_taxonomy_bundle(
+                            conn,
+                            helper,
+                            helper._sql_ident(taxonomy_actual),
+                            release_id,
+                            granularity,
+                        )
+                        _synchronize_statement_tables(helper, conn, taxonomy_bundle, table_names)
+                        mapping_df = _build_taxonomy_mapping_frame(taxonomy_bundle)
+                        taxonomy_bundle["mapping_df"] = mapping_df
+                        taxonomy_bundle["concept_qnames"] = tuple(mapping_df["concept_qname"].drop_duplicates().tolist())
+                        taxonomy_cache[cache_key] = taxonomy_bundle
+
+                    release_mapping_df = taxonomy_bundle["mapping_df"].copy()
+                    release_mapping_df["release_id"] = str(release_id)
+                    batch_mapping_frames.append(release_mapping_df)
+
+                    financial_statement_frames.append(
+                        release_metadata_df[
+                            [
+                                "docID",
+                                "Company_Code",
+                                "docTypeCode",
+                                "Currency",
+                                "Data_Source",
+                                "submitDateTime",
+                                "periodStart",
+                                "periodEnd",
+                                "release_id",
+                            ]
+                        ].copy()
+                    )
+
+                combined_mapping_df = pd.concat(batch_mapping_frames, ignore_index=True) if batch_mapping_frames else pd.DataFrame(
+                    columns=["statement_family", "concept_qname", "column_name", "release_id"]
+                )
+                combined_concepts = _with_consolidated_alternatives(combined_mapping_df["concept_qname"].drop_duplicates().tolist())
+
+                if normalized_source_mode == _SOURCE_MODE_FILINGS:
+                    facts_batch_df = _load_filings_fact_batch(
+                        helper,
+                        conn,
+                        source_schema,
+                        metadata_batch_df["docID"].tolist(),
+                        concept_qnames=combined_concepts,
+                    )
+                else:
+                    facts_batch_df = _load_fact_batch(
+                        helper,
+                        conn,
+                        source_schema,
+                        source_actual,
+                        metadata_batch_df["docID"].tolist(),
+                        concept_qnames=combined_concepts,
+                    )
+
+                for release_id, release_metadata_df in metadata_batch_df.groupby("release_id", sort=False):
+                    release_mapping_df = combined_mapping_df.loc[
+                        combined_mapping_df["release_id"] == str(release_id)
                     ].copy()
-                )
 
-            combined_mapping_df = pd.concat(batch_mapping_frames, ignore_index=True) if batch_mapping_frames else pd.DataFrame(
-                columns=["statement_family", "concept_qname", "column_name", "release_id"]
-            )
-            combined_concepts = _with_consolidated_alternatives(combined_mapping_df["concept_qname"].drop_duplicates().tolist())
+                    release_statement_frames = _build_statement_batch_frames(
+                        release_metadata_df,
+                        facts_batch_df,
+                        release_mapping_df,
+                    )
+                    for statement_family, frame in release_statement_frames.items():
+                        statement_frames_by_family[statement_family].append(frame)
 
-            if normalized_source_mode == _SOURCE_MODE_FILINGS:
-                facts_batch_df = _load_filings_fact_batch(
-                    helper,
-                    conn,
-                    source_schema,
-                    metadata_batch_df["docID"].tolist(),
-                    concept_qnames=combined_concepts,
-                )
-            else:
-                facts_batch_df = _load_fact_batch(
-                    helper,
-                    conn,
-                    source_schema,
-                    source_actual,
-                    metadata_batch_df["docID"].tolist(),
-                    concept_qnames=combined_concepts,
-                )
-
-            for release_id, release_metadata_df in metadata_batch_df.groupby("release_id", sort=False):
-                release_mapping_df = combined_mapping_df.loc[
-                    combined_mapping_df["release_id"] == str(release_id)
-                ].copy()
-
-                release_statement_frames = _build_statement_batch_frames(
-                    release_metadata_df,
-                    facts_batch_df,
-                    release_mapping_df,
-                )
-                for statement_family, frame in release_statement_frames.items():
-                    statement_frames_by_family[statement_family].append(frame)
-
-            _bulk_replace_rows(
-                conn,
-                helper,
-                table_names[_FINANCIAL_STATEMENTS_TABLE],
-                pd.concat(financial_statement_frames, ignore_index=True),
-            )
-            for statement_family, frames in statement_frames_by_family.items():
                 _bulk_replace_rows(
                     conn,
                     helper,
-                    table_names[statement_family],
-                    pd.concat(frames, ignore_index=True),
+                    table_names[_FINANCIAL_STATEMENTS_TABLE],
+                    pd.concat(financial_statement_frames, ignore_index=True),
                 )
+                for statement_family, frames in statement_frames_by_family.items():
+                    _bulk_replace_rows(
+                        conn,
+                        helper,
+                        table_names[statement_family],
+                        pd.concat(frames, ignore_index=True),
+                    )
 
-            processed_documents += len(metadata_batch_df)
-            conn.commit()
-            if context is not None and total_documents:
-                context.report_progress(
-                    processed_documents,
-                    total_documents,
-                    "Financial statement batch committed",
-                )
+                processed_documents += len(metadata_batch_df)
+                conn.commit()
+                if context is not None and total_documents:
+                    context.report_progress(
+                        processed_documents,
+                        total_documents,
+                        "Financial statement batch committed",
+                    )
 
-            if processed_documents % _PROGRESS_LOG_INTERVAL == 0 or processed_documents == total_documents:
-                logger.info(
-                    "Processed %d/%d docID(s) for generate_financial_statements (%d remaining).",
-                    processed_documents,
-                    total_documents,
-                    total_documents - processed_documents,
-                )
+                if processed_documents % _PROGRESS_LOG_INTERVAL == 0 or processed_documents == total_documents:
+                    logger.info(
+                        "Processed %d/%d docID(s) for generate_financial_statements (%d remaining).",
+                        processed_documents,
+                        total_documents,
+                        total_documents - processed_documents,
+                    )
 
         # Figures an issuer tagged a power of ten off, against the report's own others.
         from .slips import correct_decimal_slips, ensure_corrections_table

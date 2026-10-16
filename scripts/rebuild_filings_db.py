@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""Build a compact filing catalog from retained ZIP archives.
+"""Rebuild yearly filing files from their own retained ZIP archives.
 
-The source database is never modified.  The rebuilt catalog keeps filing
-metadata, compressed archives, artifact metadata, contexts, units, numeric
-XBRL facts, and the logs of filings the bond and ownership steps have read
-(with the bond supplements' archives).  Materialized narrative sections, the FTS copy of those
-sections, nonnumeric facts, nil facts, and their per-fact quality rows are
-intentionally omitted because the source ZIP remains available on demand.
+Each yearly file (``filings/filings_YYYY.db``) is rebuilt into a new file next
+to it (``filings_YYYY.rebuilt.db``, or in ``--output-folder``); the existing
+file is never modified. The new file keeps the filing metadata, the compressed
+archives (each checked against its SHA-256), artifact metadata, contexts,
+units and parse runs, and re-parses every archive's XBRL so only structural
+numeric facts are kept, with their quality issues assessed again.
 
-Run without ``--apply`` to inspect the expected reduction.  ``--apply``
-requires an output path that does not already exist; build the output on a
-different drive when the source volume does not have enough free space.
+Run without ``--apply`` to see what would be rebuilt. ``--switch`` (with the
+server stopped) then points the index at the new file and re-reads its filing
+rows; the old file stays where it was until you delete it.
+
+The old single-file ``filings.db`` must be split first (``main.py filings split``).
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
-import os
 import shutil
 import sqlite3
 import sys
@@ -28,124 +30,55 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.bonds.store import ensure_documents_table as ensure_bond_documents  # noqa: E402
 from src.filings.archive import DEFAULT_ARCHIVE_POLICY, validate_zip_in_memory  # noqa: E402
-from src.filings.catalog import FilingCatalog  # noqa: E402
 from src.filings.quality import assess_facts  # noqa: E402
+from src.filings.storage import (  # noqa: E402
+    LAYOUT_SPLIT,
+    METADATA_COLUMNS,
+    FilingStorage,
+    FilingStorageError,
+    initialize_shard,
+    shard_info,
+    validate_shard_id,
+)
 from src.filings.xbrl import XbrlParser  # noqa: E402
 from src.orchestrator.common.db_config import get_filings_db  # noqa: E402
-from src.orchestrator.common.sqlite import connect_read, connect_write  # noqa: E402
-from src.ownership.store import ensure_documents_table as ensure_ownership_documents  # noqa: E402
+from src.orchestrator.common.sqlite import connect_read, connect_write, initialize_managed_database  # noqa: E402
 
 _ARCHIVE_LIMIT = 25 * 1024 * 1024
-_FILINGS_COLUMNS = (
-    "doc_id, edinet_code, submitter_name, period_start, period_end, submitted_at, "
-    "form_code, doc_type_code, xbrl_flag, csv_flag, archive_path, archive_content, "
-    "archive_sha256, archive_size, status, parse_error, created_at, updated_at"
-)
-_ARTIFACT_COLUMNS = (
-    "artifact_id, doc_id, member_path, kind, media_type, size_bytes, sha256"
-)
-_ARTIFACT_DESTINATION_COLUMNS = f"{_ARTIFACT_COLUMNS}, content"
+_REBUILT_SUFFIX = ".rebuilt.db"
 _FACT_COLUMNS = (
     "fact_id, doc_id, artifact_id, concept, namespace_uri, context_id, unit_id, "
     "value_text, numeric_value, decimals, is_nil"
 )
+#: Tables copied unchanged from the old yearly file, with their columns.
+_COPIED_TABLES: tuple[tuple[str, str], ...] = (
+    ("filings", ", ".join(METADATA_COLUMNS)),
+    ("artifacts", "artifact_id, doc_id, member_path, kind, media_type, size_bytes, sha256"),
+    ("xbrl_contexts", "context_id, doc_id, entity_identifier, period_start, period_end, instant"),
+    ("xbrl_units", "unit_id, doc_id, measure"),
+    (
+        "parse_runs",
+        "parse_run_id, doc_id, parser_version, status, started_at, completed_at, fact_count, "
+        "section_count, warning_count, error_message",
+    ),
+)
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Rebuild a compact Filings.db from retained compressed archives."
-    )
+    parser = argparse.ArgumentParser(description="Rebuild yearly filing files from their retained archives.")
+    parser.add_argument("--index", default=get_filings_db(), help="The filing index (default: the configured filings.db)")
+    parser.add_argument("--shard", action="append", help="A year to rebuild (repeatable); default: every year")
+    parser.add_argument("--output-folder", help="Where the rebuilt files go (default: next to each yearly file)")
+    parser.add_argument("--apply", action="store_true", help="Build the new files; without this the command is a dry run.")
     parser.add_argument(
-        "--source",
-        default=get_filings_db(),
-        help="Source Filings.db (default: configured filings database)",
-    )
-    parser.add_argument(
-        "--output",
-        required=True,
-        help="New database path; it must not already exist",
-    )
-    parser.add_argument(
-        "--apply",
+        "--switch",
         action="store_true",
-        help="Build the output database; without this flag the command is a dry run.",
+        help="After building, point the index at each new file (server stopped); the old file is kept.",
     )
-    parser.add_argument(
-        "--no-vacuum",
-        action="store_true",
-        help="Skip the final VACUUM; the rebuilt database is still checkpointed.",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=250,
-        help="Rows per copy batch (default: 250)",
-    )
+    parser.add_argument("--no-vacuum", action="store_true", help="Skip the final VACUUM of each new file.")
+    parser.add_argument("--batch-size", type=int, default=250, help="Rows per copy batch (default: 250)")
     return parser
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone() is not None
-
-
-def _summary(path: Path) -> dict[str, int]:
-    conn = connect_read(path)
-    try:
-        filing = conn.execute(
-            """SELECT COUNT(*) AS filing_count,
-                      COALESCE(SUM(archive_size), 0) AS archive_bytes,
-                      SUM(CASE WHEN archive_content IS NOT NULL THEN 1 ELSE 0 END)
-                          AS archived_count
-                 FROM filings"""
-        ).fetchone()
-        facts = conn.execute(
-            """SELECT COUNT(*) AS fact_count,
-                      SUM(CASE WHEN numeric_value IS NOT NULL AND is_nil = 0 THEN 1 ELSE 0 END)
-                          AS numeric_fact_count,
-                      SUM(CASE WHEN numeric_value IS NULL AND value_text IS NOT NULL THEN 1 ELSE 0 END)
-                          AS nonnumeric_fact_count,
-                      COALESCE(SUM(CASE WHEN numeric_value IS NULL AND value_text IS NOT NULL
-                                       THEN length(CAST(value_text AS BLOB)) ELSE 0 END), 0)
-                          AS nonnumeric_text_bytes
-                 FROM xbrl_facts"""
-        ).fetchone()
-        sections = (0, 0)
-        if _table_exists(conn, "sections"):
-            sections = conn.execute(
-                """SELECT COUNT(*),
-                          COALESCE(SUM(length(CAST(text AS BLOB))), 0)
-                     FROM sections"""
-            ).fetchone()
-        return {
-            "filing_count": int(filing["filing_count"] or 0),
-            "archived_count": int(filing["archived_count"] or 0),
-            "archive_bytes": int(filing["archive_bytes"] or 0),
-            "fact_count": int(facts["fact_count"] or 0),
-            "numeric_fact_count": int(facts["numeric_fact_count"] or 0),
-            "nonnumeric_fact_count": int(facts["nonnumeric_fact_count"] or 0),
-            "nonnumeric_text_bytes": int(facts["nonnumeric_text_bytes"] or 0),
-            "section_count": int(sections[0] or 0),
-            "section_text_bytes": int(sections[1] or 0),
-        }
-    finally:
-        conn.close()
-
-
-def _print_summary(summary: dict[str, int]) -> None:
-    print(f"Filings: {summary['filing_count']:,}")
-    print(f"Retained archives: {summary['archived_count']:,}")
-    print(f"Archive bytes: {summary['archive_bytes']:,}")
-    print(f"Source facts: {summary['fact_count']:,}")
-    print(f"Numeric facts to retain: {summary['numeric_fact_count']:,}")
-    print(f"Nonnumeric facts to omit: {summary['nonnumeric_fact_count']:,}")
-    print(f"Nonnumeric text to omit: {summary['nonnumeric_text_bytes']:,} bytes")
-    print(f"Materialized sections to omit: {summary['section_count']:,}")
-    print(f"Materialized section text to omit: {summary['section_text_bytes']:,} bytes")
 
 
 def _copy_batches(
@@ -174,121 +107,39 @@ def _copy_catalog_rows(
     *,
     batch_size: int,
 ) -> dict[str, int]:
+    """Copy filings, artifact metadata, contexts, units and parse runs, then every archive (SHA-256 checked)."""
     counts: dict[str, int] = {}
-    counts["filings"] = _copy_batches(
-        source,
-        destination,
-        f"SELECT {_FILINGS_COLUMNS} FROM filings ORDER BY doc_id",
-        f"INSERT INTO filings ({_FILINGS_COLUMNS}) VALUES ({','.join('?' for _ in _FILINGS_COLUMNS.split(', '))})",
-        batch_size=batch_size,
-    )
-    counts["artifacts"] = _copy_batches(
-        source,
-        destination,
-        f"SELECT {_ARTIFACT_COLUMNS} FROM artifacts ORDER BY doc_id, member_path",
-        f"INSERT INTO artifacts ({_ARTIFACT_DESTINATION_COLUMNS}) VALUES ({','.join('?' for _ in _ARTIFACT_COLUMNS.split(', '))}, NULL)",
-        batch_size=batch_size,
-    )
-    counts["contexts"] = _copy_batches(
-        source,
-        destination,
-        "SELECT context_id, doc_id, entity_identifier, period_start, period_end, instant "
-        "FROM xbrl_contexts ORDER BY doc_id, context_id",
-        "INSERT OR IGNORE INTO xbrl_contexts "
-        "(context_id, doc_id, entity_identifier, period_start, period_end, instant) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        batch_size=batch_size,
-    )
-    counts["units"] = _copy_batches(
-        source,
-        destination,
-        "SELECT unit_id, doc_id, measure FROM xbrl_units ORDER BY doc_id, unit_id",
-        "INSERT OR IGNORE INTO xbrl_units (unit_id, doc_id, measure) VALUES (?, ?, ?)",
-        batch_size=batch_size,
-    )
-    return counts
-
-
-def _copy_small_tables(
-    source: sqlite3.Connection,
-    destination: sqlite3.Connection,
-    *,
-    batch_size: int,
-) -> dict[str, int]:
-    """Copy small derived/catalog tables whose schemas are unchanged."""
-    counts: dict[str, int] = {}
-    table_names = (
-        "data_watermarks",
-        "filing_translations",
-        "metric_catalog",
-        "observations",
-        "observation_dependencies",
-        "parse_runs",
-        "Bond_Documents",
-        "Ownership_Documents",
-    )
-    for table_name in table_names:
-        if not _table_exists(source, table_name) or not _table_exists(destination, table_name):
-            continue
-        source_columns = [row[1] for row in source.execute(f"PRAGMA table_info({table_name})")]
-        destination_columns = {row[1] for row in destination.execute(f"PRAGMA table_info({table_name})")}
-        columns = [column for column in source_columns if column in destination_columns]
-        quoted = ", ".join(f'"{column}"' for column in columns)
-        placeholders = ", ".join("?" for _ in columns)
-        counts[table_name] = _copy_batches(
+    for table, columns in _COPIED_TABLES:
+        marks = ", ".join("?" for _ in columns.split(", "))
+        counts[table] = _copy_batches(
             source,
             destination,
-            f'SELECT {quoted} FROM "{table_name}"',
-            f'INSERT OR REPLACE INTO "{table_name}" ({quoted}) VALUES ({placeholders})',
+            f"SELECT {columns} FROM {table} ORDER BY rowid",
+            f"INSERT OR IGNORE INTO {table} ({columns}) VALUES ({marks})",
             batch_size=batch_size,
         )
-    return counts
-
-
-def _copy_observation_sources(
-    source: sqlite3.Connection,
-    destination: sqlite3.Connection,
-    *,
-    batch_size: int,
-) -> int:
-    """Copy provenance links only when their source fact survived filtering."""
-    table_name = "observation_sources"
-    if not _table_exists(source, table_name) or not _table_exists(destination, table_name):
-        return 0
-    columns = [row[1] for row in source.execute(f"PRAGMA table_info({table_name})")]
-    destination_columns = {row[1] for row in destination.execute(f"PRAGMA table_info({table_name})")}
-    columns = [column for column in columns if column in destination_columns]
-    quoted = ", ".join(f'"{column}"' for column in columns)
-    placeholders = ", ".join("?" for _ in columns)
-    insert_sql = f'INSERT OR REPLACE INTO "{table_name}" ({quoted}) VALUES ({placeholders})'
-    copied = 0
-    cursor = source.execute(f'SELECT {quoted} FROM "{table_name}"')
+    counts["filing_archives"] = 0
+    bad: list[str] = []
+    cursor = source.execute("SELECT doc_id, sha256, size, content FROM filing_archives ORDER BY doc_id")
     while True:
         rows = cursor.fetchmany(batch_size)
         if not rows:
             break
-        fact_ids = list({row["fact_id"] for row in rows if row["fact_id"]})
-        surviving: set[str] = set()
-        for start in range(0, len(fact_ids), 500):
-            chunk = fact_ids[start : start + 500]
-            marks = ", ".join("?" for _ in chunk)
-            surviving.update(
-                row[0]
-                for row in destination.execute(
-                    f"SELECT fact_id FROM xbrl_facts WHERE fact_id IN ({marks})",
-                    chunk,
-                )
-            )
-        kept = [
-            tuple(row)
-            for row in rows
-            if not row["fact_id"] or row["fact_id"] in surviving
-        ]
-        if kept:
-            destination.executemany(insert_sql, kept)
-            destination.commit()
-            copied += len(kept)
-    return copied
+        kept = []
+        for row in rows:
+            content = bytes(row["content"])
+            if hashlib.sha256(content).hexdigest() != row["sha256"] or len(content) != row["size"]:
+                bad.append(str(row["doc_id"]))
+                continue
+            kept.append((row["doc_id"], row["sha256"], row["size"], content))
+        destination.executemany("INSERT INTO filing_archives (doc_id, sha256, size, content) VALUES (?, ?, ?, ?)", kept)
+        destination.commit()
+        counts["filing_archives"] += len(kept)
+    if bad:
+        # A damaged archive is left out; the filing stays and can be downloaded again.
+        print(f"Warning: {len(bad)} archive(s) did not match their SHA-256 and were left out: {', '.join(bad[:20])}")
+    counts["damaged_archives"] = len(bad)
+    return counts
 
 
 def _fact_row(doc_id: str, artifact_id: str, fact: Any) -> dict[str, Any]:
@@ -307,85 +158,57 @@ def _fact_row(doc_id: str, artifact_id: str, fact: Any) -> dict[str, Any]:
     }
 
 
-def _source_numeric_facts(
-    source: sqlite3.Connection,
-    doc_id: str,
-) -> list[tuple[Any, ...]]:
+def _source_numeric_facts(source: sqlite3.Connection, doc_id: str) -> list[dict[str, Any]]:
     return [
-        tuple(row)
+        dict(row)
         for row in source.execute(
-            f"SELECT {_FACT_COLUMNS} FROM xbrl_facts "
-            "WHERE doc_id = ? AND numeric_value IS NOT NULL AND is_nil = 0",
+            f"SELECT {_FACT_COLUMNS} FROM xbrl_facts WHERE doc_id = ? AND numeric_value IS NOT NULL AND is_nil = 0",
             (doc_id,),
         )
     ]
 
 
-def _rebuild_facts(
-    source: sqlite3.Connection,
-    destination: sqlite3.Connection,
-    *,
-    batch_size: int,
-) -> int:
-    """Reparse XBRL members so numeric filtering uses XBRL structure."""
+def _rebuild_facts(source: sqlite3.Connection, destination: sqlite3.Connection) -> int:
+    """Re-parse each copied archive's XBRL members so numeric filtering uses XBRL structure."""
     parser = XbrlParser()
     fact_insert = (
-        "INSERT OR IGNORE INTO xbrl_facts "
-        f"({_FACT_COLUMNS}) VALUES ({','.join(':' + column for column in _FACT_COLUMNS.split(', '))})"
+        f"INSERT OR IGNORE INTO xbrl_facts ({_FACT_COLUMNS}) "
+        f"VALUES ({', '.join(':' + column for column in _FACT_COLUMNS.split(', '))})"
     )
     quality_insert = (
-        "INSERT OR IGNORE INTO quality_issues "
-        "(issue_id, doc_id, severity, code, message, fact_id, created_at) "
+        "INSERT OR IGNORE INTO quality_issues (issue_id, doc_id, severity, code, message, fact_id, created_at) "
         "VALUES (:issue_id, :doc_id, :severity, :code, :message, :fact_id, :created_at)"
     )
     total = 0
-    filings = source.execute(
-        "SELECT doc_id, archive_content FROM filings "
-        "WHERE archive_content IS NOT NULL ORDER BY doc_id"
-    )
-    for index, filing in enumerate(filings, start=1):
-        doc_id = str(filing["doc_id"])
+    doc_ids = [str(row[0]) for row in destination.execute("SELECT doc_id FROM filings ORDER BY doc_id")]
+    for number, doc_id in enumerate(doc_ids, start=1):
+        row = destination.execute("SELECT content FROM filing_archives WHERE doc_id = ?", (doc_id,)).fetchone()
         facts: list[dict[str, Any]] = []
         try:
-            archive_content = bytes(filing["archive_content"])
+            if row is None:
+                raise ValueError("no archive")
+            archive_content = bytes(row[0])
             infos = validate_zip_in_memory(archive_content, DEFAULT_ARCHIVE_POLICY)
-            info_by_path = {
-                info.filename.replace("\\", "/"): info
-                for info in infos
-                if not info.is_dir()
-            }
-            artifacts = source.execute(
-                "SELECT artifact_id, member_path FROM artifacts "
-                "WHERE doc_id = ? AND kind = 'xbrl' ORDER BY member_path",
+            info_by_path = {info.filename.replace("\\", "/"): info for info in infos if not info.is_dir()}
+            artifacts = destination.execute(
+                "SELECT artifact_id, member_path FROM artifacts WHERE doc_id = ? AND kind = 'xbrl' ORDER BY member_path",
                 (doc_id,),
-            )
+            ).fetchall()
             with zipfile.ZipFile(io.BytesIO(archive_content)) as archive:
                 for artifact in artifacts:
-                    member_path = str(artifact["member_path"]).replace("\\", "/")
-                    info = info_by_path.get(member_path)
+                    info = info_by_path.get(str(artifact["member_path"]).replace("\\", "/"))
                     if info is None or info.file_size > _ARCHIVE_LIMIT:
                         continue
-                    parsed = parser.parse(
-                        archive.read(info),
-                        doc_id,
-                        str(artifact["artifact_id"]),
-                        numeric_only=True,
-                    )
+                    parsed = parser.parse(archive.read(info), doc_id, str(artifact["artifact_id"]), numeric_only=True)
                     facts.extend(
                         _fact_row(doc_id, str(artifact["artifact_id"]), fact)
                         for fact in parsed.facts
                         if fact.numeric_value is not None and not fact.is_nil
                     )
         except (OSError, ValueError, zipfile.BadZipFile) as exc:
-            # Preserve already-indexed numeric facts if a legacy archive is
-            # unreadable during migration; the ZIP remains available for a
-            # later manual repair.
-            print(f"Warning: {doc_id}: reparsing failed ({exc}); using existing numeric facts")
-            facts = [
-                dict(zip(_FACT_COLUMNS.split(", "), row, strict=True))
-                for row in _source_numeric_facts(source, doc_id)
-            ]
-
+            # Keep the numeric facts already indexed when the archive cannot be read.
+            print(f"Warning: {doc_id}: reparsing failed ({exc}); keeping its existing numeric facts")
+            facts = _source_numeric_facts(source, doc_id)
         if facts:
             destination.executemany(fact_insert, facts)
             issues = assess_facts(doc_id, facts)
@@ -393,100 +216,111 @@ def _rebuild_facts(
                 destination.executemany(quality_insert, issues)
             destination.commit()
             total += len(facts)
-        if index % 100 == 0 or index == 1:
-            print(f"Rebuilt numeric facts for {index:,} filings ({total:,} facts)")
+        if number % 100 == 0 or number == 1:
+            print(f"  re-parsed {number:,} of {len(doc_ids):,} filings ({total:,} facts)")
+    destination.execute(
+        "UPDATE parse_runs SET fact_count = (SELECT COUNT(*) FROM xbrl_facts WHERE xbrl_facts.doc_id = parse_runs.doc_id), "
+        "section_count = 0"
+    )
+    destination.commit()
     return total
 
 
 def _finalize(path: Path, *, vacuum: bool) -> None:
     conn = connect_write(path)
     try:
-        conn.commit()
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         if vacuum:
             conn.execute("VACUUM")
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.execute("PRAGMA journal_mode = DELETE")
-        conn.commit()
+        result = conn.execute("PRAGMA quick_check").fetchone()[0]
     finally:
         conn.close()
+    if result != "ok":
+        raise RuntimeError(f"{path.name} failed its quick check: {result}")
 
 
-def _estimated_output_bytes(summary: dict[str, int]) -> int:
-    # Archives dominate the rebuilt file; this intentionally includes a
-    # generous per-fact allowance for relational columns and indexes.
-    return summary["archive_bytes"] + summary["numeric_fact_count"] * 4096 + 4 * 1024 * 1024 * 1024
+def _output_path(source: Path, shard: str, output_folder: str | None) -> Path:
+    folder = Path(output_folder).expanduser().resolve() if output_folder else source.parent
+    return folder / f"filings_{shard}{_REBUILT_SUFFIX}"
+
+
+def rebuild_shard(source_path: Path, output_path: Path, shard: str, *, batch_size: int = 250, vacuum: bool = True) -> dict[str, int]:
+    """Build ``output_path`` from the yearly file ``source_path``; a partial file is left as ``.partial``."""
+    partial = output_path.with_name(output_path.name + ".partial")
+    for path in (output_path, partial):
+        if path.exists():
+            raise SystemExit(f"Refusing to overwrite {path}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    source = connect_read(source_path)
+    try:
+        info = shard_info(source)
+        if info.get("shard") != shard:
+            raise SystemExit(f"{source_path} holds year {info.get('shard') or 'unknown'}, not {shard}")
+        destination = connect_write(partial)
+        try:
+            initialize_managed_database(destination)
+            initialize_shard(destination, shard)
+            destination.commit()
+            counts = _copy_catalog_rows(source, destination, batch_size=batch_size)
+            counts["xbrl_facts"] = _rebuild_facts(source, destination)
+        finally:
+            destination.close()
+    finally:
+        source.close()
+    _finalize(partial, vacuum=vacuum)
+    partial.replace(output_path)
+    return counts
 
 
 def main() -> int:
     args = _parser().parse_args()
     if args.batch_size < 1:
         raise SystemExit("--batch-size must be positive")
-    source_path = Path(args.source).expanduser().resolve(strict=True)
-    output_path = Path(args.output).expanduser().resolve()
-    if source_path == output_path:
-        raise SystemExit("--output must be different from --source")
+    if args.switch and not args.apply:
+        raise SystemExit("--switch needs --apply")
+    storage = FilingStorage(args.index)
+    if storage.layout() != LAYOUT_SPLIT:
+        raise SystemExit("Filing storage needs to be split first (main.py filings split, or Admin → Filing storage)")
+    registered = {row["shard"]: row for row in storage.shards()}
+    wanted = [validate_shard_id(shard) for shard in args.shard] if args.shard else sorted(registered)
+    unknown = [shard for shard in wanted if shard not in registered]
+    if unknown:
+        raise SystemExit(f"No yearly file for {', '.join(unknown)}")
 
-    summary = _summary(source_path)
-    _print_summary(summary)
+    plan = []
+    for shard in wanted:
+        row = registered[shard]
+        source = Path(row["file"])
+        if not row["exists"]:
+            raise SystemExit(f"{source.name} is missing; restore it or run `main.py filings check --repair` first")
+        output = _output_path(source, shard, args.output_folder)
+        plan.append((shard, source, output))
+        print(f"{shard}: {row['filing_count']:,} filings, {row['size_bytes'] or 0:,} bytes -> {output}")
     if not args.apply:
-        print("Dry run; pass --apply to build the compact database.")
+        print("Dry run; pass --apply to build the new files.")
         return 0
-    if output_path.exists():
-        raise SystemExit(f"Refusing to overwrite existing output: {output_path}")
-    partial_path = output_path.with_name(output_path.name + ".partial")
-    if partial_path.exists():
-        raise SystemExit(f"Refusing to overwrite existing partial output: {partial_path}")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    required = _estimated_output_bytes(summary)
-    free = shutil.disk_usage(output_path.parent).free
-    if free < required:
-        raise SystemExit(
-            f"Not enough free space for the rebuilt database: estimated at least "
-            f"{required:,} bytes, available {free:,} bytes"
-        )
+    needed = max((source.stat().st_size for _, source, _ in plan), default=0)
+    for _, _, output in plan:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if shutil.disk_usage(output.parent).free < needed:
+            raise SystemExit(f"Not enough free space in {output.parent} for a rebuilt file of up to {needed:,} bytes")
 
-    try:
-        FilingCatalog(partial_path, include_narrative_index=False)
-        ensure_bond_documents(partial_path)
-        ensure_ownership_documents(partial_path)
-        source = connect_read(source_path)
-        destination = connect_write(partial_path)
-        try:
-            counts = _copy_catalog_rows(source, destination, batch_size=args.batch_size)
-            print("Copied catalog rows: " + ", ".join(f"{key}={value:,}" for key, value in counts.items()))
-            copied_facts = _rebuild_facts(source, destination, batch_size=args.batch_size)
-            print(f"Retained {copied_facts:,} numeric facts.")
-            small_counts = _copy_small_tables(source, destination, batch_size=args.batch_size)
-            destination.execute(
-                "UPDATE parse_runs SET fact_count = "
-                "(SELECT COUNT(*) FROM xbrl_facts WHERE xbrl_facts.doc_id = parse_runs.doc_id), "
-                "section_count = 0"
-            )
-            destination.commit()
-            small_counts["observation_sources"] = _copy_observation_sources(
-                source,
-                destination,
-                batch_size=args.batch_size,
-            )
-            if small_counts:
-                print("Copied derived rows: " + ", ".join(f"{key}={value:,}" for key, value in small_counts.items()))
-        finally:
-            source.close()
-            destination.close()
-        _finalize(partial_path, vacuum=not args.no_vacuum)
-        sidecars = [
-            partial_path.with_name(partial_path.name + suffix)
-            for suffix in ("-wal", "-shm")
-        ]
-        if any(sidecar.exists() for sidecar in sidecars):
-            raise RuntimeError("Rebuilt database still has SQLite sidecar files; refusing to finalize")
-        os.replace(partial_path, output_path)
-    except Exception:
-        print(f"Rebuild failed; partial output was left at {partial_path}", file=sys.stderr)
-        raise
+    from src.filings import maintenance
 
-    print(f"Compact database written to {output_path}")
+    for shard, source, output in plan:
+        print(f"Rebuilding {shard} ...")
+        counts = rebuild_shard(source, output, shard, batch_size=args.batch_size, vacuum=not args.no_vacuum)
+        print(f"  {shard}: " + ", ".join(f"{key}={value:,}" for key, value in counts.items()))
+        if args.switch:
+            try:
+                maintenance.move_shard(storage, shard, str(output))
+                maintenance.check(storage, repair=True, shard=shard)
+            except FilingStorageError as exc:
+                raise SystemExit(f"Could not switch {shard} over: {exc}") from exc
+            print(f"  the index now uses {output}; the old file {source} can be deleted once you are satisfied")
+        else:
+            print(f"  built {output}; switch with --switch or `main.py filings move-shard {shard} {output}`")
     return 0
 
 

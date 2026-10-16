@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, Link2, RotateCcw, UserPlus } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 
 import { apiRequest } from '../../api/client'
 import { LoadingState } from '../../components/Feedback'
@@ -10,6 +10,9 @@ import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { useAuth } from './authContext'
 import { ADMIN_SECTIONS, adminScope } from './adminHotkeys'
+import { FILING_STORAGE_KEY, noticeOf, type FilingStorageResponse } from './filingStorage'
+import { FilingStorageBanner } from './FilingStorageBanner'
+import { FilingStoragePanel } from './FilingStoragePanel'
 import { ShutdownServer } from './ShutdownServer'
 import { WorkersPanel } from './WorkersPanel'
 import './admin.css'
@@ -87,6 +90,7 @@ const EVENT_LABELS: Record<string, string> = {
 const ALARMING = new Set(['login_failed', 'refresh_reuse_detected', 'password_change_failed', 'user_disabled'])
 
 const SECTIONS = ADMIN_SECTIONS
+const FILING_STORAGE_SECTION = SECTIONS.indexOf('Filing storage') + 1
 
 const stamp = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })
 const when = (value: string | null | undefined) => (value ? stamp.format(new Date(value)) : '—')
@@ -142,6 +146,15 @@ export default function AdminPage() {
   const users = useQuery({ queryKey: ['admin-users'], queryFn: () => apiRequest<AdminUser[]>('/api/admin/auth/users') })
   const audit = useQuery({ queryKey: ['admin-audit'], queryFn: () => apiRequest<AuditEvent[]>('/api/admin/auth/audit?limit=300'), refetchInterval: 60_000 })
   const settings = useQuery({ queryKey: ['admin-auth-settings'], queryFn: () => apiRequest<AuthSettings>('/api/admin/auth/settings') })
+  const storage = useQuery({ queryKey: FILING_STORAGE_KEY, queryFn: () => apiRequest<FilingStorageResponse>('/api/admin/filing-storage') })
+  // The overview banner links to /admin#filing-storage.
+  const location = useLocation()
+  const jumped = useRef(false)
+  useEffect(() => {
+    if (jumped.current || location.hash !== '#filing-storage' || !storage.data) return
+    jumped.current = true
+    focusSection(FILING_STORAGE_SECTION)
+  }, [location.hash, storage.data])
   const usersById = useMemo(() => new Map((users.data ?? []).map(user => [user.user_id, user])), [users.data])
   const shown = useMemo(() => (users.data ?? []).filter(user => `${user.username} ${user.email ?? ''} ${user.role} ${user.status}`.toLowerCase().includes(filter.trim().toLowerCase())), [users.data, filter])
   const index = Math.min(cursor, Math.max(0, shown.length - 1))
@@ -212,6 +225,7 @@ export default function AdminPage() {
   })
 
   const allUsers = users.data ?? []
+  const storageNotice = noticeOf(storage.data)
   const day = 24 * 3600 * 1000
   const failures = (audit.data ?? []).filter(event => event.event_type === 'login_failed' && now - new Date(event.occurred_at).getTime() < day).length
 
@@ -229,6 +243,7 @@ export default function AdminPage() {
       <div><span>Registration</span><strong>{settings.data?.registration_mode ?? '—'}</strong><small>new accounts are {settings.data?.default_role ?? '—'}s</small></div>
       <div><span>Password minimum</span><strong>{settings.data?.password_min_length ?? '—'}</strong><small>characters</small></div>
     </div>
+    {storageNotice && <FilingStorageBanner notice={storageNotice} action={<button type="button" className="text-button" onClick={() => focusSection(FILING_STORAGE_SECTION)}>Open filing storage</button>} />}
     {error && <p className="form-error" role="alert">{error} <button type="button" className="text-button" onClick={() => setError(null)}>Dismiss</button></p>}
     {link && <OneTimeLink label={link.label} url={link.url} onDismiss={() => setLink(null)} />}
 
@@ -271,6 +286,7 @@ export default function AdminPage() {
         </Section>
         <Section index={7} title="Remote access" meta="Cloudflare tunnel"><RemoteAccessSection registrationOpen={settings.data?.registration_mode === 'open'} /></Section>
         <Section index={8} title="Workers" meta="background jobs"><WorkersPanel /></Section>
+        <Section index={FILING_STORAGE_SECTION} title="Filing storage" meta="index and yearly files"><FilingStoragePanel /></Section>
         <Section index={4} title="Pipeline schedules"><SchedulesSection /></Section>
         <Section index={5} title="Audit log" meta={audit.data ? `${audit.data.length} latest events` : undefined}>
           <AuditTable events={audit.data ?? []} users={usersById} loading={audit.isLoading} />

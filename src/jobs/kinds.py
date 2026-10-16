@@ -96,6 +96,24 @@ KINDS: dict[str, KindSpec] = {
             "xbrl_backfill", "XBRL backfill", "batch", "src.worker.handlers.filings:xbrl_backfill",
             exclusive=_FILINGS, writes=_FILINGS, retry_on_lost=False, notify=True,
         ),
+        KindSpec(
+            "filings_split", "Filing storage split", "batch", "src.worker.handlers.filing_storage:split",
+            exclusive=_FILINGS, writes=_FILINGS, retry_on_lost=False, notify=True, admin_only=True,
+        ),
+        KindSpec(
+            "filing_storage_check", "Filing storage check", "batch", "src.worker.handlers.filing_storage:check",
+            exclusive=_FILINGS, writes=_FILINGS, notify=True, admin_only=True,
+        ),
+        KindSpec(
+            "filing_storage_compact", "Filing storage compaction", "batch",
+            "src.worker.handlers.filing_storage:compact",
+            exclusive=_FILINGS, writes=_FILINGS, notify=True, admin_only=True,
+        ),
+        KindSpec(
+            "filing_storage_cleanup", "Old filings file deletion", "batch",
+            "src.worker.handlers.filing_storage:cleanup",
+            exclusive=_FILINGS, notify=True, admin_only=True,
+        ),
         KindSpec("echo", "Diagnostic", "interactive", "src.worker.handlers.diagnostic:echo", admin_only=True),
     )
 }

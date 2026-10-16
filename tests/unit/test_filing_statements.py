@@ -192,7 +192,7 @@ TAXONOMY_LABELS = {
 def _tables(tmp_path, content: bytes | None = None) -> dict:
     content = content or _filing()
     catalog = FilingCatalog(tmp_path / "Filings.db")
-    ingest_content(content, "S100STMT", catalog)
+    ingest_content(content, "S100STMT", catalog, {"submitted_at": "2025-06-20T09:00"})
     facts = [dict(row) for row in catalog.statement_facts("S100STMT")]
     return build_statement_tables(read_linkbases(content), facts, lambda names: {n: TAXONOMY_LABELS[n] for n in names if n in TAXONOMY_LABELS})
 
@@ -291,7 +291,7 @@ def test_statement_tables_endpoint(tmp_path):
     from src.filings.runtime import catalog
     from src.web_app.server import app
 
-    ingest_content(_filing(), "S100STAPI", catalog)
+    ingest_content(_filing(), "S100STAPI", catalog, {"submitted_at": "2025-06-20T09:00"})
     client = TestClient(app)
 
     response = client.get("/api/filings/S100STAPI/statement-tables")

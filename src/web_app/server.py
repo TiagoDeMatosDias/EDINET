@@ -6,6 +6,7 @@ The frontend is the React SPA at ``frontend-v2``.  API routes are built by
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import threading
@@ -32,6 +33,8 @@ from src.version import __version__
 from src.web_app.api import router_app
 from src.web_app.security import OperatorGuidanceError, get_settings, install_security
 from src.web_app.tunnel import TunnelManager
+
+logger = logging.getLogger(__name__)
 
 BRAND_ASSETS_DIR = bundle_dir() / "assets" / "brand"
 FRONTEND_V2_DIST = (
@@ -95,6 +98,32 @@ def _on_stop_signal(callback: Callable[[], None]) -> None:
         signal.signal(sig, handler)
 
 
+def _finish_filing_storage_split() -> None:
+    from src.filings.split import switch_over
+
+    try:
+        outcome = switch_over(get_filings_db())
+    except Exception:  # noqa: BLE001 - never block startup; Admin keeps offering "restart to finish"
+        logger.exception("The filing storage switch-over failed")
+        return
+    if outcome["status"] == "failed":
+        logger.warning("Filing storage split not finished, restart to try again: %s", outcome.get("error"))
+    elif outcome["status"] == "switched":
+        logger.info("Filing storage now uses the split layout; the old file is %s", outcome["retired"])
+
+
+def _worker_written_paths() -> tuple[list[str], list[str]]:
+    """Files and folders only workers write: market.db, the filing index and every yearly filing file."""
+    from src.filings.storage import FilingStorage, next_index_path, retired_index_path
+
+    filings_db = get_filings_db()
+    storage = FilingStorage(filings_db)
+    files = [get_market_db(), filings_db, str(next_index_path(filings_db)), str(retired_index_path(filings_db))]
+    # Years moved to another disk are recorded with absolute paths.
+    files.extend(str(row["file"]) for row in storage.shards())
+    return files, [str(storage.shards_dir)]
+
+
 @asynccontextmanager
 async def _lifespan(lifespan_app: FastAPI):
     """Create missing databases at startup rather than at import time.
@@ -113,14 +142,18 @@ async def _lifespan(lifespan_app: FastAPI):
 
     setup_logging()
     ensure_server_databases(settings=SETTINGS)
+    # A finished filing storage split is put in place now, before anything
+    # (this server, a worker) opens filings.db: Windows cannot rename an open file.
+    await run_in_threadpool(_finish_filing_storage_split)
     # Workers write market.db and filings.db. Their fixed schema is still created
     # (and migrated) here once, before any worker starts and before request
     # handling, so a clean install or an upgrade never serves pages against a
     # missing file or an older schema.
     await run_in_threadpool(ensure_data_databases)
-    # From here on only workers write market.db and filings.db: any write the
-    # server attempts fails loudly instead of contending with a worker.
-    protect_database_paths([get_market_db(), get_filings_db()])
+    # From here on only workers write market.db, filings.db and the yearly
+    # filing files: any write the server attempts fails loudly instead of
+    # contending with a worker.
+    protect_database_paths(*_worker_written_paths())
     maintenance = start_job_service()
     service = get_job_service()
     service.stopping = False

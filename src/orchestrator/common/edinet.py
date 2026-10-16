@@ -28,7 +28,7 @@ def _acquire_xbrl(doc: dict, working_folder: str) -> None:
     """Download and archive a type-1 XBRL package for a document.
 
     Called from ``downloadDocs`` when ``xbrlFlag == \"1\"``.  The XBRL ZIP
-    is saved into ``data/filings/archive/`` and indexed in ``Filings.db``.
+    is stored and indexed in the filing catalog (see ``src.filings.storage``).
     """
     doc_id = str(doc.get("docID", "")).strip()
     if not doc_id:
@@ -37,6 +37,7 @@ def _acquire_xbrl(doc: dict, working_folder: str) -> None:
         from src.filings.acquisition import EdinetDownloadClient
         from src.filings.runtime import catalog
 
+        catalog.require_writable()
         client = EdinetDownloadClient.from_settings()
         client.acquire_type1(
             doc_id,

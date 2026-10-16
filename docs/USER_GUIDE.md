@@ -250,7 +250,7 @@ The server creates missing configured database parents, files, managed schemas, 
 - Research — tags, notes, thesis state, alerts, screens, report recipes, and runs;
 - Pipeline jobs — durable job and step state;
 - Filings — retained compressed ZIPs, compact numeric XBRL index, quality/provenance metadata, and translation cache;
-- Bonds — bond terms read from EDINET bond supplements and annual-report bond schedules, the stored supplements, the JGB curve, and JSDA reference prices (rebuildable: the **Update bonds** step recreates it).
+- Bonds — bond terms read from EDINET bond supplements and annual-report bond schedules (both stored with the filings), the JGB curve, and JSDA reference prices (rebuildable: the **Update bonds** step recreates it).
 
 New filing ingests keep the compressed provider ZIP in SQLite, omit duplicate extracted member BLOBs, retain numeric/non-nil analytical facts, and reconstruct narrative sections on demand. Existing filing databases can be compacted or rebuilt with the scripts documented in [Running the Application](RUNNING.md).
 

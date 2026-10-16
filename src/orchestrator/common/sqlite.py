@@ -24,9 +24,11 @@ def quote_identifier(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
 
-# Databases the server must never write (market.db, filings.db: only workers
-# do). Armed by the server lifespan; see ``protect_database_paths``.
+# Databases the server must never write (market.db, filings.db and the yearly
+# filing files: only workers do). Armed by the server lifespan; see
+# ``protect_database_paths``.
 _protected_paths: frozenset[Path] = frozenset()
+_protected_folders: tuple[Path, ...] = ()
 _protected_lock = threading.Lock()
 
 
@@ -34,15 +36,16 @@ def _canonical(path: str | Path) -> Path:
     return Path(path).expanduser().resolve(strict=False)
 
 
-def protect_database_paths(paths: Iterable[str | Path]) -> None:
-    """Make later ``connect_write`` calls on these files read-only.
+def protect_database_paths(paths: Iterable[str | Path], folders: Iterable[str | Path] = ()) -> None:
+    """Make later ``connect_write`` calls on these files, and on any file under these folders, read-only.
 
     Replaces any earlier set. Connections opened before this call are not
     affected.
     """
-    global _protected_paths
+    global _protected_paths, _protected_folders
     with _protected_lock:
         _protected_paths = frozenset(_canonical(path) for path in paths)
+        _protected_folders = tuple(_canonical(folder) for folder in folders)
 
 
 def clear_protected_database_paths() -> None:
@@ -51,7 +54,10 @@ def clear_protected_database_paths() -> None:
 
 
 def is_protected_database(path: str | Path) -> bool:
-    return bool(_protected_paths) and _canonical(path) in _protected_paths
+    if not _protected_paths and not _protected_folders:
+        return False
+    canonical = _canonical(path)
+    return canonical in _protected_paths or any(canonical.is_relative_to(folder) for folder in _protected_folders)
 
 
 def _configure_connection(
@@ -68,12 +74,21 @@ def connect_write(
     path: str | Path,
     *,
     busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
+    uri: bool = False,
 ) -> sqlite3.Connection:
-    """Open one thread-local writable connection with consistent policy."""
+    """Open one thread-local writable connection with consistent policy.
+
+    On a protected path the connection is read-only, and a missing protected
+    file is not created (opening would leave an empty file behind). ``uri``
+    opens the file by URI, which ``attach(..., read_only=True)`` needs.
+    """
     if busy_timeout_ms < 1:
         raise ValueError("busy_timeout_ms must be positive")
+    if is_protected_database(path) and not Path(path).expanduser().exists():
+        raise sqlite3.OperationalError(f"attempt to write a readonly database: {Path(path).name} does not exist")
     conn = sqlite3.connect(
-        str(Path(path)),
+        Path(path).expanduser().resolve(strict=False).as_uri() if uri else str(Path(path)),
+        uri=uri,
         timeout=busy_timeout_ms / 1000,
     )
     _configure_connection(conn, busy_timeout_ms)

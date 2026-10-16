@@ -210,6 +210,8 @@ def test_after_write_refreshes_market_and_checkpoints_only_written_databases(wor
     calls = []
     monkeypatch.setattr(maintenance, "_refresh_market", lambda db, results: calls.append(("refresh", db)))
     monkeypatch.setattr(maintenance, "checkpoint", lambda path: calls.append(("checkpoint", path)))
+    # The filing index and its yearly files are checkpointed together.
+    monkeypatch.setattr(maintenance, "checkpoint_filings", lambda path: calls.append(("checkpoint", path)))
 
     maintenance.after_write(frozenset({"filings"}))
     assert calls == [("checkpoint", str(filings))]

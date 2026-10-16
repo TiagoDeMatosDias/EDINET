@@ -482,6 +482,9 @@ def run_download_xbrl(config, overwrite=False, context=None):
     """Download configured document IDs with bounded progress and storage."""
     from src.filings.acquisition import EdinetDownloadClient
     from src.filings.runtime import catalog
+
+    # Refused before anything is downloaded while filings.db waits to be split.
+    catalog.require_writable()
     step_cfg = config.get("download_xbrl_config", {})
     mode = str(step_cfg.get("mode", "explicit")).strip().lower()
 

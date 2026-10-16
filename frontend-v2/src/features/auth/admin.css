@@ -100,3 +100,21 @@
 .worker-enroll__result strong, .worker-enroll__result code { grid-column: 1 / -1; }
 .worker-enroll__result code { white-space: normal; overflow-wrap: anywhere; }
 .worker-test { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.filing-storage { display: flex; flex-direction: column; gap: 6px; }
+.filing-storage code { font-family: var(--font-mono); font-size: .68rem; overflow-wrap: anywhere; }
+.filing-storage__split { display: flex; flex-direction: column; gap: 6px; }
+.filing-storage__facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 4px; margin: 0; }
+.filing-storage__facts > div { display: flex; flex-direction: column; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius); min-width: 0; }
+.filing-storage__facts dt { color: var(--muted); font-size: .6rem; letter-spacing: .07em; text-transform: uppercase; }
+.filing-storage__facts dd { margin: 0; font-family: var(--font-mono); font-size: .82rem; overflow-wrap: anywhere; }
+.filing-storage__facts dd.console-mono { font-size: .68rem; }
+.filing-storage__table .num { font-family: var(--font-mono); text-align: right; }
+.filing-storage__table tr.is-alarm td:nth-child(2) { color: inherit; }
+.filing-storage__state { display: block; color: var(--muted); font-size: .62rem; line-height: 1.1; }
+.filing-storage__table tr.is-alarm td:first-child, .filing-storage__table tr.is-alarm .filing-storage__state { color: var(--vermilion); }
+.filing-storage__row-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.filing-storage__row-actions .text-button { font-size: .72rem; }
+.filing-storage__retired { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 5px 8px; border: 1px dashed var(--border-strong); border-radius: var(--radius); font-size: .72rem; }
+.filing-storage__retired > span { flex: 1; min-width: 200px; }
+.filing-storage__jobs { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: .74rem; }
+.console-page > .filing-storage-banner { margin: 0; }

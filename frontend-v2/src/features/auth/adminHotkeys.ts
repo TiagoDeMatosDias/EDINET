@@ -1,6 +1,6 @@
 import { defineScope } from '../../hotkeys/registry'
 
-export const ADMIN_SECTIONS = ['Users', 'Invite and reset', 'Access', 'Pipeline schedules', 'Audit log', 'Server settings', 'Remote access', 'Workers'] as const
+export const ADMIN_SECTIONS = ['Users', 'Invite and reset', 'Access', 'Pipeline schedules', 'Audit log', 'Server settings', 'Remote access', 'Workers', 'Filing storage'] as const
 
 export const adminScope = defineScope({
   id: 'admin',

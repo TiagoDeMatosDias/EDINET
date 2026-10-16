@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import sqlite3
+import ssl
 import sys
 import tempfile
 import threading
@@ -254,7 +255,8 @@ def create_demo_runtime(*, seed_research: bool = False) -> tuple[Path, dict[str,
 def _wait_for_server(base_url: str) -> None:
     for _ in range(80):
         try:
-            with urllib.request.urlopen(f"{base_url}/health", timeout=0.5):
+            # The server's certificate is self-signed.
+            with urllib.request.urlopen(f"{base_url}/health", timeout=0.5, context=ssl._create_unverified_context()):
                 return
         except Exception:
             time.sleep(0.25)
@@ -267,6 +269,7 @@ def _capture_with_playwright(
     research_db: Path,
 ) -> None:
     from playwright.sync_api import Page, sync_playwright
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -275,21 +278,28 @@ def _capture_with_playwright(
         if dismiss.count() and dismiss.is_visible():
             dismiss.click()
 
+    def open_page(page: Page, route: str) -> None:
+        page.goto(f"{base_url}{route}", wait_until="load")
+        try:
+            page.wait_for_load_state("networkidle", timeout=10_000)
+        except PlaywrightTimeoutError:
+            pass  # a page showing a chat channel keeps a long poll open, so the network never goes idle
+
     def capture(page: Page, route: str, filename: str, *, wait_ms: int = 800) -> None:
-        page.goto(f"{base_url}{route}", wait_until="networkidle")
+        open_page(page, route)
         dismiss_local_warning(page)
         page.wait_for_timeout(wait_ms)
         page.screenshot(path=str(output_dir / filename))
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
-        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        page = browser.new_page(viewport={"width": 1280, "height": 720}, ignore_https_errors=True)
         capture(page, "/", "web-home.png")
         capture(page, "/pricing", "web-pricing.png")
         capture(page, "/overview", "web-dashboard.png")
         capture(page, "/pipeline", "web-pipeline.png")
 
-        page.goto(f"{base_url}/screen", wait_until="networkidle")
+        open_page(page, "/screen")
         dismiss_local_warning(page)
         # Build a two-rule screen the way a user would: N, type to find a metric, Enter.
         for index, (metric, comparison, value) in enumerate([("ReturnOnEquity", ">", "0.08"), ("PERatio", "<", "20")]):
@@ -313,7 +323,7 @@ def _capture_with_playwright(
         capture(page, "/portfolio", "web-portfolio.png", wait_ms=2_500)
         capture(page, "/filings", "web-filings.png")
 
-        page.goto(f"{base_url}/filings/S100DEMO", wait_until="networkidle")
+        open_page(page, "/filings/S100DEMO")
         dismiss_local_warning(page)
         page.get_by_role("tab", name=re.compile("Sections")).click()
         page.locator(".reader-english p").first.wait_for(timeout=10_000)
@@ -321,7 +331,7 @@ def _capture_with_playwright(
 
         _seed_research(research_db)
         capture(page, "/research?company=E00001", "web-research.png", wait_ms=1_500)
-        page.goto(f"{base_url}/research?tab=options&company=E00001", wait_until="networkidle")
+        open_page(page, "/research?tab=options&company=E00001")
         dismiss_local_warning(page)
         page.get_by_role("region", name="Option values").wait_for(timeout=10_000)
         # The synthetic demo prices barely move, so assume a typical equity volatility.
@@ -330,7 +340,7 @@ def _capture_with_playwright(
         page.wait_for_timeout(800)
         page.screenshot(path=str(output_dir / "web-research-options.png"), full_page=True)
 
-        page.goto(f"{base_url}/compare", wait_until="networkidle")
+        open_page(page, "/compare")
         dismiss_local_warning(page)
         picker = page.get_by_label("Add a company or a tag")
         picker.fill("Alpha")
@@ -369,11 +379,17 @@ def main() -> int:
     args = parser.parse_args()
 
     runtime, paths = create_demo_runtime(seed_research=args.seed_research)
+    # Serve like main.py does (HTTPS on this port), so the local worker can register and run screens.
+    os.environ["EDINET_PORT"] = str(args.port)
     from src.web_app.server import app
+    from src.web_app.tls import provision_tls
 
-    config = uvicorn.Config(app, host="127.0.0.1", port=args.port, log_level="warning")
+    cert_path, key_path = provision_tls(host="127.0.0.1")
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=args.port, log_level="warning", ssl_certfile=cert_path, ssl_keyfile=key_path
+    )
     server = uvicorn.Server(config)
-    base_url = f"http://127.0.0.1:{args.port}"
+    base_url = f"https://127.0.0.1:{args.port}"
     try:
         if args.serve_only:
             print(f"Documentation demo: {base_url}", flush=True)

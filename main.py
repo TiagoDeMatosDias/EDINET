@@ -3,7 +3,9 @@
 ``main.py`` starts the web workstation. ``main.py config`` reads and changes
 the settings stored in ``app.db``; ``main.py migrate`` moves an installation
 from the old storage layout (it also runs automatically on start);
-``main.py worker ...`` runs the job worker (``python main.py worker --help``).
+``main.py filings ...`` splits, checks and repairs filing storage
+(``python main.py filings --help``); ``main.py worker ...`` runs the job
+worker (``python main.py worker --help``).
 """
 
 import argparse
@@ -251,6 +253,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     commands.add_parser("worker", help="Run the job worker (run, enroll, status); see `worker --help`.")
     migrate = commands.add_parser("migrate", help="Move an old installation into the data folder.")
     migrate.add_argument("--dry-run", action="store_true", help="List the steps without taking them.")
+    from src.filings.cli import add_parser as add_filings_parser
+
+    add_filings_parser(commands)
     return parser.parse_args(argv)
 
 
@@ -265,6 +270,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "config":
             return _run_config(args)
+        if args.command == "filings":
+            _migrate()
+            from src.filings.cli import run as run_filings
+
+            return run_filings(args)
         if args.command == "migrate":
             from src.orchestrator.common.migrate_layout import migrate_legacy_layout
 

@@ -15,6 +15,8 @@ from src.chat.api import router as _chat_router
 from src.chat.profiles_api import router as _profiles_router
 from src.comparison.api import router as _comparison_router
 from src.filings.api import router as _filings_router
+from src.filings.storage_api import install_filing_storage_error_handlers
+from src.filings.storage_api import router as _filing_storage_router
 from src.jobs.admin_api import router as _workers_admin_router
 from src.jobs.user_api import install_job_error_handlers
 from src.jobs.user_api import router as _my_jobs_router
@@ -36,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 router_app = _api_app
 install_job_error_handlers(router_app)
+install_filing_storage_error_handlers(router_app)
 
 _ROUTERS = (
     _auth_router,
@@ -61,6 +64,7 @@ _ROUTERS = (
     _worker_router,
     _my_jobs_router,
     _workers_admin_router,
+    _filing_storage_router,
     _api_docs_router,
 )
 

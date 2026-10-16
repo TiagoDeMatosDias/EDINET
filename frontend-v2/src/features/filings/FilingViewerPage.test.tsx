@@ -28,7 +28,9 @@ function renderViewer() {
 
 const authorizations: Array<string | null> = []
 
-function stubViewerBackend(translationStatus = 200) {
+const MISSING = "This filing's archive is unavailable: filings_2026.db is missing"
+
+function stubViewerBackend(translationStatus = 200, missingShard = false) {
   const requests: string[] = []
   authorizations.length = 0
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -39,8 +41,10 @@ function stubViewerBackend(translationStatus = 200) {
       return jsonResponse({
         filing: { doc_id: 'S100TEST', edinet_code: 'E00001', submitter_name: 'テスト株式会社', period_start: '2025-04-01', period_end: '2026-03-31', form_code: '030000', status: 'parsed', archive_sha256: 'abc' },
         artifacts: [],
+        archive_unavailable: missingShard ? MISSING : null,
       })
     }
+    if (missingShard && path.startsWith('/api/filings/S100TEST/')) return Promise.resolve(new Response(JSON.stringify({ detail: MISSING }), { status: 503, headers: { 'Content-Type': 'application/json' } }))
     if (path === '/api/filings/S100TEST/statement-tables') {
       const current = { key: 'D:2025-04-01:2026-03-31', start: '2025-04-01', end: '2026-03-31', label: '2026-03-31', detail: '12 months' }
       const prior = { key: 'D:2024-04-01:2025-03-31', start: '2024-04-01', end: '2025-03-31', label: '2025-03-31', detail: '12 months' }
@@ -107,6 +111,17 @@ describe('filing document translation', () => {
     cleanup()
     vi.unstubAllGlobals()
     window.localStorage.clear()
+  })
+
+  it('names the missing yearly file instead of showing an empty filing', async () => {
+    stubViewerBackend(200, true)
+    renderViewer()
+    expect(await screen.findByText(new RegExp(`^${MISSING}\\.`))).toHaveTextContent('Admin → Filing storage')
+    expect(await screen.findByRole('heading', { name: 'TEST COMPANY' })).toBeInTheDocument()
+    // Every tab and the ZIP need the missing file, so they are not offered.
+    expect(screen.queryByRole('tab', { name: /Report/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('No report documents')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /ZIP/ })).not.toBeInTheDocument()
   })
 
   it('loads one complete document translation and displays it beside the original', async () => {

@@ -1,105 +1,124 @@
-"""Tests for the compact filing database rebuild helpers."""
+"""Tests for rebuilding a yearly filing file from its own archives."""
 
 from __future__ import annotations
 
-from scripts.rebuild_filings_db import _copy_catalog_rows, _copy_small_tables
-from src.bonds.store import ensure_documents_table as ensure_bond_documents
+import sys
+
+import pytest
+
+from scripts import rebuild_filings_db as rebuild
 from src.filings.catalog import FilingCatalog
+from src.filings.ingest import ingest_content
 from src.orchestrator.common.sqlite import connect_read, connect_write
-from src.ownership.store import ensure_documents_table as ensure_ownership_documents
+from tests.filing_fixtures import zip_bytes
+
+XBRL = b"""<?xml version='1.0'?>
+<xbrli:xbrl xmlns:xbrli='http://www.xbrl.org/2003/instance' xmlns:jp='https://example.test/jp'>
+  <xbrli:context id='C1'><xbrli:entity><xbrli:identifier scheme='x'>E123</xbrli:identifier></xbrli:entity>
+    <xbrli:period><xbrli:startDate>2018-04-01</xbrli:startDate><xbrli:endDate>2019-03-31</xbrli:endDate></xbrli:period>
+  </xbrli:context>
+  <xbrli:unit id='JPY'><xbrli:measure>iso4217:JPY</xbrli:measure></xbrli:unit>
+  <jp:Revenue contextRef='C1' unitRef='JPY' decimals='0'>1234</jp:Revenue>
+  <jp:Note contextRef='C1'>text, not a number</jp:Note>
+</xbrli:xbrl>"""
 
 
-def test_copy_catalog_rows_copies_artifact_metadata_without_content(tmp_path):
-    source_path = tmp_path / "source.db"
-    destination_path = tmp_path / "destination.db"
-    FilingCatalog(source_path)
-    FilingCatalog(destination_path)
+def _catalog(tmp_path) -> FilingCatalog:
+    catalog = FilingCatalog(tmp_path / "data" / "filings.db")
+    for doc_id, submitted in (("S100A", "2019-06-20T09:00"), ("S100B", "2019-07-01T09:00"), ("S100C", "2020-06-20T09:00")):
+        content = zip_bytes((f"XBRL/PublicDoc/{doc_id}.xbrl", XBRL))
+        ingest_content(content, doc_id, catalog, {"edinet_code": "E00001", "submitted_at": submitted})
+    return catalog
 
-    source = connect_write(source_path)
+
+def _rows(path, sql: str) -> list[tuple]:
+    conn = connect_read(path)
     try:
-        source.execute(
-            """INSERT INTO filings(
-                doc_id, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?)""",
-            ("S100TEST", "parsed", "2026-01-01", "2026-01-01"),
+        return [tuple(row) for row in conn.execute(sql)]
+    finally:
+        conn.close()
+
+
+def test_rebuild_shard_copies_rows_and_reparses_facts(tmp_path):
+    catalog = _catalog(tmp_path)
+    source = catalog.storage.shard_path("2019")
+    output = tmp_path / "out" / "filings_2019.rebuilt.db"
+    conn = connect_write(source)
+    try:
+        conn.execute(
+            "INSERT INTO parse_runs (parse_run_id, doc_id, parser_version, status, started_at, fact_count) "
+            "VALUES ('R1', 'S100A', 'v1', 'completed', '2026-01-01', 9)"
         )
-        source.execute(
-            """INSERT INTO artifacts(
-                artifact_id, doc_id, member_path, kind, media_type,
-                size_bytes, sha256, content
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                "artifact-1",
-                "S100TEST",
-                "PublicDoc/report.xbrl",
-                "xbrl",
-                "application/xml",
-                10,
-                "digest",
-                b"legacy extracted content",
-            ),
-        )
-        source.commit()
+        conn.commit()
     finally:
-        source.close()
+        conn.close()
 
-    source = connect_read(source_path)
-    destination = connect_write(destination_path)
+    counts = rebuild.rebuild_shard(source, output, "2019", batch_size=1)
+
+    assert counts["filings"] == 2 and counts["filing_archives"] == 2 and counts["damaged_archives"] == 0
+    assert counts["xbrl_facts"] == 2  # one numeric fact per filing; the text fact is not kept
+    assert _rows(output, "SELECT value FROM shard_info WHERE key = 'shard'") == [("2019",)]
+    assert _rows(output, "SELECT doc_id, concept FROM xbrl_facts ORDER BY doc_id") == [("S100A", "Revenue"), ("S100B", "Revenue")]
+    assert _rows(output, "SELECT doc_id FROM filing_archives ORDER BY doc_id") == [("S100A",), ("S100B",)]
+    # Parse runs are kept, with the fact count of the re-parse.
+    assert _rows(output, "SELECT parse_run_id, doc_id, fact_count FROM parse_runs") == [("R1", "S100A", 1)]
+    assert not output.with_name(output.name + ".partial").exists()
+    # The old file is untouched.
+    assert _rows(source, "SELECT COUNT(*) FROM filing_archives") == [(2,)]
+
+
+def test_rebuild_leaves_out_an_archive_that_fails_its_checksum(tmp_path, capsys):
+    catalog = _catalog(tmp_path)
+    source = catalog.storage.shard_path("2019")
+    conn = connect_write(source)
     try:
-        counts = _copy_catalog_rows(source, destination, batch_size=10)
+        conn.execute("UPDATE filing_archives SET content = ? WHERE doc_id = 'S100B'", (b"damaged",))
+        conn.commit()
     finally:
-        source.close()
-        destination.close()
+        conn.close()
 
-    destination = connect_read(destination_path)
-    try:
-        artifact = destination.execute(
-            "SELECT artifact_id, sha256, content FROM artifacts"
-        ).fetchone()
-    finally:
-        destination.close()
+    counts = rebuild.rebuild_shard(source, tmp_path / "filings_2019.rebuilt.db", "2019")
 
-    assert counts["filings"] == 1
-    assert counts["artifacts"] == 1
-    assert tuple(artifact) == ("artifact-1", "digest", None)
+    assert counts["filing_archives"] == 1 and counts["damaged_archives"] == 1
+    assert "S100B" in capsys.readouterr().out
 
 
-def test_copy_small_tables_keeps_the_bond_and_ownership_document_logs(tmp_path):
-    source_path = tmp_path / "source.db"
-    destination_path = tmp_path / "destination.db"
-    for path in (source_path, destination_path):
-        FilingCatalog(path)
-        ensure_bond_documents(path)
-        ensure_ownership_documents(path)
+def test_rebuild_refuses_a_file_holding_another_year_or_an_existing_output(tmp_path):
+    catalog = _catalog(tmp_path)
+    source = catalog.storage.shard_path("2019")
+    with pytest.raises(SystemExit, match="not 2020"):
+        rebuild.rebuild_shard(source, tmp_path / "x.db", "2020")
+    existing = tmp_path / "exists.db"
+    existing.write_bytes(b"")
+    with pytest.raises(SystemExit, match="Refusing to overwrite"):
+        rebuild.rebuild_shard(source, existing, "2019")
 
-    source = connect_write(source_path)
-    try:
-        source.execute(
-            "INSERT INTO Bond_Documents(doc_id, kind, status, processed_at, archive) VALUES (?, ?, ?, ?, ?)",
-            ("S100BOND", "issuance", "parsed", "2026-10-01", b"PK archive"),
-        )
-        source.execute(
-            "INSERT INTO Ownership_Documents(doc_id, edinet_code, status, processed_at) VALUES (?, ?, ?, ?)",
-            ("S100OWNR", "E99001", "parsed", "2026-10-01"),
-        )
-        source.commit()
-    finally:
-        source.close()
 
-    source = connect_read(source_path)
-    destination = connect_write(destination_path)
-    try:
-        counts = _copy_small_tables(source, destination, batch_size=10)
-    finally:
-        source.close()
-        destination.close()
+def test_main_dry_run_then_switch_points_the_index_at_the_new_file(tmp_path, monkeypatch, capsys):
+    catalog = _catalog(tmp_path)
+    old = catalog.storage.shard_path("2019")
+    argv = ["rebuild_filings_db.py", "--index", str(catalog.path), "--shard", "2019"]
 
-    destination = connect_read(destination_path)
-    try:
-        archive = destination.execute("SELECT archive FROM Bond_Documents WHERE doc_id = 'S100BOND'").fetchone()[0]
-        owned = destination.execute("SELECT edinet_code FROM Ownership_Documents WHERE doc_id = 'S100OWNR'").fetchone()[0]
-    finally:
-        destination.close()
+    monkeypatch.setattr(sys, "argv", argv)
+    assert rebuild.main() == 0
+    assert "Dry run" in capsys.readouterr().out
+    assert not old.with_name("filings_2019.rebuilt.db").exists()
 
-    assert counts["Bond_Documents"] == 1 and counts["Ownership_Documents"] == 1
-    assert (archive, owned) == (b"PK archive", "E99001")
+    monkeypatch.setattr(sys, "argv", [*argv, "--apply", "--switch", "--no-vacuum"])
+    assert rebuild.main() == 0
+
+    new = old.with_name("filings_2019.rebuilt.db")
+    assert catalog.storage.shard_path("2019") == new
+    assert old.exists()
+    assert catalog.get_archive_content("S100A") is not None
+    assert [row["concept"] for row in catalog.list_facts("S100A")] == ["Revenue"]
+    assert {row["shard"]: row["filing_count"] for row in catalog.shards()} == {"2019": 2, "2020": 1}
+
+
+def test_main_refuses_the_old_single_file(tmp_path, monkeypatch):
+    from tests.filing_fixtures import create_legacy_filings_db, filing_row
+
+    index = create_legacy_filings_db(tmp_path / "filings.db", [filing_row("S100OLD")])
+    monkeypatch.setattr(sys, "argv", ["rebuild_filings_db.py", "--index", str(index)])
+    with pytest.raises(SystemExit, match="split first"):
+        rebuild.main()

@@ -14,13 +14,15 @@ const OVERVIEW = {
 }
 
 const requests: string[] = []
+let overview: typeof OVERVIEW & { data: typeof OVERVIEW.data & { filing_storage?: unknown } } = OVERVIEW
 
 beforeEach(() => {
   requests.length = 0
+  overview = OVERVIEW
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
     const path = String(input)
     requests.push(path)
-    const body = path === '/api/overview' ? OVERVIEW
+    const body = path === '/api/overview' ? overview
       : path.startsWith('/api/research/recent-work') ? { items: [{ work_id: 'w1', kind: 'screen', title: 'Cheap banks', href: '/screen?run=1', occurred_at: '2026-10-03T09:00:00Z' }] }
         : path.startsWith('/api/chat/feed') ? { messages: [], has_more: false }
           : path === '/api/chat/unread' ? { total: 3, channels: 2, conversations: 1, invitations: 0 }
@@ -50,6 +52,24 @@ describe('OverviewPage', () => {
     expect(screen.queryByText('Refresh data')).not.toBeInTheDocument()
     expect(screen.queryByText('Recent pipeline runs')).not.toBeInTheDocument()
     expect(requests.some(path => path.startsWith('/api/jobs') || path === '/api/system/status')).toBe(false)
+  })
+
+  it('shows the filing storage notice while filings.db has the old layout, with the way to Admin for administrators', async () => {
+    overview = { ...OVERVIEW, data: { ...OVERVIEW.data, filing_storage: { state: 'legacy', needed_bytes: 81_446_335_488 } } }
+    renderAs('admin')
+    expect(await screen.findByText('Filing storage needs reorganising — ≈81 GB free space needed')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Admin → Filing storage' })).toHaveAttribute('href', '/admin#filing-storage')
+    cleanup()
+    renderAs('member')
+    expect(await screen.findByText('Filing storage needs reorganising — ≈81 GB free space needed')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Admin → Filing storage' })).not.toBeInTheDocument()
+  })
+
+  it('shows no filing storage notice once storage is split', async () => {
+    overview = { ...OVERVIEW, data: { ...OVERVIEW.data, filing_storage: null } }
+    renderAs('admin')
+    await screen.findByRole('heading', { name: 'Overview' })
+    expect(screen.queryByText(/Filing storage/)).not.toBeInTheDocument()
   })
 
   it('adds the job status and runs for administrators', async () => {

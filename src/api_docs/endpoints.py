@@ -145,6 +145,23 @@ ENDPOINTS: dict[str, EndpointDoc] = {
     "POST /api/admin/workers/local/restart": D(summary="Restart the worker process the server runs on its own machine."),
     "PATCH /api/admin/workers/{worker_id}": D(summary="Rename, enable or disable a worker, or change its slots.", body={"enabled": False}),
     "DELETE /api/admin/workers/{worker_id}": D(summary="Revoke an enrolled worker; it stops at its next heartbeat."),
+    "GET /api/admin/filing-storage": D(
+        returns="`layout`, `state` (`legacy`, `splitting`, `ready` to finish at restart, or `split`), `shards` (one row per "
+        "submission year: filings, archive and file size, state, last check), `retired` (the old file kept after the split), "
+        "`preflight` on the old layout, and the recent filing storage `jobs`.",
+    ),
+    "POST /api/admin/filing-storage/split": D(
+        notes="Leave `target_folder` out to put the yearly files in the `filings` folder beside filings.db; an absolute folder "
+        "on another disk is used for this split only. A stopped split resumes where it left off.",
+        body={},
+        returns="The queued `filings_split` job; follow it with `GET /api/jobs/{job_id}`.",
+    ),
+    "POST /api/admin/filing-storage/check": D(
+        body={"repair": False},
+        returns="The queued `filing_storage_check` job; its result lists each year's problems.",
+    ),
+    "POST /api/admin/filing-storage/compact": D(body={"shard": "2019"}, returns="The queued `filing_storage_compact` job."),
+    "DELETE /api/admin/filing-storage/retired": D(returns="The queued `filing_storage_cleanup` job."),
     "POST /api/admin/server/shutdown": D(body={"confirm": True}),
     # ── Pipeline ───────────────────────────────────────────────────────
     "POST /api/pipeline/run": D(
@@ -319,7 +336,7 @@ ENDPOINTS: dict[str, EndpointDoc] = {
     "GET /api/filings": D(query={"company_code": "E02144", "limit": 10}),
     "GET /api/filings/company/{edinet_code}": D(summary="A company's retained filings, newest first.", query={"limit": 10}),
     "GET /api/filings/coverage": D(summary="How many filings are stored and parsed, by form and year."),
-    "GET /api/filings/{doc_id}": D(summary="One filing's metadata: company, form, period, submission time, and parse status."),
+    "GET /api/filings/{doc_id}": D(summary="One filing's metadata: company, form, period, submission time, and parse status, with its stored files. When the yearly file holding the filing is missing, `archive_unavailable` names it and `artifacts` is empty; the endpoints that read the filing's contents answer 503 with the same message."),
     "GET /api/filings/{doc_id}/artifact": D(summary="The filing's archived EDINET ZIP, as downloaded.", content_type="application/zip"),
     "GET /api/filings/{doc_id}/sections": D(summary="The filing's narrative sections (titles and text); `query` searches them.", query={"query": "dividend", "limit": 20}),
     "GET /api/filings/{doc_id}/sections/{section_id}": D(summary="One narrative section with its full text.", path={"section_id": "SECTION_ID"}),

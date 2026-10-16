@@ -19,6 +19,7 @@ import statistics
 from datetime import date, timedelta
 from typing import Any
 
+from src.filings.storage import ShardReader
 from src.orchestrator.common.sqlite import attach
 
 from .names import CompanyDirectory
@@ -140,9 +141,23 @@ def status(path: str) -> dict[str, Any]:
         conn.close()
 
 
+def _stored(conn: sqlite3.Connection, alias: str) -> str:
+    """SQL for "this supplement's ZIP can be downloaded": it is in the filing catalog, or still in the log.
+
+    Supplements logged by an earlier version keep their ZIP in ``Bond_Documents``
+    until the next bond run moves it into the catalog.
+    """
+    tables = {row[0] for row in conn.execute(f"SELECT name FROM {FILINGS_SCHEMA}.sqlite_master WHERE type = 'table'")}
+    stored = f"EXISTS (SELECT 1 FROM {FILINGS_SCHEMA}.filings f WHERE f.doc_id = {alias}.doc_id)" if "filings" in tables else "0"
+    columns = {row[1] for row in conn.execute(f"PRAGMA {FILINGS_SCHEMA}.table_info(Bond_Documents)")}
+    if "archive" in columns:
+        stored = f"({stored} OR {alias}.archive IS NOT NULL)"
+    return f"({alias}.kind = 'issuance' AND {stored})"
+
+
 def _documents(conn: sqlite3.Connection, edinet_code: str, catalogued: set[str]) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT doc_id, kind, submitted_at, period_end, bond_count, status, description, archive IS NOT NULL AS stored FROM Bond_Documents "
+        f"SELECT doc_id, kind, submitted_at, period_end, bond_count, status, description, {_stored(conn, 'd')} AS stored FROM Bond_Documents d "
         "WHERE edinet_code = ? AND status IN ('parsed', 'empty') ORDER BY submitted_at DESC",
         (edinet_code,),
     ).fetchall()
@@ -382,7 +397,7 @@ def bond_detail(path: str, filings_db: str, bond_id: str, *, today: str | None =
         issuance = None
         if bond.get("issuance_doc_id"):
             found = conn.execute(
-                "SELECT i.*, d.archive IS NOT NULL AS stored FROM Bond_Issuances i JOIN Bond_Documents d ON d.doc_id = i.doc_id "
+                f"SELECT i.*, {_stored(conn, 'd')} AS stored FROM Bond_Issuances i JOIN Bond_Documents d ON d.doc_id = i.doc_id "
                 "WHERE i.doc_id = ? AND i.name = ? LIMIT 1",
                 (bond["issuance_doc_id"], bond.get("name")),
             ).fetchone()
@@ -437,9 +452,20 @@ def bond_detail(path: str, filings_db: str, bond_id: str, *, today: str | None =
 
 
 def document_archive(path: str, filings_db: str, doc_id: str) -> bytes | None:
+    """A bond supplement's ZIP from the filing catalog; ``ShardUnavailableError`` when its year's file is missing.
+
+    Until the next bond run moves it, a supplement logged by an earlier version still
+    has its ZIP in ``Bond_Documents``.
+    """
     conn = _connect(path, filings_db)
     try:
-        row = conn.execute("SELECT archive FROM Bond_Documents WHERE doc_id = ?", (doc_id,)).fetchone()
+        if conn.execute("SELECT 1 FROM Bond_Documents WHERE doc_id = ? AND kind = 'issuance'", (doc_id,)).fetchone() is None:
+            return None
+        columns = {row[1] for row in conn.execute(f"PRAGMA {FILINGS_SCHEMA}.table_info(Bond_Documents)")}
+        row = conn.execute("SELECT archive FROM Bond_Documents WHERE doc_id = ?", (doc_id,)).fetchone() if "archive" in columns else None
     finally:
         conn.close()
-    return bytes(row[0]) if row and row[0] else None
+    if row and row[0]:
+        return bytes(row[0])
+    with ShardReader(filings_db) as source:
+        return source.archive(doc_id)

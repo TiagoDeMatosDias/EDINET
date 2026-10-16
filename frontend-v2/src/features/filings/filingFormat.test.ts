@@ -14,6 +14,8 @@ describe('filing formatting', () => {
     expect(formCategory('030000')).toBe('annual')
     expect(formCategory('043A00')).toBe('interim')
     expect(formCategory('07A000')).toBe('funds')
+    expect(formCategory('120003')).toBe('shelf')
+    expect(formLabel('120003')).toBe('Shelf registration supplement (shares, bonds)')
     expect(formCategory('999999')).toBe('other')
   })
 

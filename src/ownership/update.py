@@ -1,8 +1,9 @@
 """Refresh the ownership tables: read new annual reports, then decide who each row is.
 
-Annual reports come from the filing catalog (``filings.db``), one archive at a
-time; the selecting query only touches columns stored before the archive
-column, which keeps it fast on a large catalog. Every stored year is read, so
+Annual reports come from the filing catalog, one archive at a time: the
+selecting query reads the filing index (``filings.db``) and each archive comes
+from its year's file. A report whose year's file is missing is skipped with a
+warning and read on a later run. Every stored year is read, so
 a holder's stake and a board's membership can be followed over time.
 
 The log of reports read is in ``filings.db`` and what they say is in
@@ -18,6 +19,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
+from src.filings.storage import ShardReader, ShardUnavailableError
 from src.orchestrator.common.sqlite import connect_read
 
 from . import build, store
@@ -90,37 +92,41 @@ def _keep_newest_careers(report: Any, order: tuple[str, str], newest: dict[tuple
 
 def read_reports(conn: sqlite3.Connection, documents: list[dict[str, Any]], filings_db_path: str, progress: Progress = _no_progress) -> dict[str, int]:
     """Read ``documents`` (grouped by company, newest first) and store what each says."""
-    counts = {"documents": 0, "shareholders": 0, "officers": 0, "empty": 0, "errors": 0}
+    counts = {"documents": 0, "shareholders": 0, "officers": 0, "empty": 0, "errors": 0, "skipped": 0}
     if not documents:
         return counts
-    source = connect_read(filings_db_path)
     newest: dict[tuple[str, str], tuple[str, str]] = {}
     company = None
-    try:
+    with ShardReader(filings_db_path) as source:
         for index, document in enumerate(documents, start=1):
             doc_id, code = document["doc_id"], document["edinet_code"]
             if code != company:
                 company, newest = code, store.career_holders(conn, code, person_key)
-            row = source.execute("SELECT archive_content FROM filings WHERE doc_id = ?", (doc_id,)).fetchone()
-            archive = bytes(row[0]) if row and row[0] else None
-            if archive is None:
-                store.record_document(conn, doc_id, document, status="unavailable", parser_version=PARSER_VERSION, error="The catalog holds no archive for this filing")
+            try:
+                archive = source.archive(doc_id)
+            except ShardUnavailableError as exc:
+                # The year's file is missing: not recorded, so the report is read once it is back.
+                counts["skipped"] += 1
+                logger.warning("Shareholders and officers in %s skipped: %s", doc_id, exc)
             else:
-                try:
-                    report = parse_annual_report(archive)
-                except Exception as exc:  # noqa: BLE001 - one malformed report must not stop the rest
-                    counts["errors"] += 1
-                    store.record_document(conn, doc_id, document, status="error", parser_version=PARSER_VERSION, error=f"{type(exc).__name__}: {exc}"[:500])
-                    logger.warning("Shareholders and officers in %s could not be read: %s", doc_id, exc)
+                if archive is None:
+                    store.record_document(conn, doc_id, document, status="unavailable", parser_version=PARSER_VERSION, error="The catalog holds no archive for this filing")
                 else:
-                    found = bool(report.shareholders or report.officers)
-                    _keep_newest_careers(report, (document["period_end"], document["submitted_at"]), newest)
-                    store.replace_report(conn, doc_id, document, report)
-                    store.record_document(conn, doc_id, document, status="parsed" if found else "empty", report=report, parser_version=PARSER_VERSION)
-                    counts["documents"] += 1
-                    counts["empty"] += not found
-                    counts["shareholders"] += len(report.shareholders)
-                    counts["officers"] += len(report.officers)
+                    try:
+                        report = parse_annual_report(archive)
+                    except Exception as exc:  # noqa: BLE001 - one malformed report must not stop the rest
+                        counts["errors"] += 1
+                        store.record_document(conn, doc_id, document, status="error", parser_version=PARSER_VERSION, error=f"{type(exc).__name__}: {exc}"[:500])
+                        logger.warning("Shareholders and officers in %s could not be read: %s", doc_id, exc)
+                    else:
+                        found = bool(report.shareholders or report.officers)
+                        _keep_newest_careers(report, (document["period_end"], document["submitted_at"]), newest)
+                        store.replace_report(conn, doc_id, document, report)
+                        store.record_document(conn, doc_id, document, status="parsed" if found else "empty", report=report, parser_version=PARSER_VERSION)
+                        counts["documents"] += 1
+                        counts["empty"] += not found
+                        counts["shareholders"] += len(report.shareholders)
+                        counts["officers"] += len(report.officers)
             following = documents[index]["edinet_code"] if index < len(documents) else None
             if following != code:
                 # A report newer than those stored before takes over the careers it repeats.
@@ -128,8 +134,6 @@ def read_reports(conn: sqlite3.Connection, documents: list[dict[str, Any]], fili
             if index % _COMMIT_EVERY == 0:
                 conn.commit()
             progress(index, len(documents), f"Read shareholders and officers in {doc_id}")
-    finally:
-        source.close()
     conn.commit()
     return counts
 

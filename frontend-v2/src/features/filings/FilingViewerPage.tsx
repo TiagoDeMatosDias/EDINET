@@ -36,6 +36,8 @@ export default function FilingViewerPage() {
     queryFn: () => apiRequest<FilingDetail>(`/api/filings/${encodeURIComponent(docId)}`),
   })
   const filing = detail.data?.filing
+  // The filing's yearly file is missing: the index still describes it, but nothing inside can be read.
+  const unavailable = detail.data?.archive_unavailable
   const companyCode = filing?.edinet_code ?? searchParams.get('company') ?? ''
   // The company's other filings give the English name and older/newer navigation.
   const siblings = useQuery({
@@ -137,12 +139,15 @@ export default function FilingViewerPage() {
         </div>
         <div className="viewer-header__actions">
           {companyCode && <Link className="button button--secondary button--small" to={`/analyze/${encodeURIComponent(companyCode)}`} title="Open the company analysis (A)">Analysis<ArrowRight aria-hidden="true" /></Link>}
-          {filing?.archive_sha256 && <DownloadButton path={`/api/filings/${encodeURIComponent(docId)}/artifact`} filename={`${docId}.zip`}>ZIP</DownloadButton>}
+          {filing?.archive_sha256 && !unavailable && <DownloadButton path={`/api/filings/${encodeURIComponent(docId)}/artifact`} filename={`${docId}.zip`}>ZIP</DownloadButton>}
           <HotkeyHelpButton />
         </div>
       </div>
     </header>
 
+    {unavailable && <p className="viewer-note viewer-note--error" role="alert">{unavailable}. Its report, sections and statements come back once the file is restored (Admin → Filing storage).</p>}
+
+    {!unavailable && <>
     <div className="viewer-tabs" role="tablist" aria-label="Filing views">
       {VIEWER_TABS.map(option => <button key={option.key} type="button" role="tab" aria-selected={tab === option.key} className={tab === option.key ? 'viewer-tab active' : 'viewer-tab'} title={option.hint} onClick={() => selectTab(option.key)}>
         <HotkeyKbd hotkey={filingViewerScope.byId[`tab-${option.key}`]} />{option.label}
@@ -158,5 +163,6 @@ export default function FilingViewerPage() {
       {tab === 'statements' && <StatementsTab docId={docId} fileStem={fileStem} active={item} onSelect={selectItem} />}
       {tab === 'details' && <DetailsTab docId={docId} artifacts={detail.data?.artifacts ?? []} issues={issues} issuesLoading={quality.isLoading} />}
     </div>
+    </>}
   </div>
 }

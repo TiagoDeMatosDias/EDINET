@@ -27,7 +27,8 @@ def _filing(doc_id: str) -> dict:
         "edinet_code submitter_name period_start period_end submitted_at form_code doc_type_code xbrl_flag csv_flag "
         "archive_path archive_content archive_sha256 archive_size parse_error"
     ).split()
-    return {"doc_id": doc_id, "status": "parsed", "created_at": "x", "updated_at": "x", **dict.fromkeys(keys)}
+    # The submission date picks the filing's yearly file.
+    return {"doc_id": doc_id, "status": "parsed", "created_at": "x", "updated_at": "x", **dict.fromkeys(keys), "submitted_at": "2025-06-20T09:00"}
 
 
 class FakeClient:

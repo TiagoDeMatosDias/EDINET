@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from src.auth.models import AuthenticatedUser
+from src.filings.storage import ShardUnavailableError
 from src.orchestrator.common.db_config import get_filings_db, get_market_db
 
 from . import service
@@ -77,7 +78,10 @@ def document(request: Request, doc_id: str) -> Response:
         raise HTTPException(status_code=401, detail="Account authentication is required")
     if not _DOC_ID.match(doc_id):
         raise HTTPException(status_code=404, detail="Document not found")
-    content = service.document_archive(_require(_database()), get_filings_db(), doc_id)
+    try:
+        content = service.document_archive(_require(_database()), get_filings_db(), doc_id)
+    except ShardUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not content:
         raise HTTPException(status_code=404, detail="Document not stored")
     return Response(content=content, media_type="application/zip", headers={"Content-Disposition": f"attachment; filename={doc_id}.zip"})

@@ -77,6 +77,14 @@ def checkpoint(path: str) -> None:
         conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchall()
 
 
+def checkpoint_filings(path: str) -> None:
+    """Passive checkpoints of the filing index and every yearly filing file."""
+    from src.filings.maintenance import checkpoint_all
+    from src.filings.storage import FilingStorage
+
+    checkpoint_all(FilingStorage(path), "PASSIVE")
+
+
 def after_write(writes: frozenset[str]) -> dict[str, str]:
     """Maintenance after a job that wrote the named databases (``market`` and/or ``filings``)."""
     results: dict[str, str] = {}
@@ -86,6 +94,7 @@ def after_write(writes: frozenset[str]) -> dict[str, str]:
     for name in sorted(writes):
         path = databases.get(name)
         if path:
-            _step(results, f"checkpoint_{name}", lambda path=path: checkpoint(path))  # type: ignore[misc]
+            action = checkpoint_filings if name == "filings" else checkpoint
+            _step(results, f"checkpoint_{name}", lambda path=path, action=action: action(path))  # type: ignore[misc]
     logger.info("Maintenance after %s writes: %s", "+".join(sorted(writes)), results)
     return results

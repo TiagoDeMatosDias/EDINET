@@ -9,6 +9,8 @@ export interface Artifact { artifact_id: string; member_path: string; kind: stri
 export interface FilingDetail {
   filing: Filing
   artifacts: Artifact[]
+  /** Set when the yearly file holding this filing is missing, e.g. "…: filings_2018.db is missing". */
+  archive_unavailable?: string | null
 }
 
 /** An HTML document of the filing, named by its own opening heading. */

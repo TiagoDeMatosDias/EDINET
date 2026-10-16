@@ -50,7 +50,6 @@ def resolve_report_data(
             filing = catalog.get_filing(doc_id)
             if filing:
                 filing_data = dict(filing)
-                filing_data.pop("archive_path", None)
                 quality = catalog.list_quality_issues(doc_id)
                 filing_data["quality_issue_count"] = len(quality)
                 filing_summaries.append(filing_data)

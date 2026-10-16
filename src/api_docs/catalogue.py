@@ -871,7 +871,7 @@ ADMIN = Section(
     id="admin",
     title="Administration",
     screen_paths=("/admin",),
-    summary="Users, invitations, settings, workers, schedules, and the server. Administrators only.",
+    summary="Users, invitations, settings, workers, schedules, filing storage, and the server. Administrators only.",
     intro=(
         "Workers talk to the server through `/api/worker/*` with their own enrollment tokens; that protocol is not part of this API. "
         "Enroll a worker machine with `ShadeWorker enroll` and an enrollment code from `POST /api/admin/workers/enrollments`."
@@ -880,6 +880,7 @@ ADMIN = Section(
         Group("Users and invitations", ("/api/admin/auth/*",)),
         Group("Settings", ("/api/admin/settings/*",)),
         Group("Workers", ("/api/admin/workers/*",)),
+        Group("Filing storage", ("/api/admin/filing-storage/*", "/api/admin/filing-storage")),
         Group("Schedules", ("/api/admin/pipeline-schedules/*",)),
         Group("Server and tunnel", ("/api/admin/server/*", "/api/admin/*")),
         Group("Maintenance", ("POST /api/tags/migrate-legacy",)),
@@ -891,6 +892,19 @@ ADMIN = Section(
             "`PATCH /api/admin/auth/users/{id}/role` sets `admin`, `operator`, or `member`.",
             curl=_curl("/api/admin/auth/invitations", body='{"role": "member", "email": "bob@example.com"}') + "\n" + _curl("/api/admin/auth/users"),
             python='for user in call("GET", "/api/admin/auth/users"):\n    print(user["username"], user["role"], user["status"])',
+        ),
+        Guide(
+            "Split and check filing storage",
+            "`GET /api/admin/filing-storage` shows where the split stands (`state`: `legacy`, `splitting`, `ready` until "
+            "the next restart, then `split`), one row per "
+            "submission year, and on the old layout the preflight: free space, space needed and the files to create. "
+            "`POST /api/admin/filing-storage/split` queues the split as a worker job; restart the server when it finishes. "
+            "`POST /api/admin/filing-storage/check` compares the index with every yearly file (`repair` puts the index right).",
+            curl=_curl("/api/admin/filing-storage") + "\n" + _curl("/api/admin/filing-storage/check", body='{"repair": false}'),
+            python=(
+                'storage = call("GET", "/api/admin/filing-storage")\n'
+                'print(storage["state"], [(year["shard"], year["filings"], year["state"]) for year in storage["shards"]])'
+            ),
         ),
         Guide(
             "Read and change settings",

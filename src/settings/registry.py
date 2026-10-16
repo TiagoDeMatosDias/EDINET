@@ -188,8 +188,9 @@ SETTINGS: tuple[SettingSpec, ...] = (
         "path",
         "",
         "Filing archive location",
-        "Path of filings.db, for example on a larger disk. Empty keeps it in the data folder. "
-        "Move the file yourself, with the server stopped, before changing this.",
+        "Path of filings.db, for example on a larger disk; the yearly archive files live in the "
+        "filings folder beside it. Empty keeps both in the data folder. Move filings.db and the "
+        "filings folder yourself, with the server stopped, before changing this.",
         restart=True,
     ),
     SettingSpec(

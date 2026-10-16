@@ -10,22 +10,35 @@ from src.worker.context import JobContext, JobError
 logger = logging.getLogger(__name__)
 
 
+def _writable_catalog() -> Any:
+    """The filing catalog, or a ``JobError`` while the old single-file layout waits to be split."""
+    from src.filings.catalog import FilingCatalog, FilingStorageError
+    from src.orchestrator.common.db_config import get_filings_db
+
+    catalog = FilingCatalog(get_filings_db())
+    try:
+        catalog.require_writable()
+    except FilingStorageError as exc:
+        raise JobError(str(exc)) from exc
+    return catalog
+
+
 def acquire(context: JobContext) -> dict:
     """Download and index one filing; returns what ``POST /api/filings/acquire`` used to."""
     from src.filings.acquisition import EdinetAcquisitionError, EdinetDownloadClient
-    from src.filings.catalog import FilingCatalog
-    from src.orchestrator.common.db_config import get_filings_db
+    from src.filings.catalog import FilingStorageError
 
     metadata: dict[str, Any] = dict(context.payload)
     doc_id = str(metadata.get("doc_id") or "")
     if not doc_id:
         raise JobError("A filing document id is required.")
+    catalog = _writable_catalog()
     context.report_progress(None, f"Downloading {doc_id}")
     client = None
     try:
         client = EdinetDownloadClient.from_settings()
-        fact_count = client.acquire_type1(doc_id, FilingCatalog(get_filings_db()), metadata)
-    except (ValueError, EdinetAcquisitionError) as exc:
+        fact_count = client.acquire_type1(doc_id, catalog, metadata)
+    except (ValueError, EdinetAcquisitionError, FilingStorageError) as exc:
         raise JobError(str(exc)) from exc
     finally:
         if client is not None:
@@ -36,8 +49,7 @@ def acquire(context: JobContext) -> dict:
 def xbrl_backfill(context: JobContext) -> dict:
     """Download XBRL packages for eligible documents; returns the downloaded/skipped/failed/total summary."""
     from src.filings.acquisition import EdinetDownloadClient
-    from src.filings.catalog import FilingCatalog
-    from src.orchestrator.common.db_config import get_filings_db, get_market_db
+    from src.orchestrator.common.db_config import get_market_db
     from src.orchestrator.common.sqlite import connect_read
 
     limit = min(max(int(context.payload.get("limit") or 50), 1), 200)
@@ -67,7 +79,7 @@ def xbrl_backfill(context: JobContext) -> dict:
     finally:
         conn.close()
 
-    catalog = FilingCatalog(get_filings_db())
+    catalog = _writable_catalog()
     try:
         client = EdinetDownloadClient.from_settings()
     except ValueError as exc:

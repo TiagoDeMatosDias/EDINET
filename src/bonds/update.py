@@ -1,15 +1,16 @@
 """Refresh the bond tables: read new filings, update the yield curve, rebuild the bond list.
 
 Issuance supplements are listed in market.db's ``DocumentList`` (document type
-100) and downloaded from EDINET, since the XBRL step does not fetch them; the
-ZIP is kept so later parser versions can re-read it. Bond schedules come
-from annual reports already in the filing catalog (filings.db), read one
-archive at a time; the selecting query only touches columns stored before
-the archive column, which keeps it fast on a large catalog.
+100) and downloaded from EDINET, since the XBRL step does not fetch them. Each
+ZIP goes into the filing catalog like any other filing (its year's file, no
+XBRL facts), so later parser versions re-read it there. Bond schedules come
+from annual reports already in the filing catalog, read one archive at a
+time: the selecting query reads the filing index (filings.db) and each
+archive comes from its year's file.
 
 The log of filings read is in filings.db and what they say is in market.db,
 so a filing counts as read only while its rows are still there: a rebuilt
-market.db has its filings read again (supplements from their stored ZIP).
+market.db has its filings read again (supplements from the catalog).
 """
 
 from __future__ import annotations
@@ -22,6 +23,9 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date, timedelta
 from typing import Any
 
+from src.filings.catalog import FilingCatalog
+from src.filings.ingest import ingest_content
+from src.filings.storage import ShardReader, ShardUnavailableError
 from src.orchestrator.common import company_names
 from src.orchestrator.common.sqlite import connect_read
 
@@ -104,25 +108,38 @@ def pending_annual_reports(conn: sqlite3.Connection, filings_db_path: str, *, re
     ]
 
 
-def _stored_archive(conn: sqlite3.Connection, doc_id: str) -> bytes | None:
-    row = conn.execute("SELECT archive FROM Bond_Documents WHERE doc_id = ?", (doc_id,)).fetchone()
-    return bytes(row[0]) if row and row[0] else None
+def _store_supplement(catalog: FilingCatalog, document: dict[str, Any], archive: bytes) -> None:
+    """Keep a supplement in the filing catalog: its year's file, without XBRL facts, so no statement step reads it."""
+    metadata = {
+        "edinet_code": document.get("edinet_code"),
+        "submitter_name": document.get("filer_name"),
+        "submitted_at": document.get("submitted_at"),
+        "period_end": document.get("period_end"),
+        "form_code": document.get("form_code"),
+        "doc_type_code": ISSUANCE_DOC_TYPE,
+    }
+    ingest_content(archive, document["doc_id"], catalog, metadata, parse_facts=False)
 
 
-def _downloads(client: Any, conn: sqlite3.Connection, documents: list[dict[str, Any]]) -> Iterator[tuple[dict[str, Any], bytes | None, Exception | None]]:
-    """Archives for ``documents``: stored copies first, then EDINET with a few requests in flight."""
+def _downloads(client: Any, source: ShardReader, documents: list[dict[str, Any]]) -> Iterator[tuple[dict[str, Any], bytes | None, Exception | None, bool]]:
+    """``(document, archive, error, downloaded)``: copies in the catalog first, then EDINET with a few requests in flight."""
     missing: list[dict[str, Any]] = []
     for document in documents:
-        archive = _stored_archive(conn, document["doc_id"])
+        try:
+            archive = source.archive(document["doc_id"])
+        except ShardUnavailableError as exc:
+            # Stored in a year whose file is missing: skipped, not downloaded again.
+            yield document, None, exc, False
+            continue
         if archive:
-            yield document, archive, None
+            yield document, archive, None, False
         else:
             missing.append(document)
     if not missing:
         return
     if client is None:
         for document in missing:
-            yield document, None, RuntimeError("No EDINET API key: set edinet.api_key on the Admin page")
+            yield document, None, RuntimeError("No EDINET API key: set edinet.api_key on the Admin page"), False
         return
     queue = iter(missing)
     with ThreadPoolExecutor(max_workers=_DOWNLOAD_WORKERS, thread_name_prefix="bond-download") as executor:
@@ -140,72 +157,135 @@ def _downloads(client: Any, conn: sqlite3.Connection, documents: list[dict[str, 
             for future in finished:
                 document = running.pop(future)
                 try:
-                    yield document, future.result(), None
+                    yield document, future.result(), None, True
                 except Exception as exc:  # noqa: BLE001 - one unavailable filing must not stop the rest
-                    yield document, None, exc
+                    yield document, None, exc, False
                 submit()
 
 
-def read_issuances(conn: sqlite3.Connection, documents: list[dict[str, Any]], client: Any, progress: Progress = _no_progress) -> dict[str, int]:
+def read_issuances(conn: sqlite3.Connection, documents: list[dict[str, Any]], client: Any, filings_db_path: str, progress: Progress = _no_progress) -> dict[str, int]:
     from src.filings.acquisition import EdinetAcquisitionError
 
-    counts = {"documents": 0, "bonds": 0, "unavailable": 0, "errors": 0}
-    for index, (document, archive, error) in enumerate(_downloads(client, conn, documents), start=1):
-        doc_id = document["doc_id"]
-        if error is not None or archive is None:
-            unavailable = isinstance(error, EdinetAcquisitionError)
-            counts["unavailable" if unavailable else "errors"] += 1
-            store.record_document(conn, doc_id, "issuance", document, status="unavailable" if unavailable else "error", parser_version=PARSER_VERSION, error=str(error)[:500])
-            logger.warning("Bond supplement %s could not be downloaded: %s", doc_id, error)
-        else:
-            try:
-                bonds = parse_issuance(archive)
-            except Exception as exc:  # noqa: BLE001 - keep the archive and record why it failed
-                counts["errors"] += 1
-                store.record_document(conn, doc_id, "issuance", document, status="error", parser_version=PARSER_VERSION, error=f"{type(exc).__name__}: {exc}"[:500], archive=archive)
-                logger.warning("Bond supplement %s could not be read: %s", doc_id, exc)
+    counts = {"documents": 0, "bonds": 0, "unavailable": 0, "errors": 0, "skipped": 0}
+    if not documents:
+        return counts
+    catalog = FilingCatalog(filings_db_path)
+    with ShardReader(catalog.storage) as source:
+        for index, (document, archive, error, downloaded) in enumerate(_downloads(client, source, documents), start=1):
+            doc_id = document["doc_id"]
+            if isinstance(error, ShardUnavailableError):
+                # Not recorded, so the supplement is read once its year's file is back.
+                counts["skipped"] += 1
+                logger.warning("Bond supplement %s skipped: %s", doc_id, error)
+            elif error is not None or archive is None:
+                unavailable = isinstance(error, EdinetAcquisitionError)
+                counts["unavailable" if unavailable else "errors"] += 1
+                store.record_document(conn, doc_id, "issuance", document, status="unavailable" if unavailable else "error", parser_version=PARSER_VERSION, error=str(error)[:500])
+                logger.warning("Bond supplement %s could not be downloaded: %s", doc_id, error)
             else:
-                store.replace_issuances(conn, doc_id, document["edinet_code"], document["submitted_at"], [bond.as_dict() for bond in bonds])
-                store.record_document(conn, doc_id, "issuance", document, status="parsed" if bonds else "empty", bond_count=len(bonds), parser_version=PARSER_VERSION, archive=archive)
-                counts["documents"] += 1
-                counts["bonds"] += len(bonds)
-        if index % _COMMIT_EVERY == 0:
-            conn.commit()
-        progress(index, len(documents), f"Read bond supplement {doc_id}")
+                if downloaded:
+                    # The catalog writes filings.db through its own connections; this one must not hold its lock.
+                    conn.commit()
+                    try:
+                        _store_supplement(catalog, document, archive)
+                    except Exception as exc:  # noqa: BLE001 - the terms are still read; the next re-parse downloads it again
+                        logger.warning("Bond supplement %s could not be stored in the filing catalog: %s", doc_id, exc)
+                try:
+                    bonds = parse_issuance(archive)
+                except Exception as exc:  # noqa: BLE001 - the archive stays in the catalog; record why it failed
+                    counts["errors"] += 1
+                    store.record_document(conn, doc_id, "issuance", document, status="error", parser_version=PARSER_VERSION, error=f"{type(exc).__name__}: {exc}"[:500])
+                    logger.warning("Bond supplement %s could not be read: %s", doc_id, exc)
+                else:
+                    store.replace_issuances(conn, doc_id, document["edinet_code"], document["submitted_at"], [bond.as_dict() for bond in bonds])
+                    store.record_document(conn, doc_id, "issuance", document, status="parsed" if bonds else "empty", bond_count=len(bonds), parser_version=PARSER_VERSION)
+                    counts["documents"] += 1
+                    counts["bonds"] += len(bonds)
+            if index % _COMMIT_EVERY == 0:
+                conn.commit()
+            progress(index, len(documents), f"Read bond supplement {doc_id}")
     conn.commit()
     return counts
 
 
+def move_stored_archives(conn: sqlite3.Connection, filings_db_path: str) -> dict[str, int]:
+    """Move the supplement ZIPs earlier versions kept in ``Bond_Documents`` into the filing catalog.
+
+    Each becomes a filing in its year's file, stored without XBRL facts; a date or
+    form the log lacks comes from ``DocumentList``. A ZIP that cannot be placed stays
+    in the log for the next run. filings.db is compacted after a move; the emptied
+    column stays, so an older build sharing the data still reads the log.
+    ``conn`` is the bond connection (market.db, filings.db attached as ``filings``).
+    """
+    counts = {"moved": 0, "errors": 0}
+    columns = {row[1] for row in conn.execute(f"PRAGMA {store.FILINGS_SCHEMA}.table_info(Bond_Documents)")}
+    if "archive" not in columns:
+        return counts
+    listed = conn.execute("SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = 'DocumentList'").fetchone()
+    listing = (
+        "LEFT JOIN main.DocumentList d ON d.docID = b.doc_id" if listed
+        else "LEFT JOIN (SELECT NULL AS docID, NULL AS edinetCode, NULL AS filerName, NULL AS submitDateTime, NULL AS periodEnd, NULL AS formCode) d ON 0"
+    )
+    rows = conn.execute(
+        "SELECT b.doc_id, COALESCE(NULLIF(b.edinet_code, ''), d.edinetCode), COALESCE(NULLIF(b.filer_name, ''), d.filerName), "
+        "COALESCE(NULLIF(b.submitted_at, ''), d.submitDateTime), COALESCE(NULLIF(b.period_end, ''), d.periodEnd), "
+        f"COALESCE(NULLIF(b.form_code, ''), d.formCode) FROM {store.FILINGS_SCHEMA}.Bond_Documents b {listing} WHERE b.archive IS NOT NULL"
+    ).fetchall()
+    catalog = FilingCatalog(filings_db_path) if rows else None
+    for doc_id, edinet_code, filer_name, submitted_at, period_end, form_code in rows:
+        try:
+            if catalog is not None and catalog.get_filing(doc_id) is None:
+                (archive,) = conn.execute(f"SELECT archive FROM {store.FILINGS_SCHEMA}.Bond_Documents WHERE doc_id = ?", (doc_id,)).fetchone()
+                document = {"doc_id": doc_id, "edinet_code": edinet_code, "filer_name": filer_name, "submitted_at": submitted_at, "period_end": period_end, "form_code": form_code}
+                _store_supplement(catalog, document, bytes(archive))
+        except Exception as exc:  # noqa: BLE001 - the ZIP stays in the log and the next run tries again
+            counts["errors"] += 1
+            logger.warning("Bond supplement %s could not be moved into the filing catalog: %s", doc_id, exc)
+            continue
+        conn.execute(f"UPDATE {store.FILINGS_SCHEMA}.Bond_Documents SET archive = NULL WHERE doc_id = ?", (doc_id,))
+        conn.commit()
+        counts["moved"] += 1
+    if counts["moved"]:
+        logger.info("Moved %d bond supplement(s) from the bond log into the filing catalog", counts["moved"])
+        try:
+            conn.execute(f"VACUUM {store.FILINGS_SCHEMA}")
+        except sqlite3.Error as exc:  # the space is reused by later writes; a busy index is compacted another time
+            logger.warning("filings.db was not compacted after moving the bond supplements: %s", exc)
+    return counts
+
+
 def read_annual_reports(conn: sqlite3.Connection, documents: list[dict[str, Any]], filings_db_path: str, progress: Progress = _no_progress) -> dict[str, int]:
-    counts = {"documents": 0, "with_bonds": 0, "rows": 0, "errors": 0}
+    counts = {"documents": 0, "with_bonds": 0, "rows": 0, "errors": 0, "skipped": 0}
     if not documents:
         return counts
-    source = connect_read(filings_db_path)
-    try:
+    with ShardReader(filings_db_path) as source:
         for index, document in enumerate(documents, start=1):
             doc_id = document["doc_id"]
-            row = source.execute("SELECT archive_content FROM filings WHERE doc_id = ?", (doc_id,)).fetchone()
-            archive = bytes(row[0]) if row and row[0] else None
-            if archive is None:
-                store.record_document(conn, doc_id, "annual", document, status="unavailable", parser_version=PARSER_VERSION, error="The catalog holds no archive for this filing")
+            try:
+                archive = source.archive(doc_id)
+            except ShardUnavailableError as exc:
+                # The year's file is missing: not recorded, so the report is read once it is back.
+                counts["skipped"] += 1
+                logger.warning("Bond schedule in %s skipped: %s", doc_id, exc)
             else:
-                try:
-                    rows = parse_bond_schedule(archive)
-                except Exception as exc:  # noqa: BLE001 - one malformed report must not stop the rest
-                    counts["errors"] += 1
-                    store.record_document(conn, doc_id, "annual", document, status="error", parser_version=PARSER_VERSION, error=f"{type(exc).__name__}: {exc}"[:500])
-                    logger.warning("Bond schedule in %s could not be read: %s", doc_id, exc)
+                if archive is None:
+                    store.record_document(conn, doc_id, "annual", document, status="unavailable", parser_version=PARSER_VERSION, error="The catalog holds no archive for this filing")
                 else:
-                    store.replace_schedule(conn, doc_id, document["edinet_code"], document["period_end"], [item.as_dict() for item in rows])
-                    store.record_document(conn, doc_id, "annual", document, status="parsed" if rows else "empty", bond_count=len(rows), parser_version=PARSER_VERSION)
-                    counts["documents"] += 1
-                    counts["with_bonds"] += bool(rows)
-                    counts["rows"] += len(rows)
+                    try:
+                        rows = parse_bond_schedule(archive)
+                    except Exception as exc:  # noqa: BLE001 - one malformed report must not stop the rest
+                        counts["errors"] += 1
+                        store.record_document(conn, doc_id, "annual", document, status="error", parser_version=PARSER_VERSION, error=f"{type(exc).__name__}: {exc}"[:500])
+                        logger.warning("Bond schedule in %s could not be read: %s", doc_id, exc)
+                    else:
+                        store.replace_schedule(conn, doc_id, document["edinet_code"], document["period_end"], [item.as_dict() for item in rows])
+                        store.record_document(conn, doc_id, "annual", document, status="parsed" if rows else "empty", bond_count=len(rows), parser_version=PARSER_VERSION)
+                        counts["documents"] += 1
+                        counts["with_bonds"] += bool(rows)
+                        counts["rows"] += len(rows)
             if index % _COMMIT_EVERY == 0:
                 conn.commit()
             progress(index, len(documents), f"Read the bond schedule in {doc_id}")
-    finally:
-        source.close()
     conn.commit()
     return counts
 
@@ -260,11 +340,14 @@ def update_bonds(
     conn = store.connect(market_db, filings_db_path)
     result: dict[str, Any] = {}
     try:
+        moved = move_stored_archives(conn, filings_db_path)
+        if moved["moved"] or moved["errors"]:
+            result["stored_supplements"] = moved
         if issuances:
             documents = pending_issuances(conn, reparse=reparse)
             if max_documents > 0:
                 documents = documents[:max_documents]
-            result["issuances"] = read_issuances(conn, documents, client, progress)
+            result["issuances"] = read_issuances(conn, documents, client, filings_db_path, progress)
             store.mark_update(conn, "issuances", result["issuances"])
         if annual_reports:
             documents = pending_annual_reports(conn, filings_db_path, reparse=reparse)

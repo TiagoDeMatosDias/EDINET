@@ -20,7 +20,10 @@ from src.bonds import build, jsda, parsing, service, update, valuation
 from src.bonds.names import CompanyDirectory, bond_label, filed_label, is_japanese, is_parent_issuer
 from src.bonds.store import BOND_COLUMNS, connect, ensure_bond_tables
 from src.filings.acquisition import EdinetAcquisitionError
+from src.filings.catalog import FilingCatalog
+from src.filings.storage import ShardReader
 from src.web_app.security import AppSettings, install_security
+from tests.filing_fixtures import filing_row
 
 TODAY = "2026-10-09"
 PASSWORD = "correct horse battery staple"
@@ -219,12 +222,15 @@ def _sources(tmp_path: Path) -> dict[str, str]:
             ("S100ANN1", "E99001", "テスト工業株式会社", "2026-06-25 10:00", "2026-03-31", "030000", "有価証券報告書", "120", "1", "0"),
         ])
     filings = tmp_path / "Filings.db"
-    with _db(filings) as conn:
-        conn.execute("CREATE TABLE filings (doc_id TEXT PRIMARY KEY, edinet_code TEXT, submitter_name TEXT, period_start TEXT, period_end TEXT, submitted_at TEXT, form_code TEXT, doc_type_code TEXT, archive_content BLOB)")
-        conn.executemany("INSERT INTO filings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
-            ("S100OLD1", "E99001", "テスト工業株式会社", "2024-04-01", "2025-03-31", "2025-06-25T10:00:00", "030000", "1", _zip("<html></html>")),
-            ("S100ANN1", "E99001", "テスト工業株式会社", "2025-04-01", "2026-03-31", "2026-06-25T10:00:00", "030000", "1", _zip(ANNUAL_HTML)),
-        ])
+    catalog = FilingCatalog(filings)
+    for doc_id, period_start, period_end, submitted, content in (
+        ("S100OLD1", "2024-04-01", "2025-03-31", "2025-06-25T10:00:00", _zip("<html></html>")),
+        ("S100ANN1", "2025-04-01", "2026-03-31", "2026-06-25T10:00:00", _zip(ANNUAL_HTML)),
+    ):
+        catalog.upsert_filing(filing_row(
+            doc_id, "E99001", submitted, content=content, submitter_name="テスト工業株式会社",
+            period_start=period_start, period_end=period_end, doc_type_code="1",
+        ))
     with _db(market) as conn:
         conn.execute('CREATE TABLE CompanyInfo (Company_Code TEXT, "Submitter Name" TEXT, Company_Name TEXT, Company_Ticker TEXT, Company_Industry TEXT, Listed TEXT)')
         conn.executemany("INSERT INTO CompanyInfo VALUES (?, ?, ?, ?, ?, ?)", [
@@ -268,17 +274,21 @@ def updated(tmp_path):
 
 def test_update_reads_supplements_and_the_latest_schedule(updated):
     paths, result, client = updated
-    assert result["issuances"] == {"documents": 1, "bonds": 2, "unavailable": 1, "errors": 0}
+    assert result["issuances"] == {"documents": 1, "bonds": 2, "unavailable": 1, "errors": 0, "skipped": 0}
     assert result["annual_reports"]["documents"] == 1 and result["annual_reports"]["rows"] == 5
     assert sorted(client.requests) == ["S100GONE", "S100ISS1"]
+    assert "stored_supplements" not in result
     with _db(paths["bonds"]) as conn:
         conn.row_factory = sqlite3.Row
         bonds = {row["name"]: dict(row) for row in conn.execute("SELECT * FROM Bonds")}
         assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'Bond_Documents'").fetchall()
-    # The log of filings read, with the supplements' archives, is kept beside the filings.
+    # The log of filings read is kept beside the filings; it holds no archives.
     with _db(paths["filings"]) as conn:
-        stored = conn.execute("SELECT doc_id, status, archive IS NOT NULL FROM Bond_Documents ORDER BY doc_id").fetchall()
-    assert [tuple(row) for row in stored] == [("S100ANN1", "parsed", 0), ("S100GONE", "unavailable", 0), ("S100ISS1", "parsed", 1)]
+        stored = conn.execute("SELECT doc_id, status FROM Bond_Documents ORDER BY doc_id").fetchall()
+        assert "archive" not in {row[1] for row in conn.execute("PRAGMA table_info(Bond_Documents)")}
+    assert [tuple(row) for row in stored] == [("S100ANN1", "parsed"), ("S100GONE", "unavailable"), ("S100ISS1", "parsed")]
+    # The supplement is an ordinary filing in its year's file, without XBRL facts, so no statement step reads it.
+    _assert_stored_supplement(paths["filings"], "S100ISS1", "2026-09-14 10:00")
 
     fourth = bonds["第4回無担保社債"]
     assert fourth["status"] == "outstanding" and fourth["outstanding"] == 15e9 and fourth["outstanding_as_of"] == "2026-03-31"
@@ -301,6 +311,16 @@ def test_update_reads_supplements_and_the_latest_schedule(updated):
     hybrid = next(bond for name, bond in bonds.items() if "利払繰延" in name)
     assert hybrid["seniority"] == "hybrid" and hybrid["call_date"] == "2031-09-20" and hybrid["rating"] == "A-" and hybrid["rating_inferred"] == 0
     assert hybrid["issue_tenor"] == pytest.approx(5.0, abs=0.01)
+
+
+def _assert_stored_supplement(filings_db: str, doc_id: str, submitted_at: str) -> None:
+    filing = FilingCatalog(filings_db).get_filing(doc_id)
+    assert filing is not None
+    assert (filing["doc_type_code"], filing["form_code"], filing["submitted_at"], filing["status"]) == ("100", "120003", submitted_at, "parsed")
+    with _db(filings_db) as conn:
+        assert conn.execute("SELECT shard, fact_count, issue_count FROM filings WHERE doc_id = ?", (doc_id,)).fetchone() == ("2026", 0, 0)
+    with ShardReader(filings_db) as source:
+        assert source.archive(doc_id) == _zip(ISSUANCE_HTML)
 
 
 def test_a_second_run_reads_nothing_new_and_overwrite_reads_from_storage(updated):
@@ -335,12 +355,44 @@ def test_a_document_log_kept_in_market_db_by_an_earlier_version_is_moved_to_fili
         conn.execute("INSERT INTO Bond_Documents (doc_id, kind, edinet_code, status, processed_at, archive) VALUES ('S100ISS1', 'issuance', 'E99001', 'error', '2026-10-01', ?)", (_zip(ISSUANCE_HTML),))
     client = FakeClient({})
     result = update.update_bonds(market_db=paths["bonds"], filings_db_path=paths["filings"], client=client, curve=False, market_prices=False, today=TODAY)
-    # The supplement is read from the archive that moved with the log, without a download.
+    # The ZIP that moved with the log goes into the filing catalog, dated from DocumentList, and is read from there.
+    assert result["stored_supplements"] == {"moved": 1, "errors": 0}
     assert result["issuances"]["bonds"] == 2 and client.requests == ["S100GONE"]
     with _db(paths["bonds"]) as conn:
         assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'Bond_Documents'").fetchall()
     with _db(paths["filings"]) as conn:
-        assert conn.execute("SELECT status, archive IS NOT NULL FROM Bond_Documents WHERE doc_id = 'S100ISS1'").fetchone() == ("parsed", 1)
+        # The emptied column stays, so an older build sharing the data still reads the log.
+        assert conn.execute("SELECT status, archive FROM Bond_Documents WHERE doc_id = 'S100ISS1'").fetchone() == ("parsed", None)
+    _assert_stored_supplement(paths["filings"], "S100ISS1", "2026-09-14 10:00")
+    again = update.update_bonds(market_db=paths["bonds"], filings_db_path=paths["filings"], client=client, curve=False, market_prices=False, today=TODAY)
+    assert "stored_supplements" not in again
+
+
+def test_a_stored_supplement_that_cannot_be_placed_stays_in_the_log(tmp_path):
+    paths = _sources(tmp_path)
+    ensure_bond_tables(paths["bonds"], paths["filings"])
+    with _db(paths["filings"]) as conn:
+        conn.execute("ALTER TABLE Bond_Documents ADD COLUMN archive BLOB")
+        # No submission date in the log, and DocumentList does not list it: its year is unknown.
+        conn.execute("INSERT INTO Bond_Documents (doc_id, kind, edinet_code, status, processed_at, archive) VALUES ('S100LOST', 'issuance', 'E99001', 'parsed', '2026-10-01', ?)", (_zip(ISSUANCE_HTML),))
+        conn.execute("INSERT INTO Bond_Documents (doc_id, kind, edinet_code, submitted_at, form_code, status, processed_at, archive) VALUES ('S100OLDS', 'issuance', 'E99001', '2025-02-03 09:00', '120003', 'parsed', '2026-10-01', ?)", (_zip(ISSUANCE_HTML),))
+    result = update.update_bonds(market_db=paths["bonds"], filings_db_path=paths["filings"], client=FakeClient({"S100ISS1": _zip(ISSUANCE_HTML)}), curve=False, market_prices=False, today=TODAY)
+    assert result["stored_supplements"] == {"moved": 1, "errors": 1}
+    with _db(paths["filings"]) as conn:
+        kept = conn.execute("SELECT doc_id, archive IS NOT NULL FROM Bond_Documents WHERE kind = 'issuance' AND doc_id LIKE 'S100%S' OR doc_id = 'S100LOST' ORDER BY doc_id").fetchall()
+        assert [tuple(row) for row in kept] == [("S100LOST", 1), ("S100OLDS", 0)]
+    assert FilingCatalog(paths["filings"]).get_filing("S100OLDS")["submitted_at"] == "2025-02-03 09:00"
+    assert FilingCatalog(paths["filings"]).get_filing("S100LOST") is None
+
+
+def test_a_supplement_whose_year_is_missing_is_skipped_not_downloaded_again(updated):
+    paths, _, _ = updated
+    shard = Path(paths["filings"]).parent / "filings" / "filings_2026.db"
+    shard.rename(shard.with_suffix(".away"))
+    client = FakeClient({"S100ISS1": _zip(ISSUANCE_HTML)})
+    result = update.update_bonds(market_db=paths["bonds"], filings_db_path=paths["filings"], client=client, curve=False, market_prices=False, reparse=True, today=TODAY)
+    assert result["issuances"]["skipped"] == 1 and result["annual_reports"]["skipped"] == 1
+    assert client.requests == ["S100GONE"]
 
 
 def test_curve_files_from_the_ministry_parse_era_dates():
@@ -559,11 +611,10 @@ def test_update_names_an_issuer_in_english_from_its_annual_report_when_edinet_li
     _curve(paths)
     with _db(paths["bonds"]) as conn:
         conn.execute("INSERT INTO CompanyInfo VALUES ('E99003', '無名海運株式会社', '', '99970', 'Marine Transportation', 'Listed company')")
-    with _db(paths["filings"]) as conn:
-        conn.execute("INSERT INTO filings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (
-            "S100SHIP1", "E99003", "無名海運株式会社", "2025-04-01", "2026-03-31", "2026-06-25T10:00:00", "030000", "1",
-            _report(HEADER_HTML, ANNUAL_HTML.replace("テスト物流㈱", "無名海運㈱")),
-        ))
+    FilingCatalog(paths["filings"]).upsert_filing(filing_row(
+        "S100SHIP1", "E99003", "2026-06-25T10:00:00", content=_report(HEADER_HTML, ANNUAL_HTML.replace("テスト物流㈱", "無名海運㈱")),
+        submitter_name="無名海運株式会社", period_start="2025-04-01", period_end="2026-03-31", doc_type_code="1",
+    ))
 
     result = update.update_bonds(market_db=paths["bonds"], filings_db_path=paths["filings"], client=FakeClient({}), curve=False, market_prices=False, today=TODAY)
 

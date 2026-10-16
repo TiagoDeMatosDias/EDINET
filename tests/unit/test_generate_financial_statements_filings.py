@@ -483,3 +483,54 @@ def test_a_failure_before_the_swap_leaves_the_live_tables_unchanged(tmp_path, mo
     _generate(filings_path, target_path, overwrite=True)
     final = _snapshot(target_path)
     assert final == before
+
+
+def _statement_rows(path) -> dict[str, list[tuple]]:
+    with sqlite3.connect(path) as conn:
+        return {
+            "financial": conn.execute(
+                "SELECT docID, Company_Code, docTypeCode, Currency, periodStart, periodEnd, release_id "
+                "FROM FinancialStatements ORDER BY docID"
+            ).fetchall(),
+            "income": conn.execute("SELECT docID, [Net Sales] FROM IncomeStatement ORDER BY docID").fetchall(),
+            "balance": conn.execute("SELECT docID, [Cash and Deposits] FROM BalanceSheet ORDER BY docID").fetchall(),
+        }
+
+
+def test_split_and_single_file_catalogs_give_the_same_statements(tmp_path, monkeypatch):
+    from src.orchestrator.generate_financial_statements import service
+    from tests.filing_fixtures import legacy_copy
+
+    catalog = FilingCatalog(tmp_path / "split" / "filings.db")
+    for doc_id, submitted in (("S100Y2023", "2023-06-20T09:00"), ("S100Y2024", "2024-06-20 09:00"), ("S100Y2025", "2025-06-20T09:00")):
+        ingest_content(
+            _zip_bytes(_XBRL),
+            doc_id,
+            catalog,
+            {"edinet_code": "E12345", "submitted_at": submitted, "period_start": "2024-04-01", "period_end": "2025-03-31", "doc_type_code": "120"},
+        )
+    old = legacy_copy(catalog, tmp_path / "old" / "filings.db")
+    assert FilingCatalog(old).layout == "legacy"
+
+    attached: list[list[str]] = []
+    original = service._shard_batches
+
+    def watching(conn, shard_groups, batch_size):
+        for batch in original(conn, shard_groups, batch_size):
+            attached.append([row[1] for row in conn.execute("PRAGMA database_list") if row[1] not in ("main", "temp")])
+            yield batch
+
+    monkeypatch.setattr(service, "_shard_batches", watching)
+    results = {}
+    for name, source in (("split", catalog.path), ("old", old)):
+        target = tmp_path / f"{name}.db"
+        _create_taxonomy(target)
+        results[name] = generate_financial_statements(
+            source_database=str(source), target_database=str(target), granularity_level=1, source_mode="filings"
+        )
+
+    assert results["split"]["documents_processed"] == results["old"]["documents_processed"] == 3
+    split_rows, old_rows = _statement_rows(tmp_path / "split.db"), _statement_rows(tmp_path / "old.db")
+    assert split_rows == old_rows and len(split_rows["income"]) == 3
+    # One yearly file at a time, each in its own batch.
+    assert attached == [["src"], ["src"], ["src"]]

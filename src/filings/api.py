@@ -28,7 +28,7 @@ from src.orchestrator.common.db_config import get_market_db
 from src.orchestrator.common.sqlite import connect_read
 
 from .archive import ArchiveMemberNotFoundError, UnsafeArchiveError
-from .catalog import FilingCatalog
+from .catalog import FilingCatalog, ShardUnavailableError
 from .remote_translation import owner_of, server_translator
 from .report_files import describe_report_files
 from .runtime import catalog
@@ -127,7 +127,11 @@ def build_filings_bundle(
             if not doc_id:
                 skipped += 1
                 continue
-            content = target_catalog.get_archive_content(doc_id)
+            try:
+                content = target_catalog.get_archive_content(doc_id)
+            except ShardUnavailableError:
+                # Its year's file is missing: listed in the manifest as not included.
+                content = None
             manifest.append((
                 doc_id,
                 str(row["period_end"] or ""),
@@ -264,7 +268,12 @@ def get_filing(request: Request, doc_id: str) -> dict[str, Any]:
             )
         except Exception as exc:  # noqa: BLE001 - activity history is best effort
             logger.info("Could not record recent filing view for %s: %s", doc_id, exc)
-    return {"filing": filing, "artifacts": [_record(item) for item in catalog.list_artifacts(doc_id)]}
+    # The index still describes a filing whose yearly file is missing; the viewer shows why its contents are not.
+    try:
+        artifacts, unavailable = [_record(item) for item in catalog.list_artifacts(doc_id)], None
+    except ShardUnavailableError as exc:
+        artifacts, unavailable = [], str(exc)
+    return {"filing": filing, "artifacts": artifacts, "archive_unavailable": unavailable}
 
 
 @router.get("/{doc_id}/facts")
@@ -421,6 +430,7 @@ def _queued(record: Any) -> dict[str, Any]:
 def acquire_filing(request: Request, payload: AcquireRequest) -> dict[str, Any]:
     """Queue the download of a type-1 archive; a worker runs it (batch lane) and the job tray follows it."""
     user = _require_operator(request)
+    catalog.require_writable()
     record = get_job_service().enqueue(
         "filing_acquire",
         payload.model_dump(exclude_none=True),
@@ -505,6 +515,7 @@ def trigger_xbrl_backfill(
     user = _require_operator(request)
     if not os.path.exists(get_market_db()):
         return {"downloaded": 0, "skipped": 0, "failed": 0, "total": 0}
+    catalog.require_writable()
     record = get_job_service().enqueue(
         "xbrl_backfill",
         {"limit": min(max(limit, 1), 200), "doc_type_code": doc_type_code.strip()},
@@ -544,7 +555,7 @@ def get_filing_html(
         raise HTTPException(status_code=400, detail="Artifact is not an HTML file")
 
     try:
-        artifact = catalog.get_artifact_content(artifact_id)
+        artifact = catalog.get_artifact_content(artifact_id, doc_id)
     except ArchiveMemberNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Artifact missing from filing archive") from exc
     except UnsafeArchiveError as exc:

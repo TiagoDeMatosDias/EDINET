@@ -1,8 +1,9 @@
 """Bond tables: the rebuildable store of bond terms and the government yield curve.
 
-``Bond_Documents`` logs every filing the bond step has read (issuance
-supplements keep their ZIP so terms can be re-read without downloading). It
-lives in ``filings.db`` beside the filings it describes; every other table is
+``Bond_Documents`` logs every filing the bond step has read. Issuance
+supplements are stored in the filing catalog like any other filing, so terms can
+be re-read without downloading. The log lives in ``filings.db`` beside the
+filings it describes; every other table is
 in ``market.db``, and connections that need both attach ``filings.db`` as
 ``filings`` (see ``connect``).
 ``Bond_Issuances`` and ``Bond_Schedule_Rows`` hold what each filing says;
@@ -38,8 +39,7 @@ CREATE TABLE IF NOT EXISTS Bond_Documents (
     bond_count INTEGER NOT NULL DEFAULT 0,
     parser_version INTEGER NOT NULL DEFAULT 0,
     error TEXT,
-    processed_at TEXT NOT NULL,
-    archive BLOB
+    processed_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_bond_documents_company ON Bond_Documents(edinet_code, kind, period_end);
 """
@@ -244,6 +244,11 @@ def ensure_bond_tables(market_db: str | Path, filings_db: str | Path) -> None:
         for column in BOND_COLUMNS:
             if column not in existing:
                 conn.execute(f'ALTER TABLE Bonds ADD COLUMN "{column}" {_COLUMN_TYPES.get(column, "TEXT")}')
+        # A log from before the supplements moved into the filing catalog keeps their ZIPs until update_bonds moves them.
+        old = {row[1] for row in conn.execute("PRAGMA main.table_info(Bond_Documents)")}
+        new = {row[1] for row in conn.execute(f"PRAGMA {FILINGS_SCHEMA}.table_info(Bond_Documents)")}
+        if "archive" in old and "archive" not in new:
+            conn.execute(f"ALTER TABLE {FILINGS_SCHEMA}.Bond_Documents ADD COLUMN archive BLOB")
         move_table(conn, "Bond_Documents", FILINGS_SCHEMA)
         conn.commit()
     finally:
@@ -270,23 +275,22 @@ def _value(column: str, value: Any) -> Any:
 
 
 def record_document(conn, doc_id: str, kind: str, meta: dict[str, Any], *, status: str, bond_count: int = 0,
-                    parser_version: int = 0, error: str | None = None, archive: bytes | None = None) -> None:
+                    parser_version: int = 0, error: str | None = None) -> None:
     conn.execute(
         """
         INSERT INTO Bond_Documents (doc_id, kind, edinet_code, filer_name, submitted_at, period_end, form_code,
-            description, status, bond_count, parser_version, error, processed_at, archive)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            description, status, bond_count, parser_version, error, processed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(doc_id) DO UPDATE SET
             kind = excluded.kind, edinet_code = excluded.edinet_code, filer_name = excluded.filer_name,
             submitted_at = excluded.submitted_at, period_end = excluded.period_end, form_code = excluded.form_code,
             description = excluded.description, status = excluded.status, bond_count = excluded.bond_count,
-            parser_version = excluded.parser_version, error = excluded.error, processed_at = excluded.processed_at,
-            archive = COALESCE(excluded.archive, Bond_Documents.archive)
+            parser_version = excluded.parser_version, error = excluded.error, processed_at = excluded.processed_at
         """,
         (
             doc_id, kind, meta.get("edinet_code"), meta.get("filer_name"), meta.get("submitted_at"),
             meta.get("period_end"), meta.get("form_code"), meta.get("description"), status, bond_count,
-            parser_version, error, now(), archive,
+            parser_version, error, now(),
         ),
     )
 

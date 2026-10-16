@@ -20,6 +20,11 @@ const FORM_LABELS: Record<string, string> = {
   '082000': 'Foreign company report',
   '09A000': 'Annual report · trust beneficiary certificates',
   '09E000': 'Annual report · investment business rights',
+  // Shelf registration supplements (EDINET document type 100), stored for the bond terms they carry.
+  '120003': 'Shelf registration supplement (shares, bonds)',
+  '150003': 'Shelf registration supplement',
+  '090003': 'Shelf registration supplement',
+  '210003': 'Shelf registration supplement (investment securities)',
 }
 
 export const FORM_CATEGORIES = [
@@ -28,6 +33,7 @@ export const FORM_CATEGORIES = [
   { key: 'amended', label: 'Amendments', codes: ['030001', '043001', '043A01'] },
   { key: 'funds', label: 'Funds and trusts', codes: ['06G000', '06I000', '07A000', '07B000', '09A000', '09E000'] },
   { key: 'foreign', label: 'Foreign companies', codes: ['080000', '082000'] },
+  { key: 'shelf', label: 'Shelf supplements', codes: ['120003', '150003', '090003', '210003'] },
 ] as const
 
 export type FormCategoryKey = typeof FORM_CATEGORIES[number]['key']

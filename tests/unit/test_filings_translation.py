@@ -341,7 +341,7 @@ class _HtmlCatalog:
             }
         ]
 
-    def get_artifact_content(self, _artifact_id):
+    def get_artifact_content(self, _artifact_id, _doc_id=None):
         return {"content": b'<html lang="ja"><body><p>Japanese</p></body></html>'}
 
 

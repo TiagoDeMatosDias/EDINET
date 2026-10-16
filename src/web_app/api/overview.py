@@ -154,6 +154,15 @@ def data_summary() -> dict[str, Any]:
         result["filings"] = catalog.coverage_summary()
     except Exception:  # noqa: BLE001 - the filing catalog is optional
         result["filings"] = None
+    try:
+        from src.filings.runtime import FILINGS_DB_PATH
+        from src.filings.split import notice
+
+        # Set while filings.db still has the old single-file layout (Admin -> Filing storage).
+        result["filing_storage"] = notice(FILINGS_DB_PATH)
+    except Exception:  # noqa: BLE001 - the notice is advice only
+        logger.info("Overview could not read the filing storage layout", exc_info=True)
+        result["filing_storage"] = None
     return result
 
 

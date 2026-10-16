@@ -92,6 +92,9 @@ def test_all_mode_updates_base_statuses_and_retries_failures(tmp_path, monkeypat
     monkeypatch.setattr(db_config, "get_market_db", lambda: str(base_path))
 
     class FakeCatalog:
+        def require_writable(self):
+            return None
+
         def get_filing(self, document_id):
             if document_id == "A":
                 return {"status": "parsed"}

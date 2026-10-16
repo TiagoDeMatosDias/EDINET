@@ -1,9 +1,14 @@
 """Catalog an EDINET archive and build its compact XBRL index.
 
-The compressed provider ZIP is retained in ``Filings.db``. Extracted member
+The compressed provider ZIP is retained in the yearly filing file of its
+submission year (``filings/filings_YYYY.db``; see ``storage``). Extracted member
 bytes are used transiently for parsing and are not duplicated in the catalog.
 Only numeric/analytical XBRL facts are persisted; narrative members are
 extracted from the retained ZIP on demand.
+
+A filing already in the catalog stays in its year's file when it is downloaded
+or parsed again. A new filing without a submission date is refused: its year,
+and so its file, is never guessed.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ def ingest_content(
     metadata: dict[str, Any] | None = None,
     *,
     policy: ArchivePolicy = DEFAULT_ARCHIVE_POLICY,
+    parse_facts: bool = True,
 ) -> int:
     """Validate, index, and store one ZIP in the catalog database.
 
@@ -48,14 +54,17 @@ def ingest_content(
         catalog: FilingCatalog instance for the target database.
         metadata: Optional dict with edinet_code, submitter_name, etc.
         policy: Validation policy (size limits, member counts).
+        parse_facts: False stores the archive and its member list only, for a filing
+            its own parser reads (bond supplements), so no statement step picks it up.
 
     Returns:
         Number of XBRL facts indexed.
     """
     infos = validate_zip_in_memory(zip_bytes, policy)
-    metadata = metadata or {}
-    # If no company metadata was provided, try to look it up from Base.db
-    if not metadata.get("edinet_code") and not metadata.get("submitter_name"):
+    metadata = dict(metadata or {})
+    # Fill missing company metadata, and the submission date that picks the
+    # filing's yearly file, from market.db's document list.
+    if not metadata.get("submitted_at") or (not metadata.get("edinet_code") and not metadata.get("submitter_name")):
         try:
             from src.orchestrator.common.db_config import get_market_db
             from src.orchestrator.common.sqlite import connect_read
@@ -69,12 +78,16 @@ def ingest_content(
                     (doc_id,),
                 ).fetchone()
                 if row:
-                    metadata.setdefault("edinet_code", row["edinetCode"] or "")
-                    metadata.setdefault("submitter_name", row["filerName"] or "")
-                    metadata.setdefault("submitted_at", row["submitDateTime"] or "")
-                    metadata.setdefault("period_start", row["periodStart"] or "")
-                    metadata.setdefault("period_end", row["periodEnd"] or "")
-                    metadata.setdefault("form_code", row["formCode"] or "")
+                    for key, column in (
+                        ("edinet_code", "edinetCode"),
+                        ("submitter_name", "filerName"),
+                        ("submitted_at", "submitDateTime"),
+                        ("period_start", "periodStart"),
+                        ("period_end", "periodEnd"),
+                        ("form_code", "formCode"),
+                    ):
+                        if not metadata.get(key):
+                            metadata[key] = row[column] or ""
                 conn.close()
         except (OSError, sqlite3.Error, ValueError):
             pass
@@ -91,7 +104,6 @@ def ingest_content(
             "doc_type_code": metadata.get("doc_type_code", "1"),
             "xbrl_flag": metadata.get("xbrl_flag", "1"),
             "csv_flag": metadata.get("csv_flag", "0"),
-            "archive_path": "",
             "archive_content": zip_bytes,
             "archive_sha256": sha256(zip_bytes),
             "archive_size": len(zip_bytes),
@@ -125,7 +137,7 @@ def ingest_content(
                         "sha256": sha256(content),
                     }
                 )
-                if kind == "xbrl" and len(content) <= 25 * 1024 * 1024:
+                if parse_facts and kind == "xbrl" and len(content) <= 25 * 1024 * 1024:
                     parsed = parser.parse(content, doc_id, artifact_id, numeric_only=True)
                     contexts.extend(parsed.contexts)
                     units.extend(parsed.units)
