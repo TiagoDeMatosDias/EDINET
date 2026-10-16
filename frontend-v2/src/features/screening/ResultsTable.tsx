@@ -52,13 +52,14 @@ function sortRows(rows: Row[], sort: ResultsSort) {
 
 /**
  * Screening results: company name (with ticker and code) first and linked to
- * Analysis, then each output column. Sortable headers and 100 rows a page.
+ * Analysis, then each output column, ``lead`` columns (what the rules
+ * measure) right after the price. Sortable headers and 100 rows a page.
  * Keyboard: ↓ or J from anywhere on the page enters the list, ↑/↓ or J/K move
  * (across pages), Enter opens the company, Shift+Enter opens it in a new tab,
  * and [ ] change pages. The place is remembered, so coming back from Analysis
  * lands on the company last opened.
  */
-export function ResultsTable({ result, columnInfo, hotkeys = true }: { result: ScreeningResult; columnInfo: (column: string) => ResultColumnInfo; hotkeys?: boolean }) {
+export function ResultsTable({ result, columnInfo, lead = [], hotkeys = true }: { result: ScreeningResult; columnInfo: (column: string) => ResultColumnInfo; lead?: string[]; hotkeys?: boolean }) {
   const navigate = useNavigate()
   const nameColumn = firstPresent(result.columns, NAME_COLUMNS)
   const tickerColumn = firstPresent(result.columns, TICKER_COLUMNS)
@@ -66,11 +67,14 @@ export function ResultsTable({ result, columnInfo, hotkeys = true }: { result: S
   const formats = result.column_formats ?? {}
   // Ticker, code, and price date ride along in the name and price cells instead of their own columns.
   const folded = new Set([tickerColumn, codeColumn, DATE_COLUMN].filter(Boolean) as string[])
+  const rest = result.columns.filter(column => column !== nameColumn && !folded.has(column) && !column.startsWith('Company') && column !== 'LatestPrice')
+  const leading = [...new Set(lead)].filter(column => rest.includes(column))
   const shown = [
     ...(nameColumn ? [nameColumn] : []),
     ...result.columns.filter(column => column !== nameColumn && !folded.has(column) && column.startsWith('Company')),
     ...result.columns.filter(column => column === 'LatestPrice'),
-    ...result.columns.filter(column => column !== nameColumn && !folded.has(column) && !column.startsWith('Company') && column !== 'LatestPrice'),
+    ...leading,
+    ...rest.filter(column => !leading.includes(column)),
   ]
   const rows = useMemo<Row[]>(() => result.rows.map((row, index) => ({ ...Object.fromEntries(result.columns.map((column, position) => [column, row[position]])), [ROW_INDEX]: index })), [result])
   const codeOf = (row: Row) => codeColumn ? String(row[codeColumn] ?? '').trim() : ''

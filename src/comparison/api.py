@@ -9,6 +9,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.comparison.formulas import PRICE_REF, evaluate_formula, formula_columns, parse_formula
 from src.comparison.peers import find_peers
 from src.comparison.service import (
     DEFAULT_METRICS,
@@ -16,11 +17,13 @@ from src.comparison.service import (
     TREND_METRICS,
     extract_latest_statement_metrics,
     extract_latest_table_metrics,
+    flatten_overview,
     normalize_companies,
     statement_series,
 )
 from src.comparison.tags import find_tag_sets
 from src.orchestrator.common.sqlite import connect_read, quote_identifier
+from src.screening.display_formats import column_format, taxonomy_formats
 from src.security_analysis import get_security_overview, get_security_statements
 
 router = APIRouter(prefix="/api/comparison", tags=["comparison"])
@@ -105,6 +108,14 @@ def _selected_metrics(values: list[str], catalog: dict[str, list[str]] | None = 
         if metric in METRIC_DEFINITIONS:
             selected.append(metric)
             continue
+        tokens = parse_formula(metric)
+        if tokens is not None:
+            if catalog and all(
+                reference == PRICE_REF or reference.partition(".")[2] in catalog.get(reference.partition(".")[0], [])
+                for reference in formula_columns(tokens)
+            ):
+                selected.append(metric)
+            continue
         table, separator, column = metric.partition(".")
         if separator and catalog and column in catalog.get(table, []):
             selected.append(metric)
@@ -112,15 +123,32 @@ def _selected_metrics(values: list[str], catalog: dict[str, list[str]] | None = 
     return selected or DEFAULT_METRICS.copy()
 
 
-def _metric_definition(metric: str) -> dict[str, str]:
+def _column_formats(db: str, metrics: list[str]) -> dict[str, str]:
+    """The display formats the screener declares for the statement columns among *metrics*."""
+    references = [
+        metric for metric in metrics
+        if metric not in METRIC_DEFINITIONS and "." in metric and parse_formula(metric) is None
+    ]
+    if not references:
+        return {}
+    declared = taxonomy_formats(db)
+    return {reference: found for reference in references if (found := column_format(reference, declared))}
+
+
+def _metric_definition(metric: str, formats: dict[str, str] | None = None) -> dict[str, str]:
     definition = METRIC_DEFINITIONS.get(metric)
     if definition:
         return definition
+    if parse_formula(metric) is not None:
+        return {"label": metric[1:].strip(), "group": "Formula"}
     table, separator, column = metric.partition(".")
-    return {
+    described = {
         "label": column if separator else metric,
         "group": table if separator else "Other",
     }
+    if formats and metric in formats:
+        described["format"] = formats[metric]
+    return described
 
 
 def _overview(db: str, code: str) -> dict[str, Any] | None:
@@ -222,11 +250,29 @@ def _custom_metric_values(
     return extract_latest_table_metrics(history, metric_refs)
 
 
+def _formula_values(
+    formulas: dict[str, list],
+    values: dict[str, float | None],
+    price: float | None,
+) -> dict[str, float | None]:
+    """Each formula metric's value from one company's column values and latest price."""
+    def value_of(reference: str) -> float | None:
+        return price if reference == PRICE_REF else values.get(reference)
+
+    return {metric: evaluate_formula(tokens, value_of) for metric, tokens in formulas.items()}
+
+
 def _snapshot_rows(db: str, codes: list[str], metrics: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
     overviews: dict[str, dict[str, Any]] = {}
     custom_values: dict[str, dict[str, float | None]] = {}
     custom_periods: dict[str, str] = {}
-    custom_refs = [metric for metric in metrics if metric not in METRIC_DEFINITIONS]
+    formulas = {metric: tokens for metric in metrics if (tokens := parse_formula(metric)) is not None}
+    custom_refs = [metric for metric in metrics if metric not in METRIC_DEFINITIONS and metric not in formulas]
+    # A formula's columns are read like added columns, whether or not they are shown.
+    read_refs = list(dict.fromkeys([
+        *custom_refs,
+        *(reference for tokens in formulas.values() for reference in formula_columns(tokens) if reference != PRICE_REF),
+    ]))
     missing: list[str] = []
     for code in codes:
         result = _overview(db, code)
@@ -234,7 +280,9 @@ def _snapshot_rows(db: str, codes: list[str], metrics: list[str]) -> tuple[list[
             missing.append(code)
         else:
             overviews[code] = _enrich_overview(db, code, result)
-            values, period = _custom_metric_values(db, code, custom_refs)
+            values, period = _custom_metric_values(db, code, read_refs)
+            price = flatten_overview(overviews[code])["LatestPrice"]
+            values.update(_formula_values(formulas, values, price))
             custom_values[code] = values
             if period:
                 custom_periods[code] = period
@@ -315,6 +363,7 @@ def snapshot(payload: ComparisonRequest, request: Request = None) -> dict[str, A
     db = _resolve_db()
     metrics = _selected_metrics(payload.metrics, _metric_catalog(db))
     rows, missing = _snapshot_rows(db, codes, metrics)
+    formats = _column_formats(db, metrics)
     user = getattr(request.state, "user", None) if request is not None else None
     if user is not None and hasattr(user, "user_id"):
         try:
@@ -342,7 +391,7 @@ def snapshot(payload: ComparisonRequest, request: Request = None) -> dict[str, A
         "requested": codes,
         "missing": missing,
         "metrics": metrics,
-        "metric_definitions": {metric: _metric_definition(metric) for metric in metrics},
+        "metric_definitions": {metric: _metric_definition(metric, formats) for metric in metrics},
     }
 
 
@@ -365,10 +414,14 @@ def trends(payload: TrendsRequest) -> dict[str, Any]:
             _LOGGER.warning("Could not load statement trends for %s: %s", code, exc)
             continue
         companies.append({"company_code": code, **statement_series(history, custom)})
+    formats = _column_formats(db, custom)
     return {
         "companies": companies,
         "metrics": [*TREND_METRICS, *custom],
-        "metric_definitions": {**TREND_METRICS, **{metric: _metric_definition(metric) for metric in custom}},
+        "metric_definitions": {
+            **TREND_METRICS,
+            **{metric: _metric_definition(metric, formats) for metric in custom},
+        },
     }
 
 

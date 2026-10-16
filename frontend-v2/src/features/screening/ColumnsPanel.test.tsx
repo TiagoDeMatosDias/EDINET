@@ -34,7 +34,7 @@ describe('output columns', () => {
     const changes = vi.fn<(value: { columns: string[]; computed: ComputedColumn[] }) => void>()
     function Harness() {
       const [value, setValue] = useState({ columns: ['CompanyInfo.Company_Name'], computed: [] as ComputedColumn[] })
-      return <ColumnsPanel catalog={CATALOG} options={buildMetricOptions(CATALOG)} columns={value.columns} computed={value.computed} onChange={next => { setValue(next); changes(next) }} onClose={() => undefined} />
+      return <ColumnsPanel catalog={CATALOG} options={buildMetricOptions(CATALOG)} columns={value.columns} computed={value.computed} rules={{ items: [], shown: true, onShow: () => undefined }} onChange={next => { setValue(next); changes(next) }} onClose={() => undefined} />
     }
     render(<Harness />)
 
@@ -46,5 +46,23 @@ describe('output columns', () => {
     expect(state.computed.map(column => column.name)).toEqual(['P/E ratio', 'P/B ratio', 'Earnings yield', 'Dividend yield'])
     expect(state.computed.find(column => column.name === 'Dividend yield')?.format).toBe('percent')
     expect(state.columns).toEqual(['CompanyInfo.Company_Name', 'Financial_Ratios.Return on Equity', 'Financial_Ratios.Return on Assets'])
+  })
+
+  it('lists what the rules add, counts it while shown, and turns it off', () => {
+    const items = [
+      { key: 'Financial_Ratios.Return on Equity', label: 'Return on Equity', detail: 'Ratios · also among your columns', existing: true },
+      { key: 'formula:Share price × EPS', label: 'Share price × EPS', detail: 'Calculation', existing: false },
+    ]
+    function Harness() {
+      const [shown, setShown] = useState(true)
+      return <ColumnsPanel catalog={CATALOG} options={buildMetricOptions(CATALOG)} columns={['CompanyInfo.Company_Name', 'Financial_Ratios.Return on Equity']} computed={[]} rules={{ items, shown, onShow: setShown }} onChange={() => undefined} onClose={() => undefined} />
+    }
+    render(<Harness />)
+
+    expect(screen.getByRole('list', { name: 'Columns from your rules' })).toHaveTextContent('Share price × EPSCalculation')
+    expect(screen.getByRole('heading', { name: /Output columns/ })).toHaveTextContent('Output columns 3')
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Show the columns and calculations the rules use' }))
+    expect(screen.getByRole('heading', { name: /Output columns/ })).toHaveTextContent('Output columns 2')
+    expect(screen.getByRole('list', { name: 'Columns from your rules' })).toHaveClass('is-off')
   })
 })

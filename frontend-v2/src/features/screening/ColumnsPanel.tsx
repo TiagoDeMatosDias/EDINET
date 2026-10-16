@@ -51,12 +51,17 @@ function blankDerived(): ComputedColumn {
   return { name: 'Derived metric', formula_type: 'expression', format: 'number', expression_tokens: [{ type: 'column', table: 'Stock_Prices', column: 'Price' }, { type: 'op', op: '/' }, { type: 'column', table: '', column: '' }] }
 }
 
+/** A column or calculation a rule uses, as the Columns panel lists it; `existing` when it is also among the chosen columns. */
+export interface RuleColumnItem { key: string; label: string; detail: string; existing: boolean }
+
 /**
- * What the results show: plain columns (ordered, removable), derived formulas,
- * and column sets that add a theme's metrics in one step.
+ * What the results show: what the rules measure (on unless turned off), plain
+ * columns (ordered, removable), derived formulas, and column sets that add a
+ * theme's metrics in one step.
  */
-export function ColumnsPanel({ catalog, options, columns, computed, onChange, onClose }: {
+export function ColumnsPanel({ catalog, options, columns, computed, rules, onChange, onClose }: {
   catalog: MetricCatalog; options: MetricOption[]; columns: string[]; computed: ComputedColumn[]
+  rules: { items: RuleColumnItem[]; shown: boolean; onShow: (shown: boolean) => void }
   onChange: (next: { columns: string[]; computed: ComputedColumn[] }) => void; onClose: () => void
 }) {
   useEffect(() => {
@@ -81,7 +86,7 @@ export function ColumnsPanel({ catalog, options, columns, computed, onChange, on
   }
   return <div className="columns-drawer" role="dialog" aria-modal="false" aria-labelledby="columns-drawer-title">
     <header className="columns-drawer__head">
-      <h2 id="columns-drawer-title">Output columns <small>{columns.length + computed.length}</small></h2>
+      <h2 id="columns-drawer-title">Output columns <small>{columns.length + computed.length + (rules.shown ? rules.items.filter(item => !item.existing).length : 0)}</small></h2>
       <button type="button" className="icon-button" aria-label="Close output columns" onClick={onClose}><X /></button>
     </header>
     <section>
@@ -91,6 +96,15 @@ export function ColumnsPanel({ catalog, options, columns, computed, onChange, on
         {COLUMN_SETS.map(set => <button key={set.id} type="button" className="column-set" title={set.hint} onClick={() => onChange(mergeColumnSet({ columns, computed }, set.id, catalog))}><Plus aria-hidden="true" />{set.label}</button>)}
         <button type="button" className="text-button" onClick={() => onChange(defaultOutput(catalog))} title="Replace the columns with the default overview"><RotateCcw aria-hidden="true" />Reset</button>
       </div>
+    </section>
+    <section>
+      <h3>From your rules <small>shown first, and kept in step with the rules</small></h3>
+      <label className="inline-toggle"><input type="checkbox" checked={rules.shown} onChange={event => rules.onShow(event.target.checked)} />Show the columns and calculations the rules use</label>
+      {rules.items.length > 0
+        ? <ul className={rules.shown ? 'column-list column-list--rules' : 'column-list column-list--rules is-off'} aria-label="Columns from your rules">
+          {rules.items.map(item => <li key={item.key}><span><strong>{item.label}</strong><small>{item.detail}</small></span></li>)}
+        </ul>
+        : <p className="columns-drawer__empty">No rule uses a metric yet.</p>}
     </section>
     <section>
       <h3>Shown <small>in order; the company name always comes first</small></h3>

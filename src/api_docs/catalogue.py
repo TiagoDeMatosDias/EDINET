@@ -647,7 +647,9 @@ COMPARE = Section(
         Guide(
             "Compare companies side by side",
             "`POST /api/comparison/snapshot` returns each company's latest metrics (price, market cap, P/E, P/B, margins, returns). "
-            "Leave `metrics` empty for the standard set, or name `Table.Column` metrics from `GET /api/comparison/metrics`.",
+            "Leave `metrics` empty for the standard set, or name `Table.Column` metrics from `GET /api/comparison/metrics`. "
+            "A metric starting with `=` is a formula over those columns and `Stock_Prices.Price`, such as `=[ShareMetrics.Basic earnings (loss) per share] / [Stock_Prices.Price]`; "
+            "its value is under the same key in each company's `metrics`.",
             curl=_curl("/api/comparison/snapshot", body='{"company_codes": ["E02144", "E01777"], "metrics": []}'),
             python='snapshot = call("POST", "/api/comparison/snapshot", json={"company_codes": ["E02144", "E01777"], "metrics": []})\nfor company in snapshot["companies"]:\n    print(company["company_code"], company["metrics"]["PERatio"], company["metrics"]["ReturnOnEquity"])',
             response='{"companies": [{"company_code": "E02144", "metrics": {"LatestPrice": 3029.0, "MarketCap": 47843017016340.0, "PERatio": 10.26, "PriceToBook": 0.99, "ReturnOnEquity": 0.179, …}, …}, …], "missing": []}',

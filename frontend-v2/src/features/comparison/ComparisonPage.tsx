@@ -131,7 +131,8 @@ export default function ComparisonPage() {
   const definitions = useMemo<Record<string, MetricDefinition>>(() => ({
     ...result?.metric_definitions,
     ...catalog.data?.definitions,
-    ...Object.fromEntries(custom.map(metric => [metric, describeColumnMetric(metric)])),
+    // English labels come from here; the display format the server declares is kept.
+    ...Object.fromEntries(custom.map(metric => [metric, { format: result?.metric_definitions?.[metric]?.format, ...describeColumnMetric(metric) }])),
   }), [catalog.data, custom, result])
 
   const [sortMetric, setSortMetric] = useState<string | null>(null)

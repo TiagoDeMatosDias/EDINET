@@ -132,7 +132,7 @@ export function MetricBar({ standard, definitions, selected, catalog, searchRef,
         <span className="cmp-metrics__group-name">Added</span>
         {custom.map(metric => {
           const definition = metricDefinition(metric, definitions)
-          return <span key={metric} className="cmp-pill cmp-pill--added" title={`${definition.group} · ${metric.split('.').slice(1).join('.')}`}>
+          return <span key={metric} className="cmp-pill cmp-pill--added" title={definition.description ?? `${definition.group} · ${metric.split('.').slice(1).join('.')}`}>
             <button type="button" onClick={() => onFocusMetric(metric)}>{definition.label} <small>{definition.group}</small></button>
             <button type="button" className="cmp-pill__remove" onClick={() => toggle(metric)} aria-label={`Remove metric ${definition.label}`}><X /></button>
           </span>

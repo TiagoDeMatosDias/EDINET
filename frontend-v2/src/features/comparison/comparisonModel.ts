@@ -4,6 +4,7 @@ import { csvCell } from '../analysis/downloads'
 import { columnLabel, tableInfo } from '../screening/metricCatalog'
 import type { MetricDirection } from './bestValue'
 import type { ComparisonCompany, TagSet, TrendCompany } from './comparisonTypes'
+import { describeFormulaMetric } from './formulaMetric'
 
 export const MAX_COMPANIES = 12
 
@@ -13,8 +14,10 @@ export function orderMetrics(metrics: string[], standard: string[]) {
   return [...standard.filter(metric => chosen.has(metric)), ...[...chosen].filter(metric => !standard.includes(metric))]
 }
 
-/** A readable definition for an added ``Table.Column``: "Net sales · 3-yr growth" from "Income statement · rolling". */
+/** A readable definition for an added ``Table.Column`` ("Net sales · 3-yr growth" from "Income statement · rolling") or formula. */
 export function describeColumnMetric(metric: string): MetricDefinition {
+  const formula = describeFormulaMetric(metric)
+  if (formula) return formula
   const [table, ...rest] = metric.split('.')
   const column = rest.join('.')
   return { label: column ? columnLabel(table, column) : metric, group: column ? tableInfo(table).label : 'Other' }

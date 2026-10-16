@@ -42,7 +42,7 @@ function stub() {
         companies: body.company_codes.map(code => ({
           company_code: code,
           company: { company_name: COMPANIES[code].name, ticker: `${code.slice(1)}0`, industry: 'Transportation Equipments' },
-          metrics: { ...COMPANIES[code].metrics, ...Object.fromEntries(body.metrics.filter(metric => metric.includes('.')).map(metric => [metric, 1e12])) },
+          metrics: { ...COMPANIES[code].metrics, ...Object.fromEntries(body.metrics.filter(metric => metric.includes('.')).map(metric => [metric, metric.startsWith('Financial_Ratios.') ? 0.27 : 1e12])) },
           percentiles: {},
           market: { price_currency: 'JPY' },
           reporting_currency: 'JPY',
@@ -51,7 +51,7 @@ function stub() {
         requested: body.company_codes,
         missing: [],
         metrics: body.metrics,
-        metric_definitions: {},
+        metric_definitions: Object.fromEntries(body.metrics.filter(metric => metric.startsWith('Financial_Ratios.')).map(metric => [metric, { label: metric, group: 'Financial_Ratios', format: 'percent' }])),
       })
     }
     if (path.startsWith('/api/comparison/peers')) {
@@ -204,6 +204,18 @@ describe('ComparisonPage', () => {
     expect(within(table()).getByText('ROE')).toBeInTheDocument()
     expect(within(table()).getByText('Net sales')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'P/E', pressed: false })).toBeInTheDocument()
+  })
+
+  it('shows a formula sent from a screen as a row of its own', async () => {
+    const formula = '=[Stock_Prices.Price] * [IncomeStatement.Net sales]'
+    renderPage(`?companies=E1,E2&source=screen&add=Financial_Ratios.Return+on+Equity&add=${encodeURIComponent(formula)}`)
+    await waitFor(() => expect(table()).toBeInTheDocument())
+    expect(snapshots[0].metrics).toEqual([...STANDARD, 'Financial_Ratios.Return on Equity', formula])
+    // A ratio keeps the screener's percent format and its English label.
+    expect(within(table()).getByText('Return on Equity')).toBeInTheDocument()
+    expect(within(table()).getAllByText('27.0%')).toHaveLength(2)
+    expect(within(table()).getByText('Share price × Net sales')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove metric Share price × Net sales' })).toBeInTheDocument()
   })
 
   it('starts from a saved or recent comparison', async () => {

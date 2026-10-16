@@ -355,8 +355,17 @@ ENDPOINTS: dict[str, EndpointDoc] = {
     # ── Comparison ─────────────────────────────────────────────────────
     "POST /api/comparison/snapshot": D(
         summary="The latest value of each metric for 2–12 companies, side by side.",
-        notes="`metrics` are `Table.Column` references from `GET /api/comparison/metrics`; leave it empty for the standard set.",
-        body={"company_codes": ["E02144", "E01777"], "metrics": []},
+        notes=(
+            "`metrics` are `Table.Column` references from `GET /api/comparison/metrics`; leave it empty for the standard set. "
+            "A metric starting with `=` is a formula: bracketed columns, numbers, `+ - * /` and parentheses, "
+            "such as `=[Stock_Prices.Price] * [ShareMetrics.Number of issued shares as of filing date]`. "
+            "`Stock_Prices.Price` is the latest split-adjusted price; a missing value or a division by zero gives `null`."
+        ),
+        body={"company_codes": ["E02144", "E01777"], "metrics": ["PERatio", "=[ShareMetrics.Basic earnings (loss) per share] / [Stock_Prices.Price]"]},
+        returns=(
+            "`companies` (each with `metrics` keyed by metric), `metrics` (the ones kept; unknown ones are dropped), "
+            "`missing` codes, and `metric_definitions`: each metric's `label`, `group` and, where it has one, a display `format` such as `percent`."
+        ),
         try_it=True,
     ),
     "POST /api/comparison/history": D(

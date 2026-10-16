@@ -14,15 +14,17 @@ import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { useHotkeyText } from '../../hotkeys/useHotkeyText'
 import { usePersistentState } from '../../hooks/usePersistentState'
+import { formulaText } from '../comparison/formulaMetric'
 import { formatAsOf } from './asOfDates'
 import { AsOfMenu } from './AsOfMenu'
-import { ColumnsPanel } from './ColumnsPanel'
+import { ColumnsPanel, type RuleColumnItem } from './ColumnsPanel'
 import { serializeComputedColumn, serializeCriterion } from './criterion-values'
 import { normalizeCriterion } from './expression-model'
 import { buildMetricOptions, columnLabel, presetForTokens, tableInfo, tokensFormat } from './metricCatalog'
 import { ResultsTable, type ResultColumnInfo } from './ResultsTable'
 import { RuleBuilder } from './RuleBuilder'
 import { describeRule, describeScreen, newFilterRule, newGroupId, ruleProblem } from './ruleModel'
+import { comparisonMetrics, ruleOutput } from './ruleOutput'
 import { availableStarters, defaultOutput, type StarterScreen } from './screenDefaults'
 import { ScreensMenu } from './ScreensMenu'
 import type { ColumnFormats, ComputedColumn, Criterion, CriteriaMatch, MetricCatalog, SavedScreen, SavedScreenSummary } from './types'
@@ -97,6 +99,21 @@ function screenDefinition(state: ScreenState, catalog: MetricCatalog) {
   }
 }
 
+/**
+ * The screen as it runs and exports: its own columns, then (unless turned off)
+ * the columns and calculations its rules use, which are never saved with it.
+ */
+function runDefinition(state: ScreenState, catalog: MetricCatalog, withRules: boolean) {
+  const definition = screenDefinition(state, catalog)
+  const fromRules = ruleOutput(state.criteria, { columns: definition.columns, computed: state.computed })
+  const body = withRules ? {
+    ...definition,
+    columns: [...definition.columns, ...fromRules.columns],
+    computed_columns: [...definition.computed_columns, ...fromRules.computed.map(serializeComputedColumn)],
+  } : definition
+  return { body, fromRules }
+}
+
 function firstProblem(criteria: Criterion[]) {
   for (const [index, criterion] of criteria.entries()) {
     const problem = criterion.enabled === false ? null : ruleProblem(criterion)
@@ -142,6 +159,7 @@ export default function ScreeningWorkspace() {
   const [showScreens, setShowScreens] = useState(false)
   const [showDate, setShowDate] = useState(false)
   const [collapsed, setCollapsed] = usePersistentState('shade.screening.builder-collapsed', false, [true, false])
+  const [ruleColumns, setRuleColumns] = usePersistentState('shade.screening.rule-columns', true, [true, false])
   const nameInput = useRef<HTMLInputElement>(null)
   const layout = useRef<HTMLDivElement>(null)
 
@@ -151,7 +169,10 @@ export default function ScreeningWorkspace() {
   const state: ScreenState = { criteria, match, columns: shownColumns, computed: shownComputed, screeningDate, rankingAlgorithm, rankingRules }
   const definition = screenDefinition(state, catalog)
   const currentKey = JSON.stringify(definition)
-  const outputColumns = definition.columns
+  const { body: runBody, fromRules } = runDefinition(state, catalog, ruleColumns)
+  const runSignature = JSON.stringify(runBody)
+  const outputColumns = runBody.columns
+  const outputComputed = runBody.computed_columns
   const dirty = savedKey !== currentKey
   useEffect(() => {
     try {
@@ -160,7 +181,7 @@ export default function ScreeningWorkspace() {
   }, [currentKey, loadedName, name, savedKey])
 
   const run = useMutation({
-    mutationFn: async ({ body, key }: { body: ReturnType<typeof screenDefinition>; key: string }) => {
+    mutationFn: async ({ body, key }: { body: ReturnType<typeof runDefinition>['body']; key: string }) => {
       const started = performance.now()
       const answer = await apiPost<ScreeningResult | JobPendingBody>('/api/screening/run', { ...body, sort_order: 'DESC' })
       let result: ScreeningResult
@@ -187,7 +208,7 @@ export default function ScreeningWorkspace() {
       return
     }
     setNotice(null)
-    const body = screenDefinition(target, catalog)
+    const { body } = runDefinition(target, catalog, ruleColumns)
     run.mutate({ body, key: JSON.stringify(body) })
   }
 
@@ -278,7 +299,7 @@ export default function ScreeningWorkspace() {
   }
 
   const exportCsv = async () => {
-    const response = await authenticatedFetch('/api/screening/export', { method: 'POST', body: JSON.stringify({ ...definition, format: 'csv' }) })
+    const response = await authenticatedFetch('/api/screening/export', { method: 'POST', body: JSON.stringify({ ...runBody, format: 'csv' }) })
     if (!response.ok) { setNotice({ text: `Export failed (${response.status})`, tone: 'warning' }); return }
     downloadBlob(`${(name.trim() || 'screen').replace(/[^\w.-]+/g, '-')}.csv`, await response.blob())
   }
@@ -314,23 +335,39 @@ export default function ScreeningWorkspace() {
   })
 
   const displayed = lastRun?.result ?? lastStored.data?.result?.result
-  const stale = Boolean(lastRun && lastRun.key !== currentKey)
+  const stale = Boolean(lastRun && lastRun.key !== runSignature)
   const compareCodes = useMemo(() => resultCompanyCodes(displayed), [displayed])
   const aliases = resultAliases(outputColumns)
+  const aliasOf = new Map([...aliases].map(([alias, reference]) => [reference, alias]))
+  // What the rules measure leads the results, in the order the rules use it.
+  const lead = ruleColumns ? fromRules.shown.map(item => item.computed ?? aliasOf.get(item.column ?? '')).filter((name): name is string => Boolean(name)) : []
+  const ruleNote = (column: string) => lead.includes(column) && <span>Shown because a rule uses it.</span>
   const columnInfo = (column: string): ResultColumnInfo => {
     if (column === 'LatestPrice') return { label: 'Price', description: 'Latest close, split-adjusted. Hover a price for its date.' }
     if (column === 'ScreeningRank') return { label: 'Rank' }
-    const derived = shownComputed.find(item => item.name === column)
+    const derived = outputComputed.find(item => item.name === column)
     if (derived) {
       const preset = presetForTokens(derived.expression_tokens)
-      const formula = (derived.expression_tokens ?? []).map(token => token.type === 'column' ? columnLabel(token.table, token.column) : token.type === 'op' ? { '*': '×', '/': '÷', '+': '+', '-': '−' }[token.op] : String(token.value)).join(' ')
-      return { label: column, description: <span className="tip-lines"><strong>{column}</strong><span>{preset?.description ?? `Derived: ${formula}`}</span></span> }
+      return { label: column, description: <span className="tip-lines"><strong>{column}</strong><span>{preset?.description ?? `Derived: ${formulaText(derived.expression_tokens ?? [])}`}</span>{ruleNote(column)}</span> }
     }
     const reference = aliases.get(column)
     if (!reference) return { label: column }
     const [table, ...rest] = reference.split('.')
     const label = columnLabel(table, rest.join('.'))
-    return { label, description: <span className="tip-lines"><strong>{label}</strong><span>{tableInfo(table).label} · {reference}{formats[reference] === 'percent' ? ' · shown as %' : ''}</span></span> }
+    return { label, description: <span className="tip-lines"><strong>{label}</strong><span>{tableInfo(table).label} · {reference}{formats[reference] === 'percent' ? ' · shown as %' : ''}</span>{ruleNote(column)}</span> }
+  }
+  const ruleItems: RuleColumnItem[] = fromRules.shown.map(({ metric, column, computed: name, existing }) => {
+    const also = existing ? ' · also among your columns' : ''
+    if (column) {
+      const [table, ...rest] = column.split('.')
+      return { key: column, label: columnLabel(table, rest.join('.')), detail: `${tableInfo(table).label}${also}`, existing }
+    }
+    return { key: `formula:${name}`, label: name ?? '', detail: `${metric.type === 'formula' && !metric.preset ? 'Calculation' : 'Formula'}${also}`, existing }
+  })
+  const compareHref = () => {
+    const query = new URLSearchParams({ companies: compareCodes.slice(0, 12).join(','), source: 'screen' })
+    if (ruleColumns) for (const metric of comparisonMetrics(criteria)) query.append('add', metric)
+    return `/compare?${query}`
   }
   const enabledRules = criteria.filter(criterion => criterion.enabled !== false)
   const summary = describeScreen(criteria, match, criterion => describeRule(criterion, columnLabel, tokens => tokensFormat(tokens, formats) === 'percent'))
@@ -394,22 +431,22 @@ export default function ScreeningWorkspace() {
           {!lastRun && displayed && <span className="muted">Your last run{lastStored.data?.result?.updated_at ? ` · ${new Date(lastStored.data.result.updated_at).toLocaleString()}` : ''}</span>}
           {stale && displayed && !run.isPending && <button type="button" className="screening-stale" onClick={() => runScreen()} title="The rules or columns changed since these results">Rules changed · run again <HotkeyKbd hotkey={screeningCommandsScope.byId.run} /></button>}
           <span className="rule-builder__spacer" />
-          <button type="button" className="button button--ghost button--small" onClick={() => setShowColumns(true)} title="Choose output columns"><Columns3 aria-hidden="true" />Columns {outputColumns.length + shownComputed.length} <HotkeyKbd hotkey={screeningScope.byId.columns} /></button>
+          <button type="button" className="button button--ghost button--small" onClick={() => setShowColumns(true)} title="Choose output columns"><Columns3 aria-hidden="true" />Columns {outputColumns.length + outputComputed.length} <HotkeyKbd hotkey={screeningScope.byId.columns} /></button>
           {displayed && <>
             <button type="button" className="button button--ghost button--small" onClick={() => void exportCsv()} title="Download every matching company with the current columns"><Download aria-hidden="true" />CSV</button>
-            <button type="button" className="button button--ghost button--small" disabled={compareCodes.length < 2} onClick={() => navigate(`/compare?companies=${encodeURIComponent(compareCodes.slice(0, 12).join(','))}&source=screen`)} title="Open the first 12 matches in Comparison"><GitCompare aria-hidden="true" />Compare</button>
+            <button type="button" className="button button--ghost button--small" disabled={compareCodes.length < 2} onClick={() => navigate(compareHref())} title={ruleColumns ? 'Open the first 12 matches in Comparison, with what the rules measure' : 'Open the first 12 matches in Comparison'}><GitCompare aria-hidden="true" />Compare</button>
             <button type="button" className="button button--ghost button--small" onClick={() => navigate('/backtest?source=screen')} title="Rerun these rules at past dates in a rolling backtest"><FlaskConical aria-hidden="true" />Backtest</button>
           </>}
         </header>
         <div className={run.isPending && displayed ? 'screening-results__body is-running' : 'screening-results__body'}>
           {run.isPending && <div className="screening-running" role="status"><LoaderCircle className="spin" aria-hidden="true" />Running the screen…</div>}
           {run.isError && <ErrorState error={run.error} retry={() => runScreen()} />}
-          {!run.isError && displayed && <ResultsTable key={lastRun?.at ?? 'stored'} hotkeys={!overlayOpen} result={displayed} columnInfo={columnInfo} />}
+          {!run.isError && displayed && <ResultsTable key={lastRun?.at ?? 'stored'} hotkeys={!overlayOpen} result={displayed} columnInfo={columnInfo} lead={lead} />}
           {!run.isError && !displayed && !run.isPending && <EmptyState title="Run the screen to see matching companies" description={criteria.length ? 'Press Ctrl+Enter, or Run above.' : 'Add rules with N, or open a starter screen with O. Running with no rules lists every company.'} />}
         </div>
       </section>
     </div>
 
-    {showColumns && <><div className="drawer-backdrop" onClick={() => setShowColumns(false)} /><ColumnsPanel catalog={catalog} options={options} columns={shownColumns} computed={shownComputed} onChange={next => { setColumns(next.columns); setComputed(next.computed) }} onClose={() => setShowColumns(false)} /></>}
+    {showColumns && <><div className="drawer-backdrop" onClick={() => setShowColumns(false)} /><ColumnsPanel catalog={catalog} options={options} columns={shownColumns} computed={shownComputed} rules={{ items: ruleItems, shown: ruleColumns, onShow: setRuleColumns }} onChange={next => { setColumns(next.columns); setComputed(next.computed) }} onClose={() => setShowColumns(false)} /></>}
   </div>
 }

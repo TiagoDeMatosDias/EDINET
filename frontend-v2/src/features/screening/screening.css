@@ -211,6 +211,9 @@
 .column-list small { color: var(--muted); font-size: .68rem; }
 .column-list .icon-button { width: 26px; height: 26px; color: var(--muted); }
 .column-list .icon-button svg { width: 14px; height: 14px; }
+.column-list--rules { margin-top: 6px; }
+.column-list--rules.is-off { opacity: .5; }
+.columns-drawer__empty { margin: 6px 0 0; color: var(--muted); font-size: .78rem; }
 .derived-list { display: grid; gap: 6px; margin: 0 0 8px; padding: 0; list-style: none; }
 .derived-column { display: grid; gap: 6px; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); }
 .derived-column__head { display: flex; align-items: center; gap: 6px; }

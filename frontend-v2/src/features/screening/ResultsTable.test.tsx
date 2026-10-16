@@ -63,6 +63,17 @@ describe('screening results', () => {
     expect(names()).toEqual(['Beta', 'Alpha', 'Gamma'])
   })
 
+  it('shows what the rules measure right after the company and price', () => {
+    render(<MemoryRouter><ResultsTable result={{
+      columns: ['Company_Code', 'Company_Name', 'Company_Industry', 'Net sales', 'Return on Equity', 'LatestPrice', 'PriceDate', 'P/B ratio', 'P/E ratio'],
+      rows: [['E1', 'Alpha', 'Autos', 100, 0.2, 1000, '2026-09-29', 1.1, 12]],
+      row_count: 1,
+      column_formats: {},
+    }} lead={['P/E ratio', 'Return on Equity', 'P/E ratio', 'Not in this result']} columnInfo={column => ({ label: column })} /></MemoryRouter>)
+
+    expect(screen.getAllByRole('columnheader').map(header => header.textContent)).toEqual(['Company_Name', 'Company_Industry', 'LatestPrice', 'P/E ratio', 'Return on Equity', 'Net sales', 'P/B ratio'])
+  })
+
   it('enters the list from anywhere, moves across pages, and opens the company with Enter', () => {
     renderResults()
 
