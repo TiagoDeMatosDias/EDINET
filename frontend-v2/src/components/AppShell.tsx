@@ -1,6 +1,6 @@
-import { BarChart3, BriefcaseBusiness, Building2, CircleCheck, CircleX, FileText, GitCompare, Home, LogIn, Menu, MessagesSquare, PanelLeftClose, Search, Settings, Shield, StickyNote, UserCircle, Workflow, X } from 'lucide-react'
+import { BarChart3, BookOpenText, BriefcaseBusiness, Building2, CircleCheck, CircleX, FileText, GitCompare, Home, LogIn, Menu, MessagesSquare, PanelLeftClose, Search, Settings, Shield, StickyNote, UserCircle, Workflow, X } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
-import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 
 import { useHealth } from '../hooks/useHealth'
 import { BrandLockup } from './Brand'
@@ -12,6 +12,12 @@ import { useGotoPages } from '../hotkeys/goto'
 import { useHotkeyText } from '../hotkeys/useHotkeyText'
 import { useAuth } from '../features/auth/authContext'
 import { useChatUnread } from '../features/chat/chatApi'
+
+/** The top bar's way to the API docs of the screen on show. */
+function ApiDocsLink({ pathname }: { pathname: string }) {
+  const onDocs = pathname.startsWith('/api-docs')
+  return <Link className="topbar-docs-link" to={onDocs ? pathname : `/api-docs?from=${encodeURIComponent(pathname)}`} aria-label="API docs" title="Use this screen from your own scripts and apps"><BookOpenText aria-hidden="true" /><span>API docs</span></Link>
+}
 
 const navigation = [
   { to: '/overview', label: 'Overview', icon: Home },
@@ -81,6 +87,7 @@ function AuthSection() {
     <div className="auth-status auth-status--user">
       <button
         className="auth-user-button"
+        aria-label={`Account menu: ${auth.user.username} (${auth.user.role})`}
         onClick={() => setMenuOpen(v => !v)}
         onBlur={() => setTimeout(() => setMenuOpen(false), 200)}
       >
@@ -129,7 +136,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     </aside>
     {mobileOpen && <button className="backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
     <div className="app-content">
-      <header className="topbar"><button className="icon-button mobile-only" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button><GlobalCompanySearch /><div className="topbar-actions"><div className={health.isError ? 'health health--error' : 'health'}>{health.isError ? <CircleX /> : <CircleCheck />}<span>{health.isError ? 'Backend unavailable' : 'Data service ready'}</span></div><JobTray enabled={signedIn} /><AuthSection /></div></header>
+      <header className="topbar"><button className="icon-button mobile-only" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button><GlobalCompanySearch /><div className="topbar-actions">{signedIn && <ApiDocsLink pathname={location.pathname} />}<div className={health.isError ? 'health health--error' : 'health'}>{health.isError ? <CircleX /> : <CircleCheck />}<span>{health.isError ? 'Backend unavailable' : 'Data service ready'}</span></div><JobTray enabled={signedIn} /><AuthSection /></div></header>
       <main id="main-content" key={location.pathname}>{children}</main>
       <GlobalHotkeys isAdmin={auth.user?.role === 'admin'} signedIn={Boolean(auth.user)} onPendingChange={setKeysActive} />
       <nav className="mobile-nav" aria-label="Mobile primary navigation">{mobileNavigation.map(item => { const Icon = item.icon; return <NavLink key={item.to} to={item.to} end={item.to === '/overview'}><Icon /><span>{item.label}</span></NavLink> })}</nav>

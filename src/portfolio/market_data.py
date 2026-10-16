@@ -8,6 +8,11 @@ Prices are returned in the holding's own (broker) currency.  A ticker can be
 stored under another form (``5984.T`` is stored as ``59840``) and quoted in
 another currency (``CSPX`` priced from the London USD line while the broker
 books it in EUR); both are resolved here so the ledger never mixes units.
+
+Prices the owner entered by hand join a symbol's market closes: on any day
+the latest one stands, and on a day with both the hand-entered one wins.
+Assets defined to be priced only by hand never use market closes, since
+another security may trade under the same symbol.
 """
 
 from __future__ import annotations
@@ -61,6 +66,8 @@ class PriceSeries:
     source_currency: str
     dates: list[str]
     prices: list[float]
+    # Per date, "market" or "manual" (entered by hand); None means all market.
+    sources: list[str] | None = None
 
     def on(self, date: str) -> tuple[float, str] | None:
         """The latest close on or before *date* with its date."""
@@ -68,6 +75,13 @@ class PriceSeries:
         if index < 0:
             return None
         return self.prices[index], self.dates[index]
+
+    def source_on(self, date: str) -> str:
+        """Where the price used on *date* came from: ``market`` or ``manual``."""
+        index = bisect_right(self.dates, date) - 1
+        if index < 0 or self.sources is None:
+            return "market"
+        return self.sources[index]
 
     @property
     def first_date(self) -> str | None:
@@ -81,12 +95,24 @@ class PriceSeries:
 class MarketData:
     """Cached price and ECB FX lookups over one read connection to the market database."""
 
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        manual_prices: dict[str, list[tuple[str, float, str]]] | None = None,
+        manual_only: set[str] | None = None,
+        splits: dict[str, list[tuple[str, float]]] | None = None,
+    ):
         self.conn = conn
         self._columns = table_columns(conn, "Stock_Prices")
         self._fx: dict[str, tuple[list[str], list[float]]] = {}
         self._prices: dict[tuple[str, str], PriceSeries | None] = {}
         self._split_factors: dict[str, list[tuple[str, float]]] = {}
+        # {symbol: [(date, price, currency), ...]} entered by hand, by date.
+        self._manual = manual_prices or {}
+        self._manual_only = manual_only or set()
+        # {symbol: [(date, factor), ...]}: the ledger's splits, which turn a
+        # price entered before one into the price per share after it.
+        self._splits = splits or {}
 
     # -- FX -----------------------------------------------------------------
 
@@ -159,13 +185,49 @@ class MarketData:
         if key in self._prices:
             return self._prices[key]
         series = None
-        for ticker in price_ticker_candidates(symbol):
-            rows = self._rows(ticker)
-            if rows:
-                series = self._build_series(ticker, rows, key[1])
-                break
+        if symbol not in self._manual_only:
+            for ticker in price_ticker_candidates(symbol):
+                rows = self._rows(ticker)
+                if rows:
+                    series = self._build_series(ticker, rows, key[1])
+                    break
+        if self._manual.get(symbol):
+            series = self._with_manual(symbol, series, key[1])
         self._prices[key] = series
         return series
+
+    def _with_manual(self, symbol: str, series: PriceSeries | None, currency: str) -> PriceSeries | None:
+        """*series* with the prices entered by hand for *symbol* merged in."""
+        points: dict[str, tuple[float, str]] = {}
+        if series is not None:
+            points = {day: (price, "market") for day, price in zip(series.dates, series.prices, strict=True)}
+        manual_currency = self._manual[symbol][-1][2] or currency
+        target = currency or (series.currency if series else manual_currency)
+        for day, price, price_currency in self._manual[symbol]:
+            rate = self.rate(price_currency or target, target, day) if target else 1.0
+            if rate is None:
+                logger.info("No rate to convert the %s price of %s on %s to %s", price_currency, symbol, day, target)
+                continue
+            points[day] = (price * rate, "manual")
+        # A price entered before a split carries forward per new share.
+        for day, factor in sorted(self._splits.get(symbol, [])):
+            earlier = [point for point in points if point < day]
+            if day in points or not earlier or not factor:
+                continue
+            price, source = points[max(earlier)]
+            if source == "manual":
+                points[day] = (price / factor, "manual")
+        if not points:
+            return series
+        dates = sorted(points)
+        return PriceSeries(
+            ticker=series.ticker if series else symbol,
+            currency=target,
+            source_currency=series.source_currency if series else manual_currency,
+            dates=dates,
+            prices=[points[day][0] for day in dates],
+            sources=[points[day][1] for day in dates],
+        )
 
     def _build_series(self, ticker: str, rows: list[tuple[str, float, str, str]], currency: str) -> PriceSeries:
         by_currency: dict[str, int] = {}

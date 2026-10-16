@@ -108,7 +108,8 @@ def ensure_data_databases(
     The market database's statement, price, and ratio tables are created by
     the pipeline according to the imported data; only its bond and ownership
     tables have a fixed schema. The file itself is still created here so a clean
-    install has the complete layout before the first pipeline run.
+    install has the complete layout before the first pipeline run. The logs of
+    filings the bond and ownership steps have read are kept in filings.db.
     """
     from src.bonds.store import ensure_bond_tables
     from src.filings.catalog import FilingCatalog
@@ -128,10 +129,10 @@ def ensure_data_databases(
         conn.commit()
     finally:
         conn.close()
-    ensure_bond_tables(paths["market"])
-    ensure_ownership_tables(paths["market"])
-
     FilingCatalog(paths["filings"], busy_timeout_ms=timeout)
+
+    ensure_bond_tables(paths["market"], paths["filings"])
+    ensure_ownership_tables(paths["market"], paths["filings"])
 
     logger.info(
         "Data databases are ready: %s",

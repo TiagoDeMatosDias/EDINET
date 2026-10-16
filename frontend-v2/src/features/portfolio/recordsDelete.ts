@@ -1,6 +1,9 @@
 import { csvCell } from '../analysis/downloads'
 import type { Transaction } from './portfolioTypes'
 
+/** The source file name records typed in by hand are stored under. */
+export const MANUAL_SOURCE = 'Manual entries'
+
 /** What to delete: everything, whole imported files, or chosen records. */
 export type DeleteSelection =
   | { kind: 'everything' }
@@ -39,7 +42,9 @@ export function selectedRecords(records: Transaction[], selection: DeleteSelecti
     return records.filter(record => files.has(record.source_file ?? ''))
   }
   const ids = new Set(selection.ids)
-  return records.filter(record => record.id != null && ids.has(record.id))
+  // Records entered together (an exercise's two legs, a dividend and its tax) are deleted together.
+  const actions = new Set(records.filter(record => record.id != null && ids.has(record.id) && record.action_id?.startsWith('manual-')).map(record => record.action_id))
+  return records.filter(record => (record.id != null && ids.has(record.id)) || (record.action_id != null && actions.has(record.action_id)))
 }
 
 const CSV_COLUMNS: Array<keyof Transaction> = ['id', 'trade_date', 'activity_type', 'symbol', 'description', 'quantity', 'trade_price', 'trade_money', 'proceeds', 'amount', 'net_cash', 'commission', 'currency', 'buy_sell', 'source_file']

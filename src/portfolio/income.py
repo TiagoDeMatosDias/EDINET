@@ -21,6 +21,7 @@ from datetime import date as Date
 from datetime import timedelta
 
 from src.orchestrator.common.sqlite import connect_read
+from src.portfolio.assets import security_names
 from src.portfolio.market_data import MarketData, price_ticker_candidates
 
 _PER_SHARE = re.compile(r"(?:CASH DIVIDEND|DIVIDEND|IN LIEU)\D*?([A-Z]{3})\s+(\d+(?:\.\d+)?)", re.IGNORECASE)
@@ -97,14 +98,7 @@ def portfolio_income(db3_path: str, db2_path: str, display_currency: str = "EUR"
                 (owner_user_id,),
             ).fetchall()
         }
-        trade_names = {
-            row[0]: row[1]
-            for row in conn3.execute(
-                "SELECT symbol, description FROM Transactions WHERE owner_user_id = ? AND activity_type = 'TRADE' "
-                "AND COALESCE(description, '') != '' ORDER BY trade_date",
-                (owner_user_id,),
-            ).fetchall()
-        }
+        trade_names = security_names(conn3, owner_user_id)
         symbols = {row["symbol"] for row in rows}
         shares_on = _shares_lookup(conn3, owner_user_id, symbols)
 

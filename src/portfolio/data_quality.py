@@ -4,6 +4,8 @@ The Portfolio page shows this beside its statistics: when the ledger was
 last valued, which quotes each holding used and how old they are, holdings
 valued at cost, quotes converted from another listing's currency, daily
 moves too large to be believable, and the rate and inflation inputs.
+Holdings valued at prices the owner entered, and splits entered by hand
+that the market data already has, are noted too.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from datetime import date as Date
 
 from src.orchestrator.common.sqlite import connect_read
 from src.portfolio import analytics
+from src.portfolio.assets import manual_only_symbols, manual_prices
 from src.portfolio.market_data import STALE_PRICE_DAYS, MarketData, price_ticker_candidates
 from src.utilities.stock_prices import tse_code
 
@@ -66,7 +69,12 @@ def portfolio_data_quality(
     conn3 = connect_read(db3_path)
     conn2 = connect_read(db2_path)
     try:
-        market = MarketData(conn2)
+        # The owner's own prices count as stored prices here, as in the ledger.
+        market = MarketData(
+            conn2,
+            manual_prices=manual_prices(conn3, owner_user_id),
+            manual_only=manual_only_symbols(conn3, owner_user_id),
+        )
         valuation = conn3.execute(
             "SELECT MAX(date), MIN(date) FROM Portfolio_Daily WHERE owner_user_id = ?",
             (owner_user_id,),
@@ -104,7 +112,7 @@ def portfolio_data_quality(
             price_date = record.get("price_date") if provenance else (series.on(valuation_date)[1] if series and valuation_date and series.on(valuation_date) else None)
             source = record.get("price_source") if provenance else ("market" if price_date else "cost")
             weight = float(record.get("market_value") or 0.0) / total_value if total_value else None
-            stale_days = _days_between(price_date, valuation_date) if source == "market" else None
+            stale_days = _days_between(price_date, valuation_date) if source in ("market", "manual") else None
             latest_stored = series.last_date if series else None
             quote_currency = (record.get("price_currency") if provenance else None) or (series.source_currency if series else None)
             status = "ok"
@@ -112,6 +120,8 @@ def portfolio_data_quality(
                 status = "cost"
             elif source is None:
                 status = "missing"
+            elif source == "manual":
+                status = "manual"
             elif source == "market" and stale_days is not None and stale_days > STALE_PRICE_DAYS:
                 status = "stale"
             weekly_years = sparse_price_years(conn2, series.ticker, first_date) if series else []
@@ -176,6 +186,16 @@ def portfolio_data_quality(
                 + ", ".join(f"{holding['symbol']} ({holding['price_date']})" for holding in stale) + ".",
                 "symbols": [holding["symbol"] for holding in stale],
             })
+        manual = [holding for holding in holdings if holding["status"] == "manual"]
+        if manual:
+            share = sum(holding["weight"] or 0 for holding in manual)
+            issues.append({
+                "level": "info", "code": "manual_prices",
+                "message": f"{len(manual)} holding(s) are valued at prices you entered ({share:.1%} of the portfolio): "
+                + ", ".join(f"{holding['symbol']} ({holding['price_date']})" for holding in manual)
+                + ". Enter a new price when it changes.",
+                "symbols": [holding["symbol"] for holding in manual],
+            })
         newer = [holding for holding in holdings if holding["newer_price_stored"]]
         if newer:
             issues.append({"level": "info", "code": "newer_prices", "message": f"Newer prices are stored for {len(newer)} holding(s) than the last rebuild used. Rebuild to use them.", "symbols": [holding["symbol"] for holding in newer]})
@@ -211,6 +231,7 @@ def portfolio_data_quality(
         if inflation is None:
             issues.append({"level": "info", "code": "inflation_missing", "message": f"No consumer price index is stored for {currency}; real returns are unavailable."})
         issues.extend(_ledger_issues(conn3, owner_user_id))
+        issues.extend(_split_issues(conn3, conn2, owner_user_id))
 
         return {
             "today": today,
@@ -262,8 +283,44 @@ def _ledger_issues(conn3: sqlite3.Connection, owner_user_id: str) -> list[dict]:
     return issues
 
 
+def _split_issues(conn3: sqlite3.Connection, conn2: sqlite3.Connection, owner_user_id: str) -> list[dict]:
+    """Splits entered by hand that the market data already records, so the ledger applies them once."""
+    from src.portfolio.portfolio_state import (
+        _alias_split_events,
+        _load_confirmed_split_events,
+        _with_manual_splits,
+    )
+
+    records = [
+        dict(row) for row in conn3.execute(
+            "SELECT activity_type, symbol, trade_date, multiplier FROM Transactions "
+            "WHERE owner_user_id = ? AND activity_type = 'SPLIT'",
+            (owner_user_id,),
+        ).fetchall()
+    ]
+    if not records:
+        return []
+    try:
+        events = _alias_split_events(_load_confirmed_split_events(conn2), {str(record["symbol"] or "") for record in records})
+    except sqlite3.Error:
+        events = {}
+    _merged, known = _with_manual_splits(events, records)
+    if not known:
+        return []
+    return [{
+        "level": "info", "code": "manual_split_known",
+        "message": f"{len(known)} split(s) you entered are already in the market data and are applied once: "
+        + ", ".join(f"{record['symbol']} ({record['trade_date']})" for record in known) + ".",
+        "symbols": sorted({str(record["symbol"]) for record in known}),
+    }]
+
+
 def held_refresh_tickers(db3_path: str, owner_user_id: str = "") -> list[str]:
-    """Stored tickers for the open holdings, for a price refresh."""
+    """Stored tickers for the open holdings, for a price refresh.
+
+    Assets defined to be priced only by hand are left out: their symbol may
+    belong to another security in the market data.
+    """
     conn = connect_read(db3_path)
     try:
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(Portfolio_Holdings)")}
@@ -273,11 +330,14 @@ def held_refresh_tickers(db3_path: str, owner_user_id: str = "") -> list[str]:
             "WHERE owner_user_id = ? AND quantity != 0 AND asset_category != 'CASH'",
             (owner_user_id,),
         ).fetchall()
+        manual_only = manual_only_symbols(conn, owner_user_id)
     except sqlite3.OperationalError:
         return []
     finally:
         conn.close()
     tickers = []
     for symbol, price_ticker, underlying, is_option in rows:
+        if ((underlying or symbol) if is_option else symbol) in manual_only:
+            continue
         tickers.append(refresh_ticker(underlying or symbol, None) if is_option else refresh_ticker(symbol, price_ticker))
     return list(dict.fromkeys(tickers))

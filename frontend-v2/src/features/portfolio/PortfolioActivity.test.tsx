@@ -4,7 +4,7 @@ import type { ReactElement } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PortfolioActivity } from './PortfolioActivity'
-import type { Transaction } from './portfolioTypes'
+import type { ManualAsset, Transaction } from './portfolioTypes'
 import { recordsCsv, selectedRecords, selectionPayload } from './recordsDelete'
 
 afterEach(() => {
@@ -29,6 +29,16 @@ function stubDeletes() {
     return Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }))
   return bodies
+}
+
+/** Records what the form sends; answers like the server. */
+function stubPosts() {
+  const posted: Array<{ path: string; method?: string; body?: Record<string, unknown> }> = []
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    posted.push({ path: String(input), method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    return Promise.resolve(new Response(JSON.stringify({ transactions: [{ id: 9, buy_sell: 'BUY' }], daily_rows: 5, holdings_count: 2 }), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+  }))
+  return posted
 }
 
 function transactions(count: number): Transaction[] {
@@ -177,6 +187,70 @@ describe('PortfolioActivity', () => {
     expect(within(form).getByRole('textbox', { name: 'Quantity' })).toHaveValue('')
     fireEvent.keyDown(within(form).getByRole('combobox', { name: 'Kind' }), { key: 'Escape' })
     expect(screen.queryByRole('form', { name: 'Add a transaction' })).not.toBeInTheDocument()
+  })
+
+  it('records an option by its terms and exercises a contract held, inferring the side', async () => {
+    const posted = stubPosts()
+    const rows: Transaction[] = [
+      { id: 1, trade_date: '2024-01-03', activity_type: 'TRADE', asset_category: 'OPT', symbol: 'AAA   240315P00100000', quantity: -1, currency: 'USD', buy_sell: 'SELL', put_call: 'P', strike: 100, expiry: '2024-03-15', underlying_symbol: 'AAA', multiplier: 100, source_file: 'Manual entries' },
+    ]
+    render(withQueries(<PortfolioActivity data={rows} activity={{}} isLoading={false} hotkeys onOpenDetail={vi.fn()} onAdded={vi.fn()} />))
+    fireEvent.keyDown(document.body, { key: 'n' })
+    const form = screen.getByRole('form', { name: 'Add a transaction' })
+    fireEvent.change(within(form).getByRole('combobox', { name: 'Kind' }), { target: { value: 'sell_short' } })
+    fireEvent.change(within(form).getByRole('combobox', { name: 'Type' }), { target: { value: 'OPT' } })
+    expect(within(form).queryByRole('combobox', { name: 'Symbol' })).not.toBeInTheDocument()
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Underlying' }), { target: { value: 'aaa' } })
+    fireEvent.change(within(form).getByRole('combobox', { name: 'Call or put' }), { target: { value: 'C' } })
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Strike' }), { target: { value: '120' } })
+    fireEvent.change(within(form).getByLabelText('Expiry'), { target: { value: '2024-06-21' } })
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Quantity' }), { target: { value: '2' } })
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Price' }), { target: { value: '1.5' } })
+    expect(form).toHaveTextContent('Cash in: 300 USD')
+    fireEvent.submit(form)
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0]).toMatchObject({ path: '/api/portfolio/transactions/manual', body: { kind: 'sell_short', asset_category: 'OPT', symbol: 'AAA   240621C00120000', underlying: 'AAA', put_call: 'C', strike: 120, multiplier: 100, quantity: 2, price: 1.5 } })
+
+    // An exercise starts from the contract held, and says what it does with the shares.
+    fireEvent.keyDown(within(form).getByRole('combobox', { name: 'Kind' }), { key: 'Escape' })
+    fireEvent.keyDown(document.body, { key: 'n' })
+    const next = screen.getByRole('form', { name: 'Add a transaction' })
+    fireEvent.change(within(next).getByRole('combobox', { name: 'Kind' }), { target: { value: 'option_exercise' } })
+    expect(within(next).getByRole('combobox', { name: 'Contract' })).toHaveValue('AAA   240315P00100000')
+    expect(within(next).getByRole('combobox', { name: 'Held' })).toHaveDisplayValue('As held (short)')
+    fireEvent.change(within(next).getByRole('textbox', { name: 'Contracts' }), { target: { value: '1' } })
+    expect(next).toHaveTextContent('Buys 100 AAA at 100')
+    fireEvent.submit(next)
+    await waitFor(() => expect(posted).toHaveLength(2))
+    expect(posted[1].body).toMatchObject({ kind: 'option_exercise', symbol: 'AAA   240315P00100000', quantity: 1, position: '', settlement: 'shares' })
+  })
+
+  it('lists the assets and prices entered, and adds or deletes them from there', async () => {
+    const posted = stubPosts()
+    const onAssetsChanged = vi.fn()
+    const assets: ManualAsset[] = [{ symbol: 'NEWCO', name: 'New Company', asset_category: 'STK', currency: 'USD', fetch_prices: 0, defined: true, held: true, prices: [{ date: '2024-01-15', price: 12.5, currency: 'USD' }], latest_price: { date: '2024-01-15', price: 12.5, currency: 'USD' } }]
+    render(withQueries(<PortfolioActivity data={transactions(2)} activity={{}} isLoading={false} onOpenDetail={vi.fn()} onAdded={vi.fn()} assets={assets} onAssetsChanged={onAssetsChanged} />))
+    expect(screen.getByText('Stock · USD · priced by hand only · held')).toBeInTheDocument()
+    expect(screen.getAllByText('12.5 USD')).toHaveLength(2)
+    expect(screen.getByText('1 price entered')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enter a price for NEWCO' }))
+    const form = screen.getByRole('form', { name: 'Add a transaction' })
+    expect(within(form).getByRole('combobox', { name: 'Kind' })).toHaveValue('price')
+    expect(within(form).getByRole('combobox', { name: 'Symbol' })).toHaveValue('NEWCO')
+    expect(within(form).getByRole('combobox', { name: 'Currency' })).toHaveValue('USD')
+    fireEvent.change(within(form).getByLabelText('Date'), { target: { value: '2024-02-01' } })
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Price' }), { target: { value: '13' } })
+    expect(form).toHaveTextContent('your portfolio only')
+    fireEvent.submit(form)
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0]).toEqual({ path: '/api/portfolio/prices', method: 'POST', body: { symbol: 'NEWCO', date: '2024-02-01', price: 13, currency: 'USD', note: '' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete NEWCO' }))
+    expect(screen.getByText('Delete it and 1 price?')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(onAssetsChanged).toHaveBeenCalledWith(expect.stringContaining('Deleted the asset NEWCO and its 1 price')))
+    expect(posted.at(-1)).toMatchObject({ path: '/api/portfolio/assets/NEWCO', method: 'DELETE' })
   })
 
   it('clears everything only after the word delete is typed', async () => {

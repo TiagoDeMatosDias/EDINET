@@ -1,11 +1,15 @@
-"""Refresh ``Bonds.db``: read new filings, update the yield curve, rebuild the bond list.
+"""Refresh the bond tables: read new filings, update the yield curve, rebuild the bond list.
 
-Issuance supplements are listed in Base.db's ``DocumentList`` (document type
+Issuance supplements are listed in market.db's ``DocumentList`` (document type
 100) and downloaded from EDINET, since the XBRL step does not fetch them; the
 ZIP is kept so later parser versions can re-read it. Bond schedules come
-from annual reports already in the filing catalog (Filings.db), read one
+from annual reports already in the filing catalog (filings.db), read one
 archive at a time; the selecting query only touches columns stored before
 the archive column, which keeps it fast on a large catalog.
+
+The log of filings read is in filings.db and what they say is in market.db,
+so a filing counts as read only while its rows are still there: a rebuilt
+market.db has its filings read again (supplements from their stored ZIP).
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from src.orchestrator.common import company_names
-from src.orchestrator.common.sqlite import connect_read, connect_write
+from src.orchestrator.common.sqlite import connect_read
 
 from . import build, jsda, market, store
 from .parsing import PARSER_VERSION, parse_bond_schedule, parse_issuance
@@ -28,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 ISSUANCE_DOC_TYPE = "100"
 ANNUAL_FORM_CODE = "030000"
+# The rows a filing of each kind is read into.
+_ROWS = {"issuance": "Bond_Issuances", "annual": "Bond_Schedule_Rows"}
 _DOWNLOAD_WORKERS = 4
 _COMMIT_EVERY = 25
 
@@ -42,7 +48,8 @@ def _processed(conn: sqlite3.Connection, kind: str, reparse: bool) -> set[str]:
     if reparse:
         return set()
     rows = conn.execute(
-        "SELECT doc_id FROM Bond_Documents WHERE kind = ? AND parser_version = ? AND status IN ('parsed', 'empty', 'unavailable')",
+        "SELECT doc_id FROM Bond_Documents d WHERE kind = ? AND parser_version = ? AND (status IN ('empty', 'unavailable') "
+        f"OR status = 'parsed' AND EXISTS (SELECT 1 FROM {_ROWS[kind]} r WHERE r.doc_id = d.doc_id))",
         (kind, PARSER_VERSION),
     )
     return {row[0] for row in rows}
@@ -237,7 +244,7 @@ def rebuild(conn: sqlite3.Connection, *, today: str | None = None) -> dict[str, 
 def update_bonds(
     *,
     market_db: str,
-    filings_db_path: str | None,
+    filings_db_path: str,
     client: Any = None,
     issuances: bool = True,
     annual_reports: bool = True,
@@ -249,8 +256,8 @@ def update_bonds(
     progress: Progress = _no_progress,
     today: str | None = None,
 ) -> dict[str, Any]:
-    store.ensure_bond_tables(market_db)
-    conn = connect_write(market_db)
+    store.ensure_bond_tables(market_db, filings_db_path)
+    conn = store.connect(market_db, filings_db_path)
     result: dict[str, Any] = {}
     try:
         if issuances:
@@ -260,10 +267,10 @@ def update_bonds(
             result["issuances"] = read_issuances(conn, documents, client, progress)
             store.mark_update(conn, "issuances", result["issuances"])
         if annual_reports:
-            documents = pending_annual_reports(conn, filings_db_path or "", reparse=reparse)
+            documents = pending_annual_reports(conn, filings_db_path, reparse=reparse)
             if max_documents > 0:
                 documents = documents[:max_documents]
-            result["annual_reports"] = read_annual_reports(conn, documents, filings_db_path or "", progress)
+            result["annual_reports"] = read_annual_reports(conn, documents, filings_db_path, progress)
             store.mark_update(conn, "annual_reports", result["annual_reports"])
         # Bonds name their issuer from CompanyInfo, which the code list leaves without an English name for many
         # companies: fill those from the annual reports now in the catalog before the bonds are rebuilt.

@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.filings.remote_translation import owner_of
 from src.jobs.errors import JobFailed
-from src.orchestrator.common.db_config import get_market_db
+from src.orchestrator.common.db_config import get_filings_db, get_market_db
 
 from . import service
 
@@ -70,7 +70,7 @@ def ownership_status() -> dict[str, Any]:
     if path is None:
         return dict(_EMPTY)
     try:
-        return service.status(path)
+        return service.status(path, get_filings_db())
     except sqlite3.Error:  # tables appear on the first run of the step
         return dict(_EMPTY)
 
@@ -82,7 +82,7 @@ def company(edinet_code: str) -> dict[str, Any]:
     if not _EDINET_CODE.match(code):
         raise HTTPException(status_code=404, detail="Company not found")
     try:
-        return service.company_ownership(_require(_database()), code)
+        return service.company_ownership(_require(_database()), get_filings_db(), code)
     except sqlite3.OperationalError as exc:
         raise HTTPException(status_code=503, detail=_NO_DATA) from exc
 
@@ -105,7 +105,7 @@ def entity(request: Request, entity_id: str) -> Response:
     if not _ENTITY_ID.match(entity_id):
         raise HTTPException(status_code=404, detail="Not found")
     try:
-        detail = service.entity_detail(_require(_database()), entity_id)
+        detail = service.entity_detail(_require(_database()), get_filings_db(), entity_id)
     except sqlite3.OperationalError as exc:
         raise HTTPException(status_code=503, detail=_NO_DATA) from exc
     if detail is None:

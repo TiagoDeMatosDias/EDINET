@@ -2,8 +2,9 @@
 """Build a compact filing catalog from retained ZIP archives.
 
 The source database is never modified.  The rebuilt catalog keeps filing
-metadata, compressed archives, artifact metadata, contexts, units, and
-numeric XBRL facts.  Materialized narrative sections, the FTS copy of those
+metadata, compressed archives, artifact metadata, contexts, units, numeric
+XBRL facts, and the logs of filings the bond and ownership steps have read
+(with the bond supplements' archives).  Materialized narrative sections, the FTS copy of those
 sections, nonnumeric facts, nil facts, and their per-fact quality rows are
 intentionally omitted because the source ZIP remains available on demand.
 
@@ -27,12 +28,14 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.bonds.store import ensure_documents_table as ensure_bond_documents  # noqa: E402
 from src.filings.archive import DEFAULT_ARCHIVE_POLICY, validate_zip_in_memory  # noqa: E402
 from src.filings.catalog import FilingCatalog  # noqa: E402
 from src.filings.quality import assess_facts  # noqa: E402
 from src.filings.xbrl import XbrlParser  # noqa: E402
 from src.orchestrator.common.db_config import get_filings_db  # noqa: E402
 from src.orchestrator.common.sqlite import connect_read, connect_write  # noqa: E402
+from src.ownership.store import ensure_documents_table as ensure_ownership_documents  # noqa: E402
 
 _ARCHIVE_LIMIT = 25 * 1024 * 1024
 _FILINGS_COLUMNS = (
@@ -221,6 +224,8 @@ def _copy_small_tables(
         "observations",
         "observation_dependencies",
         "parse_runs",
+        "Bond_Documents",
+        "Ownership_Documents",
     )
     for table_name in table_names:
         if not _table_exists(source, table_name) or not _table_exists(destination, table_name):
@@ -443,6 +448,8 @@ def main() -> int:
 
     try:
         FilingCatalog(partial_path, include_narrative_index=False)
+        ensure_bond_documents(partial_path)
+        ensure_ownership_documents(partial_path)
         source = connect_read(source_path)
         destination = connect_write(partial_path)
         try:

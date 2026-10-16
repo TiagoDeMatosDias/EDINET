@@ -436,6 +436,68 @@ def _alias_split_events(
     return aliased
 
 
+# A split entered by hand within this many days of one the market data has
+# (with the same ratio) is the same event, and is applied once.
+MANUAL_SPLIT_MATCH_DAYS = 7
+
+
+def _with_manual_splits(
+    events: dict[str, list[tuple[str, float]]],
+    records: list[dict],
+) -> tuple[dict[str, list[tuple[str, float]]], list[dict]]:
+    """Add the owner's ``SPLIT`` records (factor in ``multiplier``) to the market's split events.
+
+    Returns the merged events and the records left out because the market
+    data already has that split.  Neither is ever written to market.db: a
+    split entered by hand only changes its owner's ledger.
+    """
+    merged = {symbol: list(rows) for symbol, rows in events.items()}
+    ignored: list[dict] = []
+    for record in records:
+        if record.get("activity_type") != "SPLIT":
+            continue
+        symbol = (record.get("symbol") or "").strip()
+        day = _parse_date(str(record.get("trade_date") or "")[:10])
+        try:
+            factor = float(record.get("multiplier") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not symbol or day is None or factor <= 0 or factor == 1:
+            continue
+        known = any(
+            abs(float(market_factor) - factor) <= 1e-6 * factor
+            and (event_day := _parse_date(str(market_day)[:10])) is not None
+            and abs((event_day - day).days) <= MANUAL_SPLIT_MATCH_DAYS
+            for market_day, market_factor in events.get(symbol, [])
+        )
+        if known:
+            ignored.append(record)
+            continue
+        merged[symbol] = [*merged.get(symbol, []), (day.isoformat(), factor)]
+    return merged, ignored
+
+
+def _position_split_events(
+    conn3: sqlite3.Connection,
+    conn2: sqlite3.Connection,
+    owner_user_id: str,
+    symbols: set[str],
+) -> dict[str, list[tuple[str, float]]]:
+    """The split events the ledger applies to *symbols*: the market's and the owner's own."""
+    try:
+        market_events = _alias_split_events(_load_confirmed_split_events(conn2), symbols)
+    except sqlite3.Error:
+        market_events = {}
+    records = [
+        dict(row) for row in conn3.execute(
+            "SELECT activity_type, symbol, trade_date, multiplier FROM Transactions "
+            "WHERE owner_user_id = ? AND activity_type = 'SPLIT'",
+            (owner_user_id,),
+        ).fetchall()
+    ]
+    return _with_manual_splits(market_events, records)[0]
+
+
 def build_portfolio_state(
     db3_path: str | None = None,
     db2_path: str | None = None,
@@ -509,17 +571,28 @@ def build_portfolio_state(
         first_date = all_dates[0]
         last_date = _parse_date(end_date) or Date.today()
 
-        # 2. Walk forward
-        market = MarketData(conn2)
+        # 2. Walk forward.  Prices entered by hand belong to this owner only:
+        # they value this ledger and never reach the shared market data.
+        from src.portfolio.assets import manual_only_symbols, manual_prices
+
+        split_events, _known_splits = _with_manual_splits(
+            _alias_split_events(
+                _load_confirmed_split_events(conn2),
+                {(t.get("symbol") or "").strip() for t in transactions},
+            ),
+            transactions,
+        )
+        market = MarketData(
+            conn2,
+            manual_prices=manual_prices(conn3, owner_user_id),
+            manual_only=manual_only_symbols(conn3, owner_user_id),
+            splits=split_events,
+        )
         holdings: dict[tuple[str, str], dict] = {}  # (symbol, asset_category) → holding dict
         cash_by_currency: dict[str, float] = {"EUR": 0.0}
         broker_fx: dict[str, float] = {}  # currency → latest fxRateToBase (fallback only)
         cumulative_return = 1.0
         prev_total_value = 0.0
-        split_events = _alias_split_events(
-            _load_confirmed_split_events(conn2),
-            {(t.get("symbol") or "").strip() for t in transactions},
-        )
         txn_index = 0
         daily_rows = 0
         hh_rows = 0
@@ -571,7 +644,8 @@ def build_portfolio_state(
                     h["price_date"] = price_date
                     h["price_source"] = source
                     multiplier = h.get("multiplier", 1) or 1
-                    h["market_value"] = price * abs(h["quantity"]) * multiplier
+                    # Negative for a short position: what buying it back would cost.
+                    h["market_value"] = price * h["quantity"] * multiplier
                 h["fx_rate"] = eur_per_unit(h["currency"], date_str)
                 if h.get("market_value"):
                     value_base = h["market_value"] * h["fx_rate"]
@@ -782,22 +856,45 @@ def _apply_transaction(
             }
 
         h = holdings[key]
+        held = h["quantity"]
         if txn.get("buy_sell") == "BUY":
-            h["quantity"] += qty
-            # Cost basis in the holding's currency, commission included.
-            if trade_price and qty > 0:
-                h["total_cost"] += qty * trade_price * multiplier + abs(commission)
-        else:  # SELL
-            sold = abs(qty)
-            if h["quantity"] > 0 and h["total_cost"]:
-                h["total_cost"] -= h["total_cost"] * min(sold, h["quantity"]) / h["quantity"]
-            h["quantity"] -= sold
-            if h["quantity"] <= 0:
-                h["total_cost"] = 0
-                if h["quantity"] < 0:
+            bought = qty
+            if held < 0 and bought > 0:
+                # Buying back a short position first; the rest opens a long one.
+                covered = min(bought, -held)
+                h["total_cost"] -= h["total_cost"] * covered / -held
+                h["quantity"] += covered
+                bought -= covered
+                if abs(h["quantity"]) < 1e-9:
                     h["quantity"] = 0
+                    h["total_cost"] = 0.0
+            if bought or held >= 0:
+                h["quantity"] += bought
+                # Cost basis in the holding's currency, commission included.
+                if trade_price and bought > 0:
+                    h["total_cost"] += bought * trade_price * multiplier + abs(commission) * bought / qty
+        else:  # SELL (and the broker's cancellation of a buy)
+            sold = abs(qty)
+            # A sale stops at zero unless it is marked as opening a short
+            # (or the position is short already): a file that starts after
+            # shares were bought must not invent a short position.
+            may_short = "O" in (txn.get("open_close") or "") or held < 0
+            if held > 0:
+                closing = min(sold, held)
+                if h["total_cost"]:
+                    h["total_cost"] -= h["total_cost"] * closing / held
+                h["quantity"] -= closing
+                sold -= closing
+            if sold > 0 and may_short:
+                h["quantity"] -= sold
+                # A short's cost is what its sale brought in, as a negative amount.
+                if trade_price:
+                    h["total_cost"] -= sold * trade_price * multiplier - abs(commission) * sold / abs(qty)
+            if h["quantity"] == 0 or (h["quantity"] < 0 and not may_short):
+                h["quantity"] = 0
+                h["total_cost"] = 0
 
-        if h["quantity"] > 0 and h["total_cost"]:
+        if h["quantity"] != 0 and h["total_cost"]:
             h["avg_cost"] = h["total_cost"] / h["quantity"]
 
         # Cash effect
@@ -851,16 +948,23 @@ def _price_holding(
     """Price one holding on *date_str*: ``(price, price date, source)`` or None.
 
     Stocks use the latest close on or before the date, as traded and in the
-    holding's currency (``source`` ``market``).  Split actions are applied to
+    holding's currency (``source`` ``market``, or ``manual`` when the latest
+    price is one the owner entered).  Split actions are applied to
     holdings above, so a split-adjusted quote would double-adjust the
     position.  Before a ticker has any stored price the average cost stands
     in (``cost``).  Options are valued with a binomial model on the
-    underlying's close (``model``).
+    underlying's close (``model``), unless the owner entered a price for the
+    contract at least as recent as that close (``manual``).
     """
     if h.get("is_option"):
         symbol = h["symbol"]
         underlying = h.get("underlying") or (symbol[:symbol.index(" ")] if " " in symbol else symbol)
         quote = market.price(underlying, h["currency"], date_str)
+        # Option contracts have no market closes here: a series for the
+        # contract holds only prices entered by hand.
+        entered = market.price(symbol, h["currency"], date_str) if symbol != underlying else None
+        if entered is not None and entered[2].source_on(date_str) == "manual" and (quote is None or entered[1] >= quote[1]):
+            return entered[0], entered[1], "manual"
         if quote is None:
             return None
         S, price_date, _series = quote
@@ -881,7 +985,7 @@ def _price_holding(
         price, price_date, series = quote
         h["price_ticker"] = series.ticker
         h["price_currency"] = series.source_currency
-        return price, price_date, "market"
+        return price, price_date, series.source_on(date_str)
     # Fall back to average cost if no market price available
     # (common for recently purchased positions where price hasn't been fetched yet)
     avg = h.get("avg_cost")
@@ -1068,6 +1172,9 @@ def get_closed_positions(db3_path: str | None = None, owner_user_id: str = "") -
             GROUP BY symbol, asset_category
         """, [*closed_syms, owner_user_id]).fetchall()
 
+        from src.portfolio.assets import security_names
+
+        names = security_names(conn, owner_user_id)
         result = []
         for row in rows:
             r = dict(row)
@@ -1075,7 +1182,7 @@ def get_closed_positions(db3_path: str | None = None, owner_user_id: str = "") -
             result.append({
                 "symbol": r["symbol"],
                 "asset_category": r["asset_category"],
-                "description": r["description"],
+                "description": names.get(r["symbol"]) or r["description"],
                 "currency": r["currency"],
                 "total_bought": round(r["total_bought"] or 0, 6),
                 "total_sold": round(r["total_sold"] or 0, 6),
@@ -1176,27 +1283,31 @@ def _compute_position_stats(
     txns: list[dict],
     display_currency: str = "EUR",
     db2_path: str | None = None,
+    split_events: list[tuple[str, float]] | None = None,
 ) -> dict:
-    """Walk trade transactions chronologically with average-cost accounting.
+    """Walk a position's records chronologically with average-cost accounting.
 
-    Tracks shares, cost basis, and realized P&L across multiple buy/sell
-    periods.  Handles the sell-and-rebuy scenario correctly.
+    Tracks the position (negative while short), its cost basis, and realized
+    P&L across buy/sell periods, so a sale and later repurchase start a new
+    period.  A sale stops at zero unless it is marked as opening a short
+    (``open_close`` ``O``) or the position is short already, as in the
+    ledger; a short's cost basis is negative (what its sale brought in) and
+    buying it back realizes the difference.  Commissions count in the cost of
+    a purchase and reduce a sale's proceeds.  ``SPINOFF`` records deliver
+    shares at no cost, and *split_events* (``[(date, factor), ...]``) change
+    the share count at the start of their day.
 
     Returns:
         cost_basis_native, cost_basis_display, cost_basis_eur,
-        realized_pnl_native, realized_pnl_display,
+        realized_pnl_native, realized_pnl_display, realized_pnl_eur,
         current_period_start, first_trade_date, last_trade_date,
-        shares_bought_total, shares_sold_total
+        shares_bought_total, shares_sold_total, currency, current_shares
     """
     from src.portfolio.currency import get_rate_at_date_any
 
     shares = 0.0
-    cost_basis_native = 0.0
-    cost_basis_display = 0.0
-    cost_basis_eur = 0.0
-    realized_pnl_native = 0.0
-    realized_pnl_display = 0.0
-    realized_pnl_eur = 0.0
+    cost = {"native": 0.0, "display": 0.0, "eur": 0.0}
+    realized = {"native": 0.0, "display": 0.0, "eur": 0.0}
     current_period_start: str | None = None
     first_trade_date: str | None = None
     last_trade_date: str | None = None
@@ -1204,12 +1315,48 @@ def _compute_position_stats(
     shares_sold_total = 0.0
     currency: str = ""
 
-    for t in txns:
-        td = t["trade_date"]
+    def amounts(native: float, td: str, fx: float) -> dict[str, float]:
+        if display_currency != currency:
+            rate = get_rate_at_date_any(currency, display_currency, td, db2_path)
+            display = native * (rate if rate else fx)
+        else:
+            display = native
+        return {"native": native, "display": display, "eur": native * fx}
+
+    def close_out() -> None:
+        nonlocal shares, current_period_start
+        shares = 0.0
+        for key in cost:
+            cost[key] = 0.0
+        current_period_start = None  # set again when a new position opens
+
+    # Splits take effect at the start of their day, before its trades.
+    events: list[tuple[str, int, int, object]] = [
+        (str(t["trade_date"])[:10], 1, index, t) for index, t in enumerate(txns)
+    ]
+    events += [(str(day)[:10], 0, index, factor) for index, (day, factor) in enumerate(split_events or [])]
+    events.sort(key=lambda event: event[:3])
+
+    for td, kind, _index, payload in events:
+        if kind == 0:
+            if shares:
+                shares *= float(payload)
+            continue
+        t = payload
         if first_trade_date is None or td < first_trade_date:
             first_trade_date = td
         if last_trade_date is None or td > last_trade_date:
             last_trade_date = td
+
+        cur = t.get("currency", "")
+        if cur:
+            currency = cur
+        if t.get("activity_type") == "SPINOFF":
+            delivered = t.get("quantity") or 0
+            if delivered and shares == 0:
+                current_period_start = td
+            shares += delivered
+            continue
 
         bs = t.get("buy_sell", "")
         qty = abs(t["quantity"] or 0)
@@ -1218,96 +1365,88 @@ def _compute_position_stats(
         trade_money = t["trade_money"] or 0
         commission = t["commission"] or 0
         fx = t["fx_rate_to_base"] or 1.0
-        cur = t.get("currency", "")
-        if cur:
-            currency = cur
 
         if bs == "BUY":
-            total_cost = trade_money + commission  # native
-            shares += qty
+            paid = amounts(abs(trade_money) + abs(commission), td, fx)
+            bought = qty
+            if shares < 0:
+                # Buying back a short position first.
+                covered = min(qty, -shares)
+                for key in cost:
+                    basis = cost[key] * covered / -shares
+                    realized[key] += -basis - paid[key] * covered / qty
+                    cost[key] -= basis
+                shares += covered
+                bought -= covered
+                if abs(shares) < 1e-9:
+                    close_out()
+            if bought > 0:
+                if shares == 0:
+                    current_period_start = td
+                shares += bought
+                for key in cost:
+                    cost[key] += paid[key] * bought / qty
             shares_bought_total += qty
-            cost_basis_native += total_cost
-            cost_basis_eur += total_cost * fx
-
-            # Display currency
-            if display_currency != currency:
-                rate = get_rate_at_date_any(currency, display_currency, td, db2_path)
-                cost_basis_display += total_cost * (rate if rate else fx)
-            else:
-                cost_basis_display += total_cost
-
-            # Track current period start (shares went from 0 → >0)
-            if shares == qty:  # just went from 0 to qty
-                current_period_start = td
 
         elif bs == "SELL":
-            qty_sell = min(qty, shares)
-            if shares > 0:
-                avg_cost_native = cost_basis_native / shares
-                avg_cost_eur = cost_basis_eur / shares
-                avg_cost_display = cost_basis_display / shares
-
-                # Reduce cost basis proportionally
-                cost_basis_native -= qty_sell * avg_cost_native
-                cost_basis_eur -= qty_sell * avg_cost_eur
-                cost_basis_display -= qty_sell * avg_cost_display
-
-                # Compute realized P&L for this sale
-                # trade_money for sells is negative (money out), proceeds = -trade_money
-                actual_proceeds = -trade_money if trade_money < 0 else trade_money
-                cost_of_sold = qty_sell * avg_cost_native
-                realized_pnl_native += actual_proceeds - cost_of_sold
-
-                # Display currency realized
-                proceeds_display = actual_proceeds
-                if display_currency != currency:
-                    rate = get_rate_at_date_any(currency, display_currency, td, db2_path)
-                    proceeds_display = actual_proceeds * (rate if rate else fx)
-                realized_pnl_display += proceeds_display - (qty_sell * avg_cost_display)
-
-                # EUR realized
-                realized_pnl_eur += (actual_proceeds * fx) - (qty_sell * avg_cost_eur)
-
-            shares -= qty_sell
-            shares_sold_total += qty_sell
-            if shares <= 0:
-                shares = 0.0
-                cost_basis_native = 0.0
-                cost_basis_display = 0.0
-                cost_basis_eur = 0.0
-                current_period_start = None  # will be set on next BUY
+            received = amounts(abs(trade_money) - abs(commission), td, fx)
+            may_short = "O" in (t.get("open_close") or "") or shares < 0
+            closing = min(qty, shares) if shares > 0 else 0.0
+            if closing > 0:
+                # Without a short, the whole sale's proceeds count against the
+                # shares held (a file that starts after they were bought).
+                share_of_sale = closing / qty if may_short else 1.0
+                for key in cost:
+                    basis = cost[key] * closing / shares
+                    realized[key] += received[key] * share_of_sale - basis
+                    cost[key] -= basis
+                shares -= closing
+                shares_sold_total += closing
+                if abs(shares) < 1e-9:
+                    close_out()
+            opened = qty - closing
+            if opened > 1e-9 and may_short:
+                if shares == 0:
+                    current_period_start = td
+                shares -= opened
+                for key in cost:
+                    cost[key] -= received[key] * opened / qty
+                shares_sold_total += opened
 
         elif bs == "BUY (Ca.)":
             # Cancellation: reverse a previous BUY — negative trade_money
             # means it reduces shares and cost basis
             shares -= qty
             shares_bought_total -= qty
-            total_cost = trade_money + commission  # may be negative
-            cost_basis_native += total_cost  # adds a negative
-            cost_basis_eur += total_cost * fx
-            if display_currency != currency:
-                rate = get_rate_at_date_any(currency, display_currency, td, db2_path)
-                cost_basis_display += total_cost * (rate if rate else fx)
-            else:
-                cost_basis_display += total_cost
+            reversed_cost = amounts(trade_money + commission, td, fx)  # may be negative
+            for key in cost:
+                cost[key] += reversed_cost[key]
             if shares < 0:
                 shares = 0.0
 
     return {
-        "cost_basis_native": cost_basis_native,
-        "cost_basis_display": cost_basis_display,
-        "cost_basis_eur": cost_basis_eur,
-        "realized_pnl_native": realized_pnl_native,
-        "realized_pnl_display": realized_pnl_display,
-        "realized_pnl_eur": realized_pnl_eur,
+        "cost_basis_native": cost["native"],
+        "cost_basis_display": cost["display"],
+        "cost_basis_eur": cost["eur"],
+        "realized_pnl_native": realized["native"],
+        "realized_pnl_display": realized["display"],
+        "realized_pnl_eur": realized["eur"],
         "current_period_start": current_period_start or first_trade_date,
         "first_trade_date": first_trade_date or "",
         "last_trade_date": last_trade_date or "",
         "shares_bought_total": shares_bought_total,
         "shares_sold_total": shares_sold_total,
         "currency": currency,
-        "current_shares": max(shares, 0),
+        # Negative while short.
+        "current_shares": shares,
     }
+
+
+def _position_return(value: float, cost_basis: float) -> float:
+    """Gain over cost: ``value / cost - 1`` for a long position, the same on the sale proceeds for a short one."""
+    if not cost_basis or not value:
+        return 0.0
+    return (value - cost_basis) / abs(cost_basis)
 
 
 def get_holding_performance(
@@ -1331,15 +1470,21 @@ def get_holding_performance(
     conn = connect_read(db3_path)
 
     txns = conn.execute(
-        "SELECT * FROM Transactions WHERE symbol = ? AND activity_type = 'TRADE' AND owner_user_id = ? ORDER BY trade_date",
+        "SELECT * FROM Transactions WHERE symbol = ? AND activity_type IN ('TRADE', 'SPINOFF') "
+        "AND owner_user_id = ? ORDER BY trade_date",
         (symbol, owner_user_id),
     ).fetchall()
     if not txns:
         conn.close()
         return None
 
+    conn2 = connect_read(db2_path)
+    try:
+        splits = _position_split_events(conn, conn2, owner_user_id, {symbol}).get(symbol, [])
+    finally:
+        conn2.close()
     stats = _compute_position_stats(
-        [dict(t) for t in txns], display_currency, db2_path,
+        [dict(t) for t in txns], display_currency, db2_path, splits,
     )
     currency = stats["currency"]
     current_qty = stats["current_shares"]
@@ -1357,10 +1502,10 @@ def get_holding_performance(
     avg_cost = holding["avg_cost"] if holding and holding["avg_cost"] else 0
     current_price = holding["market_price"] if holding and holding["market_price"] else avg_cost
     current_value_eur = holding["market_value"] if holding and holding["market_value"] else (current_qty * current_price)
-    current_value_native = holding["market_value_native"] if holding else current_qty * current_price
+    current_value_native = holding["market_value_native"] if holding and holding["market_value_native"] is not None else current_qty * current_price
 
     # P&L (Nat.) — unrealized only
-    pnl_native = current_value_native - cost_basis_native if current_qty > 0 and cost_basis_native != 0 else 0.0
+    pnl_native = current_value_native - cost_basis_native if current_qty != 0 else 0.0
 
     # P&L (Display)
     if display_currency.upper() != "EUR":
@@ -1379,8 +1524,9 @@ def get_holding_performance(
     # ── Dividends ──
     div_rows = conn.execute(
         "SELECT activity_type, amount, fx_rate_to_base, trade_date FROM Transactions "
-        "WHERE symbol = ? AND activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX')",
-        (symbol,),
+        "WHERE symbol = ? AND activity_type IN ('DIVIDEND', 'PIL_DIVIDEND', 'WITHHOLDING_TAX') "
+        "AND owner_user_id = ?",
+        (symbol, owner_user_id),
     ).fetchall()
     div_gross_native = sum(
         abs(r["amount"] or 0) for r in div_rows if r["activity_type"] in ("DIVIDEND", "PIL_DIVIDEND")
@@ -1417,12 +1563,9 @@ def get_holding_performance(
         (symbol, owner_user_id),
     ).fetchall()
 
-    name_row = conn.execute(
-        "SELECT description FROM Transactions WHERE symbol = ? AND activity_type = 'TRADE' "
-        "AND description IS NOT NULL AND description != '' ORDER BY trade_date DESC LIMIT 1",
-        (symbol,),
-    ).fetchone()
-    asset_name = name_row[0] if name_row else None
+    from src.portfolio.assets import security_names
+
+    asset_name = security_names(conn, owner_user_id).get(symbol)
     conn.close()
 
     values = [h["market_value"] or 0 for h in hist]
@@ -1434,20 +1577,15 @@ def get_holding_performance(
                 daily_returns.append(values[i] / values[i-1] - 1)
 
     # ── Total Return ──
-    total_return = 0.0
-    if cost_basis_eur > 0 and current_value_eur:
-        total_return = current_value_eur / cost_basis_eur - 1
-    total_return_native = 0.0
-    if cost_basis_native > 0 and current_value_native:
-        total_return_native = current_value_native / cost_basis_native - 1
-    total_return_display = 0.0
-    if cost_basis_display > 0 and current_value_display:
-        total_return_display = current_value_display / cost_basis_display - 1
+    total_return = _position_return(current_value_eur, cost_basis_eur)
+    total_return_native = _position_return(current_value_native, cost_basis_native)
+    total_return_display = _position_return(current_value_display, cost_basis_display)
 
     volatility = 0.0
     if daily_returns and len(daily_returns) >= 2:
         volatility = float(np.std(daily_returns, ddof=1) * np.sqrt(252))
-    avg_val = float(np.mean([v for v in values if v > 0])) if values else 0
+    held_values = [v for v in values if v > 0]
+    avg_val = float(np.mean(held_values)) if held_values else 0
     div_yield = (div_gross_eur - div_tax_eur) / avg_val if avg_val > 0 else 0
 
     # Annualized return: use current_period_start, NOT first_buy
@@ -1458,10 +1596,9 @@ def get_holding_performance(
         from datetime import date as _date
         hold_days = (_date.today() - _date.fromisoformat(period_start)).days
         years = max(hold_days / 365.25, 0.01)
-        if total_return > -1:
-            annualized_return = (1 + total_return) ** (1 / years) - 1
-        if total_return_native > -1:
-            annualized_return_native = (1 + total_return_native) ** (1 / years) - 1
+        # A short position can lose more than it was opened for: no annual rate then.
+        annualized_return = (1 + total_return) ** (1 / years) - 1 if total_return > -1 else None
+        annualized_return_native = (1 + total_return_native) ** (1 / years) - 1 if total_return_native > -1 else None
 
     return {
         "symbol": symbol,
@@ -1497,16 +1634,16 @@ def get_holding_performance(
         # ── Returns ──
         "total_return_native": round(total_return_native, 6),
         "total_return_display": round(total_return_display, 6),
-        "annualized_return_native": round(annualized_return_native, 6),
+        "annualized_return_native": None if annualized_return_native is None else round(annualized_return_native, 6),
         "total_return": round(total_return, 6),
-        "annualized_return": round(annualized_return, 6),
+        "annualized_return": None if annualized_return is None else round(annualized_return, 6),
         # ── FX attribution ──
         "fx_return": round(
             ((1 + total_return_display) / (1 + total_return_native) - 1)
             if (1 + total_return_native) > 0 else 0, 6,
         ),
         # ── Misc ──
-        "unrealized_pnl": round(current_value_eur - cost_basis_eur if current_qty > 0 else 0, 2),
+        "unrealized_pnl": round(current_value_eur - cost_basis_eur if current_qty != 0 else 0, 2),
         "volatility": round(volatility, 6),
         "dividend_income": round(div_gross_eur - div_tax_eur, 2),
         "dividend_gross": round(div_gross_eur, 2),
@@ -1593,7 +1730,8 @@ def get_all_holdings_performance(
         placeholders = ",".join("?" for _ in symbols)
         txns_by_sym: dict[str, list] = defaultdict(list)
         txns_rows = conn.execute(
-            f"SELECT * FROM Transactions WHERE symbol IN ({placeholders}) AND activity_type = 'TRADE' AND owner_user_id = ? ORDER BY trade_date",
+            f"SELECT * FROM Transactions WHERE symbol IN ({placeholders}) AND activity_type IN ('TRADE', 'SPINOFF') "
+            "AND owner_user_id = ? ORDER BY trade_date",
             [*symbols, owner_user_id],
         ).fetchall()
         for r in txns_rows:
@@ -1608,15 +1746,11 @@ def get_all_holdings_performance(
         for r in div_rows:
             div_by_sym[r["symbol"]].append(dict(r))
 
-        # ── 4. Batch-fetch names (descriptions) ──
-        names: dict[str, str | None] = {}
-        name_rows = conn.execute(
-            f"SELECT symbol, description FROM Transactions WHERE symbol IN ({placeholders}) AND activity_type='TRADE' AND description IS NOT NULL AND description!='' AND owner_user_id = ? ORDER BY trade_date DESC",
-            [*symbols, owner_user_id],
-        ).fetchall()
-        for r in name_rows:
-            if r["symbol"] not in names:
-                names[r["symbol"]] = r["description"]
+        # ── 4. Names: the asset's definition, else the broker's description ──
+        from src.portfolio.assets import security_names
+
+        names = security_names(conn, owner_user_id)
+        split_events = _position_split_events(conn, conn2, owner_user_id, set(symbols))
 
         # ── 5. Batch-fetch holdings history ──
         hist_by_sym: dict[str, list] = defaultdict(list)
@@ -1665,7 +1799,7 @@ def get_all_holdings_performance(
                 continue
 
             stats = _compute_position_stats(
-                txns, display_currency, db2_path,
+                txns, display_currency, db2_path, split_events.get(sym),
             )
             currency = stats["currency"]
             cost_basis_native = stats["cost_basis_native"]
@@ -1680,9 +1814,9 @@ def get_all_holdings_performance(
             avg_cost = holding["avg_cost"] if holding and holding["avg_cost"] else 0
             current_price = holding["market_price"] if holding and holding["market_price"] else avg_cost
             cv_eur = holding["market_value"] if holding and holding["market_value"] else (current_qty * current_price)
-            cv_native = holding["market_value_native"] if holding else current_qty * current_price
+            cv_native = holding["market_value_native"] if holding and holding["market_value_native"] is not None else current_qty * current_price
 
-            pnl_native = cv_native - cost_basis_native if current_qty > 0 and cost_basis_native != 0 else 0
+            pnl_native = cv_native - cost_basis_native if current_qty != 0 else 0
             cv_display = cv_eur
             pnl_display = cv_eur - cost_basis_eur
             if display_currency.upper() != currency.upper():
@@ -1727,12 +1861,13 @@ def get_all_holdings_performance(
                 elif previous_price > 0:
                     dr_list.append(0.0)
 
-            total_return = cv_eur / cost_basis_eur - 1 if cost_basis_eur > 0 and cv_eur else 0
-            total_return_native = cv_native / cost_basis_native - 1 if cost_basis_native > 0 and cv_native else 0
-            total_return_display_d = cv_display / cost_basis_display - 1 if cost_basis_display > 0 and cv_display else 0
+            total_return = _position_return(cv_eur, cost_basis_eur)
+            total_return_native = _position_return(cv_native, cost_basis_native)
+            total_return_display_d = _position_return(cv_display, cost_basis_display)
 
             volatility = float(np.std(dr_list, ddof=1) * np.sqrt(261)) if len(dr_list) >= 2 else 0
-            avg_val = float(np.mean([v for v in values if v > 0])) if values else 0
+            held_values = [v for v in values if v > 0]
+            avg_val = float(np.mean(held_values)) if held_values else 0
             div_yield = (div_gross_eur - div_tax_eur) / avg_val if avg_val > 0 else 0
 
             period_start = stats["current_period_start"]
@@ -1741,10 +1876,9 @@ def get_all_holdings_performance(
             if period_start:
                 hold_days = (Date.fromisoformat(valuation_date) - Date.fromisoformat(period_start)).days
                 years = max(hold_days / 365.25, 0.01)
-                if total_return > -1:
-                    annualized_return = (1 + total_return) ** (1 / years) - 1
-                if total_return_native > -1:
-                    annualized_return_native = (1 + total_return_native) ** (1 / years) - 1
+                # A short position can lose more than it was opened for: no annual rate then.
+                annualized_return = (1 + total_return) ** (1 / years) - 1 if total_return > -1 else None
+                annualized_return_native = (1 + total_return_native) ** (1 / years) - 1 if total_return_native > -1 else None
 
             fx_ret = ((1 + total_return_display_d) / (1 + total_return_native) - 1) if (1 + total_return_native) > 0 else 0
 
@@ -1774,11 +1908,11 @@ def get_all_holdings_performance(
                 "dividends_display": round(div_net_display, 2),
                 "total_return_native": round(total_return_native, 6),
                 "total_return_display": round(total_return_display_d, 6),
-                "annualized_return_native": round(annualized_return_native, 6),
+                "annualized_return_native": None if annualized_return_native is None else round(annualized_return_native, 6),
                 "fx_return": round(fx_ret, 6),
-                "unrealized_pnl": round(cv_eur - cost_basis_eur if current_qty > 0 else 0, 2),
+                "unrealized_pnl": round(cv_eur - cost_basis_eur if current_qty != 0 else 0, 2),
                 "total_return": round(total_return, 6),
-                "annualized_return": round(annualized_return, 6),
+                "annualized_return": None if annualized_return is None else round(annualized_return, 6),
                 "volatility": round(volatility, 6),
                 "dividend_income": round(div_gross_eur - div_tax_eur, 2),
                 "dividend_gross": round(div_gross_eur, 2),

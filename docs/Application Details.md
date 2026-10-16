@@ -1,7 +1,7 @@
 
 # Python Source File Reference (Living Document)
 
-Last updated: 2026-10-09
+Last updated: 2026-10-16
 - Central reference for runtime/test Python modules (`src/`), web app modules (`src/web_app/`), React frontend (`frontend-v2/`), and top-level scripts.
 - For each file: what it owns, available functions, input/output contract, and key dependencies/calls.
 - Designed to be updated continuously as functions are added/removed/changed.
@@ -170,6 +170,21 @@ Responsibility: put reported per-share figures on the split-adjusted share basis
 ### [src/orchestrator/common/share_basis.py](../src/orchestrator/common/share_basis.py)
 
 Responsibility: which stored columns move with share splits and how (`SHARE_BASIS_COLUMNS`: `ShareMetrics`, `PerShare_Metrics`, and the averages in their `_Rolling` tables, each with its factor and whether it multiplies or divides), `share_basis_rule(table, column)`, and `to_adjusted_basis(value, factor, operator)`. Stored tables keep figures as filed; screening, the rolling step, statement history (`src/security_analysis/history.py`, which returns `reported_values` and the splits), and the Analysis overview apply the factors. `rolling_columns.py` names the rolling tables and columns, and `own_filings.py` keeps a company's own annual reports apart from those a trust bank files for its trusts.
+
+### [src/api_docs/](../src/api_docs/)
+
+Responsibility: the per-screen API documentation behind `/api-docs` in the web app. Every documented operation is read from the live FastAPI app and OpenAPI schema, so parameters, body fields, and answers cannot drift from the routes; the package adds only what the schema cannot say.
+
+- Who may call each route comes from [src/auth/route_access.py](../src/auth/route_access.py) (below); the worker protocol (`WORKER_PREFIX`, `/api/worker/*`) is left out of the docs.
+- `catalogue.py` — `SECTIONS` (one `Section` per screen: `screen_paths` from `App.tsx`, `Group`s of operation patterns such as `POST /api/screening/run` or `/api/research/*`, and `Guide`s with short curl and Python examples), `SECTIONS_BY_ID`, and `PYTHON_SETUP`, the `call`/`wait_for_job` helper every Python example starts from.
+- `endpoints.py` — `ENDPOINTS`: per-operation `EndpointDoc` overrides (summary, notes, example path, query, and body values, and what the answer means) keyed `"METHOD /path"`.
+- `reference.py` — `documented_operations(app)`, `owner(method, path)` (the one section and group documenting an operation), and `endpoint_reference`, `section_reference`, `section_summary`, and `section_visible`, which take the viewer's role and leave out every endpoint, related entry, `role_notes` note, and guide (`guide_level`: the highest role of any route its code names) that role may not use; a section with nothing left is hidden. `sample_value(name, schema)` fills example values that satisfy each field's pattern, enum, and length.
+- `api.py` — `GET /api/docs` (the caller's sections, server facts, Python setup), `GET /api/docs/{section_id}` (404 for a section the caller's role cannot see), `GET /api/docs/openapi.json` (`openapi_for_role`: the caller's operations and only the models they reference), `GET /api/docs/certificate` (the server's own PEM, for clients to trust), and `install_openapi_security(app)`, which adds the bearer scheme and each operation's `x-required-role` to the schema. With accounts the full `/openapi.json`, `/docs`, and `/redoc` answer 404 (`src/web_app/security.py`).
+- `tests/unit/test_api_docs.py` checks that every operation has exactly one owner, that examples validate against the request models, that every guide calls real routes, the access rules each page promises (401 without a token, 403 for read-only tokens and for roles below a route's), that the middleware refuses routes lacking their own check, and that no index, section, or schema a member or operator receives names a route above their role.
+
+### [src/auth/route_access.py](../src/auth/route_access.py)
+
+Responsibility: the role every HTTP route needs. `access_level(method, path)` gives `public`, `member`, `operator`, or `admin` for a route template (everything under `/api/admin/` is `admin`); `role_allows(role, level)` ranks member < operator < admin and gives unknown roles nothing; `route_path(app, scope)` finds the template of the route that will answer a request; `read_only_token_allowed`, `PUBLIC_AUTH_PATHS`, `REFUSALS`, and `ACCESS_LABELS` complete it. The security middleware (`src/web_app/security.py`) refuses a caller below the level with 403 `forbidden` before the route runs; the routes keep their own checks (`require_admin`, `require_operator`, in-handler checks, `AuthService`) as a second line. The API docs use the same rules to show each caller only their routes. A new operator or administrator route outside `/api/admin/` must be added to `_OPERATOR` or `_ADMIN`.
 
 ### [src/backtesting/detail.py](../src/backtesting/detail.py), [src/backtesting/html_report.py](../src/backtesting/html_report.py)
 

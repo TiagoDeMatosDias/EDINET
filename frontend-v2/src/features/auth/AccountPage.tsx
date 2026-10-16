@@ -305,15 +305,37 @@ function BlocksSection() {
   </div>
 }
 
-function TokensSection() {
+const TOKEN_EXPIRY = [
+  { days: 0, label: 'Never' },
+  { days: 30, label: '30 days' },
+  { days: 90, label: '90 days' },
+  { days: 365, label: '1 year' },
+]
+
+function tokenAccess(scopesJson: string) {
+  try {
+    const scopes = JSON.parse(scopesJson) as unknown
+    return Array.isArray(scopes) && !scopes.includes('*') ? 'Read-only' : 'Full'
+  } catch {
+    return 'Full'
+  }
+}
+
+export function TokensSection() {
   const client = useQueryClient()
   const [name, setName] = useState('')
+  const [access, setAccess] = useState<'*' | 'read'>('*')
+  const [expiryDays, setExpiryDays] = useState(90)
   const [created, setCreated] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
   const message = useMessage()
   const tokens = useQuery({ queryKey: ['auth-tokens'], queryFn: () => apiRequest<ApiToken[]>('/api/auth/tokens') })
   const create = useMutation({
-    mutationFn: () => apiRequest<{ token: string }>('/api/auth/tokens', { method: 'POST', body: JSON.stringify({ name, scopes: ['*'] }) }),
-    onSuccess: data => { setCreated(data.token); setName(''); void client.invalidateQueries({ queryKey: ['auth-tokens'] }) },
+    mutationFn: () => apiRequest<{ token: string }>('/api/auth/tokens', {
+      method: 'POST',
+      body: JSON.stringify({ name: name.trim(), scopes: [access], expires_at: expiryDays ? new Date(Date.now() + expiryDays * 86_400_000).toISOString() : null }),
+    }),
+    onSuccess: data => { setCreated(data.token); setCopied(false); setName(''); void client.invalidateQueries({ queryKey: ['auth-tokens'] }) },
     onError: message.fail,
   })
   const revoke = useMutation({
@@ -321,19 +343,38 @@ function TokensSection() {
     onSuccess: () => void client.invalidateQueries({ queryKey: ['auth-tokens'] }),
     onError: message.fail,
   })
+  const copy = (text: string) => { void navigator.clipboard?.writeText(text).then(() => setCopied(true), () => setCopied(false)) }
   const active = (tokens.data ?? []).filter(token => !token.revoked_at)
+  const tryIt = created ? `export SHADE_URL=${window.location.origin}\nexport SHADE_TOKEN=${created}\ncurl -s "$SHADE_URL/api/auth/me" -H "Authorization: Bearer $SHADE_TOKEN"` : ''
   return <div className="account-form">
-    {created && <div className="callout callout--warning"><strong>Copy this token now; it is not shown again.</strong><pre className="token-display">{created}</pre><button type="button" className="text-button" onClick={() => setCreated(null)}>Dismiss</button></div>}
-    <form className="account-inline" onSubmit={event => { event.preventDefault(); if (name.trim()) create.mutate() }}>
-      <input className="input" value={name} onChange={event => setName(event.target.value)} placeholder="New token name" aria-label="New token name" />
+    <p>Scripts and apps use a token to act as you, with your role. A read-only token can only make GET requests. <Link to="/api-docs/start">Read the API docs</Link> for every screen&apos;s calls.</p>
+    {created && <div className="callout callout--warning account-token-created">
+      <strong>Copy this token now; it is not shown again.</strong>
+      <pre className="token-display">{created}</pre>
+      <div className="account-actions">
+        <button type="button" className="button button--secondary button--small" onClick={() => copy(created)}>{copied ? 'Copied' : 'Copy token'}</button>
+        <button type="button" className="text-button" onClick={() => setCreated(null)}>Dismiss</button>
+      </div>
+      <span>Try it from a terminal (see <Link to="/api-docs/start">Getting started</Link> if your server uses its own certificate):</span>
+      <pre className="token-display">{tryIt}</pre>
+    </div>}
+    <form className="account-token-form" onSubmit={event => { event.preventDefault(); if (name.trim()) create.mutate() }}>
+      <label className="field"><span>Name</span><input className="input" value={name} onChange={event => setName(event.target.value)} placeholder="e.g. Nightly screen" aria-label="New token name" maxLength={100} /></label>
+      <label className="field"><span>Access</span><select className="input" value={access} aria-label="Token access" onChange={event => setAccess(event.target.value as '*' | 'read')}>
+        <option value="*">Full access</option>
+        <option value="read">Read-only</option>
+      </select></label>
+      <label className="field"><span>Expires</span><select className="input" value={expiryDays} aria-label="Token expiry" onChange={event => setExpiryDays(Number(event.target.value))}>
+        {TOKEN_EXPIRY.map(option => <option key={option.days} value={option.days}>{option.label}</option>)}
+      </select></label>
       <button type="submit" className="button button--primary button--small" disabled={create.isPending || !name.trim()}>Create</button>
     </form>
     {tokens.isLoading ? <LoadingState label="Loading tokens" /> : <table className="account-table">
-      <thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th>Expires</th><th /></tr></thead>
+      <thead><tr><th>Name</th><th>Access</th><th>Prefix</th><th>Created</th><th>Last used</th><th>Expires</th><th /></tr></thead>
       <tbody>{active.length ? active.map(token => <tr key={token.token_id}>
-        <td>{token.name}</td><td><code>{token.token_prefix}…</code></td><td>{when(token.created_at)}</td><td>{when(token.last_used_at)}</td><td>{token.expires_at ? when(token.expires_at) : 'never'}</td>
+        <td>{token.name}</td><td>{tokenAccess(token.scopes_json)}</td><td><code>{token.token_prefix}…</code></td><td>{when(token.created_at)}</td><td>{when(token.last_used_at)}</td><td>{token.expires_at ? when(token.expires_at) : 'never'}</td>
         <td><button type="button" className="text-button" onClick={() => revoke.mutate(token.token_id)}>Revoke</button></td>
-      </tr>) : <tr><td colSpan={6} className="muted">No active tokens.</td></tr>}</tbody>
+      </tr>) : <tr><td colSpan={7} className="muted">No active tokens.</td></tr>}</tbody>
     </table>}
     {message.node}
   </div>

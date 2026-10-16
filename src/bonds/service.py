@@ -1,4 +1,4 @@
-"""Read side of ``Bonds.db`` for the Analysis and Research pages.
+"""Read side of the bond tables for the Analysis and Research pages.
 
 Valuation uses the latest JGB curve. A bond's current spread is the one its
 JSDA reference price implies when it is quoted, and otherwise the spread it
@@ -19,8 +19,10 @@ import statistics
 from datetime import date, timedelta
 from typing import Any
 
+from src.orchestrator.common.sqlite import attach
+
 from .names import CompanyDirectory
-from .store import decode
+from .store import FILINGS_SCHEMA, decode
 from .valuation import Curve, CurveBook, clean_price, modified_duration, year_fraction
 
 EDINET_VIEWER = "https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?{doc_id},,,"
@@ -75,9 +77,16 @@ def value_bond(bond: dict[str, Any], curve: Curve | None, today: str) -> dict[st
     return result
 
 
-def _connect(path: str) -> sqlite3.Connection:
+def _connect(path: str, filings_db: str | None = None) -> sqlite3.Connection:
+    """market.db read-only, with filings.db (where ``Bond_Documents`` lives) attached when given."""
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    if filings_db:
+        try:
+            attach(conn, filings_db, FILINGS_SCHEMA, read_only=True)
+        except BaseException:
+            conn.close()
+            raise
     return conn
 
 
@@ -170,10 +179,10 @@ def _with_links(bond: dict[str, Any], directory: CompanyDirectory, subsidiaries:
     return bond
 
 
-def company_bonds(path: str, edinet_code: str, *, today: str | None = None, catalogued: set[str] | None = None) -> dict[str, Any]:
+def company_bonds(path: str, filings_db: str, edinet_code: str, *, today: str | None = None, catalogued: set[str] | None = None) -> dict[str, Any]:
     """Every bond in a company's latest filings, with totals, a maturity ladder, and its documents."""
     today = today or date.today().isoformat()
-    conn = _connect(path)
+    conn = _connect(path, filings_db)
     try:
         bonds = [decode(row) for row in conn.execute("SELECT * FROM Bonds WHERE edinet_code = ? ORDER BY maturity IS NULL, maturity, name", (edinet_code,))]
         curves = _curves(conn)
@@ -356,10 +365,10 @@ def peer_value(target: dict[str, Any], peers: list[dict[str, Any]], curve: Curve
     return result
 
 
-def bond_detail(path: str, bond_id: str, *, today: str | None = None) -> dict[str, Any] | None:
+def bond_detail(path: str, filings_db: str, bond_id: str, *, today: str | None = None) -> dict[str, Any] | None:
     """One bond with its terms, sources, valuation, similar bonds of other issuers, and the peer spread curve."""
     today = today or date.today().isoformat()
-    conn = _connect(path)
+    conn = _connect(path, filings_db)
     try:
         row = conn.execute("SELECT * FROM Bonds WHERE bond_id = ?", (bond_id,)).fetchone()
         if row is None:
@@ -427,8 +436,8 @@ def bond_detail(path: str, bond_id: str, *, today: str | None = None) -> dict[st
     }
 
 
-def document_archive(path: str, doc_id: str) -> bytes | None:
-    conn = _connect(path)
+def document_archive(path: str, filings_db: str, doc_id: str) -> bytes | None:
+    conn = _connect(path, filings_db)
     try:
         row = conn.execute("SELECT archive FROM Bond_Documents WHERE doc_id = ?", (doc_id,)).fetchone()
     finally:

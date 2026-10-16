@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 
 from src.api.router import app as _api_app  # noqa: F401
+from src.api_docs.api import install_openapi_security
+from src.api_docs.api import router as _api_docs_router
 from src.auth.api import admin_router as _admin_router
 from src.auth.api import router as _auth_router
 from src.backtesting.api import router as _backtesting_router
@@ -59,10 +61,12 @@ _ROUTERS = (
     _worker_router,
     _my_jobs_router,
     _workers_admin_router,
+    _api_docs_router,
 )
 
 for _router in _ROUTERS:
     router_app.include_router(_router)
     logger.info("Registered API router: prefix=%s", _router.prefix)
+install_openapi_security(router_app)
 
 __all__ = ["router_app"]

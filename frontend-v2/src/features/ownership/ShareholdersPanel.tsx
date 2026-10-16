@@ -1,9 +1,11 @@
 import { Download, ExternalLink, FileText, History, Users } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import { ApiError } from '../../api/client'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
+import { SortHeader } from '../../components/SortHeader'
+import { useTableSort, type SortColumn } from '../../components/tableSort'
 import { Tip } from '../../components/Tooltip'
 import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
@@ -14,11 +16,29 @@ import { formatDay } from '../research/researchModel'
 import { entityHref, exactShares, fiscalYear, formatPoints, formatShares, formatStake, formatYen, KIND_LABELS, shareholdersCsv, stakeValue } from './ownershipFormat'
 import { EntityLink, KindIcon, Kpi, StakeBar } from './ownershipParts'
 import { useCompanyOwnership } from './ownershipQueries'
-import type { CompanyOwnership, CompanyShareholders, DistributionSlice, ShareholderRow } from './ownershipTypes'
+import type { CompanyOwnership, CompanyShareholders, DistributionSlice, HolderHistory, ShareholderRow } from './ownershipTypes'
 import '../research/research.css'
 import './ownership.css'
 
 const NO_DATA = 'An administrator can run the Update ownership pipeline step to read shareholders and officers from the stored annual reports.'
+
+// The report ranks holders by stake; # restores that order. A stake's value sorts as the stake does.
+const HOLDER_COLUMNS = {
+  rank: { value: row => row.rank },
+  name: { value: row => row.name },
+  stake: { value: row => row.ratio, descending: true },
+  change: { value: row => row.change, descending: true },
+  shares: { value: row => row.shares, descending: true },
+  value: { value: row => row.ratio, descending: true },
+  holds: { value: row => row.other_holdings, descending: true },
+  since: { value: row => row.since },
+} satisfies Record<string, SortColumn<ShareholderRow>>
+const VOTING_COLUMNS = {
+  rank: { value: row => row.rank },
+  name: { value: row => row.name },
+  stake: { value: row => row.ratio, descending: true },
+  votes: { value: row => row.shares, descending: true },
+} satisfies Record<string, SortColumn<ShareholderRow>>
 
 /** The largest shareholders in the company's latest annual report. ``marketCap`` values each stake. */
 export function ShareholdersPanel({ companyCode, marketCap }: { companyCode: string; marketCap: number | null }) {
@@ -52,6 +72,7 @@ function ShareholdersContent({ data, companyCode, companyName, stale, holder, ma
 }) {
   const navigate = useNavigate()
   const rows = data.rows
+  const [sorted, sort] = useTableSort(rows, HOLDER_COLUMNS)
   const largest = rows[0]
   const max = Math.max(...rows.map(row => row.ratio ?? 0), 0)
   const foreign = sliceRatio(data.distribution, ['foreign'])
@@ -80,38 +101,48 @@ function ShareholdersContent({ data, companyCode, companyName, stale, holder, ma
     <div className="rs-table-scroll ow-table-wrap">
       <table className="rs-table ow-table" aria-label="Major shareholders">
         <thead><tr>
-          <th scope="col" className="num">#</th>
-          <th scope="col">Shareholder</th>
-          <th scope="col" className="num">Stake</th>
-          <th scope="col" className="num">{previous ? <Tip content={`Change in the holder’s whole stake since the report for ${fiscalYear(previous)}, in percentage points.`}>Change</Tip> : 'Change'}</th>
-          <th scope="col" className="num">Shares</th>
-          {hasValue && <th scope="col" className="num"><Tip content="The stake times the company’s market capitalisation today: an estimate from the shares held at the record date.">Value</Tip></th>}
-          <th scope="col"><Tip content="How many other companies list this holder among their largest shareholders in their latest report.">Also holds</Tip></th>
-          <th scope="col"><Tip content="The first of the unbroken run of stored years in which the holder is listed.">Listed since</Tip></th>
+          <SortHeader sort={sort} column="rank" className="num">#</SortHeader>
+          <SortHeader sort={sort} column="name">Shareholder</SortHeader>
+          <SortHeader sort={sort} column="stake" className="num">Stake</SortHeader>
+          <SortHeader sort={sort} column="change" className="num">{previous ? <Tip content={`Change in the holder’s whole stake since the report for ${fiscalYear(previous)}, in percentage points.`} focusable={false}>Change</Tip> : 'Change'}</SortHeader>
+          <SortHeader sort={sort} column="shares" className="num">Shares</SortHeader>
+          {hasValue && <SortHeader sort={sort} column="value" className="num"><Tip content="The stake times the company’s market capitalisation today: an estimate from the shares held at the record date." focusable={false}>Value</Tip></SortHeader>}
+          <SortHeader sort={sort} column="holds"><Tip content="How many other companies list this holder among their largest shareholders in their latest report." focusable={false}>Also holds</Tip></SortHeader>
+          <SortHeader sort={sort} column="since"><Tip content="The first of the unbroken run of stored years in which the holder is listed." focusable={false}>Listed since</Tip></SortHeader>
         </tr></thead>
-        <tbody>{rows.map(row => <HolderRow key={`${row.rank}-${row.filed_name}`} row={row} max={max} marketCap={hasValue ? marketCap : null} showValue={hasValue} onOpen={() => { if (row.entity_id) navigate(entityHref(row.entity_id)) }} />)}</tbody>
+        <tbody>{sorted.map(row => <HolderRow key={`${row.rank}-${row.filed_name}`} row={row} max={max} marketCap={hasValue ? marketCap : null} showValue={hasValue} onOpen={() => { if (row.entity_id) navigate(entityHref(row.entity_id)) }} />)}</tbody>
       </table>
     </div>
     {history && <HistoryTable data={data} />}
     {data.voting.length > 0 && <details className="ow-more">
       <summary>By voting rights: {data.voting.length} largest holders</summary>
-      <div className="rs-table-scroll">
-        <table className="rs-table ow-table" aria-label="Largest holders by voting rights">
-          <thead><tr><th scope="col" className="num">#</th><th scope="col">Shareholder</th><th scope="col" className="num">Share of votes</th><th scope="col" className="num">Voting rights</th></tr></thead>
-          <tbody>{data.voting.map(row => <tr key={`${row.rank}-${row.filed_name}`}>
-            <td className="num">{row.rank}</td>
-            <th scope="row"><span className="ow-name"><KindIcon kind={row.kind} /><EntityLink entity={row} /></span></th>
-            <td className="num">{formatStake(row.ratio)}</td>
-            <td className="num">{formatShares(row.shares)}</td>
-          </tr>)}</tbody>
-        </table>
-      </div>
+      <VotingTable rows={data.voting} />
     </details>}
     <p className="rs-hint ow-hint">
       Click a shareholder for everything else it holds. Names are in English where the holder files with EDINET or is a well-known institution; hover for the name as filed. A trust or custody bank holds on behalf of funds and pensions, not for itself.
       {' '}<Link to={filingHref(data.doc_id, companyCode, 'analysis')}><FileText aria-hidden="true" />Annual report</Link>
       {' '}<a href={data.edinet_url} target="_blank" rel="noreferrer"><ExternalLink aria-hidden="true" />EDINET</a>
     </p>
+  </div>
+}
+
+function VotingTable({ rows }: { rows: ShareholderRow[] }) {
+  const [sorted, sort] = useTableSort(rows, VOTING_COLUMNS)
+  return <div className="rs-table-scroll">
+    <table className="rs-table ow-table" aria-label="Largest holders by voting rights">
+      <thead><tr>
+        <SortHeader sort={sort} column="rank" className="num">#</SortHeader>
+        <SortHeader sort={sort} column="name">Shareholder</SortHeader>
+        <SortHeader sort={sort} column="stake" className="num">Share of votes</SortHeader>
+        <SortHeader sort={sort} column="votes" className="num">Voting rights</SortHeader>
+      </tr></thead>
+      <tbody>{sorted.map(row => <tr key={`${row.rank}-${row.filed_name}`}>
+        <td className="num">{row.rank}</td>
+        <th scope="row"><span className="ow-name"><KindIcon kind={row.kind} /><EntityLink entity={row} /></span></th>
+        <td className="num">{formatStake(row.ratio)}</td>
+        <td className="num">{formatShares(row.shares)}</td>
+      </tr>)}</tbody>
+    </table>
   </div>
 }
 
@@ -163,13 +194,20 @@ function Distribution({ slices }: { slices: DistributionSlice[] }) {
 function HistoryTable({ data }: { data: CompanyShareholders }) {
   const { periods, holders } = data.history
   const max = Math.max(...holders.flatMap(holder => holder.ratios.map(ratio => ratio ?? 0)), 0)
+  // One column per stored year, keyed by its period end.
+  const columns = useMemo(() => {
+    const byYear: Record<string, SortColumn<HolderHistory>> = { name: { value: holder => holder.name } }
+    periods.forEach((period, index) => { byYear[period] = { value: holder => holder.ratios[index], descending: true } })
+    return byYear
+  }, [periods])
+  const [sorted, sort] = useTableSort(holders, columns)
   return <div className="rs-table-scroll ow-table-wrap">
     <table className="rs-table ow-table ow-history" aria-label="Shareholders by year">
       <thead><tr>
-        <th scope="col">Shareholder</th>
-        {periods.map(period => <th key={period} scope="col" className="num">{fiscalYear(period)}</th>)}
+        <SortHeader sort={sort} column="name">Shareholder</SortHeader>
+        {periods.map(period => <SortHeader key={period} sort={sort} column={period} className="num">{fiscalYear(period)}</SortHeader>)}
       </tr></thead>
-      <tbody>{holders.map(holder => <tr key={holder.entity_id ?? holder.name}>
+      <tbody>{sorted.map(holder => <tr key={holder.entity_id ?? holder.name}>
         <th scope="row"><span className="ow-name"><KindIcon kind={holder.kind} /><EntityLink entity={holder} /></span></th>
         {holder.ratios.map((ratio, index) => <td key={periods[index]} className="num" style={ratio != null && max > 0 ? { background: `rgb(52 96 168 / ${Math.round((ratio / max) * 22) + 2}%)` } : undefined}>{ratio != null ? formatStake(ratio) : <span className="rs-dim">·</span>}</td>)}
       </tr>)}</tbody>

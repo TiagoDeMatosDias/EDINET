@@ -5,6 +5,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import { ApiError } from '../../api/client'
 import { downloadApiFile } from '../../api/download'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
+import { SortHeader } from '../../components/SortHeader'
+import { useTableSort, type SortColumn } from '../../components/tableSort'
 import { Tip } from '../../components/Tooltip'
 import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
@@ -14,9 +16,26 @@ import { formatDay, formatNumber, formatPercent } from '../research/researchMode
 import { CurveChart, MaturityLadderChart } from './BondCharts'
 import { bondMarketHref, calculatorHref, COUPON_KIND_LABELS, FEATURE_LABELS, featureTags, filedTitle, formatBp, formatCoupon, formatYears, formatYen, maturityText, ratingText, SENIORITY_LABELS } from './bondFormat'
 import { useCompanyBonds } from './bondQueries'
-import type { Bond, CompanyBonds } from './bondTypes'
+import type { Bond, CompanyBonds, Seniority } from './bondTypes'
 import '../research/research.css'
 import './bonds.css'
+
+// From the first claim on the issuer to the last.
+const RANKING_ORDER: Seniority[] = ['secured', 'senior', 'convertible', 'subordinated', 'hybrid']
+// Unsorted, bonds keep the order the server sends. Ratings run best first: the notch of AAA is 1.
+const BOND_COLUMNS = {
+  bond: { value: bond => bond.label },
+  issuer: { value: bond => bond.issuer },
+  ranking: { value: bond => RANKING_ORDER.indexOf(bond.seniority) },
+  coupon: { value: bond => bond.coupon, descending: true },
+  issued: { value: bond => bond.issue_date, descending: true },
+  maturity: { value: bond => bond.maturity },
+  years: { value: bond => bond.years_to_maturity },
+  outstanding: { value: bond => bond.outstanding, descending: true },
+  rating: { value: bond => bond.rating_notch },
+  spread: { value: bond => bond.spread, descending: true },
+  price: { value: bond => bond.market_price ?? bond.model_price, descending: true },
+} satisfies Record<string, SortColumn<Bond>>
 
 function Kpi({ label, value, detail, tip }: { label: string; value: string; detail?: string; tip?: string }) {
   return <div className="bd-kpi"><span>{tip ? <Tip content={tip}>{label}</Tip> : label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>
@@ -48,7 +67,7 @@ function CompanyBondsContent({ data, companyCode, showAll, onToggle }: { data: C
   const navigate = useNavigate()
   const { summary } = data
   const live = data.bonds.filter(bond => bond.status === 'outstanding')
-  const shown = showAll ? data.bonds : live
+  const [shown, sort] = useTableSort(showAll ? data.bonds : live, BOND_COLUMNS)
   const past = data.bonds.length - live.length
   const hasGroup = data.bonds.some(bond => !bond.is_parent)
   const curveBonds = useMemo(() => live
@@ -78,17 +97,17 @@ function CompanyBondsContent({ data, companyCode, showAll, onToggle }: { data: C
     <div className="rs-table-scroll bd-table-wrap">
       <table className="rs-table bd-table" aria-label="Bonds">
         <thead><tr>
-          <th scope="col">Bond</th>
-          {hasGroup && <th scope="col">Issuer</th>}
-          <th scope="col">Ranking</th>
-          <th scope="col" className="num">Coupon</th>
-          <th scope="col">Issued</th>
-          <th scope="col">Maturity</th>
-          <th scope="col" className="num">Years left</th>
-          <th scope="col" className="num">Outstanding</th>
-          <th scope="col">Rating</th>
-          <th scope="col" className="num"><Tip content="Over JGBs of the same tenor: from the JSDA reference price where quoted, with the spread at issue below it; i marks a bond with no quote.">Spread</Tip></th>
-          <th scope="col" className="num"><Tip content="The JSDA reference price per 100 of face value; * marks an estimate at today’s JGB yield plus the spread at issue.">Price</Tip></th>
+          <SortHeader sort={sort} column="bond">Bond</SortHeader>
+          {hasGroup && <SortHeader sort={sort} column="issuer">Issuer</SortHeader>}
+          <SortHeader sort={sort} column="ranking">Ranking</SortHeader>
+          <SortHeader sort={sort} column="coupon" className="num">Coupon</SortHeader>
+          <SortHeader sort={sort} column="issued">Issued</SortHeader>
+          <SortHeader sort={sort} column="maturity">Maturity</SortHeader>
+          <SortHeader sort={sort} column="years" className="num">Years left</SortHeader>
+          <SortHeader sort={sort} column="outstanding" className="num">Outstanding</SortHeader>
+          <SortHeader sort={sort} column="rating">Rating</SortHeader>
+          <SortHeader sort={sort} column="spread" className="num"><Tip content="Over JGBs of the same tenor: from the JSDA reference price where quoted, with the spread at issue below it; i marks a bond with no quote." focusable={false}>Spread</Tip></SortHeader>
+          <SortHeader sort={sort} column="price" className="num"><Tip content="The JSDA reference price per 100 of face value; * marks an estimate at today’s JGB yield plus the spread at issue." focusable={false}>Price</Tip></SortHeader>
           <th scope="col">Sources</th>
         </tr></thead>
         <tbody>{shown.map(bond => <BondRow key={bond.bond_id} bond={bond} hasGroup={hasGroup} companyCode={companyCode} onOpen={() => navigate(bondMarketHref(bond.bond_id, companyCode))} />)}</tbody>

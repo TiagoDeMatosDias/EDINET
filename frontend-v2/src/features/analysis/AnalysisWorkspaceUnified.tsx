@@ -30,6 +30,7 @@ import { FinancialHistoryWorkspace } from './FinancialHistoryWorkspace'
 import { buildCompanyReport, type SnapshotGroup } from './markdownReport'
 import { ANALYSIS_SECTIONS, analysisScope } from './analysisHotkeys'
 import { PricePanel } from './PricePanel'
+import { useSelectedSection } from './useSelectedSection'
 import type { PriceHistoryRow } from './priceHistoryRanges'
 import './analysis.css'
 
@@ -136,8 +137,8 @@ function StartAnalysis() {
   </div>
 }
 
-function Section({ id, title, aside, children, hideTitle = false }: { id: SectionId; title: string; aside?: ReactNode; children: ReactNode; hideTitle?: boolean }) {
-  return <section id={id} className="analysis-section" aria-labelledby={`${id}-title`}>
+function Section({ id, title, aside, children, hideTitle = false, selected }: { id: SectionId; title: string; aside?: ReactNode; children: ReactNode; hideTitle?: boolean; selected: SectionId | null }) {
+  return <section id={id} className="analysis-section" aria-labelledby={`${id}-title`} data-selected={selected === id || undefined}>
     <header className={hideTitle ? 'analysis-section__header sr-only' : 'analysis-section__header'}>
       <h2 id={`${id}-title`} tabIndex={-1}>{title}</h2>
       {aside}
@@ -270,6 +271,7 @@ export default function AnalysisWorkspaceUnified() {
   const noteInput = useRef<HTMLTextAreaElement>(null)
   const ready = Boolean(overview.data)
   const activeSection = useActiveSection(ready)
+  const selectedSection = useSelectedSection<SectionId>(ready)
   const header = useRef<HTMLDivElement>(null)
   const [headerHidden, setHeaderHidden] = useState(false)
   useEffect(() => {
@@ -400,7 +402,7 @@ export default function AnalysisWorkspaceUnified() {
       </div>
     </nav>
 
-    <Section id="overview" title="Overview" hideTitle>
+    <Section id="overview" selected={selectedSection} title="Overview" hideTitle>
       <div className={hasPrices ? 'overview-grid' : 'overview-grid overview-grid--no-price'}>
         {ticker && (hasPrices || prices.isLoading) && <section className="panel panel--price" aria-label="Price history">
           {prices.isLoading ? <LoadingState label="Loading prices" /> : <PricePanel rows={priceRows} formatPrice={formatPrice} />}
@@ -427,27 +429,27 @@ export default function AnalysisWorkspaceUnified() {
       </div>
     </Section>
 
-    <Section id="financials" title="Financial statements" aside={<span className="analysis-section__note">Annual figures from XBRL filings. Click lines to chart them.</span>}>
+    <Section id="financials" selected={selectedSection} title="Financial statements" aside={<span className="analysis-section__note">Annual figures from XBRL filings. Click lines to chart them.</span>}>
       <FinancialHistoryWorkspace history={history.data} isLoading={history.isLoading} error={history.error} retry={() => { void history.refetch() }} downloadPrefix={canonicalCode || ticker} currency={currencies.reporting} />
     </Section>
 
-    {canonicalCode && <Section id="shareholders" title="Major shareholders" aside={<span className="analysis-section__note">The largest shareholders in the latest annual report, each stake at today’s market value. Click one for everything else it holds.</span>}>
+    {canonicalCode && <Section id="shareholders" selected={selectedSection} title="Major shareholders" aside={<span className="analysis-section__note">The largest shareholders in the latest annual report, each stake at today’s market value. Click one for everything else it holds.</span>}>
       <ShareholdersPanel companyCode={canonicalCode} marketCap={metrics.MarketCap ?? null} />
     </Section>}
 
-    {canonicalCode && <Section id="people" title="Related people" aside={<span className="analysis-section__note">Directors, auditors, and executive officers, with the shares each holds. Click one for their career and other boards.</span>}>
+    {canonicalCode && <Section id="people" selected={selectedSection} title="Related people" aside={<span className="analysis-section__note">Directors, auditors, and executive officers, with the shares each holds. Click one for their career and other boards.</span>}>
       <PeoplePanel companyCode={canonicalCode} marketCap={metrics.MarketCap ?? null} />
     </Section>}
 
-    {canonicalCode && <Section id="filings" title="Filings" aside={<span className="analysis-section__note">Retained EDINET annual reports with their XBRL data.</span>}>
+    {canonicalCode && <Section id="filings" selected={selectedSection} title="Filings" aside={<span className="analysis-section__note">Retained EDINET annual reports with their XBRL data.</span>}>
       <FilingsPanel companyCode={canonicalCode} />
     </Section>}
 
-    {canonicalCode && <Section id="bonds" title="Bonds" aside={<span className="analysis-section__note">Terms from EDINET bond supplements and annual-report bond schedules; spreads over JGBs at issue.</span>}>
+    {canonicalCode && <Section id="bonds" selected={selectedSection} title="Bonds" aside={<span className="analysis-section__note">Terms from EDINET bond supplements and annual-report bond schedules; spreads over JGBs at issue.</span>}>
       <CompanyBondsPanel companyCode={canonicalCode} />
     </Section>}
 
-    {canonicalCode && <Section id="discussion" title="Discussion" aside={<span className="analysis-section__note">The company’s public channel and mentions elsewhere. $ references another company.</span>}>
+    {canonicalCode && <Section id="discussion" selected={selectedSection} title="Discussion" aside={<span className="analysis-section__note">The company’s public channel and mentions elsewhere. $ references another company.</span>}>
       <CompanyChannelPanel companyCode={canonicalCode} composerRef={discussionInput} />
     </Section>}
   </div>

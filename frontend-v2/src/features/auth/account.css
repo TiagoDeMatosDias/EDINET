@@ -28,6 +28,9 @@
 .account-actions p { margin: 0; font-size: .74rem; }
 .account-actions .button svg { width: 13px; height: 13px; }
 .account-inline { display: flex; gap: 6px; }
+.account-token-form { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, .8fr) auto; align-items: end; gap: 6px; }
+.account-token-created { display: flex; flex-direction: column; gap: 6px; }
+.account-token-created .token-display { margin: 0; }
 .account-inline .input { flex: 1; }
 .account-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .account-chip { display: inline-flex; align-items: center; gap: 2px; padding: 0 2px 0 7px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg); font-size: .74rem; }
@@ -53,4 +56,4 @@
 .account-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); }
 .account-table code { font-size: .7rem; }
 .account-table__agent { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 1000px) { .account-grid { grid-template-columns: minmax(0, 1fr); } .account-fields--2, .account-fields--3, .account-facts { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 1000px) { .account-grid, .account-token-form { grid-template-columns: minmax(0, 1fr); } .account-fields--2, .account-fields--3, .account-facts { grid-template-columns: minmax(0, 1fr); } }

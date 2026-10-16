@@ -76,6 +76,33 @@ export type Transaction = {
   buy_sell?: string | null
   account_id?: string | null
   source_file?: string
+  strike?: number | null
+  expiry?: string | null
+  put_call?: string | null
+  underlying_symbol?: string | null
+  multiplier?: number | null
+  /** Records entered together (an exercise's two legs, a dividend and its tax) share it and are deleted together. */
+  action_id?: string | null
+  /** 'O' when a sale opens or adds to a short position. */
+  open_close?: string | null
+}
+
+export type ManualPrice = { symbol?: string; date: string; price: number; currency: string; note?: string | null }
+
+/** An asset the account defined, or a symbol it entered prices for. */
+export type ManualAsset = {
+  symbol: string
+  name?: string | null
+  asset_category?: string | null
+  currency?: string | null
+  isin?: string | null
+  notes?: string | null
+  /** 1 when market prices are used too; 0 when it is priced only by hand. */
+  fetch_prices?: number | boolean | null
+  defined: boolean
+  held: boolean
+  prices: ManualPrice[]
+  latest_price?: ManualPrice | null
 }
 
 /** One weekday on the performance path; returns are cumulative from the period's start. */
@@ -225,7 +252,7 @@ export type HoldingDataStatus = {
   symbol: string
   currency: string
   weight: number | null
-  price_source: 'market' | 'cost' | 'model' | null
+  price_source: 'market' | 'cost' | 'model' | 'manual' | null
   price_date: string | null
   stale_days: number | null
   price_ticker: string | null
@@ -235,7 +262,7 @@ export type HoldingDataStatus = {
   market_age_days: number | null
   newer_price_stored: boolean
   weekly_years: number[]
-  status: 'ok' | 'stale' | 'cost' | 'missing'
+  status: 'ok' | 'stale' | 'cost' | 'missing' | 'manual'
 }
 
 export type DataQuality = {

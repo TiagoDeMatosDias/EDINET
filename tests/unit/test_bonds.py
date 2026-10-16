@@ -18,9 +18,8 @@ from fastapi.testclient import TestClient
 import src.bonds.api as bonds_api
 from src.bonds import build, jsda, parsing, service, update, valuation
 from src.bonds.names import CompanyDirectory, bond_label, filed_label, is_japanese, is_parent_issuer
-from src.bonds.store import BOND_COLUMNS, ensure_bond_tables
+from src.bonds.store import BOND_COLUMNS, connect, ensure_bond_tables
 from src.filings.acquisition import EdinetAcquisitionError
-from src.orchestrator.common.sqlite import connect_write
 from src.web_app.security import AppSettings, install_security
 
 TODAY = "2026-10-09"
@@ -235,9 +234,9 @@ def _sources(tmp_path: Path) -> dict[str, str]:
     return {"filings": str(filings), "bonds": str(market)}
 
 
-def _curve(path: str) -> None:
-    ensure_bond_tables(path)
-    with _db(path) as conn:
+def _curve(paths: dict[str, str]) -> None:
+    ensure_bond_tables(paths["bonds"], paths["filings"])
+    with _db(paths["bonds"]) as conn:
         for day in ("2016-09-20", "2019-09-20", "2021-09-20", "2023-10-10", "2026-09-18", "2026-10-07"):
             conn.executemany("INSERT INTO JGB_Yields VALUES (?, ?, ?)", [(day, 1.0, 0.002), (day, 5.0, 0.004), (day, 10.0, 0.006), (day, 40.0, 0.02)])
 
@@ -258,7 +257,7 @@ def _peers(path: str) -> None:
 @pytest.fixture
 def updated(tmp_path):
     paths = _sources(tmp_path)
-    _curve(paths["bonds"])
+    _curve(paths)
     client = FakeClient({"S100ISS1": _zip(ISSUANCE_HTML)})
     result = update.update_bonds(
         market_db=paths["bonds"], filings_db_path=paths["filings"],
@@ -275,6 +274,9 @@ def test_update_reads_supplements_and_the_latest_schedule(updated):
     with _db(paths["bonds"]) as conn:
         conn.row_factory = sqlite3.Row
         bonds = {row["name"]: dict(row) for row in conn.execute("SELECT * FROM Bonds")}
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'Bond_Documents'").fetchall()
+    # The log of filings read, with the supplements' archives, is kept beside the filings.
+    with _db(paths["filings"]) as conn:
         stored = conn.execute("SELECT doc_id, status, archive IS NOT NULL FROM Bond_Documents ORDER BY doc_id").fetchall()
     assert [tuple(row) for row in stored] == [("S100ANN1", "parsed", 0), ("S100GONE", "unavailable", 0), ("S100ISS1", "parsed", 1)]
 
@@ -309,6 +311,36 @@ def test_a_second_run_reads_nothing_new_and_overwrite_reads_from_storage(updated
     reparsed = update.update_bonds(market_db=paths["bonds"], filings_db_path=paths["filings"], client=client, curve=False, market_prices=False, reparse=True, today=TODAY)
     # The stored archive is re-read without a download; only the unavailable filing is tried again.
     assert reparsed["issuances"]["bonds"] == 2 and client.requests == ["S100GONE"]
+
+
+def test_a_rebuilt_market_database_reads_the_logged_filings_again(updated):
+    paths, _, _ = updated
+    with _db(paths["bonds"]) as conn:
+        conn.execute("DELETE FROM Bond_Issuances")
+        conn.execute("DELETE FROM Bond_Schedule_Rows")
+    client = FakeClient({})
+    again = update.update_bonds(market_db=paths["bonds"], filings_db_path=paths["filings"], client=client, curve=False, market_prices=False, today=TODAY)
+    # The log in filings.db says both were read, but their rows are gone: the supplement is re-read from its stored ZIP.
+    assert again["issuances"]["bonds"] == 2 and again["annual_reports"]["rows"] == 5 and client.requests == []
+
+
+def test_a_document_log_kept_in_market_db_by_an_earlier_version_is_moved_to_filings_db(tmp_path):
+    paths = _sources(tmp_path)
+    with _db(paths["bonds"]) as conn:
+        conn.execute(
+            "CREATE TABLE Bond_Documents (doc_id TEXT PRIMARY KEY, kind TEXT NOT NULL, edinet_code TEXT, filer_name TEXT, submitted_at TEXT, "
+            "period_end TEXT, form_code TEXT, description TEXT, status TEXT NOT NULL, bond_count INTEGER NOT NULL DEFAULT 0, "
+            "parser_version INTEGER NOT NULL DEFAULT 0, error TEXT, processed_at TEXT NOT NULL, archive BLOB)"
+        )
+        conn.execute("INSERT INTO Bond_Documents (doc_id, kind, edinet_code, status, processed_at, archive) VALUES ('S100ISS1', 'issuance', 'E99001', 'error', '2026-10-01', ?)", (_zip(ISSUANCE_HTML),))
+    client = FakeClient({})
+    result = update.update_bonds(market_db=paths["bonds"], filings_db_path=paths["filings"], client=client, curve=False, market_prices=False, today=TODAY)
+    # The supplement is read from the archive that moved with the log, without a download.
+    assert result["issuances"]["bonds"] == 2 and client.requests == ["S100GONE"]
+    with _db(paths["bonds"]) as conn:
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'Bond_Documents'").fetchall()
+    with _db(paths["filings"]) as conn:
+        assert conn.execute("SELECT status, archive IS NOT NULL FROM Bond_Documents WHERE doc_id = 'S100ISS1'").fetchone() == ("parsed", 1)
 
 
 def test_curve_files_from_the_ministry_parse_era_dates():
@@ -357,7 +389,7 @@ def test_reference_prices_give_market_yields_and_spreads(updated):
         fetched.append((days, set(skip)))
         return jsda.parse_reference_csv(QUOTES), {"dates": ["2026-10-07"]}
 
-    conn = connect_write(paths["bonds"])
+    conn = connect(paths["bonds"], paths["filings"])
     try:
         assert update.update_market_prices(conn, 3, fetch=fetch)["rows"] == 2
         update.update_market_prices(conn, 3, fetch=fetch)
@@ -365,13 +397,13 @@ def test_reference_prices_give_market_yields_and_spreads(updated):
     finally:
         conn.close()
     assert fetched == [(3, set()), (3, {"2026-10-07"})]
-    data = service.company_bonds(paths["bonds"], "E99001", today=TODAY)
+    data = service.company_bonds(paths["bonds"], paths["filings"], "E99001", today=TODAY)
     senior = next(bond for bond in data["bonds"] if bond["series"] == 5)
     assert senior["jsda_code"] == "041056367" and senior["market_price"] == 98.10 and senior["market_date"] == "2026-10-07"
     years = valuation.year_fraction("2026-10-07", "2031-09-19")
     assert senior["market_yield"] == pytest.approx(valuation.yield_from_price(0.0125, years, 98.10), abs=1e-7)
     assert senior["spread_basis"] == "market" and senior["spread"] == senior["market_spread"]
-    detail = service.bond_detail(paths["bonds"], senior["bond_id"], today=TODAY)
+    detail = service.bond_detail(paths["bonds"], paths["filings"], senior["bond_id"], today=TODAY)
     assert detail["market_history"] == [{"date": "2026-10-07", "price": 98.10, "yield": pytest.approx(0.017)}]
 
 
@@ -379,7 +411,7 @@ def test_reference_prices_give_market_yields_and_spreads(updated):
 
 def test_company_view_totals_ladder_and_documents(updated):
     paths, _, _ = updated
-    data = service.company_bonds(paths["bonds"], "E99001", today=TODAY)
+    data = service.company_bonds(paths["bonds"], paths["filings"], "E99001", today=TODAY)
     summary = data["summary"]
     # Yen bonds outstanding across the group: the 4th (15bn), the 5th (10bn), the hybrid (5bn), and the
     # subsidiary's 0.2bn; the dollar bond is counted apart.
@@ -403,7 +435,7 @@ def test_company_view_totals_ladder_and_documents(updated):
     # A subsidiary that files nothing with EDINET has no English name: it is labelled, with its filed name beside it.
     subsidiary = next(bond for bond in data["bonds"] if not bond["is_parent"])
     assert (subsidiary["issuer"], subsidiary["issuer_ja"], subsidiary["company_name"]) == ("Subsidiary", "テスト物流(株)", "TEST INDUSTRIES")
-    assert service.bond_detail(paths["bonds"], subsidiary["bond_id"], today=TODAY)["bond"]["issuer"] == "Subsidiary"
+    assert service.bond_detail(paths["bonds"], paths["filings"], subsidiary["bond_id"], today=TODAY)["bond"]["issuer"] == "Subsidiary"
 
 
 def test_market_view_and_bond_detail_compare_with_other_issuers(updated):
@@ -415,7 +447,7 @@ def test_market_view_and_bond_detail_compare_with_other_issuers(updated):
     assert all("company_name" not in bond and "name" not in bond for bond in market["bonds"])
     assert not any(bond.get("edinet_code") == "E99001" and bond.get("private") for bond in market["bonds"])
     target = next(bond for bond in market["bonds"] if bond["edinet_code"] == "E99001" and bond.get("series") == 5)
-    detail = service.bond_detail(paths["bonds"], target["bond_id"], today=TODAY)
+    detail = service.bond_detail(paths["bonds"], paths["filings"], target["bond_id"], today=TODAY)
     assert detail["bond"]["bond_id"] == target["bond_id"] and detail["issuance"]["negative_pledge"] == 1
     assert [item["edinet_code"] for item in detail["similar"]] == ["E99002"]
     assert (target["label"], target["label_ja"]) == ("Bond No. 5", "第5回無担保社債")
@@ -427,7 +459,7 @@ def test_market_view_and_bond_detail_compare_with_other_issuers(updated):
     assert peer["peer_count"] == 5 and peer["peer_spread"] == pytest.approx(0.004) and peer["quoted_peers"] == 0
     assert detail["bond"]["spread_basis"] == "issue"
     assert peer["relative_spread"] == pytest.approx(detail["bond"]["issue_spread"] - 0.004)
-    assert service.bond_detail(paths["bonds"], "E99001-missing", today=TODAY) is None
+    assert service.bond_detail(paths["bonds"], paths["filings"], "E99001-missing", today=TODAY) is None
 
 
 def _directory(rows: list[tuple[str, str, str | None]]) -> CompanyDirectory:
@@ -524,7 +556,7 @@ def _report(header: str | None, body: str = "<html><body><p>本文</p></body></h
 
 def test_update_names_an_issuer_in_english_from_its_annual_report_when_edinet_lists_none(tmp_path):
     paths = _sources(tmp_path)
-    _curve(paths["bonds"])
+    _curve(paths)
     with _db(paths["bonds"]) as conn:
         conn.execute("INSERT INTO CompanyInfo VALUES ('E99003', '無名海運株式会社', '', '99970', 'Marine Transportation', 'Listed company')")
     with _db(paths["filings"]) as conn:
@@ -540,7 +572,7 @@ def test_update_names_an_issuer_in_english_from_its_annual_report_when_edinet_li
     with _db(paths["bonds"]) as conn:
         assert conn.execute("SELECT Company_Name FROM CompanyInfo WHERE Company_Code = 'E99003'").fetchone()[0] == "Mumei Kaiun Kabushiki Kaisha & Co."
         assert {row[0] for row in conn.execute("SELECT company_name_en FROM Bonds WHERE edinet_code = 'E99003'")} == {"Mumei Kaiun Kabushiki Kaisha & Co."}
-    data = service.company_bonds(paths["bonds"], "E99003", today=TODAY)
+    data = service.company_bonds(paths["bonds"], paths["filings"], "E99003", today=TODAY)
     assert data["company_name"] == "Mumei Kaiun Kabushiki Kaisha & Co."
     assert {bond["company_name_ja"] for bond in data["bonds"]} == {"無名海運株式会社"}
     # Its schedule names it 無名海運㈱ in one row: that is the company itself, not a subsidiary.
@@ -577,6 +609,7 @@ def test_bond_titles_are_rewritten_in_english_from_their_terms(bond, label):
 def client(updated, monkeypatch, tmp_path):
     paths, _, _ = updated
     monkeypatch.setattr(bonds_api, "get_market_db", lambda: paths["bonds"])
+    monkeypatch.setattr(bonds_api, "get_filings_db", lambda: paths["filings"])
     app = FastAPI()
     app.include_router(bonds_api.router)
     install_security(app, AppSettings(auth_mode="accounts", registration_mode="open", auth_db_path=tmp_path / "auth.db"))

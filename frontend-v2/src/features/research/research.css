@@ -72,6 +72,7 @@
 .rs-table .is-due { color: var(--warning); }
 .rs-sort { display: inline-flex; align-items: center; gap: 2px; padding: 0; border: 0; color: inherit; background: transparent; font: inherit; cursor: pointer; }
 .rs-sort svg { width: 11px; height: 11px; }
+.rs-sort:hover { color: var(--text); }
 th.num .rs-sort { justify-content: flex-end; }
 .rs-pill { display: inline-block; padding: 0 6px; border-radius: var(--radius); font-size: .7rem; font-weight: 500; }
 .rs-pill--buy { color: #fff; background: var(--indigo); }

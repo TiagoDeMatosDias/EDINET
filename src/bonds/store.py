@@ -1,7 +1,10 @@
-"""Tables in ``Bonds.db``, the rebuildable store of bond terms and the government yield curve.
+"""Bond tables: the rebuildable store of bond terms and the government yield curve.
 
 ``Bond_Documents`` logs every filing the bond step has read (issuance
-supplements keep their ZIP so terms can be re-read without downloading);
+supplements keep their ZIP so terms can be re-read without downloading). It
+lives in ``filings.db`` beside the filings it describes; every other table is
+in ``market.db``, and connections that need both attach ``filings.db`` as
+``filings`` (see ``connect``).
 ``Bond_Issuances`` and ``Bond_Schedule_Rows`` hold what each filing says;
 ``Bonds`` is the merged view the application reads, one row per bond;
 ``JGB_Yields`` is the Ministry of Finance par-yield curve by day.
@@ -10,14 +13,18 @@ supplements keep their ZIP so terms can be re-read without downloading);
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.orchestrator.common.sqlite import connect_write
+from src.orchestrator.common.sqlite import attach, connect_write, move_table
 
-DDL = """
+FILINGS_SCHEMA = "filings"
+
+# In filings.db.
+DOCUMENTS_DDL = """
 CREATE TABLE IF NOT EXISTS Bond_Documents (
     doc_id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -35,7 +42,10 @@ CREATE TABLE IF NOT EXISTS Bond_Documents (
     archive BLOB
 );
 CREATE INDEX IF NOT EXISTS idx_bond_documents_company ON Bond_Documents(edinet_code, kind, period_end);
+"""
 
+# In market.db.
+DDL = """
 CREATE TABLE IF NOT EXISTS Bond_Issuances (
     doc_id TEXT NOT NULL,
     seq INTEGER NOT NULL,
@@ -212,19 +222,43 @@ def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def ensure_bond_tables(path: str | Path) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = connect_write(path)
+def ensure_documents_table(filings_db: str | Path) -> None:
+    Path(filings_db).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect_write(filings_db)
     try:
-        conn.executescript(DDL)
-        # Columns added after a database was created: Bonds is rebuilt on every run, so empty columns are enough.
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(Bonds)")}
-        for column in BOND_COLUMNS:
-            if column not in existing:
-                conn.execute(f'ALTER TABLE Bonds ADD COLUMN "{column}" {_COLUMN_TYPES.get(column, "TEXT")}')
+        conn.executescript(DOCUMENTS_DDL)
         conn.commit()
     finally:
         conn.close()
+
+
+def ensure_bond_tables(market_db: str | Path, filings_db: str | Path) -> None:
+    """Create the tables in both databases, moving a document log that earlier versions kept in market.db."""
+    ensure_documents_table(filings_db)
+    Path(market_db).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(market_db, filings_db)
+    try:
+        conn.executescript(DDL)
+        # Columns added after a database was created: Bonds is rebuilt on every run, so empty columns are enough.
+        existing = {row[1] for row in conn.execute("PRAGMA main.table_info(Bonds)")}
+        for column in BOND_COLUMNS:
+            if column not in existing:
+                conn.execute(f'ALTER TABLE Bonds ADD COLUMN "{column}" {_COLUMN_TYPES.get(column, "TEXT")}')
+        move_table(conn, "Bond_Documents", FILINGS_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def connect(market_db: str | Path, filings_db: str | Path) -> sqlite3.Connection:
+    """A writable connection to market.db with filings.db attached, so every bond table can be named."""
+    conn = connect_write(market_db)
+    try:
+        attach(conn, filings_db, FILINGS_SCHEMA)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
 
 
 def _value(column: str, value: Any) -> Any:

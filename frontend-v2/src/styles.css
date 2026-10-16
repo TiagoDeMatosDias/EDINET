@@ -123,6 +123,9 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
 .health svg { width: 14px; height: 14px; color: var(--success); stroke-width: 1.75; }
 .health--error svg { color: var(--danger); }
 .topbar-actions { display: flex; align-items: center; gap: 14px; }
+.topbar-docs-link { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: .8rem; text-decoration: none; white-space: nowrap; }
+.topbar-docs-link:hover { color: var(--text); }
+.topbar-docs-link svg { width: 14px; height: 14px; stroke-width: 1.75; }
 .auth-loading { min-height: 100vh; display: grid; place-items: center; color: var(--muted); }
 .auth-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--bg); }
 .auth-card { width: min(440px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 36px; }
@@ -312,11 +315,15 @@ svg { width: 18px; height: 18px; flex: 0 0 auto; }
   .mobile-only { display: inline-grid; }
   .brand .mobile-only { margin-left: auto; color: var(--text); }
   .topbar { min-height: 58px; padding: 8px 14px; }
-  .global-search-wrap { width: auto; flex: 1; }
+  .global-search-wrap { width: auto; min-width: 0; flex: 1; }
   .company-picker { min-width: 240px; width: 100%; }
   .global-search kbd, .health span { display: none; }
   .topbar .auth-status--disabled { display: none; }
   .topbar-actions { gap: 8px; }
+  /* Icons only: the labels would push the account button off a phone screen. */
+  .topbar-docs-link span, .job-tray__label, .auth-user-button span, .auth-user-button small { display: none; }
+  .topbar-docs-link { padding: 6px; }
+  .auth-user-button { padding: 6px 8px; }
   #main-content { --page-gutter: 15px; padding: 24px var(--page-gutter) 86px; }
   .page-header { flex-direction: column; gap: 16px; }
   .card-grid { grid-template-columns: 1fr; }

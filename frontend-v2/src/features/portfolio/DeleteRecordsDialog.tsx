@@ -6,7 +6,7 @@ import { apiPost } from '../../api/client'
 import { downloadTextFile } from '../analysis/downloads'
 import { formatDay, titleCase } from './portfolioFormat'
 import type { Transaction } from './portfolioTypes'
-import { recordsCsv, selectedRecords, selectionPayload, selectionTitle, type DeletePreview, type DeleteResult, type DeleteSelection } from './recordsDelete'
+import { MANUAL_SOURCE, recordsCsv, selectedRecords, selectionPayload, selectionTitle, type DeletePreview, type DeleteResult, type DeleteSelection } from './recordsDelete'
 
 const CONFIRM_WORD = 'delete'
 
@@ -60,8 +60,8 @@ export function DeleteRecordsDialog({ selection, records, onCancel, onDeleted }:
         {preview.isLoading ? <p>Checking what would be deleted…</p> : preview.isError ? <p className="pf-issue is-error">{preview.error instanceof Error ? preview.error.message : 'The records could not be checked.'}</p> : summary && <>
           <p className="pf-dialog__lead">This permanently deletes <strong>{summary.records.toLocaleString()} record{summary.records === 1 ? '' : 's'}</strong>{summary.first_date ? <> dated {formatDay(summary.first_date)}{summary.last_date !== summary.first_date ? <> to {formatDay(summary.last_date)}</> : null}</> : null}{summary.symbols ? `, across ${summary.symbols} symbol${summary.symbols === 1 ? '' : 's'}` : ''}. {summary.remaining ? `${summary.remaining.toLocaleString()} records stay.` : 'No records will remain.'}</p>
           <dl className="pf-dialog__types">{Object.entries(summary.by_type).map(([type, count]) => <div key={type}><dt>{titleCase(type)}</dt><dd>{count.toLocaleString()}</dd></div>)}</dl>
-          {summary.source_files.length > 0 && <p className="pf-footnote">From {summary.source_files.map(file => file || 'records without a file name').join(', ')}.</p>}
-          <p className="pf-issue is-warning"><AlertTriangle aria-hidden="true" /><span>Holdings, values, and returns are rebuilt from the records that remain. To restore deleted records, import the original Flex Query files again.</span></p>
+          {summary.source_files.length > 0 && <p className="pf-footnote">From {summary.source_files.map(file => file || 'records without a file name').join(', ')}.{selection.kind === 'records' && summary.records > selection.ids.length ? ' Records entered together, such as an exercise’s option and share legs or a dividend and its tax, are deleted together.' : ''}</p>}
+          <p className="pf-issue is-warning"><AlertTriangle aria-hidden="true" /><span>Holdings, values, and returns are rebuilt from the records that remain. To restore deleted records, import the original Flex Query files again{summary.source_files.includes(MANUAL_SOURCE) ? '; records entered by hand have to be entered again' : ''}.</span></p>
           {everything && <label className="pf-dialog__confirm">Type <kbd>{CONFIRM_WORD}</kbd> to clear everything <input className="input" value={typed} autoComplete="off" aria-label={`Type ${CONFIRM_WORD} to confirm`} onChange={event => setTyped(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && ready) remove.mutate() }} /></label>}
           {remove.isError && <p className="pf-issue is-error">{remove.error instanceof Error ? remove.error.message : 'The records could not be deleted.'}</p>}
         </>}

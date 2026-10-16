@@ -11,6 +11,7 @@ import { globalScope } from '../../hotkeys/globalScopes'
 import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
 import { financialsScope } from './analysisHotkeys'
+import { useClipped } from '../../hooks/useClipped'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { crosshairPlugin } from './chartPlugins'
 import { downloadTextFile, selectedMetricsCsv } from './downloads'
@@ -194,6 +195,7 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
   const filterInput = useRef<HTMLInputElement>(null)
   const rowRefs = useRef<Array<HTMLTableRowElement | null>>([])
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({})
+  const [tableWrap, clipped] = useClipped<HTMLDivElement>()
 
   const sourceKey = source && layouts[source]?.length ? source : populated[0] ?? ''
   const table = tables[sourceKey]
@@ -391,7 +393,7 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
       </div>}
     </section>
 
-    <div className="statement-table-wrap" role="tabpanel" aria-label={tables[sourceKey].display_name}>
+    <div ref={tableWrap} className="statement-table-wrap" role="tabpanel" aria-label={tables[sourceKey].display_name} data-clipped={clipped || undefined}>
       <table className="statement-table">
         <caption className="sr-only">{tables[sourceKey].display_name}, {unitCaption(unit, currency)}. Use the arrow keys to move between lines and Space to chart one.</caption>
         <thead>
@@ -451,7 +453,10 @@ export function FinancialHistoryWorkspace({ history, isLoading, error, retry, do
           {' · '}{adjustedLines.toLocaleString()} {adjustedLines === 1 ? 'line' : 'lines'} {activeBasis === 'adjusted' ? 'adjusted to today’s shares for the' : 'as filed, before the'} {splits.map(describeSplit).join('; ')}
         </span>}
       </span>
-      <span className="statement-footnote__keys"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Space</kbd> chart · <HotkeyKbd hotkey={globalScope.byId.help} /> all shortcuts</span>
+      <span className="statement-footnote__keys">
+        {/* On the Analysis page the table scrolls only once its section is selected; analysis.css shows the hint that applies. */}
+        {clipped && <><span className="scroll-hint scroll-hint--idle">click to scroll the table ·</span><span className="scroll-hint scroll-hint--live"><kbd>Esc</kbd> scroll the page ·</span></>}
+        <kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Space</kbd> chart · <HotkeyKbd hotkey={globalScope.byId.help} /> all shortcuts</span>
     </p>
   </div>
 }

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, CheckCircle2, CloudDownload, FileUp, RefreshCw, Upload } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, CloudDownload, FileUp, PencilLine, RefreshCw, Upload } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -14,6 +14,7 @@ import { useHotkeyText } from '../../hotkeys/useHotkeyText'
 import { holdingDetailScope, portfolioIncomeScope, portfolioScope } from './portfolioHotkeys'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { useAuth } from '../auth/authContext'
+import { ManualTransactionForm, type ManualResult } from './ManualTransactionForm'
 import { PortfolioActivity } from './PortfolioActivity'
 import { PortfolioData } from './PortfolioData'
 import { PortfolioDetailContent } from './PortfolioDetailContent'
@@ -33,6 +34,7 @@ import type {
   HoldingHistoryPoint,
   ImportFile,
   IncomeData,
+  ManualAsset,
   Performance,
   PerformanceRange,
   PieData,
@@ -96,6 +98,7 @@ export default function PortfolioWorkspace() {
   const [detail, setDetail] = useState<PortfolioDetail | null>(null)
   const [status, setStatus] = useState('')
   const [holdingOrder, setHoldingOrder] = useState<Holding[]>([])
+  const [startByHand, setStartByHand] = useState(false)
   // Coming back from Analysis lands on the holding last opened.
   const [returnTo] = useState(() => {
     const trail = readPortfolioTrail()
@@ -120,6 +123,7 @@ export default function PortfolioWorkspace() {
   const dateRange = useQuery({ queryKey: ['portfolio-date-range'], queryFn: () => apiRequest<{ min_date?: string | null; max_date?: string | null }>('/api/portfolio/date-range'), retry: false })
   const activity = useQuery({ queryKey: ['portfolio-activity'], queryFn: () => apiRequest<{ by_activity: Record<string, number> }>('/api/portfolio/activity-summary'), retry: false })
   const imports = useQuery({ queryKey: ['portfolio-imports'], queryFn: () => apiRequest<ImportFile[]>('/api/portfolio/imports'), retry: false, enabled: tab === 'activity' })
+  const manualAssets = useQuery({ queryKey: ['portfolio-assets'], queryFn: () => apiRequest<{ assets: ManualAsset[] }>('/api/portfolio/assets'), retry: false, enabled: tab === 'activity' })
   const transactions = useQuery({ queryKey: ['portfolio-transactions'], queryFn: () => apiRequest<Transaction[]>('/api/portfolio/transactions?limit=10000'), retry: false })
   const holdings = useQuery({
     queryKey: ['portfolio-holdings', currency, includeClosed],
@@ -217,6 +221,11 @@ export default function PortfolioWorkspace() {
       setStatus(error instanceof Error ? error.message : 'Import failed')
     }
   }
+
+  const onAdded = useCallback(async (result: ManualResult) => {
+    setStatus(`${result.summary ?? 'Added the record'}. Rebuilt ${result.holdings_count} holdings over ${result.daily_rows.toLocaleString()} days.`)
+    await invalidate()
+  }, [invalidate])
 
   const summary = useMemo(() => buildPortfolioSummary(holdings.data ?? [], allocation.data), [allocation.data, holdings.data])
   const openHoldings = useMemo(() => (holdings.data ?? []).filter(holding => holding.is_open !== false && !isCash(holding)), [holdings.data])
@@ -319,7 +328,12 @@ export default function PortfolioWorkspace() {
       </div>
     </header>
     {status && <div className="inline-status" role="status">{status}</div>}
-    {unavailable ? <Card title="Import your portfolio" description="Choose one or more IBKR Flex Query XML files (trades, cash transactions, and corporate actions). They are rebuilt into daily values, holdings, and income."><label className="file-drop"><FileUp /><strong>Import IBKR Flex Query XML</strong><input type="file" accept=".xml,text/xml" multiple onChange={event => void uploadFiles(event.target.files)} /></label></Card> : <>
+    {unavailable ? <Card title="Import your portfolio" description="Choose one or more IBKR Flex Query XML files (trades, cash transactions, and corporate actions). They are rebuilt into daily values, holdings, and income. With another broker, enter the transactions by hand instead.">
+      <label className="file-drop"><FileUp /><strong>Import IBKR Flex Query XML</strong><input type="file" accept=".xml,text/xml" multiple onChange={event => void uploadFiles(event.target.files)} /></label>
+      {startByHand
+        ? <div className="pf-start-manual"><ManualTransactionForm records={transactions.data ?? []} initial={{ kind: 'deposit' }} onClose={() => setStartByHand(false)} onAdded={async result => { setStartByHand(false); setTab('activity'); await onAdded(result) }} /></div>
+        : <button type="button" className="button button--secondary button--small pf-start-manual" onClick={() => setStartByHand(true)}><PencilLine aria-hidden="true" />Enter transactions by hand</button>}
+    </Card> : <>
       <div className="portfolio-pulse">
         <StatButton label="Portfolio value" tip="Market value of every holding and cash balance on the valuation date, in the display currency." value={holdings.isLoading ? '—' : money(summary.totalValue, currency)} detail={lastPoint ? `${signedPercent(lastPoint.invested ? lastPoint.value / lastPoint.invested - 1 : null, 0)} on ${compactMoney(lastPoint.invested, currency)} put in` : `${summary.positionCount} holdings`} onClick={() => setTab('holdings')} />
         <StatButton label="Total return" tip="Time-weighted: daily returns with deposits and withdrawals removed, chained over the period. It measures the investments, not the timing of your deposits." value={signedPercent(performanceData?.total_return)} detail={bench ? `${bench.ticker} ${signedPercent(bench.total_return)}` : 'Time-weighted'} tone={Number(performanceData?.total_return) >= 0 ? 'positive' : 'negative'} onClick={() => setTab('performance')} />
@@ -360,9 +374,10 @@ export default function PortfolioWorkspace() {
             : `Deleted ${result.deleted.toLocaleString()} record${result.deleted === 1 ? '' : 's'}; ${result.remaining.toLocaleString()} remain. Rebuilt ${result.holdings_count} holdings over ${result.daily_rows.toLocaleString()} days.`)
           await invalidate()
         }}
-        onAdded={async result => {
-          const record = result.transaction
-          setStatus(`Added ${record ? `${record.activity_type === 'TRADE' ? (record.buy_sell ?? '').toLowerCase() : (record.activity_type ?? '').toLowerCase().replaceAll('_', ' ')} ${record.symbol ?? ''} on ${record.trade_date}` : 'the record'}. Rebuilt ${result.holdings_count} holdings over ${result.daily_rows.toLocaleString()} days.`)
+        onAdded={onAdded}
+        assets={manualAssets.data?.assets}
+        onAssetsChanged={async message => {
+          setStatus(message)
           await invalidate()
         }}
       />}

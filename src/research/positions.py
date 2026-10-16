@@ -12,6 +12,8 @@ import re
 from typing import Any
 
 from src.orchestrator.common.sqlite import connect_read
+from src.portfolio.assets import security_names
+from src.portfolio.manual_entries import MANUAL_SOURCE
 
 from .storage import ResearchStore
 
@@ -59,13 +61,15 @@ def portfolio_positions(db3: str, db2: str | None, user_id: str) -> list[dict[st
         names: dict[str, str] = {}
         try:
             # A trade names the security ("ALTRIA GROUP INC"); dividends describe the payment, so trades win.
+            # Records typed in by hand carry notes rather than names; an asset's definition names it.
             for symbol, description in conn.execute(
                 "SELECT symbol, description FROM Transactions WHERE owner_user_id = ? AND COALESCE(description, '') != '' "
-                "ORDER BY activity_type = 'TRADE', trade_date",
-                (user_id,),
+                "AND COALESCE(source_file, '') != ? ORDER BY activity_type = 'TRADE', trade_date",
+                (user_id, MANUAL_SOURCE),
             ).fetchall():
                 if symbol in held:
                     names[str(symbol)] = str(description)
+            names.update({symbol: name for symbol, name in security_names(conn, user_id).items() if symbol in held})
         except Exception:  # noqa: BLE001 - names are a convenience
             pass
     finally:

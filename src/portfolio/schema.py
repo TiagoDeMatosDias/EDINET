@@ -476,6 +476,45 @@ def _migration_8(conn: sqlite3.Connection) -> None:
     _add_column(conn, "Transactions", "commission_currency", "TEXT")
 
 
+_DDL_ASSETS = """
+CREATE TABLE IF NOT EXISTS Portfolio_Assets (
+    owner_user_id   TEXT NOT NULL DEFAULT '',
+    symbol          TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    asset_category  TEXT NOT NULL DEFAULT 'STK',
+    currency        TEXT NOT NULL,
+    isin            TEXT,
+    notes           TEXT,
+    -- 1: also look its symbol up in the market data, 0: only prices entered by hand.
+    fetch_prices    INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT DEFAULT (datetime('now')),
+    updated_at      TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (owner_user_id, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS Portfolio_Prices (
+    owner_user_id   TEXT NOT NULL DEFAULT '',
+    symbol          TEXT NOT NULL,
+    date            TEXT NOT NULL,
+    price           REAL NOT NULL,
+    currency        TEXT NOT NULL,
+    note            TEXT,
+    created_at      TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (owner_user_id, symbol, date)
+);
+"""
+
+
+def _migration_9(conn: sqlite3.Connection) -> None:
+    """Assets and prices entered by hand, and sales that may open a short position.
+
+    ``open_close`` follows IBKR's ``openCloseIndicator``: ``O`` marks a sale
+    that may open (or extend) a short position rather than stop at zero.
+    """
+    _add_column(conn, "Transactions", "open_close", "TEXT")
+    _execute_ddl(conn, _DDL_ASSETS)
+
+
 _MIGRATIONS = (
     (1, _migration_1),
     (2, _migration_2),
@@ -485,6 +524,7 @@ _MIGRATIONS = (
     (6, _migration_6),
     (7, _migration_7),
     (8, _migration_8),
+    (9, _migration_9),
 )
 
 

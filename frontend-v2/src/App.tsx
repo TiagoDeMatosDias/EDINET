@@ -25,6 +25,7 @@ const AccountPage = lazy(() => import('./features/auth/AccountPage'))
 const AdminPage = lazy(() => import('./features/auth/AdminPage'))
 const ChatPage = lazy(() => import('./features/chat/ChatPage'))
 const ProfilePage = lazy(() => import('./features/chat/ProfilePage'))
+const ApiDocsPage = lazy(() => import('./features/apidocs/ApiDocsPage'))
 
 function WorkspaceLayout() {
   return (
@@ -71,6 +72,8 @@ export function App() {
             <Route path="/people/:username" element={<ProfilePage />} />
             <Route path="/account" element={<AccountPage />} />
             <Route path="/admin" element={<AdminPage />} />
+            <Route path="/api-docs" element={<ApiDocsPage />} />
+            <Route path="/api-docs/:sectionId" element={<ApiDocsPage />} />
           </Route>
 
           <Route path="*" element={<Navigate replace to="/" />} />

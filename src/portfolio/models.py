@@ -39,6 +39,7 @@ class TransactionEntry(BaseModel):
     multiplier: float = 1
     action_description: str | None = None
     action_id: str | None = None
+    open_close: str | None = None
     source_file: str | None = None
     imported_at: str | None = None
     notes: str | None = None

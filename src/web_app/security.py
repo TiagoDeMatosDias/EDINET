@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from src.auth.route_access import PUBLIC_AUTH_PATHS, REFUSALS, access_level, role_allows, route_path
 from src.paths import jobs_dir
 
 logger = logging.getLogger(__name__)
@@ -39,16 +40,6 @@ def _default_auth_db_path() -> Path:
 
         _DEFAULT_AUTH_DB_PATH = Path(get_app_db())
     return _DEFAULT_AUTH_DB_PATH
-_PUBLIC_AUTH_PATHS = frozenset(
-    {
-        "/api/auth/status",
-        "/api/auth/register",
-        "/api/auth/login",
-        "/api/auth/refresh",
-        "/api/auth/accept-invitation",
-        "/api/auth/reset-password",
-    }
-)
 
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -436,6 +427,12 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
             allowed_hosts=list(settings.trusted_hosts),
         )
 
+    schema_paths = frozenset(
+        path
+        for path in (app.openapi_url, app.docs_url, app.redoc_url, app.swagger_ui_oauth2_redirect_url)
+        if path
+    )
+
     @app.middleware("http")
     async def request_security(request: Request, call_next):
         correlation_id = str(uuid4())
@@ -461,7 +458,7 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
             settings.authentication_required
             and request.url.path.startswith("/api/")
             and not is_worker_route
-            and request.url.path not in _PUBLIC_AUTH_PATHS
+            and request.url.path not in PUBLIC_AUTH_PATHS
         ):
             authorization = request.headers.get("Authorization", "")
             scheme, _, supplied = authorization.partition(" ")
@@ -503,6 +500,37 @@ def install_security(app: FastAPI, settings: AppSettings) -> None:
                 _apply_security_headers(response, request.url.path, settings)
                 return response
             request.state.user = user
+
+        # One role check for every route, before it runs (routes keep their own).
+        user = getattr(request.state, "user", None)
+        if user is not None and request.url.path.startswith("/api/") and not is_worker_route:
+            template = route_path(request.app, request.scope)
+            if not template or not template.startswith("/api/"):
+                template = request.url.path  # no API route: the page fallback answers it
+            level = access_level(request.method, template)
+            if not role_allows(user.role, level):
+                response = JSONResponse(
+                    status_code=403,
+                    content={
+                        "code": "forbidden",
+                        "detail": REFUSALS[level],
+                        "correlation_id": correlation_id,
+                    },
+                    headers={"X-Correlation-ID": correlation_id},
+                )
+                _apply_security_headers(response, request.url.path, settings)
+                return response
+
+        # With accounts, the schema and its explorers would show every route to
+        # anyone; signed-in callers get theirs from /api/docs/openapi.json.
+        if settings.authentication_required and request.url.path in schema_paths:
+            response = JSONResponse(
+                status_code=404,
+                content={"code": "request_error", "detail": "Not Found", "correlation_id": correlation_id},
+                headers={"X-Correlation-ID": correlation_id},
+            )
+            _apply_security_headers(response, request.url.path, settings)
+            return response
 
         response = await call_next(request)
         response.headers["X-Correlation-ID"] = correlation_id

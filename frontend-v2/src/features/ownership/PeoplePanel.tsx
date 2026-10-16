@@ -4,6 +4,8 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import { ApiError } from '../../api/client'
 import { EmptyState, ErrorState, LoadingState } from '../../components/Feedback'
+import { SortHeader } from '../../components/SortHeader'
+import { useTableSort, type SortColumn } from '../../components/tableSort'
 import { Tip } from '../../components/Tooltip'
 import { HotkeyKbd } from '../../hotkeys/HotkeyKbd'
 import { useHotkeyScope } from '../../hotkeys/useHotkeyScope'
@@ -19,6 +21,19 @@ import '../research/research.css'
 import './ownership.css'
 
 const NO_DATA = 'An administrator can run the Update ownership pipeline step to read shareholders and officers from the stored annual reports.'
+
+// Unsorted, officers stay in the report's order, which follows rank. A stake's value sorts as the stake does.
+const OFFICER_COLUMNS = {
+  name: { value: row => row.name },
+  title: { value: row => row.title },
+  age: { value: row => row.age },
+  since: { value: row => row.since },
+  shares: { value: row => row.shares, descending: true },
+  stake: { value: row => row.ratio, descending: true },
+  value: { value: row => row.ratio, descending: true },
+  term: { value: row => row.term_end ?? row.term },
+  boards: { value: row => row.other_positions, descending: true },
+} satisfies Record<string, SortColumn<OfficerRow>>
 
 /** The directors, auditors, and executive officers in the company's latest annual report. */
 export function PeoplePanel({ companyCode, marketCap }: { companyCode: string; marketCap: number | null }) {
@@ -39,6 +54,7 @@ export function PeoplePanel({ companyCode, marketCap }: { companyCode: string; m
 function PeopleContent({ data, companyCode, marketCap, showDeparted, onDeparted }: { data: CompanyPeople; companyCode: string; marketCap: number | null; showDeparted: boolean; onDeparted: () => void }) {
   const navigate = useNavigate()
   const rows = data.rows
+  const [sorted, sort] = useTableSort(rows, OFFICER_COLUMNS)
   const counted = data.men != null || data.women != null
   const headcount = counted ? (data.men ?? 0) + (data.women ?? 0) : rows.length
   const hasShares = rows.some(row => row.shares != null)
@@ -64,17 +80,17 @@ function PeopleContent({ data, companyCode, marketCap, showDeparted, onDeparted 
     <div className="rs-table-scroll ow-table-wrap">
       <table className="rs-table ow-table" aria-label="Related people">
         <thead><tr>
-          <th scope="col">Name</th>
-          <th scope="col">Title</th>
-          <th scope="col" className="num">Age</th>
-          {hasSince && <th scope="col"><Tip content="The first stored annual report that lists the person as an officer of this company. Blank where that is the oldest report stored.">Listed since</Tip></th>}
-          {hasShares && <th scope="col" className="num">Shares held</th>}
-          {hasShares && <th scope="col" className="num">Stake</th>}
-          {hasValue && <th scope="col" className="num"><Tip content="The stake times the company’s market capitalisation today.">Value</Tip></th>}
-          {hasTerm && <th scope="col"><Tip content="The term ends at the close of the shareholders’ meeting held for this fiscal year.">Term ends</Tip></th>}
-          <th scope="col"><Tip content="Other companies whose latest report lists the same person (same name and date of birth) as an officer.">Other boards</Tip></th>
+          <SortHeader sort={sort} column="name">Name</SortHeader>
+          <SortHeader sort={sort} column="title">Title</SortHeader>
+          <SortHeader sort={sort} column="age" className="num">Age</SortHeader>
+          {hasSince && <SortHeader sort={sort} column="since"><Tip content="The first stored annual report that lists the person as an officer of this company. Blank where that is the oldest report stored." focusable={false}>Listed since</Tip></SortHeader>}
+          {hasShares && <SortHeader sort={sort} column="shares" className="num">Shares held</SortHeader>}
+          {hasShares && <SortHeader sort={sort} column="stake" className="num">Stake</SortHeader>}
+          {hasValue && <SortHeader sort={sort} column="value" className="num"><Tip content="The stake times the company’s market capitalisation today." focusable={false}>Value</Tip></SortHeader>}
+          {hasTerm && <SortHeader sort={sort} column="term"><Tip content="The term ends at the close of the shareholders’ meeting held for this fiscal year." focusable={false}>Term ends</Tip></SortHeader>}
+          <SortHeader sort={sort} column="boards"><Tip content="Other companies whose latest report lists the same person (same name and date of birth) as an officer." focusable={false}>Other boards</Tip></SortHeader>
         </tr></thead>
-        <tbody>{rows.map((row, index) => <OfficerLine key={`${row.entity_id}-${index}`} row={row} marketCap={hasValue ? marketCap : null} columns={{ hasShares, hasValue, hasTerm, hasSince }} onOpen={() => { if (row.entity_id) navigate(entityHref(row.entity_id)) }} />)}</tbody>
+        <tbody>{sorted.map(row => <OfficerLine key={`${row.entity_id}-${rows.indexOf(row)}`} row={row} marketCap={hasValue ? marketCap : null} columns={{ hasShares, hasValue, hasTerm, hasSince }} onOpen={() => { if (row.entity_id) navigate(entityHref(row.entity_id)) }} />)}</tbody>
       </table>
     </div>
     {data.departed.length > 0 && <p className="rs-hint ow-hint">

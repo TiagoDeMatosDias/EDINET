@@ -259,6 +259,7 @@
 .pf-badge.is-ok { color: var(--success); background: var(--success-soft); }
 .pf-badge.is-stale { color: var(--warning); background: var(--warning-soft); }
 .pf-badge.is-cost, .pf-badge.is-missing { color: var(--danger); background: var(--danger-soft); }
+.pf-badge.is-manual { color: var(--primary); background: var(--primary-soft); }
 .pf-inline-form { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; font-size: .74rem; }
 .pf-inline-form label { display: inline-flex; align-items: center; gap: 6px; }
 .pf-inline-form .input { width: 76px; min-height: 28px; padding: 3px 7px; }
@@ -329,12 +330,33 @@
 }
 
 /* Manual transaction entry */
-.pf-manual { display: grid; grid-template-columns: 130px 140px minmax(120px, 1fr) 90px repeat(3, minmax(80px, .7fr)) minmax(140px, 1.2fr) auto; align-items: end; gap: 6px; margin-bottom: 10px; padding: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg); }
-.pf-manual .field { display: flex; flex-direction: column; gap: 2px; font-size: .72rem; }
-.pf-manual .field > span { color: var(--muted); font-size: .62rem; letter-spacing: .04em; text-transform: uppercase; }
-.pf-manual .input, .pf-manual .select { min-height: 30px; padding: 4px 6px; font-size: .8rem; }
+.pf-manual { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); align-items: end; gap: 6px; margin-bottom: 10px; padding: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg); }
+.pf-manual .field { display: flex; min-width: 0; flex-direction: column; gap: 2px; font-size: .72rem; }
+.pf-manual .field > span { color: var(--muted); font-size: .62rem; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+.pf-manual .input, .pf-manual .select { width: 100%; min-width: 0; min-height: 30px; padding: 4px 6px; font-size: .8rem; }
+.pf-manual__wide { grid-column: span 2; }
+.pf-manual__check { min-height: 30px; padding: 4px 8px; grid-column: span 2; }
 .pf-manual__actions { display: flex; align-items: center; gap: 4px; }
 .pf-manual__actions .button svg { width: 13px; height: 13px; }
-.pf-manual__hint { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: .7rem; }
+.pf-manual__hint { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: .7rem; line-height: 1.5; }
 .pf-manual__hint strong { color: var(--text); }
-@media (max-width: 1100px) { .pf-manual { grid-template-columns: repeat(4, minmax(0, 1fr)); } .pf-manual__description { grid-column: span 2; } }
+.pf-manual__hint .form-error { font-size: .7rem; }
+@media (max-width: 520px) { .pf-manual { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.pf-start-manual { margin-top: 12px; }
+.pf-assets { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.pf-assets > li { padding: 8px 2px; border-bottom: 1px solid var(--border); }
+.pf-assets > li:last-child { border-bottom: 0; }
+.pf-assets__row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; }
+.pf-assets__name, .pf-assets__price { display: flex; min-width: 0; flex-direction: column; }
+.pf-assets__name strong { overflow: hidden; font-size: .78rem; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.pf-assets__price { align-items: flex-end; font-size: .78rem; }
+.pf-assets small { color: var(--muted); font-size: .68rem; }
+.pf-assets__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; font-size: .74rem; }
+.pf-assets__actions .button svg { width: 13px; height: 13px; }
+.pf-assets__prices { margin-top: 4px; font-size: .72rem; }
+.pf-assets__prices summary { color: var(--muted); cursor: pointer; }
+.pf-assets__prices ul { display: flex; flex-direction: column; margin: 4px 0 0; padding: 0; list-style: none; }
+.pf-assets__prices li { display: grid; grid-template-columns: 110px 130px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 2px 0; }
+.pf-assets__prices li small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-assets__empty { margin: 0; font-size: .78rem; }
+@media (max-width: 700px) { .pf-assets__row { grid-template-columns: minmax(0, 1fr) auto; } .pf-assets__actions { grid-column: 1 / -1; justify-content: flex-start; } .pf-assets__prices li { grid-template-columns: auto auto minmax(0, 1fr) auto; } }

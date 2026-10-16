@@ -16,11 +16,13 @@ from collections.abc import Callable
 from datetime import date
 from typing import Any
 
+from src.orchestrator.common.sqlite import attach
+
 from .build import CURRENT_YEARS
 from .careers import Translate, translate_lines
 from .directory import FilerDirectory
 from .names import account_label, title_en, title_roles
-from .store import career_entries, statistics
+from .store import FILINGS_SCHEMA, career_entries, statistics
 
 EDINET_VIEWER = "https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?{doc_id},,,"
 KINDS = ("person", "individual", "company", "organization")
@@ -44,9 +46,16 @@ def edinet_link(doc_id: str | None) -> str | None:
     return EDINET_VIEWER.format(doc_id=doc_id) if doc_id else None
 
 
-def _connect(path: str) -> sqlite3.Connection:
+def _connect(path: str, filings_db: str | None = None) -> sqlite3.Connection:
+    """market.db read-only, with filings.db (where ``Ownership_Documents`` lives) attached when given."""
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    if filings_db:
+        try:
+            attach(conn, filings_db, FILINGS_SCHEMA, read_only=True)
+        except BaseException:
+            conn.close()
+            raise
     return conn
 
 
@@ -77,8 +86,8 @@ def _updates(conn: sqlite3.Connection) -> dict[str, Any]:
     return result
 
 
-def status(path: str) -> dict[str, Any]:
-    conn = _connect(path)
+def status(path: str, filings_db: str) -> dict[str, Any]:
+    conn = _connect(path, filings_db)
     try:
         documents = conn.execute("SELECT COUNT(*), COUNT(DISTINCT edinet_code), MAX(period_end) FROM Ownership_Documents WHERE status = 'parsed'").fetchone()
         entities = conn.execute("SELECT COUNT(*) FROM Ownership_Entities").fetchone()[0]
@@ -348,10 +357,10 @@ def _people(conn: sqlite3.Connection, edinet_code: str, reports: list[sqlite3.Ro
     }
 
 
-def company_ownership(path: str, edinet_code: str, *, today: str | None = None) -> dict[str, Any]:
+def company_ownership(path: str, filings_db: str, edinet_code: str, *, today: str | None = None) -> dict[str, Any]:
     """A company's largest shareholders and officers from its latest annual report."""
     today = today or date.today().isoformat()
-    conn = _connect(path)
+    conn = _connect(path, filings_db)
     try:
         directory = FilerDirectory.load(conn, history=False)
         reports = _reports(conn, edinet_code)
@@ -521,10 +530,10 @@ def _issued(conn: sqlite3.Connection, doc_id: str) -> float | None:
     return (row[0] or row[1]) if row else None
 
 
-def entity_detail(path: str, entity: str, *, today: str | None = None) -> dict[str, Any] | None:
+def entity_detail(path: str, filings_db: str, entity: str, *, today: str | None = None) -> dict[str, Any] | None:
     """One person or organisation: every company it holds or serves, and what the filings say about it."""
     today = today or date.today().isoformat()
-    conn = _connect(path)
+    conn = _connect(path, filings_db)
     try:
         row = conn.execute("SELECT * FROM Ownership_Entities WHERE entity_id = ?", (entity,)).fetchone()
         if row is None:

@@ -5,9 +5,10 @@
 ``chat.db``    chat channels and messages, kept apart because it grows with use.
 ``market.db``  rebuildable market data: the EDINET document index
                (``DocumentList``), taxonomy, company info, statements, ratios,
-               rolling metrics, prices, splits, and bonds.
-``filings.db`` rebuildable filing archive: provider ZIPs, XBRL facts, and
-               translations. Kept apart because of its size.
+               rolling metrics, prices, splits, bonds, and ownership.
+``filings.db`` rebuildable filing archive: provider ZIPs, XBRL facts,
+               translations, and the logs of filings the bond and ownership
+               steps have read. Kept apart because of its size.
 
 ``app.db`` and ``chat.db`` always live in the data folder (see ``src.paths``).
 ``market.db`` and ``filings.db`` default to it; the ``storage.market_db_path``

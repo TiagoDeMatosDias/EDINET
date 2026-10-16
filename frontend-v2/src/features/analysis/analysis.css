@@ -153,7 +153,9 @@
 .statement-chart__plots--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .statement-chart__plot { position: relative; min-width: 0; }
 
-.statement-table-wrap { max-height: min(70vh, 780px); overflow: auto; overscroll-behavior: contain; }
+.statement-table-wrap { max-height: min(70vh, 780px); overflow: auto; }
+/* The vertical scrollbar appears when the section is selected; its room is kept so the columns do not shift. */
+.statement-table-wrap[data-clipped] { scrollbar-gutter: stable; }
 .statement-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: .78rem; }
 .statement-table th, .statement-table td { height: 25px; padding: 0 7px; border-bottom: 1px solid var(--border); white-space: nowrap; text-align: right; }
 .statement-table td { font-family: var(--font-mono); font-size: .75rem; font-variant-numeric: tabular-nums; }
@@ -185,6 +187,17 @@
 .statement-empty { margin: 0; padding: 24px; color: var(--muted); text-align: center; }
 .statement-footnote { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 14px; margin: 0; padding: 6px 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: .7rem; }
 .statement-footnote__keys { display: inline-flex; align-items: center; gap: 3px; }
+
+/*
+ * Areas that scroll inside a section take the wheel only once their section is selected by a click
+ * (useSelectedSection); until then the wheel scrolls the page past them instead of sticking in them.
+ */
+.analysis-section:not([data-selected]) .statement-table-wrap,
+.analysis-section:not([data-selected]) .company-chat .chat-list { overflow-y: hidden; }
+.analysis-section .company-chat .chat-list { scrollbar-gutter: stable; }
+.scroll-hint { display: none; }
+.analysis-section:not([data-selected]) .scroll-hint--idle,
+.analysis-section[data-selected] .scroll-hint--live { display: inline-flex; align-items: center; gap: 3px; }
 
 /* Filings */
 .filings-panel__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: .76rem; }

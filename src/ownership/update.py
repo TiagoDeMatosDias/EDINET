@@ -4,6 +4,10 @@ Annual reports come from the filing catalog (``filings.db``), one archive at a
 time; the selecting query only touches columns stored before the archive
 column, which keeps it fast on a large catalog. Every stored year is read, so
 a holder's stake and a board's membership can be followed over time.
+
+The log of reports read is in ``filings.db`` and what they say is in
+``market.db``, so a report counts as read only while its rows are still
+there: a rebuilt market.db has its reports read again.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
-from src.orchestrator.common.sqlite import connect_read, connect_write
+from src.orchestrator.common.sqlite import connect_read
 
 from . import build, store
 from .names import person_key
@@ -40,7 +44,9 @@ def pending_reports(conn: sqlite3.Connection, filings_db_path: str, *, reparse: 
     if not reparse:
         done = {
             row[0] for row in conn.execute(
-                "SELECT doc_id FROM Ownership_Documents WHERE parser_version = ? AND status IN ('parsed', 'empty', 'unavailable')",
+                "SELECT doc_id FROM Ownership_Documents d WHERE parser_version = ? AND (status IN ('empty', 'unavailable') "
+                "OR status = 'parsed' AND (EXISTS (SELECT 1 FROM Ownership_Shareholders s WHERE s.doc_id = d.doc_id) "
+                "OR EXISTS (SELECT 1 FROM Ownership_Officers o WHERE o.doc_id = d.doc_id)))",
                 (PARSER_VERSION,),
             )
         }
@@ -138,20 +144,20 @@ def rebuild(conn: sqlite3.Connection) -> dict[str, Any]:
 def update_ownership(
     *,
     market_db: str,
-    filings_db_path: str | None,
+    filings_db_path: str,
     reparse: bool = False,
     latest_only: bool = False,
     max_documents: int = 0,
     progress: Progress = _no_progress,
 ) -> dict[str, Any]:
-    store.ensure_ownership_tables(market_db)
-    conn = connect_write(market_db)
+    store.ensure_ownership_tables(market_db, filings_db_path)
+    conn = store.connect(market_db, filings_db_path)
     result: dict[str, Any] = {}
     try:
-        documents = pending_reports(conn, filings_db_path or "", reparse=reparse, latest_only=latest_only)
+        documents = pending_reports(conn, filings_db_path, reparse=reparse, latest_only=latest_only)
         if max_documents > 0:
             documents = documents[:max_documents]
-        result["reports"] = read_reports(conn, documents, filings_db_path or "", progress)
+        result["reports"] = read_reports(conn, documents, filings_db_path, progress)
         store.mark_update(conn, "reports", result["reports"])
         progress(1, 1, "Identifying shareholders and officers")
         result["entities"] = rebuild(conn)

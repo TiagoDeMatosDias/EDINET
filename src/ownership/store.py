@@ -1,6 +1,9 @@
-"""Ownership tables in ``market.db``: the rebuildable record of who owns and runs each company.
+"""Ownership tables: the rebuildable record of who owns and runs each company.
 
-``Ownership_Documents`` logs every annual report the ownership step has read.
+``Ownership_Documents`` logs every annual report the ownership step has read,
+with the share statistics it states. It lives in ``filings.db`` beside the
+filings it describes; every other table is in ``market.db``, and connections
+that need both attach ``filings.db`` as ``filings`` (see ``connect``).
 ``Ownership_Shareholders`` and ``Ownership_Officers`` hold what each report
 says, one row per listed shareholder or officer, as filed. The build then
 decides who each row is: it fills ``entity_id`` (and, for a shareholder, the
@@ -22,9 +25,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.orchestrator.common.sqlite import connect_write
+from src.orchestrator.common.sqlite import attach, connect_write, move_table
 
-DDL = """
+FILINGS_SCHEMA = "filings"
+
+# In filings.db.
+DOCUMENTS_DDL = """
 CREATE TABLE IF NOT EXISTS Ownership_Documents (
     doc_id TEXT PRIMARY KEY,
     edinet_code TEXT NOT NULL,
@@ -48,7 +54,10 @@ CREATE TABLE IF NOT EXISTS Ownership_Documents (
     processed_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ownership_documents_company ON Ownership_Documents(edinet_code, period_end);
+"""
 
+# In market.db.
+DDL = """
 CREATE TABLE IF NOT EXISTS Ownership_Shareholders (
     doc_id TEXT NOT NULL,
     seq INTEGER NOT NULL,
@@ -138,14 +147,38 @@ def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def ensure_ownership_tables(path: str | Path) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = connect_write(path)
+def ensure_documents_table(filings_db: str | Path) -> None:
+    Path(filings_db).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect_write(filings_db)
     try:
-        conn.executescript(DDL)
+        conn.executescript(DOCUMENTS_DDL)
         conn.commit()
     finally:
         conn.close()
+
+
+def ensure_ownership_tables(market_db: str | Path, filings_db: str | Path) -> None:
+    """Create the tables in both databases, moving a document log that earlier versions kept in market.db."""
+    ensure_documents_table(filings_db)
+    Path(market_db).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(market_db, filings_db)
+    try:
+        conn.executescript(DDL)
+        move_table(conn, "Ownership_Documents", FILINGS_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def connect(market_db: str | Path, filings_db: str | Path) -> sqlite3.Connection:
+    """A writable connection to market.db with filings.db attached, so every ownership table can be named."""
+    conn = connect_write(market_db)
+    try:
+        attach(conn, filings_db, FILINGS_SCHEMA)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
 
 
 def career_text(entries: Iterable[tuple[str, str]]) -> str | None:

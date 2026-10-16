@@ -429,8 +429,13 @@ class TestGetAllHoldingsPerformance:
         for r in results:
             cat = r.get("asset_category", "")
             sym = r.get("symbol", "")
-            if cat == "CASH" or sym.startswith("CASH") or sym == "SPIN":
+            if cat == "CASH" or sym.startswith("CASH"):
                 assert r.get("performance") is None, f"Cash entry {sym} should have no performance"
+            elif sym == "SPIN":
+                # Spun-off shares arrive at no cost: the whole value is gain.
+                perf = r["performance"]
+                assert perf["cost_basis_native"] == 0
+                assert perf["pnl_native"] == round(r.get("market_value_native") or 0, 2)
             else:
                 perf = r.get("performance")
                 assert perf is not None, f"Missing performance for {sym}"

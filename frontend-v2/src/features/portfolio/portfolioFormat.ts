@@ -121,10 +121,12 @@ export function displayValue(holding: Holding) {
 /** Why a holding's quote deserves a second look: stale, at cost, or converted from another listing. */
 export function priceNote(holding: Holding): { level: 'error' | 'warning' | 'info'; text: string } | null {
   if (holding.price_source === 'cost') return { level: 'error', text: 'No stored prices: valued at average cost' }
+  const manual = holding.price_source === 'manual'
   if (holding.price_date && holding.valuation_date) {
     const days = (Date.parse(holding.valuation_date) - Date.parse(holding.price_date)) / 86_400_000
-    if (days > 7) return { level: 'warning', text: `Last price ${formatDay(holding.price_date)}, ${Math.round(days)} days before the valuation date` }
+    if (days > 7) return { level: manual ? 'info' : 'warning', text: `${manual ? 'Price you entered' : 'Last price'} ${formatDay(holding.price_date)}, ${Math.round(days)} days before the valuation date` }
   }
+  if (manual) return { level: 'info', text: `Valued at the price you entered for ${formatDay(holding.price_date)}` }
   if (holding.price_currency && holding.currency && holding.price_currency !== holding.currency) return { level: 'info', text: `Quoted in ${holding.price_currency} and converted to ${holding.currency} at ECB rates` }
   return null
 }

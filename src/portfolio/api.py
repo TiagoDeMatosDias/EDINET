@@ -335,11 +335,18 @@ async def delete_transactions_selection(request: Request, payload: DeleteTransac
 
 
 class ManualTransactionRequest(BaseModel):
-    """A transaction typed in by hand. Amounts are positive; ``kind`` sets their direction."""
+    """A transaction typed in by hand. Amounts are positive; ``kind`` sets their direction.
+
+    Trades of an option (``asset_category`` ``OPT``) and option exercises
+    and expirations name the contract by its terms or by its symbol; a held
+    contract's terms come from its records.  Empty optional fields are
+    filled from the account's records: the category a symbol is held under,
+    and whether an option was held long or short.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: str = Field(pattern=r"^(buy|sell|dividend|withholding_tax|deposit|withdrawal|fee|interest)$")
+    kind: str = Field(pattern=r"^(buy|sell|sell_short|buy_to_cover|dividend|withholding_tax|deposit|withdrawal|fee|interest|split|spinoff|option_exercise|option_expiration)$")
     trade_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     currency: str = Field(pattern=r"^[A-Za-z]{3}$")
     symbol: str = Field(default="", max_length=40)
@@ -348,7 +355,21 @@ class ManualTransactionRequest(BaseModel):
     price: float = Field(default=0, ge=0, le=1e12)
     commission: float = Field(default=0, ge=0, le=1e9)
     amount: float = Field(default=0, ge=0, le=1e13)
-    asset_category: str = Field(default="STK", pattern=r"^(STK|BOND|FUND)$")
+    asset_category: Optional[str] = Field(default=None, pattern=r"^(STK|ETF|FUND|BOND|OTHER|OPT)$")
+    underlying: str = Field(default="", max_length=20)
+    put_call: str = Field(default="", pattern=r"^[CPcp]?$")
+    strike: float = Field(default=0, ge=0, le=1e9)
+    expiry: str = Field(default="", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
+    multiplier: float = Field(default=0, ge=0, le=1e6)
+    position: str = Field(default="", pattern=r"^(long|short)?$")
+    settlement: str = Field(default="shares", pattern=r"^(shares|cash)$")
+    settlement_price: float = Field(default=0, ge=0, le=1e12)
+    underlying_category: Optional[str] = Field(default=None, pattern=r"^(STK|ETF|FUND|OTHER)$")
+    ratio_from: float = Field(default=0, ge=0, le=1e9)
+    ratio_to: float = Field(default=0, ge=0, le=1e9)
+    new_symbol: str = Field(default="", max_length=40)
+    new_category: Optional[str] = Field(default=None, pattern=r"^(STK|ETF|FUND|BOND|OTHER)$")
+    withholding_tax: float = Field(default=0, ge=0, le=1e13)
 
 
 def _rate_to_base(currency: str, base: str, day: str) -> float | None:
@@ -361,45 +382,267 @@ def _rate_to_base(currency: str, base: str, day: str) -> float | None:
         return None
 
 
-@router.post("/transactions/manual", status_code=201)
-async def add_manual_transaction(request: Request, payload: ManualTransactionRequest):
-    """Record a transaction by hand and rebuild holdings, cash, and returns with it."""
-    from src.portfolio.manual_entries import (
-        MANUAL_SOURCE,
-        TRADE_KINDS,
-        ManualEntryError,
-        ManualTransaction,
-        account_currency,
-        normalized_entry,
-        stored_record,
-    )
-
-    user = _account(request)
+def _past_day(value: str) -> date:
     try:
-        day = date.fromisoformat(payload.trade_date)
+        day = date.fromisoformat(value)
     except ValueError as exc:
         raise HTTPException(422, "Use a real date") from exc
     if day > date.today():
         raise HTTPException(422, "The date is in the future")
-    entry = ManualTransaction(**payload.model_dump())
+    return day
+
+
+def _manual_entry(db3: str, owner_user_id: str, payload: ManualTransactionRequest):
+    """The entry to record, with the fields left empty filled from the account's records."""
+    from src.portfolio.manual_entries import (
+        OPTION_KINDS,
+        ManualTransaction,
+        contract_terms,
+        known_category,
+    )
+
+    fields = payload.model_dump()
+    symbol = payload.symbol.strip().upper()
+    fields["symbol"] = symbol
+    option = payload.kind in OPTION_KINDS or payload.asset_category == "OPT"
+    if option:
+        fields["asset_category"] = "OPT"
+        if symbol:
+            # A contract named by its symbol: its terms from its records or the symbol itself.
+            terms = contract_terms(db3, owner_user_id, symbol)
+            for key in ("underlying", "put_call", "strike", "expiry", "multiplier"):
+                if not fields.get(key) and terms.get(key):
+                    fields[key] = terms[key]
+            if not fields["position"]:
+                fields["position"] = "short" if terms["net_quantity"] < 0 else "long"
+        fields["multiplier"] = fields["multiplier"] or 100.0
+        fields["underlying"] = str(fields["underlying"] or "").strip().upper()
+        fields["underlying_category"] = fields["underlying_category"] or known_category(db3, owner_user_id, fields["underlying"]) or "STK"
+        if fields["underlying_category"] == "OPT":
+            fields["underlying_category"] = "STK"
+    else:
+        fields["asset_category"] = fields["asset_category"] or (known_category(db3, owner_user_id, symbol) if symbol else None) or "STK"
+        fields["multiplier"] = fields["multiplier"] or 100.0
+        fields["underlying_category"] = fields["underlying_category"] or "STK"
+    if payload.kind == "spinoff":
+        new_symbol = payload.new_symbol.strip().upper()
+        fields["new_symbol"] = new_symbol
+        fields["new_category"] = fields["new_category"] or (known_category(db3, owner_user_id, new_symbol) if new_symbol else None) or "STK"
+    fields["position"] = fields["position"] or "long"
+    return ManualTransaction(**fields)
+
+
+def _check_position(db3: str, owner_user_id: str, entry, records: list[dict]) -> None:
+    """Refuse a sale of more than was held, or a cover of more than was short, on that day."""
+    from src.portfolio.manual_entries import _number, held_on
+
+    if entry.kind not in ("sell", "buy_to_cover"):
+        return
+    record = records[0]
+    held = held_on(db3, owner_user_id, record["symbol"], record["asset_category"], entry.trade_date)
+    if entry.kind == "sell" and entry.quantity > held + 1e-9:
+        symbol = record["symbol"]
+        have = f"held {_number(held)} {symbol}" if held > 0 else (f"were short {_number(-held)} {symbol}" if held < 0 else f"held no {symbol}")
+        raise HTTPException(422, (
+            f"You {have} on {entry.trade_date}. Record the purchase first "
+            "(dated before the sale), or use Sell short to open or add to a short position."
+        ))
+    if entry.kind == "buy_to_cover" and entry.quantity > -held + 1e-9:
+        short = f"were short {_number(-held)} {record['symbol']}" if held < 0 else f"had no short position in {record['symbol']}"
+        raise HTTPException(422, f"You {short} on {entry.trade_date}. Use Buy for a purchase, or record the short sale first.")
+
+
+def _price_requests(db3: str, owner_user_id: str, records: list[dict]) -> dict[str, str]:
+    """Tickers whose market prices a new holding needs; assets priced only by hand are left out."""
+    from src.portfolio.assets import manual_only_symbols
+
+    wanted = _build_currency_map(records)
+    for record in records:
+        if record["activity_type"] == "SPINOFF" and record.get("symbol"):
+            wanted[record["symbol"]] = record["currency"]
+    conn = connect_read(db3)
+    try:
+        manual_only = manual_only_symbols(conn, owner_user_id)
+    finally:
+        conn.close()
+    return {ticker: currency for ticker, currency in wanted.items() if ticker not in manual_only}
+
+
+@router.post("/transactions/manual", status_code=201)
+async def add_manual_transaction(request: Request, payload: ManualTransactionRequest):
+    """Record a transaction by hand and rebuild holdings, cash, and returns with it.
+
+    Some entries are stored as more than one record (an exercise's option
+    and share legs, a dividend and its withholding tax); they share an
+    action id, are returned in ``transactions``, and are deleted together.
+    """
+    from src.portfolio.manual_entries import (
+        MANUAL_SOURCE,
+        ManualEntryError,
+        account_currency,
+        normalized_entries,
+        stored_record,
+    )
+
+    user = _account(request)
+    _past_day(payload.trade_date)
     db3, db2 = get_app_db(), get_market_db()
+    entry = await asyncio.to_thread(_manual_entry, db3, user.user_id, payload)
     base = await asyncio.to_thread(account_currency, db3, user.user_id)
     rate = await asyncio.to_thread(_rate_to_base, entry.currency, base, entry.trade_date)
     try:
-        record = normalized_entry(entry, rate)
+        records = normalized_entries(entry, rate)
     except ManualEntryError as exc:
         raise HTTPException(422, str(exc)) from exc
-    if entry.kind in TRADE_KINDS:
+    await asyncio.to_thread(_check_position, db3, user.user_id, entry, records)
+    wanted = await asyncio.to_thread(_price_requests, db3, user.user_id, records)
+    if wanted:
         # Best effort: a new holding needs prices to be valued; the record is kept either way.
+        # Only the provider's own prices are fetched into the shared market data.
         try:
-            await _fetch_prices(_build_currency_map([record]), user.user_id)
+            await _fetch_prices(wanted, user.user_id)
         except Exception:
-            logger.warning("Prices for manual record %s could not be fetched", record["symbol"], exc_info=True)
-    await asyncio.to_thread(insert_entries, db3, [record], MANUAL_SOURCE, owner_user_id=user.user_id)
+            logger.warning("Prices for manual records %s could not be fetched", sorted(wanted), exc_info=True)
+    await asyncio.to_thread(insert_entries, db3, records, MANUAL_SOURCE, owner_user_id=user.user_id)
     rebuilt = await asyncio.to_thread(build_portfolio_state, db3, db2, owner_user_id=user.user_id)
     await asyncio.to_thread(_retag_positions, user.user_id)
-    created = await asyncio.to_thread(stored_record, db3, user.user_id, record["transaction_id"])
-    return {"transaction": created, "base_currency": base, "fx_rate_to_base": rate, **rebuilt}
+    created = [
+        stored for record in records
+        if (stored := await asyncio.to_thread(stored_record, db3, user.user_id, record["transaction_id"]))
+    ]
+    return {
+        "transaction": created[0] if created else None,
+        "transactions": created,
+        "base_currency": base,
+        "fx_rate_to_base": rate,
+        **rebuilt,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Assets and prices entered by hand (this account's only; never shared market data)
+# ---------------------------------------------------------------------------
+
+class AssetRequest(BaseModel):
+    """A security the market data does not know, defined by hand."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=200)
+    asset_category: str = Field(default="STK", pattern=r"^(STK|ETF|FUND|BOND|OTHER)$")
+    currency: str = Field(pattern=r"^[A-Za-z]{3}$")
+    isin: str = Field(default="", max_length=12)
+    notes: str = Field(default="", max_length=500)
+    fetch_prices: bool = False
+
+
+class PriceRequest(BaseModel):
+    """A price entered by hand: it values the account's holding from that day on."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1, max_length=40)
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    price: float = Field(gt=0, le=1e12)
+    currency: str = Field(pattern=r"^[A-Za-z]{3}$")
+    note: str = Field(default="", max_length=300)
+
+
+async def _rebuild_owner(owner_user_id: str) -> dict:
+    rebuilt = await asyncio.to_thread(build_portfolio_state, get_app_db(), get_market_db(), owner_user_id=owner_user_id)
+    await asyncio.to_thread(_retag_positions, owner_user_id)
+    return rebuilt
+
+
+@router.get("/assets")
+async def list_manual_assets(request: Request):
+    """The account's defined assets and the prices it entered, newest first per asset."""
+    from src.portfolio.assets import ASSET_CATEGORIES, list_assets
+
+    user = _account(request)
+    assets = await asyncio.to_thread(list_assets, get_app_db(), user.user_id)
+    return {"assets": assets, "categories": ASSET_CATEGORIES}
+
+
+@router.post("/assets", status_code=201)
+async def save_manual_asset(request: Request, payload: AssetRequest):
+    """Define an asset (or change its definition) and rebuild with it."""
+    from src.portfolio.assets import AssetDefinition, AssetError, save_asset
+
+    user = _account(request)
+    try:
+        asset = await asyncio.to_thread(save_asset, get_app_db(), user.user_id, AssetDefinition(**payload.model_dump()))
+    except AssetError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if payload.fetch_prices:
+        try:
+            await _fetch_prices({asset["symbol"]: asset["currency"]}, user.user_id)
+        except Exception:
+            logger.warning("Prices for defined asset %s could not be fetched", asset["symbol"], exc_info=True)
+    return {"asset": asset, **await _rebuild_owner(user.user_id)}
+
+
+@router.delete("/assets/{symbol:path}")
+async def delete_manual_asset(request: Request, symbol: str):
+    """Remove a definition and the prices entered for it; its transactions stay."""
+    from src.portfolio.assets import delete_asset
+
+    user = _account(request)
+    deleted = await asyncio.to_thread(delete_asset, get_app_db(), user.user_id, symbol)
+    if not deleted["assets"] and not deleted["prices"]:
+        raise HTTPException(404, "No such asset")
+    return {"deleted": deleted, **await _rebuild_owner(user.user_id)}
+
+
+@router.get("/prices")
+async def list_manual_prices(request: Request, symbol: Optional[str] = Query(None, max_length=40)):
+    """Prices the account entered by hand, newest first."""
+    from src.portfolio.assets import list_assets, normalize_symbol
+
+    user = _account(request)
+    assets = await asyncio.to_thread(list_assets, get_app_db(), user.user_id)
+    wanted = normalize_symbol(symbol) if symbol else None
+    return [
+        {**price, "symbol": asset["symbol"]}
+        for asset in assets if wanted is None or asset["symbol"] == wanted
+        for price in asset["prices"]
+    ]
+
+
+@router.post("/prices", status_code=201)
+async def save_manual_price(request: Request, payload: PriceRequest):
+    """Set an asset's price on a day (replacing one entered for that day) and rebuild.
+
+    It values only this account's holding; the shared market prices are unchanged.
+    """
+    from src.portfolio.assets import AssetError, save_price
+
+    user = _account(request)
+    _past_day(payload.date)
+    try:
+        price = await asyncio.to_thread(
+            save_price, get_app_db(), user.user_id, payload.symbol, payload.date, payload.price, payload.currency, payload.note,
+        )
+    except AssetError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"price": price, **await _rebuild_owner(user.user_id)}
+
+
+@router.delete("/prices")
+async def delete_manual_price(
+    request: Request,
+    symbol: str = Query(min_length=1, max_length=40),
+    day: str = Query(alias="date", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+):
+    """Remove a price entered by hand and rebuild."""
+    from src.portfolio.assets import delete_price
+
+    user = _account(request)
+    deleted = await asyncio.to_thread(delete_price, get_app_db(), user.user_id, symbol, day)
+    if not deleted:
+        raise HTTPException(404, "No price entered for that day")
+    return {"deleted": deleted, **await _rebuild_owner(user.user_id)}
 
 
 @router.get("/activity-summary", response_model=ActivitySummaryResponse)

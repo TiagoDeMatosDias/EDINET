@@ -25,7 +25,7 @@ _ENTRY_COLS = [
     "net_cash", "buy_sell", "fx_rate_to_base",
     "strike", "expiry", "put_call", "underlying_symbol",
     "underlying_conid", "multiplier", "action_description", "action_id",
-    "report_date", "commission_currency",
+    "report_date", "commission_currency", "open_close",
 ]
 
 # Details added after the first imports: re-importing a file fills them in on
@@ -162,7 +162,8 @@ def get_transactions(
         cols = (
             "id, trade_date, settle_date, report_date, activity_type, asset_category, symbol, "
             "quantity, trade_price, amount, net_cash, currency, buy_sell, commission, "
-            "commission_currency, taxes, description, trade_money, proceeds, account_id, source_file"
+            "commission_currency, taxes, description, trade_money, proceeds, account_id, source_file, "
+            "strike, expiry, put_call, underlying_symbol, multiplier, action_id, open_close"
         )
     else:
         cols = "*"
@@ -299,8 +300,14 @@ def _selection(
     where = ["owner_user_id = ?"]
     params: list = [owner_user_id]
     if ids:
-        where.append(f"id IN ({','.join('?' for _ in ids)})")
-        params.extend(int(value) for value in ids)
+        # Records entered together by hand (an exercise's two legs, a dividend
+        # and its tax) share a manual action id and are deleted together.
+        marks = ",".join("?" for _ in ids)
+        where.append(
+            f"(id IN ({marks}) OR action_id IN (SELECT action_id FROM Transactions "
+            f"WHERE owner_user_id = ? AND id IN ({marks}) AND action_id LIKE 'manual-%'))"
+        )
+        params.extend([*(int(value) for value in ids), owner_user_id, *(int(value) for value in ids)])
     if source_files:
         where.append(f"COALESCE(source_file, '') IN ({','.join('?' for _ in source_files)})")
         params.extend(source_files)

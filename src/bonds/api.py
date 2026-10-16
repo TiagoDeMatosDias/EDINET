@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from src.auth.models import AuthenticatedUser
-from src.orchestrator.common.db_config import get_market_db
+from src.orchestrator.common.db_config import get_filings_db, get_market_db
 
 from . import service
 
@@ -46,7 +46,7 @@ def bond_status() -> dict[str, Any]:
 @router.get("/company/{edinet_code}")
 def company(edinet_code: str) -> dict[str, Any]:
     """The company's bonds with totals, a maturity ladder, and the filings they come from."""
-    return service.company_bonds(_require(_database()), edinet_code.strip())
+    return service.company_bonds(_require(_database()), get_filings_db(), edinet_code.strip())
 
 
 @router.get("/market")
@@ -64,7 +64,7 @@ def market(request: Request, include_group: bool = False) -> Response:
 @router.get("/bond/{bond_id}")
 def bond(bond_id: str) -> dict[str, Any]:
     """One bond: terms, sources, valuation, and similar bonds of other issuers."""
-    detail = service.bond_detail(_require(_database()), bond_id.strip())
+    detail = service.bond_detail(_require(_database()), get_filings_db(), bond_id.strip())
     if detail is None:
         raise HTTPException(status_code=404, detail="Bond not found")
     return detail
@@ -77,7 +77,7 @@ def document(request: Request, doc_id: str) -> Response:
         raise HTTPException(status_code=401, detail="Account authentication is required")
     if not _DOC_ID.match(doc_id):
         raise HTTPException(status_code=404, detail="Document not found")
-    content = service.document_archive(_require(_database()), doc_id)
+    content = service.document_archive(_require(_database()), get_filings_db(), doc_id)
     if not content:
         raise HTTPException(status_code=404, detail="Document not stored")
     return Response(content=content, media_type="application/zip", headers={"Content-Disposition": f"attachment; filename={doc_id}.zip"})

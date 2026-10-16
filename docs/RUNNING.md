@@ -17,14 +17,14 @@ Everything the application writes lives in one data folder: `data/` beside `main
 | `app.db` | Settings and secrets, accounts, research, pipeline setups and schedules, enrolled workers, portfolio, and who ran each saved backtest | No: back it up |
 | `chat.db` | Chat channels and messages (kept apart because it grows with use) | No: back it up |
 | `jobs.db` | The job queue: open, running, and recently finished jobs with their progress and results, and worker sessions (see [Job workers](#job-workers)) | Finished jobs expire; open ones are lost with it |
-| `market.db` | EDINET document index (`DocumentList`), taxonomy, company info, statements, ratios, rolling metrics, prices, splits, and bonds | Yes, by the pipeline |
-| `filings.db` | Provider ZIPs, XBRL facts, catalog, and translations | Yes, by the pipeline |
+| `market.db` | EDINET document index (`DocumentList`), taxonomy, company info, statements, ratios, rolling metrics, prices, splits, bonds, and ownership | Yes, by the pipeline |
+| `filings.db` | Provider ZIPs, XBRL facts, catalog, translations, and the logs of filings the bond and ownership steps have read (`Bond_Documents`, with the bond supplements' ZIPs, and `Ownership_Documents`) | Yes, by the pipeline |
 | `certs/` | TLS certificate and key | Generated |
 | `logs/` | Rotating `server.log` and `worker-<id>.log` per worker | Generated |
 | `tools/` | `cloudflared`, downloaded when a tunnel is opened from a source checkout that has none (a release carries its own) | Generated |
 | `artifacts/` | Backtests, reports, screening exports, per-job workspaces (`artifacts/jobs/`), downloaded documents | Generated |
 
-When the web server starts, it creates any missing database with its managed schema, before it starts the local worker; from then on it opens `market.db` and `filings.db` read-only and leaves every write to the workers. Components that share `app.db` record their migrations per component in `schema_migrations`. The market tables are created by the pipeline; only the bond tables have a fixed schema. The server always reads its own databases; API requests cannot name one.
+When the web server starts, it creates any missing database with its managed schema, before it starts the local worker; from then on it opens `market.db` and `filings.db` read-only and leaves every write to the workers. Components that share `app.db` record their migrations per component in `schema_migrations`. The market tables are created by the pipeline; only the bond and ownership tables have a fixed schema. Earlier versions kept `Bond_Documents` and `Ownership_Documents` in `market.db`; the server moves them to `filings.db` when it starts. The server always reads its own databases; API requests cannot name one.
 
 Settings are rows in the `settings` table of `app.db`, declared with their types, defaults, and validation in `src/settings/registry.py`. Administrators edit them under **Admin → Server settings**; from a terminal:
 
@@ -442,7 +442,8 @@ Reads corporate bonds into the bond tables of `market.db`:
 1. **Bond supplements** — every shelf-registration supplement
    (発行登録追補書類, document type 100, with XBRL) listed in `DocumentList`
    and not read yet is downloaded from EDINET with the API key and kept in
-   `Bond_Documents`; each bond's terms and ratings go to `Bond_Issuances`.
+   `Bond_Documents` in `filings.db`; each bond's terms and ratings go to
+   `Bond_Issuances`.
    Supplements EDINET no longer serves are marked unavailable.
 2. **Annual-report bond schedules** — each company's latest annual report in
    `filings.db` (form 030000) is read for its bond schedule (社債明細表;
@@ -466,6 +467,8 @@ Reads corporate bonds into the bond tables of `market.db`:
 
 Everything already read is skipped, so a daily run takes seconds after the
 first (about 40 s for 561 supplements and 4,948 annual reports when stored).
+A filing counts as read only while its rows are in `market.db`, so a rebuilt
+`market.db` has its filings read again (supplements from their stored ZIP).
 **Overwrite** re-reads every stored supplement and report with the current
 parser, without downloading again.
 

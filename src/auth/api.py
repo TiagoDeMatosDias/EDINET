@@ -214,6 +214,9 @@ def create_token(request: Request, payload: ApiTokenRequest) -> dict[str, object
     user = getattr(request.state, "user", None)
     if not isinstance(user, AuthenticatedUser):
         raise HTTPException(status_code=401, detail="Authentication required")
+    # A leaked token must not be able to mint replacements that outlive its revocation.
+    if user.scopes is not None:
+        raise HTTPException(status_code=403, detail="Create API tokens from a signed-in session (Account page), not with another token")
     try:
         token = _service(request).create_api_token(
             user.user_id,
@@ -474,7 +477,11 @@ def admin_create_invitation(request: Request, payload: CreateInvitationRequest) 
 @admin_router.delete("/invitations/{invitation_id}", status_code=status.HTTP_204_NO_CONTENT)
 def admin_revoke_invitation(request: Request, invitation_id: str) -> None:
     user = _require_user(request)
-    if not _service(request).revoke_invitation(invitation_id, requested_by=user.user_id):
+    try:
+        revoked = _service(request).revoke_invitation(invitation_id, requested_by=user.user_id)
+    except AuthError as exc:
+        raise _error(exc) from exc
+    if not revoked:
         raise HTTPException(status_code=404, detail="Invitation not found")
 
 

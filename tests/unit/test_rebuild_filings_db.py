@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from scripts.rebuild_filings_db import _copy_catalog_rows
+from scripts.rebuild_filings_db import _copy_catalog_rows, _copy_small_tables
+from src.bonds.store import ensure_documents_table as ensure_bond_documents
 from src.filings.catalog import FilingCatalog
 from src.orchestrator.common.sqlite import connect_read, connect_write
+from src.ownership.store import ensure_documents_table as ensure_ownership_documents
 
 
 def test_copy_catalog_rows_copies_artifact_metadata_without_content(tmp_path):
@@ -60,3 +62,44 @@ def test_copy_catalog_rows_copies_artifact_metadata_without_content(tmp_path):
     assert counts["filings"] == 1
     assert counts["artifacts"] == 1
     assert tuple(artifact) == ("artifact-1", "digest", None)
+
+
+def test_copy_small_tables_keeps_the_bond_and_ownership_document_logs(tmp_path):
+    source_path = tmp_path / "source.db"
+    destination_path = tmp_path / "destination.db"
+    for path in (source_path, destination_path):
+        FilingCatalog(path)
+        ensure_bond_documents(path)
+        ensure_ownership_documents(path)
+
+    source = connect_write(source_path)
+    try:
+        source.execute(
+            "INSERT INTO Bond_Documents(doc_id, kind, status, processed_at, archive) VALUES (?, ?, ?, ?, ?)",
+            ("S100BOND", "issuance", "parsed", "2026-10-01", b"PK archive"),
+        )
+        source.execute(
+            "INSERT INTO Ownership_Documents(doc_id, edinet_code, status, processed_at) VALUES (?, ?, ?, ?)",
+            ("S100OWNR", "E99001", "parsed", "2026-10-01"),
+        )
+        source.commit()
+    finally:
+        source.close()
+
+    source = connect_read(source_path)
+    destination = connect_write(destination_path)
+    try:
+        counts = _copy_small_tables(source, destination, batch_size=10)
+    finally:
+        source.close()
+        destination.close()
+
+    destination = connect_read(destination_path)
+    try:
+        archive = destination.execute("SELECT archive FROM Bond_Documents WHERE doc_id = 'S100BOND'").fetchone()[0]
+        owned = destination.execute("SELECT edinet_code FROM Ownership_Documents WHERE doc_id = 'S100OWNR'").fetchone()[0]
+    finally:
+        destination.close()
+
+    assert counts["Bond_Documents"] == 1 and counts["Ownership_Documents"] == 1
+    assert (archive, owned) == (b"PK archive", "E99001")

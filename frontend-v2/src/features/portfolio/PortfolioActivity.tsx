@@ -10,11 +10,13 @@ import { portfolioActivityScope, portfolioScope } from './portfolioHotkeys'
 import { CashEffect } from './ActivityCells'
 import { correctionLabel, findCorrections, orderActivity, type Correction } from './activityModel'
 import { DeleteRecordsDialog } from './DeleteRecordsDialog'
+import { ManualAssets } from './ManualAssets'
+import type { Draft } from './manualModel'
 import { ManualTransactionForm, type ManualResult } from './ManualTransactionForm'
 import { formatDay, quantity, titleCase, transactionCashEffect } from './portfolioFormat'
 import { SectionCard } from './PortfolioPrimitives'
 import { PortfolioTable, type TableColumn } from './PortfolioTable'
-import type { ImportFile, PortfolioDetail, Transaction } from './portfolioTypes'
+import type { ImportFile, ManualAsset, PortfolioDetail, Transaction } from './portfolioTypes'
 import type { DeleteResult, DeleteSelection } from './recordsDelete'
 
 type Props = {
@@ -28,6 +30,9 @@ type Props = {
   onOpenDetail: (detail: PortfolioDetail) => void
   onDeleted?: (result: DeleteResult, selection: DeleteSelection) => void
   onAdded?: (result: ManualResult) => void
+  /** Assets and prices entered by hand; the card shows when they are loaded. */
+  assets?: ManualAsset[]
+  onAssetsChanged?: (message: string) => void
 }
 
 function activityTone(value?: string) {
@@ -105,7 +110,9 @@ export function PortfolioActivity(props: Props) {
   const [hideReversed, setHideReversed] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(() => new Set())
   const [pending, setPending] = useState<DeleteSelection | null>(null)
-  const [adding, setAdding] = useState(false)
+  // The form, where it opened, and what it starts with.
+  const [adding, setAdding] = useState<{ at: 'activity' | 'assets'; preset: Partial<Draft>; key: number } | null>(null)
+  const openForm = useCallback((preset: Partial<Draft> = {}, at: 'activity' | 'assets' = 'activity') => setAdding(current => ({ at, preset, key: (current?.key ?? 0) + 1 })), [])
   const activityTypes = [...new Set(props.data.map(row => row.activity_type).filter(Boolean) as string[])].sort()
   const files = [...new Set(props.data.map(row => row.source_file ?? ''))].sort()
   // Only records from another account than the usual one are tagged with it.
@@ -149,17 +156,18 @@ export function PortfolioActivity(props: Props) {
   useHotkeyScope(portfolioActivityScope, {
     delete: () => { if (shownSelected.length > 0) deleteSelected() },
     'select-all': () => { if (!adding) toggleAll() },
-    add: () => setAdding(true),
+    add: () => { if (!adding) openForm() },
   }, { enabled: Boolean(props.hotkeys) && !pending })
   const addKey = useHotkeyText(portfolioActivityScope.byId.add)
   const selectAllKey = useHotkeyText(portfolioActivityScope.byId['select-all'])
   const columns = useColumns(props.onOpenDetail, selected, toggle, corrections, mainAccount, selectAll)
+  const form = adding && <ManualTransactionForm key={adding.key} records={props.data} assets={props.assets} initial={adding.preset} onClose={() => setAdding(null)} onAdded={result => props.onAdded?.(result)} />
   const filtersOn = Boolean(term || activityType !== 'all' || file !== 'all' || from || to || hideReversed)
 
   return <div className="portfolio-section-stack">
     <ActivitySummary activity={props.activity} dateRange={props.dateRange} />
-    <SectionCard title="Activity" description={`${filtered.length.toLocaleString()} of ${props.data.length.toLocaleString()} records`} actions={!adding && <button type="button" className="button button--secondary button--small" onClick={() => setAdding(true)} title={`Record a transaction by hand (${addKey})`}><Plus aria-hidden="true" />Add transaction <span aria-hidden="true"><HotkeyKbd hotkey={portfolioActivityScope.byId.add} /></span></button>}>
-      {adding && <ManualTransactionForm records={props.data} onClose={() => setAdding(false)} onAdded={result => props.onAdded?.(result)} />}
+    <SectionCard title="Activity" description={`${filtered.length.toLocaleString()} of ${props.data.length.toLocaleString()} records`} actions={adding?.at !== 'activity' && <button type="button" className="button button--secondary button--small" onClick={() => openForm()} title={`Record a transaction by hand (${addKey})`}><Plus aria-hidden="true" />Add transaction <span aria-hidden="true"><HotkeyKbd hotkey={portfolioActivityScope.byId.add} /></span></button>}>
+      {adding?.at === 'activity' && form}
       <div className="portfolio-table-toolbar pf-activity-toolbar">
         <Field label="Search activity"><div className="input-with-icon"><Search /><input className="input" data-portfolio-find value={search} placeholder="Symbol, description, or source" onChange={event => setSearch(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { setSearch(''); event.currentTarget.blur() } }} /><span aria-hidden="true"><HotkeyKbd className="input-kbd" hotkey={portfolioScope.byId.find} /></span></div></Field>
         <Field label="Activity type"><select className="select" value={activityType} onChange={event => setActivityType(event.target.value)}><option value="all">All activity</option>{activityTypes.map(value => <option key={value} value={value}>{titleCase(value)}</option>)}</select></Field>
@@ -190,6 +198,7 @@ export function PortfolioActivity(props: Props) {
       />}
       {reversedCount > 0 && <p className="pf-footnote">Rows marked Reversal and Corrected are the broker’s own corrections, not duplicates. When it recalculates withholding tax or a fee, it cancels the original record and books the right amount, all under the original date; “booked” shows when that happened.</p>}
     </SectionCard>
+    {props.assets && <ManualAssets assets={props.assets} form={adding?.at === 'assets' ? form : undefined} onEdit={preset => openForm(preset, 'assets')} onChanged={message => props.onAssetsChanged?.(message)} />}
     <Imports imports={props.imports} onDelete={setPending} />
     {pending && <DeleteRecordsDialog
       selection={pending}

@@ -511,13 +511,46 @@ def test_latest_only_reads_one_report_per_company(tmp_path):
     paths = _sources(tmp_path)
     result = update.update_ownership(market_db=paths["market"], filings_db_path=paths["filings"], latest_only=True)
     assert result["reports"]["documents"] == 3
-    with _db(paths["market"]) as conn:
+    # The log of reports read is kept beside the filings.
+    with _db(paths["filings"]) as conn:
         assert {row[0] for row in conn.execute("SELECT doc_id FROM Ownership_Documents")} == {"S100A026", "S100B026", "S100C026"}
+    with _db(paths["market"]) as conn:
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'Ownership_Documents'").fetchall()
+
+
+def test_a_rebuilt_market_database_reads_the_logged_reports_again(updated):
+    paths, _ = updated
+    with _db(paths["market"]) as conn:
+        for table in ("Ownership_Shareholders", "Ownership_Officers", "Ownership_Entities"):
+            conn.execute(f"DROP TABLE {table}")
+    # The log in filings.db says every report was read, but what they said is gone.
+    again = update.update_ownership(market_db=paths["market"], filings_db_path=paths["filings"])
+    assert again["reports"]["documents"] == 3 and again["entities"]["people"] == 5
+
+
+def test_a_document_log_kept_in_market_db_by_an_earlier_version_is_moved_to_filings_db(updated):
+    paths, _ = updated
+    # An earlier version kept the log in market.db, with fewer columns.
+    columns = "doc_id, edinet_code, period_end, submitted_at, status, parser_version, processed_at"
+    with _db(paths["filings"]) as conn:
+        rows = conn.execute(f"SELECT {columns} FROM Ownership_Documents").fetchall()
+        conn.execute("DROP TABLE Ownership_Documents")
+    with _db(paths["market"]) as conn:
+        conn.execute("CREATE TABLE Ownership_Documents (doc_id TEXT PRIMARY KEY, edinet_code TEXT NOT NULL, period_end TEXT, submitted_at TEXT, "
+                     "status TEXT NOT NULL, parser_version INTEGER NOT NULL DEFAULT 0, processed_at TEXT NOT NULL)")
+        conn.executemany(f"INSERT INTO Ownership_Documents ({columns}) VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+    again = update.update_ownership(market_db=paths["market"], filings_db_path=paths["filings"])
+    # Nothing is read again: the moved log still says which reports were read.
+    assert again["reports"]["documents"] == 0
+    with _db(paths["market"]) as conn:
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'Ownership_Documents'").fetchall()
+    with _db(paths["filings"]) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM Ownership_Documents").fetchone()[0] == 4
 
 
 def test_company_view_lists_holders_with_changes_and_officers_with_their_stakes(updated):
     paths, _ = updated
-    view = service.company_ownership(paths["market"], "E99001", today=TODAY)
+    view = service.company_ownership(paths["market"], paths["filings"], "E99001", today=TODAY)
     assert view["company_name"] == "TEST INDUSTRIES" and view["latest_period"] == "2026-03-31" and not view["stale"]
     # Another company's report lists this one among its largest shareholders.
     assert view["holder"] == {"entity_id": "E99001", "holdings": 1, "past_holdings": 0}
@@ -557,35 +590,35 @@ def test_company_view_lists_holders_with_changes_and_officers_with_their_stakes(
 
 def test_a_company_without_a_report_has_no_sections(updated):
     paths, _ = updated
-    view = service.company_ownership(paths["market"], "E99003", today=TODAY)
+    view = service.company_ownership(paths["market"], paths["filings"], "E99003", today=TODAY)
     assert view["reports"] == 0 and view["shareholders"] is None and view["people"] is None and view["holder"]["holdings"] == 1
 
 
 def test_an_entity_lists_every_company_it_holds_or_serves(updated):
     paths, _ = updated
-    bank = service.entity_detail(paths["market"], _entity(paths["market"], "The Master Trust Bank of Japan, Ltd."), today=TODAY)
+    bank = service.entity_detail(paths["market"], paths["filings"], _entity(paths["market"], "The Master Trust Bank of Japan, Ltd."), today=TODAY)
     assert bank["entity"]["kind"] == "organization" and bank["totals"]["holdings"] == 2
     first, second = bank["holdings"]
     assert (first["company_name"], first["ratio"], first["rank"], first["account"], first["change"]) == ("TEST INDUSTRIES", pytest.approx(0.125), 1, "Trust account", pytest.approx(0.015))
     assert first["history"] == [["2025-03-31", pytest.approx(0.11)], ["2026-03-31", pytest.approx(0.125)]] and second["ratio"] == pytest.approx(0.09)
     assert "address" not in first
 
-    director = service.entity_detail(paths["market"], _entity(paths["market"], "Jiro Sato"), today=TODAY)
+    director = service.entity_detail(paths["market"], paths["filings"], _entity(paths["market"], "Jiro Sato"), today=TODAY)
     assert director["entity"]["birth_date"] == "1955-03-04" and director["entity"]["age"] == 71
     assert sorted((item["company_name"], item["title"], item["outside"]) for item in director["positions"]) == [("PEER ELECTRIC", "Outside Director", True), ("TEST INDUSTRIES", "Director", True)]
     # Each company's report tells the career in its own words.
     assert sorted(career["company_name"] for career in director["careers"]) == ["PEER ELECTRIC", "TEST INDUSTRIES"]
     assert director["careers"][0]["entries"][0] == {"date": "1978-04", "text": "(株)親会社ホールディングス入社"}
 
-    president = service.entity_detail(paths["market"], _entity(paths["market"], "Taro Yamada", "1960-01-02"), today=TODAY)
+    president = service.entity_detail(paths["market"], paths["filings"], _entity(paths["market"], "Taro Yamada", "1960-01-02"), today=TODAY)
     assert president["totals"]["positions"] == 1 and president["holdings"][0]["ratio"] == pytest.approx(0.05) and president["positions"][0]["ratio"] == pytest.approx(0.05)
     # The namesake on another board is offered, not merged.
     assert [(other["kind"], other["birth_date"]) for other in president["same_name"]] == [("person", "1975-09-09")]
 
     # A holder known by name only keeps the address filed with each stake, which may tell two namesakes apart.
-    investor = service.entity_detail(paths["market"], _entity(paths["market"], "鈴木花子"), today=TODAY)
+    investor = service.entity_detail(paths["market"], paths["filings"], _entity(paths["market"], "鈴木花子"), today=TODAY)
     assert {item["address"] for item in investor["holdings"]} == {"神奈川県横浜市", "北海道札幌市"} and investor["totals"]["addresses"] == 2
-    assert service.entity_detail(paths["market"], "Pnobody") is None
+    assert service.entity_detail(paths["market"], paths["filings"], "Pnobody") is None
 
 
 def test_stakes_are_valued_for_listed_companies_only(updated):
@@ -621,6 +654,7 @@ def test_entities_are_searched_by_english_or_filed_name(updated):
 def client(updated, monkeypatch):
     paths, _ = updated
     monkeypatch.setattr(ownership_api, "get_market_db", lambda: paths["market"])
+    monkeypatch.setattr(ownership_api, "get_filings_db", lambda: paths["filings"])
     monkeypatch.setattr(ownership_api, "_market_caps", lambda path: lambda codes: {code: 100e9 for code in codes})
     monkeypatch.setattr(ownership_api, "_machine_translation", lambda texts: {text: f"[mt] {text}" for text in texts})
     app = FastAPI()

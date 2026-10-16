@@ -195,6 +195,41 @@ def index_exists(conn: sqlite3.Connection, index_name: str) -> bool:
     return row is not None
 
 
+def attach(conn: sqlite3.Connection, path: str | Path, schema: str, *, read_only: bool = False) -> None:
+    """Attach another database file to ``conn`` as ``schema``.
+
+    Unqualified table names then resolve in the main database first and in
+    the attached one after. ``read_only`` opens an existing file in URI
+    read-only mode, so ``conn`` must have been opened with ``uri=True``; a
+    missing file raises ``sqlite3.OperationalError``.
+    """
+    if read_only:
+        target = f"{Path(path).expanduser().resolve(strict=False).as_uri()}?mode=ro"
+    else:
+        target = str(Path(path))
+    conn.execute(f"ATTACH DATABASE ? AS {quote_identifier(schema)}", (target,))
+
+
+def move_table(conn: sqlite3.Connection, table: str, schema: str) -> int:
+    """Move ``table``'s rows from the main database into the same table in the attached ``schema``.
+
+    The columns both tables have are copied (a moved row replaces one with
+    the same key), then the table is dropped from the main database. Returns
+    the number of rows moved; 0 when the main database has no such table.
+    """
+    source = [row[1] for row in conn.execute(f"PRAGMA main.table_info({quote_identifier(table)})")]
+    if not source:
+        return 0
+    target = {row[1] for row in conn.execute(f"PRAGMA {quote_identifier(schema)}.table_info({quote_identifier(table)})")}
+    columns = ", ".join(quote_identifier(column) for column in source if column in target)
+    moved = conn.execute(
+        f"INSERT OR REPLACE INTO {quote_identifier(schema)}.{quote_identifier(table)} ({columns}) "
+        f"SELECT {columns} FROM main.{quote_identifier(table)}"
+    ).rowcount
+    conn.execute(f"DROP TABLE main.{quote_identifier(table)}")
+    return moved
+
+
 class OrchestratorProcessorBase:
     def __init__(self):
         pass

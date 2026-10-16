@@ -33,7 +33,8 @@ flowchart LR
 | `/compare` | Bounded multi-company comparison |
 | `/research` | Account-owned watchlists, notes, and in-app alerts |
 | `/chat` | Encrypted company channels, direct messages, and profiles |
-| `/account` | Password changes, sessions, and personal API tokens |
+| `/account` | Password changes, sessions, personal API tokens (full or read-only, with an expiry), and keyboard shortcuts |
+| `/api-docs` and `/api-docs/:sectionId` | API documentation, one section per screen; `?from=<path>` opens the section for that screen |
 | `/admin` | Users, invitations, credential resets, registration, password policy, pipeline schedules, server settings (EDINET API key and the rest of `app.db`'s settings), the Cloudflare tunnel under Remote access, and shutting the server down |
 | `/security` | Compatibility alias for the React analysis workspace |
 
@@ -59,6 +60,7 @@ frontend-v2/
 │   │   ├── backtesting/
 │   │   ├── portfolio/
 │   │   ├── pipeline/
+│   │   ├── apidocs/         # per-screen API docs page, example builders, Try it
 │   │   └── chat/            # encrypted channels, DMs, and profiles
 │   ├── hotkeys/             # declared scopes, dispatch, help list, settings editor (see its README.md)
 │   ├── hooks/
@@ -128,7 +130,7 @@ Charts take their series colours from `BRAND_CHART_COLORS` and `SEMANTIC_CHART_C
 
 ## Application shell
 
-`AppShell` owns the persistent desktop sidebar, mobile navigation, global company search, and backend-health indicator for signed-in workspace routes. The sidebar is a light rail on the page ground: text labels with a vermilion tick on the active route, and icons only when the rail is collapsed. The header search is an underlined field rather than a filled box. The homepage, pricing, login, and registration routes use standalone public layouts. Routes are lazy-loaded so charting and feature code do not inflate the initial bundle.
+`AppShell` owns the persistent desktop sidebar, mobile navigation, global company search, the **API docs** link (to `/api-docs?from=<current path>`, which opens that screen's API section), and backend-health indicator for signed-in workspace routes. Below 720 px the docs link, job tray, and account button show icons only. The sidebar is a light rail on the page ground: text labels with a vermilion tick on the active route, and icons only when the rail is collapsed. The header search is an underlined field rather than a filled box. The homepage, pricing, login, and registration routes use standalone public layouts. Routes are lazy-loaded so charting and feature code do not inflate the initial bundle.
 
 The layout is desktop-first but has a 390 px mobile treatment:
 
